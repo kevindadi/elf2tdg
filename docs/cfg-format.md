@@ -136,17 +136,22 @@ unresolved tail-call candidate in `calls`.
 
 ### Jump tables
 
-x86-64 switch tables are recognized in two layouts:
+Switch tables are recognized in these layouts:
 
-- direct indexed memory: `jmp qword ptr [table + index*8]`;
-- PIE-relative tables: `lea table(%rip), %rdx; movslq
-  (%rdx,%rdi,4), %rax; add %rdx,%rax; jmp *%rax`.
+- x86-64 direct indexed memory: `jmp qword ptr [table + index*8]`;
+- x86-64 PIE-relative:
+  `lea table(%rip), %rdx; movslq (%rdx,%rdi,4), %rax; add %rdx,%rax; jmp *%rax`;
+- ARM Thumb `tbb [pc, rN]` and `tbh [pc, rN, lsl #1]`, including
+  register-based table bases;
+- AArch64 relative byte tables such as
+  `adr base; ldrb wN, [table, xM]; add base, base, wN, lsl #2; br base`.
 
 Entries are read until the first non-executable target or the bound implied by
 a preceding `cmp index, N` guard (falling back to a 256-entry safety limit).
 Each valid entry becomes a CFG successor; entries outside the function become
-tail-call candidates. The instruction's `indirect` object is reported as
-`indexed-memory` with `base`, `index`, `scale` and `disp` when applicable.
+tail-call candidates. x86 indexed instructions report `indirect` as
+`indexed-memory` with `base`, `index`, `scale` and `disp`; Thumb table branches
+report `table-branch` with `halfword`, `index` and an optional base.
 
 Caller-argument propagation accepts only a unique executable target across the
 known callers and marks the resulting call as indirect/medium confidence. If
@@ -257,9 +262,9 @@ functions.
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
 
 `indirect` is retained when known: `register`, `register-memory`, `memory`,
-`register-offset`, or `indexed-memory`, with register names, displacement,
-address, index and scale. Unresolved indirect calls and jumps remain explicit
-rather than being guessed.
+`register-offset`, `indexed-memory`, or `table-branch`, with register names,
+displacement, address, index, scale and halfword mode. Unresolved indirect
+calls and jumps remain explicit rather than being guessed.
 
 ### Edge semantics
 
@@ -283,9 +288,9 @@ containing basic block, so they are kept at function level with
 
 - Calls end their basic block and return to a new block; call targets remain
   metadata, not intra-function CFG edges.
-- x86-64 switch tables are expanded when their base/index form is recognized;
-  computed tables on other architectures and vtable dispatch on heap/stack
-  objects remain unresolved indirect jumps.
+- Recognized jump-table forms on x86-64, ARM Thumb and common AArch64 layouts
+  are expanded; RISC-V tables, computed indirect tables and vtable dispatch on
+  heap/stack objects remain unresolved indirect jumps.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
