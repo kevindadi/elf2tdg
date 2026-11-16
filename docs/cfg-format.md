@@ -145,6 +145,8 @@ Switch tables are recognized in these layouts:
   register-based table bases;
 - AArch64 relative byte tables such as
   `adr base; ldrb wN, [table, xM]; add base, base, wN, lsl #2; br base`;
+- AArch64 absolute-pointer tables such as
+  `adrp/add table; ldr xN, [table, xM, lsl #3]; br xN`;
 - ARM A32 conditional PC loads such as
   `cmp rN, N; ldrls pc, [pc, rN, lsl #2]` with absolute-address table entries;
 - ARM A32 branch tables such as `addls pc, pc, rN, lsl #2` followed by
@@ -297,9 +299,10 @@ containing basic block, so they are kept at function level with
 
 - Calls end their basic block and return to a new block; call targets remain
   metadata, not intra-function CFG edges.
-- Recognized jump-table forms on x86-64, ARM Thumb/A32, common AArch64 and
-  RISC-V absolute-pointer layouts are expanded. Computed/indirect tables and
-  vtable dispatch on heap/stack objects remain unresolved indirect jumps.
+- Recognized jump-table forms on x86-64, ARM Thumb/A32, common AArch64
+  relative-byte and absolute-pointer layouts, and RISC-V absolute-pointer
+  layouts are expanded. Computed/indirect tables and vtable dispatch on
+  heap/stack objects remain unresolved indirect jumps.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
