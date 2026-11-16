@@ -167,15 +167,18 @@ pub fn resolve_indirect_target(
     image.is_executable(canonical).then_some(canonical)
 }
 
-/// Maximum number of entries scanned in an indexed jump table.
-pub const MAX_JUMP_TABLE_ENTRIES: usize = 256;
+/// Maximum number of entries scanned when a comparison guard is recovered.
+pub const MAX_JUMP_TABLE_ENTRIES: usize = 4096;
+
+/// Conservative scan limit when no comparison guard can be recovered.
+const FALLBACK_JUMP_TABLE_ENTRIES: usize = 256;
 
 /// Enumerates the targets of an indexed jump table.
 ///
 /// Entry size follows the operand scale (4 or 8 bytes). Absolute pointers are
 /// preferred; 4-byte relative table entries are also accepted. Scanning stops
-/// at the first entry that does not resolve to executable code or after
-/// [`MAX_JUMP_TABLE_ENTRIES`].
+/// at the first entry that does not resolve to executable code, at the section
+/// boundary, at the recovered guard, or after [`MAX_JUMP_TABLE_ENTRIES`].
 #[must_use]
 pub fn resolve_jump_table(
     image: &Image,
@@ -201,7 +204,7 @@ pub fn resolve_jump_table(
     } else {
         u64::try_from(disp).ok()?
     };
-    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
     let targets = enumerate_jump_table(image, table_base, usize::from(scale), false, limit);
     (!targets.is_empty()).then_some(targets)
 }
@@ -233,7 +236,7 @@ pub fn resolve_table_branch(
         }
     };
     let entry_size = if halfword { 2 } else { 1 };
-    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
     let mut targets = Vec::new();
     for raw in read_table_entries(image, table_base, entry_size, limit) {
         let Some(offset) = raw.checked_mul(2) else {
@@ -278,7 +281,7 @@ pub fn resolve_indexed_pointer_table(
     }
     let table_base =
         resolve_register(image, decoded, load_index, table_register, 0)?.wrapping_add_signed(disp);
-    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
     let mut targets = Vec::new();
     for raw in read_table_entries(image, table_base, usize::from(scale), limit) {
         let target = image.canonical_address(raw);
@@ -361,7 +364,7 @@ pub fn resolve_riscv_jump_table(
         return None;
     }
     let entry_width = u8::try_from(entry_size).ok()?;
-    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
     let mut targets = Vec::new();
     for raw in read_table_entries(image, table_base, entry_size, limit) {
         let target = if let Some(base) = relative_base {
@@ -418,7 +421,7 @@ pub fn resolve_table_load(
             _ => return None,
         }
     };
-    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
     let mut targets = Vec::new();
     for raw in read_table_entries(image, table_base, 4, limit) {
         let target = image.canonical_address(raw);
@@ -452,7 +455,8 @@ pub fn resolve_branch_table(
     } else {
         site.checked_add(8)?
     };
-    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
+    let table_end = image.allocation_end_for(table_base);
     let mut targets = Vec::new();
     for index in 0..limit.min(MAX_JUMP_TABLE_ENTRIES) {
         let Some(offset) = u64::try_from(index)
@@ -464,6 +468,9 @@ pub fn resolve_branch_table(
         let Some(address) = table_base.checked_add(offset) else {
             break;
         };
+        if table_end.is_some_and(|end| address >= end) {
+            break;
+        }
         let Some(word) = image.read_uint(address, 4) else {
             break;
         };
@@ -525,7 +532,7 @@ pub fn resolve_offset_jump_table(
     let table_base =
         resolve_register(image, decoded, add_index, table_register, 0)?.wrapping_add_signed(disp);
     let code_base = resolve_register(image, decoded, add_index, code_register, 0)?;
-    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
     let mut targets = Vec::new();
     for raw in read_table_entries(image, table_base, usize::from(scale), limit) {
         let value = if signed {
@@ -548,6 +555,7 @@ pub fn resolve_offset_jump_table(
 }
 
 fn read_table_entries(image: &Image, table_base: u64, entry_size: usize, limit: usize) -> Vec<u64> {
+    let table_end = image.allocation_end_for(table_base);
     let mut entries = Vec::new();
     for index in 0..limit.min(MAX_JUMP_TABLE_ENTRIES) {
         let Some(offset) = u64::try_from(index)
@@ -559,6 +567,9 @@ fn read_table_entries(image: &Image, table_base: u64, entry_size: usize, limit: 
         let Some(address) = table_base.checked_add(offset) else {
             break;
         };
+        if table_end.is_some_and(|end| address >= end) {
+            break;
+        }
         let Some(raw) = image.read_uint(address, entry_size) else {
             break;
         };
@@ -583,6 +594,7 @@ fn enumerate_jump_table(
     relative_only: bool,
     limit: usize,
 ) -> Vec<u64> {
+    let table_end = image.allocation_end_for(table_base);
     let mut targets = Vec::new();
     for index in 0..limit.min(MAX_JUMP_TABLE_ENTRIES) {
         let Some(offset) = u64::try_from(index)
@@ -594,6 +606,9 @@ fn enumerate_jump_table(
         let Some(address) = table_base.checked_add(offset) else {
             break;
         };
+        if table_end.is_some_and(|end| address >= end) {
+            break;
+        }
         let Some(raw) = image.read_uint(address, entry_size) else {
             break;
         };
@@ -637,22 +652,153 @@ fn jump_table_bound(
     if exact.is_some() {
         return exact;
     }
-    candidates
-        .take(16)
-        .find_map(|instruction| {
-            let (_, value) = instruction.compare?;
-            usize::try_from(value)
-                .ok()
-                .map(|value| value.saturating_add(1))
-        })
-        .or_else(|| riscv_jump_table_bound(decoded, before, register))
+    if let Some(bound) = register_compare_bound(decoded, before, site, register)
+        .or_else(|| riscv_jump_table_bound(decoded, before, site, register))
+    {
+        return Some(bound);
+    }
+    candidates.take(16).find_map(|instruction| {
+        let (_, value) = instruction.compare?;
+        usize::try_from(value)
+            .ok()
+            .map(|value| value.saturating_add(1))
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnsignedRelation {
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
+impl UnsignedRelation {
+    /// Same comparison with the operands swapped.
+    fn swap(self) -> Self {
+        match self {
+            Self::Less => Self::Greater,
+            Self::LessEqual => Self::GreaterEqual,
+            Self::Greater => Self::Less,
+            Self::GreaterEqual => Self::LessEqual,
+        }
+    }
+
+    /// Negated comparison, used when the table is on the fallthrough edge.
+    fn negate(self) -> Self {
+        match self {
+            Self::Less => Self::GreaterEqual,
+            Self::LessEqual => Self::Greater,
+            Self::Greater => Self::LessEqual,
+            Self::GreaterEqual => Self::Less,
+        }
+    }
+}
+
+/// Parses an unsigned conditional-branch mnemonic (ARM/AArch64 `bhi`/`b.hi`,
+/// x86 `ja`, RISC-V `bltu` and aliases).
+fn unsigned_relation(mnemonic: &str) -> Option<UnsignedRelation> {
+    let mnemonic = mnemonic.strip_prefix("c.").unwrap_or(mnemonic);
+    let mnemonic = mnemonic
+        .strip_suffix(".w")
+        .or_else(|| mnemonic.strip_suffix(".n"))
+        .unwrap_or(mnemonic);
+    match mnemonic {
+        "blo" | "b.lo" | "bcc" | "b.cc" | "blt" | "b.lt" | "jb" | "jc" | "jnae" | "jl" | "jnge"
+        | "bltu" => Some(UnsignedRelation::Less),
+        "bls" | "b.ls" | "ble" | "b.le" | "jbe" | "jna" | "jle" | "jng" | "bleu" => {
+            Some(UnsignedRelation::LessEqual)
+        }
+        "bhi" | "b.hi" | "bgt" | "b.gt" | "ja" | "jnbe" | "jg" | "jnle" | "bgtu" => {
+            Some(UnsignedRelation::Greater)
+        }
+        "bhs" | "b.hs" | "bcs" | "b.cs" | "bge" | "b.ge" | "jae" | "jnb" | "jnc" | "jge"
+        | "jnl" | "bgeu" => Some(UnsignedRelation::GreaterEqual),
+        _ => None,
+    }
+}
+
+/// Converts an index-vs-bound relation into a table entry count.
+///
+/// `branch_to_table` distinguishes the usual `cmp index, bound; bhi default`
+/// form from the inverted `bgeu bound, index, table` form used when the
+/// default block is out of conditional-branch range.
+fn guarded_table_entries(
+    index_relation: UnsignedRelation,
+    branch_to_table: bool,
+    bound: u64,
+) -> Option<usize> {
+    let table_relation = if branch_to_table {
+        index_relation
+    } else {
+        index_relation.negate()
+    };
+    let entries = match table_relation {
+        UnsignedRelation::LessEqual => bound.checked_add(1)?,
+        UnsignedRelation::Less => bound,
+        UnsignedRelation::Greater | UnsignedRelation::GreaterEqual => return None,
+    };
+    usize::try_from(entries)
+        .ok()
+        .map(|entries| entries.min(MAX_JUMP_TABLE_ENTRIES))
+}
+
+/// Recovers a bound when the comparison threshold was materialized in a
+/// register, as in Thumb `movw r3, #299; cmp r0, r3; bhi default`.
+fn register_compare_bound(
+    decoded: &[DecodedInsn],
+    before: usize,
+    site: u64,
+    register: capstone::RegId,
+) -> Option<usize> {
+    let start = before.saturating_sub(32);
+    for index in (start..before).rev() {
+        let instruction = &decoded[index];
+        let Some((lhs, rhs)) = instruction.compare_registers else {
+            continue;
+        };
+        let lhs_is_index = lhs == register;
+        let bound_register = if lhs_is_index {
+            rhs
+        } else if rhs == register {
+            lhs
+        } else {
+            continue;
+        };
+        let Some(guard) = decoded.get(index + 1) else {
+            continue;
+        };
+        if !guard.is_jump || !guard.is_conditional {
+            continue;
+        }
+        let Some(relation) = unsigned_relation(&guard.mnemonic) else {
+            continue;
+        };
+        let Some(bound) = immediate_definition(decoded, index, bound_register) else {
+            continue;
+        };
+        let branch_to_table = guard
+            .direct_target
+            .is_some_and(|target| target > instruction.address && target < site);
+        let index_relation = if lhs_is_index {
+            relation
+        } else {
+            relation.swap()
+        };
+        if let Some(entries) = guarded_table_entries(index_relation, branch_to_table, bound) {
+            return Some(entries);
+        }
+    }
+    None
 }
 
 /// Recovers the table bound from the RISC-V register guard emitted before a
-/// switch, for example `li t0, 15; bltu t0, index, default`.
+/// switch, for example `li t0, 15; bltu t0, index, default` or the inverted
+/// `li t0, 299; bgeu t0, index, table`.
 fn riscv_jump_table_bound(
     decoded: &[DecodedInsn],
     before: usize,
+    site: u64,
     register: capstone::RegId,
 ) -> Option<usize> {
     let start = before.saturating_sub(32);
@@ -661,29 +807,31 @@ fn riscv_jump_table_bound(
         let Some((lhs, rhs)) = instruction.branch_registers else {
             continue;
         };
-        let mnemonic = instruction
-            .mnemonic
-            .strip_prefix("c.")
-            .unwrap_or(&instruction.mnemonic);
-        let bound_register = if lhs == register {
+        let lhs_is_index = lhs == register;
+        let bound_register = if lhs_is_index {
             rhs
         } else if rhs == register {
             lhs
         } else {
             continue;
         };
-        let Some(value) = immediate_definition(decoded, index, bound_register) else {
+        let Some(relation) = unsigned_relation(&instruction.mnemonic) else {
             continue;
         };
-        let value = usize::try_from(value).ok()?;
-        let entries = match (mnemonic, lhs == register) {
-            // `bound < index` branches away; the table covers 0..=bound.
-            ("bltu", false) | ("bgtu", true) => value.checked_add(1)?,
-            // `index < bound` or `index >= bound` branches away.
-            ("bgeu", true) | ("bleu", false) => value,
-            _ => continue,
+        let Some(bound) = immediate_definition(decoded, index, bound_register) else {
+            continue;
         };
-        return Some(entries.min(MAX_JUMP_TABLE_ENTRIES));
+        let branch_to_table = instruction
+            .direct_target
+            .is_some_and(|target| target > instruction.address && target < site);
+        let index_relation = if lhs_is_index {
+            relation
+        } else {
+            relation.swap()
+        };
+        if let Some(entries) = guarded_table_entries(index_relation, branch_to_table, bound) {
+            return Some(entries);
+        }
     }
     None
 }
@@ -922,7 +1070,7 @@ fn pc_value(arch: crate::loader::ArchKind, address: u64, size: u8) -> Option<u64
 mod tests {
     use super::{
         evaluate_argument_spec, forwarded_argument_index, indirect_argument_spec, jump_table_bound,
-        resolve_argument_pointer, resolve_indirect_target,
+        read_table_entries, resolve_argument_pointer, resolve_indirect_target,
     };
     use crate::arch::Decoder;
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
@@ -1187,6 +1335,53 @@ mod tests {
             jump_table_bound(&[li, branch], 0x0040_0124, index),
             Some(16)
         );
+    }
+
+    #[test]
+    fn recovers_inverted_riscv_register_guard_bound() {
+        let engine = Decoder::new(ArchKind::Riscv64).unwrap();
+        // c.li a1, 15; bgeu a1, a0, table
+        let li = engine
+            .decode_one(&[0xbd, 0x45], 0x0040_011e)
+            .unwrap()
+            .expect("c.li");
+        let branch = engine
+            .decode_one(&[0x63, 0xf8, 0xa5, 0x0a], 0x0040_0120)
+            .unwrap()
+            .expect("bgeu");
+        let (_, index) = branch.branch_registers.expect("two register operands");
+        // The branch target (0x4001d0) lies before this dispatch site, so the
+        // table is reached on the taken edge.
+        assert_eq!(
+            jump_table_bound(&[li, branch], 0x0040_0200, index),
+            Some(16)
+        );
+    }
+
+    #[test]
+    fn jump_table_scan_stops_at_section_end() {
+        let mut image = image(ArchKind::X86_64, 0x1000, Vec::new());
+        image.sections = vec![
+            Section {
+                name: ".rodata".to_owned(),
+                address: 0x2000,
+                size: 8,
+                data: vec![1, 0, 0, 0, 2, 0, 0, 0],
+                executable: false,
+                writable: false,
+                alloc: true,
+            },
+            Section {
+                name: ".data".to_owned(),
+                address: 0x2008,
+                size: 8,
+                data: vec![3, 0, 0, 0, 4, 0, 0, 0],
+                executable: false,
+                writable: true,
+                alloc: true,
+            },
+        ];
+        assert_eq!(read_table_entries(&image, 0x2000, 4, 100), vec![1, 2]);
     }
 
     #[test]

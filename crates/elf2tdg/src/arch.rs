@@ -189,6 +189,9 @@ pub struct DecodedInsn {
     /// Two-register branch operands. RISC-V tables guard the index with
     /// `bltu bound, index` rather than an immediate compare.
     pub branch_registers: Option<(RegId, RegId)>,
+    /// Two-register `cmp` operands, used when a table bound is materialized in
+    /// a register (for example Thumb `movw` followed by `cmp`).
+    pub compare_registers: Option<(RegId, RegId)>,
 }
 
 impl DecodedInsn {
@@ -363,6 +366,12 @@ impl Decoder {
             ArchKind::Riscv32 | ArchKind::Riscv64 => riscv_branch_registers(&detail, &mnemonic),
             _ => None,
         };
+        let compare_registers = match self.arch {
+            ArchKind::Thumb | ArchKind::Arm => arm_compare_registers(&detail, &mnemonic),
+            ArchKind::Aarch64 => aarch64_compare_registers(&detail, &mnemonic),
+            ArchKind::X86_64 => x86_compare_registers(&detail, &mnemonic),
+            ArchKind::Riscv32 | ArchKind::Riscv64 => None,
+        };
 
         Ok(Some(DecodedInsn {
             address,
@@ -379,6 +388,7 @@ impl Decoder {
             indirect,
             compare,
             branch_registers,
+            compare_registers,
         }))
     }
 }
@@ -677,6 +687,65 @@ fn arm_compare(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<(Reg
         return None;
     };
     u64::try_from(*value).ok().map(|value| (*register, value))
+}
+
+fn arm_compare_registers(
+    detail: &capstone::InsnDetail<'_>,
+    mnemonic: &str,
+) -> Option<(RegId, RegId)> {
+    if !mnemonic.starts_with("cmp") {
+        return None;
+    }
+    let ArchDetail::ArmDetail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let operands: Vec<_> = detail.operands().collect();
+    let arm::ArmOperandType::Reg(lhs) = operands.first()?.op_type else {
+        return None;
+    };
+    let arm::ArmOperandType::Reg(rhs) = operands.get(1)?.op_type else {
+        return None;
+    };
+    Some((lhs, rhs))
+}
+
+fn aarch64_compare_registers(
+    detail: &capstone::InsnDetail<'_>,
+    mnemonic: &str,
+) -> Option<(RegId, RegId)> {
+    if mnemonic != "cmp" {
+        return None;
+    }
+    let ArchDetail::Arm64Detail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let operands: Vec<_> = detail.operands().collect();
+    let arm64::Arm64OperandType::Reg(lhs) = operands.first()?.op_type else {
+        return None;
+    };
+    let arm64::Arm64OperandType::Reg(rhs) = operands.get(1)?.op_type else {
+        return None;
+    };
+    Some((aarch64_register(lhs), aarch64_register(rhs)))
+}
+
+fn x86_compare_registers(
+    detail: &capstone::InsnDetail<'_>,
+    mnemonic: &str,
+) -> Option<(RegId, RegId)> {
+    if !mnemonic.starts_with("cmp") {
+        return None;
+    }
+    let ArchDetail::X86Detail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let operands: Vec<_> = detail.operands().collect();
+    let (x86::X86OperandType::Reg(lhs), x86::X86OperandType::Reg(rhs)) =
+        (&operands.first()?.op_type, &operands.get(1)?.op_type)
+    else {
+        return None;
+    };
+    Some((x86_64_register(*lhs), x86_64_register(*rhs)))
 }
 
 fn riscv_branch_registers(
@@ -1049,39 +1118,44 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
                 source: ValueSource::Address(u64::try_from(*value).ok()?),
             })
         }
-        "ldr" | "ldur" | "ldrb" | "ldrh" | "ldrsb" | "ldrsh" => match &operands.get(1)?.op_type {
-            arm64::Arm64OperandType::Imm(value) => Some(ValueEffect {
-                dest,
-                source: ValueSource::LoadAddress(u64::try_from(*value).ok()?),
-            }),
-            arm64::Arm64OperandType::Mem(memory) if memory.index().0 == 0 => Some(ValueEffect {
-                dest,
-                source: ValueSource::LoadFromRegister {
-                    base: aarch64_register(memory.base()),
-                    disp: i64::from(memory.disp()),
-                },
-            }),
-            arm64::Arm64OperandType::Mem(memory) => {
-                let (scale, signed) = match mnemonic {
-                    "ldrb" => (1, false),
-                    "ldrsb" => (1, true),
-                    "ldrh" => (2, false),
-                    "ldrsh" => (2, true),
-                    _ => (dest_width, false),
-                };
-                Some(ValueEffect {
+        "ldr" | "ldur" | "ldrb" | "ldrh" | "ldrsb" | "ldrsh" | "ldrsw" | "ldursw" => {
+            match &operands.get(1)?.op_type {
+                arm64::Arm64OperandType::Imm(value) => Some(ValueEffect {
                     dest,
-                    source: ValueSource::IndexedLoad {
-                        base: (memory.base().0 != 0).then(|| aarch64_register(memory.base())),
-                        index: aarch64_register(memory.index()),
-                        scale,
-                        disp: i64::from(memory.disp()),
-                        signed,
-                    },
-                })
+                    source: ValueSource::LoadAddress(u64::try_from(*value).ok()?),
+                }),
+                arm64::Arm64OperandType::Mem(memory) if memory.index().0 == 0 => {
+                    Some(ValueEffect {
+                        dest,
+                        source: ValueSource::LoadFromRegister {
+                            base: aarch64_register(memory.base()),
+                            disp: i64::from(memory.disp()),
+                        },
+                    })
+                }
+                arm64::Arm64OperandType::Mem(memory) => {
+                    let (scale, signed) = match mnemonic {
+                        "ldrb" => (1, false),
+                        "ldrsb" => (1, true),
+                        "ldrh" => (2, false),
+                        "ldrsh" => (2, true),
+                        "ldrsw" | "ldursw" => (4, true),
+                        _ => (dest_width, false),
+                    };
+                    Some(ValueEffect {
+                        dest,
+                        source: ValueSource::IndexedLoad {
+                            base: (memory.base().0 != 0).then(|| aarch64_register(memory.base())),
+                            index: aarch64_register(memory.index()),
+                            scale,
+                            disp: i64::from(memory.disp()),
+                            signed,
+                        },
+                    })
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
         "mov" => {
             let source = match &operands.get(1)?.op_type {
                 arm64::Arm64OperandType::Reg(register) => {

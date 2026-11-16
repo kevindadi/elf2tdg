@@ -282,6 +282,19 @@ impl Image {
             .map(|section| section.name.as_str())
     }
 
+    /// Returns the end of the allocated section containing `address`.
+    ///
+    /// Jump-table scans use this to avoid reading across a section boundary
+    /// into unrelated data.
+    #[must_use]
+    pub fn allocation_end_for(&self, address: u64) -> Option<u64> {
+        self.sections
+            .iter()
+            .filter(|section| section.alloc && section.contains(address))
+            .map(Section::end)
+            .max()
+    }
+
     /// Returns bytes at `address` from any section (not just executable ones).
     /// This is used for literal pools and read-only pointer tables.
     #[must_use]
