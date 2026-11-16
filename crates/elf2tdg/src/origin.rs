@@ -228,6 +228,7 @@ mod tests {
             byte_order: ByteOrder::Little,
             elf_kind: ElfKind::Exec,
             entry: 0,
+            relocated_pointers: std::collections::BTreeMap::default(),
             segments: Vec::new(),
             sections: vec![Section {
                 name: ".text".to_owned(),

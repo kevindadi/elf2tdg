@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use object::{
-    Object, ObjectSection, ObjectSegment, ObjectSymbol, RelocationFlags, RelocationTarget,
-    SectionFlags, SectionKind, SymbolKind,
+    Object, ObjectSection, ObjectSegment, ObjectSymbol, RelocationFlags, RelocationKind,
+    RelocationTarget, SectionFlags, SectionKind, SymbolKind,
 };
 
 use crate::error::{Error, Result};
@@ -215,6 +215,8 @@ pub struct Image {
     pub elf_kind: ElfKind,
     /// Raw ELF entry point.
     pub entry: u64,
+    /// Resolved pointer-sized memory slots from dynamic relocations.
+    pub relocated_pointers: BTreeMap<u64, u64>,
     /// Loaded program segments (`PT_LOAD`).
     pub segments: Vec<Segment>,
     /// Loaded sections.
@@ -301,6 +303,15 @@ impl Image {
     /// order.
     #[must_use]
     pub fn read_uint(&self, address: u64, size: usize) -> Option<u64> {
+        if matches!(size, 4 | 8)
+            && let Some(value) = self.relocated_pointers.get(&address)
+        {
+            return Some(if size == 4 {
+                value & u64::from(u32::MAX)
+            } else {
+                *value
+            });
+        }
         let bytes = self.bytes_at_any(address, size)?;
         if bytes.len() < size {
             return None;
@@ -314,6 +325,21 @@ impl Image {
             (ByteOrder::Big, 8) => Some(u64::from_be_bytes(bytes[..8].try_into().ok()?)),
             _ => None,
         }
+    }
+
+    /// Returns the pointer width for the image architecture.
+    #[must_use]
+    pub fn pointer_size(&self) -> usize {
+        match self.arch {
+            ArchKind::Thumb | ArchKind::Arm | ArchKind::Riscv32 => 4,
+            ArchKind::Aarch64 | ArchKind::Riscv64 | ArchKind::X86_64 => 8,
+        }
+    }
+
+    /// Reads a pointer-sized value, preferring a resolved dynamic relocation.
+    #[must_use]
+    pub fn read_pointer(&self, address: u64) -> Option<u64> {
+        self.read_uint(address, self.pointer_size())
     }
 
     /// Returns the canonical address for the image's instruction set.
@@ -490,6 +516,8 @@ pub fn load(path: &Path) -> Result<Image> {
     } else {
         Vec::new()
     };
+    let relocated_pointers =
+        collect_pointer_relocations(&file, &sections, byte_order, arch, &symbols);
     let (dwarf, dwarf_error) = if has_debug_info {
         match crate::dwarf::parse(&file, byte_order) {
             Ok(info) => (Some(info), None),
@@ -505,6 +533,7 @@ pub fn load(path: &Path) -> Result<Image> {
         byte_order,
         elf_kind,
         entry,
+        relocated_pointers,
         segments,
         sections,
         symbols,
@@ -516,6 +545,121 @@ pub fn load(path: &Path) -> Result<Image> {
         dwarf,
         dwarf_error,
     })
+}
+
+fn collect_pointer_relocations(
+    file: &object::File<'_>,
+    sections: &[Section],
+    byte_order: ByteOrder,
+    arch: ArchKind,
+    symbols: &[ImageSymbol],
+) -> BTreeMap<u64, u64> {
+    let Some(relocations) = file.dynamic_relocations() else {
+        return BTreeMap::new();
+    };
+    let pointer_size = match arch {
+        ArchKind::Thumb | ArchKind::Arm | ArchKind::Riscv32 => 4,
+        ArchKind::Aarch64 | ArchKind::Riscv64 | ArchKind::X86_64 => 8,
+    };
+    let dynamic_symbols: BTreeMap<usize, (String, u64)> = file
+        .dynamic_symbols()
+        .filter_map(|symbol| {
+            let name = symbol.name().ok()?.to_owned();
+            Some((symbol.index().0, (name, symbol.address())))
+        })
+        .collect();
+    let mut relocated = BTreeMap::new();
+    for (address, relocation) in relocations {
+        let addend = if relocation.has_implicit_addend() {
+            raw_uint_at(sections, byte_order, address, pointer_size)
+        } else {
+            u64::try_from(relocation.addend()).ok()
+        };
+        let is_relative = match relocation.flags() {
+            RelocationFlags::Elf { r_type } => relative_pointer_relocation(arch, r_type),
+            _ => relocation.kind() == RelocationKind::Relative,
+        };
+        let is_absolute = match relocation.flags() {
+            RelocationFlags::Elf { r_type } => absolute_pointer_relocation(arch, r_type),
+            _ => relocation.kind() == RelocationKind::Absolute,
+        };
+        let value = if is_relative {
+            addend
+        } else if is_absolute {
+            let Some(addend) = addend else {
+                continue;
+            };
+            let base = match relocation.target() {
+                RelocationTarget::Symbol(index) => {
+                    dynamic_symbols.get(&index.0).and_then(|(name, address)| {
+                        if *address == 0 {
+                            symbols
+                                .iter()
+                                .find(|symbol| symbol.name == *name)
+                                .map(|symbol| symbol.address & !1)
+                        } else {
+                            Some(*address)
+                        }
+                    })
+                }
+                RelocationTarget::Section(index) => file
+                    .section_by_index(index)
+                    .ok()
+                    .map(|section| section.address()),
+                _ => None,
+            };
+            base.and_then(|base| base.checked_add(addend))
+        } else {
+            None
+        };
+        if let Some(value) = value
+            && value != 0
+        {
+            relocated.insert(address, value);
+        }
+    }
+    relocated
+}
+
+fn relative_pointer_relocation(arch: ArchKind, r_type: u32) -> bool {
+    match arch {
+        ArchKind::X86_64 => r_type == object::elf::R_X86_64_RELATIVE,
+        ArchKind::Aarch64 => r_type == object::elf::R_AARCH64_RELATIVE,
+        ArchKind::Riscv32 | ArchKind::Riscv64 => r_type == object::elf::R_RISCV_RELATIVE,
+        ArchKind::Thumb | ArchKind::Arm => r_type == object::elf::R_ARM_RELATIVE,
+    }
+}
+
+fn absolute_pointer_relocation(arch: ArchKind, r_type: u32) -> bool {
+    match arch {
+        ArchKind::X86_64 => r_type == object::elf::R_X86_64_64,
+        ArchKind::Aarch64 => r_type == object::elf::R_AARCH64_ABS64,
+        ArchKind::Riscv32 => r_type == object::elf::R_RISCV_32,
+        ArchKind::Riscv64 => r_type == object::elf::R_RISCV_64,
+        ArchKind::Thumb | ArchKind::Arm => r_type == object::elf::R_ARM_ABS32,
+    }
+}
+
+fn raw_uint_at(
+    sections: &[Section],
+    byte_order: ByteOrder,
+    address: u64,
+    size: usize,
+) -> Option<u64> {
+    let size_u64 = u64::try_from(size).ok()?;
+    let end = address.checked_add(size_u64)?;
+    let section = sections
+        .iter()
+        .find(|section| address >= section.address && end <= section.end())?;
+    let offset = usize::try_from(address.checked_sub(section.address)?).ok()?;
+    let bytes = section.data.get(offset..offset + size)?;
+    match (byte_order, size) {
+        (ByteOrder::Little, 4) => Some(u64::from(u32::from_le_bytes(bytes.try_into().ok()?))),
+        (ByteOrder::Little, 8) => Some(u64::from_le_bytes(bytes.try_into().ok()?)),
+        (ByteOrder::Big, 4) => Some(u64::from(u32::from_be_bytes(bytes.try_into().ok()?))),
+        (ByteOrder::Big, 8) => Some(u64::from_be_bytes(bytes.try_into().ok()?)),
+        _ => None,
+    }
 }
 
 /// Adds synthetic function symbols for dynamic PLT stubs.
@@ -763,6 +907,23 @@ mod tests {
         assert_eq!(elf_kind(&bytes, ByteOrder::Little), ElfKind::Exec);
         bytes[16] = 3;
         assert_eq!(elf_kind(&bytes, ByteOrder::Little), ElfKind::Dyn);
+    }
+
+    #[test]
+    fn resolves_dynamic_function_pointer_relocations() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/rust-concurrency/artifacts/rust-concurrency-o0.elf");
+        if !path.exists() {
+            return;
+        }
+        let image = load(&path).expect("example ELF must load");
+        assert!(!image.relocated_pointers.is_empty());
+        let (address, value) = image
+            .relocated_pointers
+            .iter()
+            .find(|(_, value)| image.is_executable(image.canonical_address(**value)))
+            .expect("at least one relocated slot points into executable code");
+        assert_eq!(image.read_pointer(*address), Some(*value));
     }
 
     #[test]
