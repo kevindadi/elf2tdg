@@ -631,3 +631,38 @@ def: mov r0, #-1
     };
     assert_jump_table_resolved(&binary, 4);
 }
+
+#[test]
+fn resolves_aarch64_absolute_pointer_jump_table_edges() {
+    let source = r"
+.text
+.global dispatch
+.type dispatch,%function
+dispatch:
+    cmp w0, #3
+    b.hi def
+    adrp x9, table
+    add x9, x9, :lo12:table
+    mov w8, w0
+    ldr x9, [x9, x8, lsl #3]
+    br x9
+c0: mov w0, #10
+    ret
+c1: mov w0, #11
+    ret
+c2: mov w0, #12
+    ret
+c3: mov w0, #13
+    ret
+def: mov w0, #-1
+    ret
+.section .rodata
+.align 3
+table:
+    .xword c0, c1, c2, c3
+";
+    let Some(binary) = compile_aarch64("switch_absolute.s", source) else {
+        return;
+    };
+    assert_jump_table_resolved(&binary, 4);
+}
