@@ -302,3 +302,40 @@ fn system_reachability_uses_code_refs_and_optional_runtime_pruning() {
             .any(|function| function.primary_name.contains("main"))
     );
 }
+
+#[test]
+fn cfg_json_limits_diagnostics_to_selected_functions() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
+    if !path.exists() {
+        return;
+    }
+    let image = loader::load(&path).expect("example ELF must load");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let reachable = analysis
+        .cfg
+        .reachable_from(&analysis.tdg, "main")
+        .expect("main reachability");
+    let selected: std::collections::BTreeSet<_> =
+        reachable.iter().map(|function| &function.id).collect();
+    let json = cfg::render_json_selected(&analysis.cfg, &analysis.tdg, &reachable, false)
+        .expect("CFG JSON");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(value["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
+    assert!(
+        value["diagnostics_omitted"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "unreachable diagnostics should be reported as omitted"
+    );
+    for diagnostic in value["diagnostics"].as_array().expect("diagnostics") {
+        if let Some(function) = diagnostic["function"].as_str() {
+            let function = elf2tdg_schema::FunctionId::new(function);
+            assert!(
+                selected.contains(&function),
+                "diagnostic for out-of-scope function {function}"
+            );
+        }
+    }
+}

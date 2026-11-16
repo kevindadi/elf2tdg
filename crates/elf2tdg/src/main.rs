@@ -210,6 +210,7 @@ fn write_rendered(cli: &Cli, rendered: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -290,11 +291,25 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|function| function.cfg.blocks_by_address.len())
                 .sum();
+            let selected: std::collections::BTreeSet<_> =
+                cfg_functions.iter().map(|function| &function.id).collect();
+            let scoped_diagnostics = tdg
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .function
+                        .as_ref()
+                        .is_none_or(|function| selected.contains(function))
+                })
+                .count();
+            let omitted = tdg.diagnostics.len().saturating_sub(scoped_diagnostics);
             eprintln!(
-                "{} functions, {} CFG blocks, {} diagnostics -> {destination}",
+                "{} functions, {} CFG blocks, {} diagnostics ({} image-wide diagnostics omitted) -> {destination}",
                 cfg_functions.len(),
                 blocks,
-                tdg.diagnostics.len()
+                scoped_diagnostics,
+                omitted
             );
         } else {
             eprintln!(

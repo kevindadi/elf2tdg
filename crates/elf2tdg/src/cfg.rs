@@ -22,7 +22,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.1";
+pub const CFG_SCHEMA_VERSION: &str = "1.2";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -887,7 +887,14 @@ struct CfgDocument<'a> {
     cfg_schema_version: &'static str,
     image: &'a ImageInfo,
     functions: Vec<CfgFunctionView>,
-    diagnostics: &'a [Diagnostic],
+    diagnostics: Vec<&'a Diagnostic>,
+    #[serde(skip_serializing_if = "is_zero")]
+    diagnostics_omitted: usize,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Serialize)]
@@ -1027,11 +1034,25 @@ pub fn render_json_selected(
         .iter()
         .map(|function| function_view(program, function, include_instructions))
         .collect();
+    let selected_ids: BTreeSet<&FunctionId> =
+        selected.iter().map(|function| &function.id).collect();
+    let diagnostics: Vec<&Diagnostic> = tdg
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic
+                .function
+                .as_ref()
+                .is_none_or(|function| selected_ids.contains(function))
+        })
+        .collect();
+    let diagnostics_omitted = tdg.diagnostics.len().saturating_sub(diagnostics.len());
     let document = CfgDocument {
         cfg_schema_version: CFG_SCHEMA_VERSION,
         image: &tdg.image,
         functions,
-        diagnostics: &tdg.diagnostics,
+        diagnostics,
+        diagnostics_omitted,
     };
     serde_json::to_string_pretty(&document).map_err(|error| error.to_string())
 }
