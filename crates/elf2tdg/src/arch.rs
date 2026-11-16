@@ -51,6 +51,13 @@ pub enum ValueSource {
         /// Left shift applied to the addend.
         shift: u8,
     },
+    /// Shift a register left by a constant.
+    ShiftRegister {
+        /// Base register.
+        base: RegId,
+        /// Left shift amount.
+        shift: u8,
+    },
     /// Signed or unsigned load from an indexed table entry.
     IndexedLoad {
         /// Optional base register; `None` means an absolute table address.
@@ -1010,7 +1017,8 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
 )]
 fn riscv_value_effect(
     detail: &capstone::InsnDetail<'_>,
@@ -1085,16 +1093,50 @@ fn riscv_value_effect(
                 source: ValueSource::Copy(*register),
             })
         }
-        "ld" | "lw" => {
-            let Some(riscv::RiscVOperand::Mem(memory)) = operands.get(1) else {
-                return None;
+        "add" | "addw" => {
+            let (base, addend) = match (operands.get(1), operands.get(2)) {
+                (Some(riscv::RiscVOperand::Reg(base)), Some(riscv::RiscVOperand::Reg(addend))) => {
+                    (*base, *addend)
+                }
+                (Some(riscv::RiscVOperand::Reg(addend)), None) => (dest, *addend),
+                _ => return None,
             };
             Some(ValueEffect {
                 dest,
-                source: ValueSource::LoadFromRegister {
-                    base: memory.base(),
-                    disp: memory.disp(),
+                source: ValueSource::AddRegister {
+                    base,
+                    addend,
+                    shift: 0,
                 },
+            })
+        }
+        "slli" | "slliw" => {
+            let (base, shift) = match (operands.get(1), operands.get(2)) {
+                (Some(riscv::RiscVOperand::Reg(base)), Some(riscv::RiscVOperand::Imm(shift))) => {
+                    (*base, *shift)
+                }
+                (Some(riscv::RiscVOperand::Imm(shift)), None) => (dest, *shift),
+                _ => return None,
+            };
+            Some(ValueEffect {
+                dest,
+                source: ValueSource::ShiftRegister {
+                    base,
+                    shift: u8::try_from(shift).ok()?,
+                },
+            })
+        }
+        "ld" | "lw" => {
+            let (base, disp) = match (operands.get(1), operands.get(2)) {
+                (Some(riscv::RiscVOperand::Mem(memory)), _) => (memory.base(), memory.disp()),
+                (Some(riscv::RiscVOperand::Imm(disp)), Some(riscv::RiscVOperand::Reg(base))) => {
+                    (*base, *disp)
+                }
+                _ => return None,
+            };
+            Some(ValueEffect {
+                dest,
+                source: ValueSource::LoadFromRegister { base, disp },
             })
         }
         _ => None,

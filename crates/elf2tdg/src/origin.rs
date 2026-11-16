@@ -120,7 +120,9 @@ fn resolve_register(
                 };
                 return Some(base_value | imm);
             }
-            ValueSource::AddRegister { .. } | ValueSource::IndexedLoad { .. } => return None,
+            ValueSource::AddRegister { .. }
+            | ValueSource::IndexedLoad { .. }
+            | ValueSource::ShiftRegister { .. } => return None,
         }
     }
     None
@@ -243,6 +245,74 @@ pub fn resolve_table_branch(
         }
     }
     (!targets.is_empty()).then_some(targets)
+}
+
+/// Resolves the common RISC-V switch sequence:
+///
+/// `slli index, index, 2; ...; add index, index, table; lw target, 0(index); jr target`.
+#[must_use]
+pub fn resolve_riscv_jump_table(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    jump_register: capstone::RegId,
+) -> Option<Vec<u64>> {
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    let (load_index, load_effect) = latest_definition(decoded, before, jump_register)?;
+    let ValueSource::LoadFromRegister {
+        base: address_register,
+        disp,
+    } = load_effect.source
+    else {
+        return None;
+    };
+    let (add_index, add_effect) = latest_definition(decoded, load_index, address_register)?;
+    let ValueSource::AddRegister {
+        base,
+        addend,
+        shift: 0,
+    } = add_effect.source
+    else {
+        return None;
+    };
+    let (index, scale, table_register) =
+        if let Some((index, scale)) = shifted_index(decoded, add_index, base) {
+            (index, scale, addend)
+        } else if let Some((index, scale)) = shifted_index(decoded, add_index, addend) {
+            (index, scale, base)
+        } else {
+            return None;
+        };
+    let table_base =
+        resolve_register(image, decoded, add_index, table_register, 0)?.wrapping_add_signed(disp);
+    let entry_size = 1usize.checked_shl(u32::from(scale))?;
+    if !matches!(entry_size, 1 | 2 | 4 | 8) {
+        return None;
+    }
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let mut targets = Vec::new();
+    for raw in read_table_entries(image, table_base, entry_size, limit) {
+        let target = image.canonical_address(raw);
+        if !image.is_executable(target) {
+            break;
+        }
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    (!targets.is_empty()).then_some(targets)
+}
+
+fn shifted_index(
+    decoded: &[DecodedInsn],
+    before: usize,
+    register: capstone::RegId,
+) -> Option<(capstone::RegId, u8)> {
+    let (_, effect) = latest_definition(decoded, before, register)?;
+    let ValueSource::ShiftRegister { base, shift } = effect.source else {
+        return None;
+    };
+    Some((base, shift))
 }
 
 /// Resolves a switch table whose entry is added to a base address.
@@ -566,7 +636,8 @@ fn trace_argument(
             | ValueSource::LoadAddress(_)
             | ValueSource::OrImmediate { .. }
             | ValueSource::AddRegister { .. }
-            | ValueSource::IndexedLoad { .. } => return None,
+            | ValueSource::IndexedLoad { .. }
+            | ValueSource::ShiftRegister { .. } => return None,
         }
     }
     None
@@ -611,7 +682,8 @@ pub fn forwarded_argument_index(
             | ValueSource::AddImmediate { .. }
             | ValueSource::OrImmediate { .. }
             | ValueSource::AddRegister { .. }
-            | ValueSource::IndexedLoad { .. } => return None,
+            | ValueSource::IndexedLoad { .. }
+            | ValueSource::ShiftRegister { .. } => return None,
         }
     }
     None
