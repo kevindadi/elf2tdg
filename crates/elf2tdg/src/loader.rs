@@ -570,16 +570,37 @@ fn collect_pointer_relocations(
         .collect();
     let mut relocated = BTreeMap::new();
     for (address, relocation) in relocations {
+        let flags = relocation.flags();
+        if let RelocationFlags::Elf { r_type } = flags
+            && import_relocation(arch, r_type)
+        {
+            let RelocationTarget::Symbol(index) = relocation.target() else {
+                continue;
+            };
+            let Some((name, _)) = dynamic_symbols.get(&index.0) else {
+                continue;
+            };
+            if let Some(symbol) = symbols.iter().find(|symbol| {
+                symbol.name == *name
+                    && symbol
+                        .section
+                        .as_deref()
+                        .is_some_and(|section| section == ".plt" || section == ".plt.sec")
+            }) {
+                relocated.insert(address, symbol.address & !1);
+            }
+            continue;
+        }
         let addend = if relocation.has_implicit_addend() {
             raw_uint_at(sections, byte_order, address, pointer_size)
         } else {
             u64::try_from(relocation.addend()).ok()
         };
-        let is_relative = match relocation.flags() {
+        let is_relative = match flags {
             RelocationFlags::Elf { r_type } => relative_pointer_relocation(arch, r_type),
             _ => relocation.kind() == RelocationKind::Relative,
         };
-        let is_absolute = match relocation.flags() {
+        let is_absolute = match flags {
             RelocationFlags::Elf { r_type } => absolute_pointer_relocation(arch, r_type),
             _ => relocation.kind() == RelocationKind::Absolute,
         };
@@ -619,6 +640,21 @@ fn collect_pointer_relocations(
         }
     }
     relocated
+}
+
+fn import_relocation(arch: ArchKind, r_type: u32) -> bool {
+    match arch {
+        ArchKind::X86_64 => {
+            r_type == object::elf::R_X86_64_GLOB_DAT || r_type == object::elf::R_X86_64_JUMP_SLOT
+        }
+        ArchKind::Aarch64 => {
+            r_type == object::elf::R_AARCH64_GLOB_DAT || r_type == object::elf::R_AARCH64_JUMP_SLOT
+        }
+        ArchKind::Riscv32 | ArchKind::Riscv64 => r_type == object::elf::R_RISCV_JUMP_SLOT,
+        ArchKind::Thumb | ArchKind::Arm => {
+            r_type == object::elf::R_ARM_GLOB_DAT || r_type == object::elf::R_ARM_JUMP_SLOT
+        }
+    }
 }
 
 fn relative_pointer_relocation(arch: ArchKind, r_type: u32) -> bool {
@@ -924,6 +960,15 @@ mod tests {
             .find(|(_, value)| image.is_executable(image.canonical_address(**value)))
             .expect("at least one relocated slot points into executable code");
         assert_eq!(image.read_pointer(*address), Some(*value));
+        assert!(
+            image
+                .relocated_pointers
+                .values()
+                .any(|value| image.symbols.iter().any(|symbol| {
+                    symbol.section.as_deref() == Some(".plt") && symbol.address & !1 == *value
+                })),
+            "import GOT slots should resolve to synthesized PLT stubs when available"
+        );
     }
 
     #[test]
