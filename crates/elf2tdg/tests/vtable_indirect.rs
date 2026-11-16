@@ -53,6 +53,58 @@ fn compile_thumb(source_name: &str, source: &str) -> Option<PathBuf> {
     )
 }
 
+fn compile_riscv64(source_name: &str, source: &str) -> Option<PathBuf> {
+    if !tool_available("clang") {
+        eprintln!("skipping {source_name}: clang is not available");
+        return None;
+    }
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let sysroot = String::from_utf8_lossy(&sysroot.stdout).trim().to_owned();
+    let lld = std::fs::read_dir(Path::new(&sysroot).join("lib/rustlib"))
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path().join("bin/rust-lld"))
+        .find(|path| path.exists())?;
+    let directory =
+        std::env::temp_dir().join(format!("elf2tdg-{source_name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).ok()?;
+    let source_path = directory.join(source_name);
+    std::fs::write(&source_path, source).ok()?;
+    let object = directory.join("fixture.o");
+    let binary = directory.join("fixture");
+    let compile = Command::new("clang")
+        .args([
+            "-target",
+            "riscv64-unknown-elf",
+            "-O2",
+            "-g",
+            "-fno-inline",
+            "-fno-pie",
+            "-c",
+        ])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&object)
+        .status()
+        .ok()?;
+    if !compile.success() {
+        eprintln!("skipping {source_name}: RISC-V compilation failed");
+        return None;
+    }
+    let link = Command::new(lld)
+        .args(["-flavor", "gnu", "-Ttext=0x400000", "-e", "dispatch", "-o"])
+        .arg(&binary)
+        .arg(&object)
+        .status()
+        .ok()?;
+    (link.success() && binary.exists()).then_some(binary)
+}
+
 fn compile_aarch64(source_name: &str, source: &str) -> Option<PathBuf> {
     if !tool_available("clang") {
         eprintln!("skipping {source_name}: clang is not available");
@@ -482,6 +534,28 @@ fn resolves_aarch64_relative_jump_table_edges() {
     }
     source.push_str("default: sink = 0; return -1; } }\n");
     let Some(binary) = compile_aarch64("switch_aarch64.c", &source) else {
+        return;
+    };
+    assert_jump_table_resolved(&binary, 16);
+}
+
+#[test]
+fn resolves_riscv64_absolute_jump_table_edges() {
+    let mut source = String::from("volatile int sink;\n");
+    for index in 0..16 {
+        let _ = writeln!(
+            source,
+            "__attribute__((noinline)) int f{index}(void) {{ sink = {}; return {}; }}",
+            index + 1,
+            index * 7 + 11
+        );
+    }
+    source.push_str("__attribute__((noinline)) int dispatch(int x) { switch (x) {\n");
+    for index in 0..16 {
+        let _ = writeln!(source, "case {index}: return f{index}();");
+    }
+    source.push_str("default: sink = 0; return -1; } }\n");
+    let Some(binary) = compile_riscv64("switch_riscv64.c", &source) else {
         return;
     };
     assert_jump_table_resolved(&binary, 16);
