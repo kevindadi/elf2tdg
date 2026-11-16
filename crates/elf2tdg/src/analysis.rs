@@ -231,37 +231,7 @@ impl<'a> Analyzer<'a> {
             self.analyze_function(address);
         }
 
-        let mut rounds = 0usize;
-        loop {
-            let missing: Vec<u64> = self
-                .calls
-                .iter()
-                .map(|call| call.target)
-                .filter(|target| {
-                    !self.functions.contains_key(target)
-                        && self.function_containing(*target).is_none()
-                        && self.image.is_executable(*target)
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            if missing.is_empty() {
-                break;
-            }
-            for target in missing {
-                self.add_synthetic_function(target)?;
-            }
-            while let Some(address) = self.queue.pop_front() {
-                self.analyze_function(address);
-            }
-            rounds += 1;
-            if rounds > 32 {
-                return Err(Error::Limit(
-                    "synthetic function discovery did not converge".to_owned(),
-                ));
-            }
-        }
-
+        self.resolve_remaining_functions()?;
         self.resolve_calls();
         self.build_tdg()
     }
@@ -1193,6 +1163,194 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn resolve_remaining_functions(&mut self) -> Result<()> {
+        let mut rounds = 0usize;
+        loop {
+            let progress = self.resolve_forwarded_indirect_calls();
+            let missing: Vec<u64> = self
+                .calls
+                .iter()
+                .map(|call| call.target)
+                .filter(|target| {
+                    !self.functions.contains_key(target)
+                        && self.function_containing(*target).is_none()
+                        && self.image.is_executable(*target)
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if missing.is_empty() && !progress {
+                return Ok(());
+            }
+            for target in missing {
+                self.add_synthetic_function(target)?;
+            }
+            while let Some(address) = self.queue.pop_front() {
+                self.analyze_function(address);
+            }
+            rounds += 1;
+            if rounds > 32 {
+                return Err(Error::Limit(
+                    "synthetic function discovery did not converge".to_owned(),
+                ));
+            }
+        }
+    }
+
+    /// Resolves indirect calls whose target expression starts from an ABI
+    /// argument, by evaluating that expression at direct caller sites.
+    ///
+    /// Only a unique statically executable target is accepted. This recovers
+    /// common vtable/function-pointer dispatch patterns without guessing when
+    /// callers disagree or the argument is dynamic.
+    fn resolve_forwarded_indirect_calls(&mut self) -> bool {
+        let callers = self.callers_by_target();
+        if callers.is_empty() {
+            return false;
+        }
+        let resolved = self.forwarded_indirect_candidates(&callers);
+        self.apply_forwarded_indirect_resolutions(resolved)
+    }
+
+    fn callers_by_target(&self) -> BTreeMap<u64, Vec<(u64, u64)>> {
+        let mut callers: BTreeMap<u64, Vec<(u64, u64)>> = BTreeMap::new();
+        for call in &self.calls {
+            callers
+                .entry(call.target)
+                .or_default()
+                .push((call.caller, call.site));
+        }
+        callers
+    }
+
+    fn forwarded_indirect_candidates(
+        &self,
+        callers: &BTreeMap<u64, Vec<(u64, u64)>>,
+    ) -> Vec<(u64, u64, u64)> {
+        let mut resolved = Vec::new();
+        for (&function_address, function) in &self.functions {
+            let Some(decoded) = self.decoded_by_function.get(&function_address) else {
+                continue;
+            };
+            let Some(caller_sites) = callers.get(&function_address) else {
+                continue;
+            };
+            let mut sites = BTreeSet::new();
+            for node in function.cfg.blocks_by_address.values() {
+                for call in &function.cfg.graph[*node].calls {
+                    if call.unresolved {
+                        sites.insert(call.site);
+                    }
+                }
+            }
+            for call in &function.cfg.recovered_calls {
+                if call.unresolved {
+                    sites.insert(call.site);
+                }
+            }
+            for site in sites {
+                let Some(instruction) = decoded
+                    .iter()
+                    .find(|instruction| instruction.address == site && instruction.is_call)
+                else {
+                    continue;
+                };
+                let Some(target) = instruction.indirect else {
+                    continue;
+                };
+                let Some(spec) = origin::indirect_argument_spec(self.image, decoded, site, target)
+                else {
+                    continue;
+                };
+                let mut candidates = BTreeSet::new();
+                let mut complete = true;
+                for (caller, caller_site) in caller_sites {
+                    let Some(caller_decoded) = self.decoded_by_function.get(caller) else {
+                        complete = false;
+                        break;
+                    };
+                    let Some(value) = origin::evaluate_argument_spec(
+                        self.image,
+                        caller_decoded,
+                        *caller_site,
+                        &spec,
+                    ) else {
+                        complete = false;
+                        break;
+                    };
+                    let value = self.image.canonical_address(value);
+                    if !self.image.is_executable(value) {
+                        complete = false;
+                        break;
+                    }
+                    candidates.insert(value);
+                }
+                if complete
+                    && candidates.len() == 1
+                    && let Some(target) = candidates.first()
+                {
+                    resolved.push((function_address, site, *target));
+                }
+            }
+        }
+        resolved
+    }
+
+    fn apply_forwarded_indirect_resolutions(&mut self, resolved: Vec<(u64, u64, u64)>) -> bool {
+        let mut changed = false;
+        for (function_address, site, target) in resolved {
+            let target_function = self.resolve_function_address(target).map(function_id);
+            let resolved_call = cfg::CfgCallSite {
+                site,
+                target: Some(target),
+                target_function,
+                direct: false,
+                tail: false,
+                conditional: false,
+                heuristic: false,
+                unresolved: false,
+            };
+            let Some(function) = self.functions.get_mut(&function_address) else {
+                continue;
+            };
+            if !update_cfg_call_site(&mut function.cfg, resolved_call) {
+                continue;
+            }
+            self.calls.push(CallDraft {
+                caller: function_address,
+                site,
+                target,
+                tail: false,
+                conditional: false,
+                heuristic: false,
+                direct: false,
+            });
+            let function_id = function_id(function_address);
+            self.diagnostics.retain(|diagnostic| {
+                !(diagnostic.code == "unresolved-indirect-call"
+                    && diagnostic.function.as_ref() == Some(&function_id)
+                    && diagnostic.site == Some(Addr::new(site)))
+            });
+            self.diagnostic_keys
+                .retain(|(code, function, diagnostic_site)| {
+                    !(code == "unresolved-indirect-call"
+                        && *function == Some(function_address)
+                        && *diagnostic_site == Some(site))
+                });
+            self.diag(
+                Severity::Info,
+                "resolved-forwarded-indirect-call",
+                format!(
+                    "resolved indirect call at 0x{site:x} to 0x{target:x} through caller argument"
+                ),
+                Some(function_address),
+                Some(site),
+            );
+            changed = true;
+        }
+        changed
+    }
+
     fn add_synthetic_function(&mut self, target: u64) -> Result<()> {
         if self.functions.contains_key(&target) || self.function_containing(target).is_some() {
             return Ok(());
@@ -1706,6 +1864,29 @@ impl<'a> Analyzer<'a> {
             details: BTreeMap::new(),
         });
     }
+}
+
+fn update_cfg_call_site(function_cfg: &mut cfg::FunctionCfg, call: cfg::CfgCallSite) -> bool {
+    for node in function_cfg.blocks_by_address.values() {
+        let block = &mut function_cfg.graph[*node];
+        if let Some(existing) = block
+            .calls
+            .iter_mut()
+            .find(|existing| existing.site == call.site)
+        {
+            *existing = call;
+            return true;
+        }
+    }
+    if let Some(existing) = function_cfg
+        .recovered_calls
+        .iter_mut()
+        .find(|existing| existing.site == call.site)
+    {
+        *existing = call;
+        return true;
+    }
+    false
 }
 
 fn frequency_only_timing_info(frequency_hz: Option<u64>) -> TimingInfo {
