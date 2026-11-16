@@ -3,6 +3,7 @@
 //! These compile tiny C/C++ programs on demand and skip when the host
 //! compiler is unavailable.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -33,6 +34,75 @@ fn compile_with_optimization(
         source,
         &[optimization, "-g", "-fno-inline", "-fno-pie", "-no-pie"],
     )
+}
+
+fn compile_thumb(source_name: &str, source: &str) -> Option<PathBuf> {
+    compile_with_args(
+        "arm-none-eabi-gcc",
+        source_name,
+        source,
+        &[
+            "-O2",
+            "-g",
+            "-mthumb",
+            "-mcpu=cortex-m4",
+            "-nostdlib",
+            "-ffreestanding",
+            "-Wl,-Ttext=0x8000000",
+        ],
+    )
+}
+
+fn compile_aarch64(source_name: &str, source: &str) -> Option<PathBuf> {
+    if !tool_available("clang") {
+        eprintln!("skipping {source_name}: clang is not available");
+        return None;
+    }
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let sysroot = String::from_utf8_lossy(&sysroot.stdout).trim().to_owned();
+    let lld = std::fs::read_dir(Path::new(&sysroot).join("lib/rustlib"))
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path().join("bin/rust-lld"))
+        .find(|path| path.exists())?;
+    let directory =
+        std::env::temp_dir().join(format!("elf2tdg-{source_name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).ok()?;
+    let source_path = directory.join(source_name);
+    std::fs::write(&source_path, source).ok()?;
+    let object = directory.join("fixture.o");
+    let binary = directory.join("fixture");
+    let compile = Command::new("clang")
+        .args([
+            "-target",
+            "aarch64-none-elf",
+            "-O2",
+            "-g",
+            "-fno-inline",
+            "-fno-pie",
+            "-c",
+        ])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&object)
+        .status()
+        .ok()?;
+    if !compile.success() {
+        eprintln!("skipping {source_name}: AArch64 compilation failed");
+        return None;
+    }
+    let link = Command::new(lld)
+        .args(["-flavor", "gnu", "-Ttext=0x400000", "-e", "dispatch", "-o"])
+        .arg(&binary)
+        .arg(&object)
+        .status()
+        .ok()?;
+    (link.success() && binary.exists()).then_some(binary)
 }
 
 fn compile_pie(compiler: &str, source_name: &str, source: &str) -> Option<PathBuf> {
@@ -311,7 +381,7 @@ int main(int argc, char **argv) { return dispatch(argc); }
     let Some(binary) = compile_with_optimization("gcc", "switch_table.c", source, "-O2") else {
         return;
     };
-    assert_jump_table_resolved(&binary);
+    assert_jump_table_resolved(&binary, 6);
 }
 
 #[test]
@@ -334,10 +404,10 @@ int main(int argc, char **argv) { return dispatch(argc); }
     let Some(binary) = compile_pie("gcc", "switch_pie.c", source) else {
         return;
     };
-    assert_jump_table_resolved(&binary);
+    assert_jump_table_resolved(&binary, 6);
 }
 
-fn assert_jump_table_resolved(binary: &Path) {
+fn assert_jump_table_resolved(binary: &Path, minimum_edges: usize) {
     let image = loader::load(binary).expect("switch fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
@@ -360,8 +430,8 @@ fn assert_jump_table_resolved(binary: &Path) {
         })
         .count();
     assert!(
-        jump_edges >= 6,
-        "expected at least six switch-case jump edges, got {jump_edges}"
+        jump_edges >= minimum_edges,
+        "expected at least {minimum_edges} switch-case jump edges, got {jump_edges}"
     );
     assert!(
         analysis
@@ -370,4 +440,49 @@ fn assert_jump_table_resolved(binary: &Path) {
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-jump-table")
     );
+}
+
+#[test]
+fn resolves_thumb_tbb_jump_table_edges() {
+    let source = r"
+volatile int sink;
+__attribute__((noinline)) int dispatch(int x) {
+    switch (x) {
+        case 0: sink = 1; return 11;
+        case 1: sink = 2; return 23;
+        case 2: sink = 3; return 37;
+        case 3: sink = 4; return 41;
+        case 4: sink = 5; return 59;
+        case 5: sink = 6; return 67;
+        default: sink = 0; return -1;
+    }
+}
+int main(void) { return dispatch(3); }
+";
+    let Some(binary) = compile_thumb("switch_thumb.c", source) else {
+        return;
+    };
+    assert_jump_table_resolved(&binary, 6);
+}
+
+#[test]
+fn resolves_aarch64_relative_jump_table_edges() {
+    let mut source = String::from("volatile int sink;\n");
+    for index in 0..16 {
+        let _ = writeln!(
+            source,
+            "__attribute__((noinline)) int f{index}(void) {{ sink = {}; return {}; }}",
+            index + 1,
+            index * 7 + 11
+        );
+    }
+    source.push_str("__attribute__((noinline)) int dispatch(int x) { switch (x) {\n");
+    for index in 0..16 {
+        let _ = writeln!(source, "case {index}: return f{index}();");
+    }
+    source.push_str("default: sink = 0; return -1; } }\n");
+    let Some(binary) = compile_aarch64("switch_aarch64.c", &source) else {
+        return;
+    };
+    assert_jump_table_resolved(&binary, 16);
 }
