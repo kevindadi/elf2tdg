@@ -143,8 +143,11 @@ Switch tables are recognized in these layouts:
   `lea table(%rip), %rdx; movslq (%rdx,%rdi,4), %rax; add %rdx,%rax; jmp *%rax`;
 - ARM Thumb `tbb [pc, rN]` and `tbh [pc, rN, lsl #1]`, including
   register-based table bases;
-- AArch64 relative byte tables such as
+- AArch64 relative byte and halfword tables such as
   `adr base; ldrb wN, [table, xM]; add base, base, wN, lsl #2; br base`;
+- AArch64 signed word-offset tables such as
+  `adr base; adr table; ldrsw xN, [table, xM, sxtw #2];
+  add base, base, xN; br base`;
 - AArch64 absolute-pointer tables such as
   `adrp/add table; ldr xN, [table, xM, lsl #3]; br xN`;
 - ARM A32 conditional PC loads such as
@@ -158,10 +161,13 @@ Switch tables are recognized in these layouts:
   lw target, 0(index); add target, target, table; jr target`, where each
   signed 32-bit entry is an offset from the table base.
 
-Entries are read until the first non-executable target or the bound implied by
-a preceding guard: `cmp index, N` on ARM/AArch64/x86, or
-`li bound, N; bltu bound, index, default` on RISC-V. Without a recoverable
-guard the scan falls back to a 256-entry safety limit.
+Entries are read until the first non-executable target, the end of the
+containing section, or the bound implied by a preceding guard: `cmp index, N`
+or a materialized bound such as `movw; cmp index, bound` on ARM/AArch64/x86,
+or `li bound, N` followed by `bltu`/`bgeu` on RISC-V. Guarded tables may span
+up to 4096 entries, including inverted guards where the conditional branch
+targets the table path and an unconditional jump reaches the default block.
+Without a recoverable guard the scan falls back to a 256-entry safety limit.
 Each valid entry becomes a CFG successor; entries outside the function become
 tail-call candidates. x86 indexed instructions report `indirect` as
 `indexed-memory` with `base`, `index`, `scale` and `disp`; Thumb table branches
@@ -180,13 +186,14 @@ each of them.
 
 ## JSON document
 
-`cfg_schema_version` is `1.0` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.1` and is independent of the TDG schema version.
 Every document contains image metadata, diagnostics, and the selected
-functions.
+functions. Version 1.1 adds an optional per-function `inline_frames` list
+recovered from DWARF.
 
 ```json
 {
-  "cfg_schema_version": "1.0",
+  "cfg_schema_version": "1.1",
   "image": { "arch": "thumb", "...": "..." },
   "functions": [
     {
@@ -265,6 +272,28 @@ functions.
 }
 ```
 
+When full debug information is present, each function can also carry the unique
+inlined subroutine ranges found inside it:
+
+```json
+"inline_frames": [
+  {
+    "name": "<std::sync::poison::mutex::Mutex<u64>>::lock",
+    "linkage_name": "_ZN...",
+    "low": "0x148da",
+    "high": "0x14903",
+    "depth": 4
+  }
+]
+```
+
+Frames are ordered by address and depth; lower `depth` values are outer inline
+calls. `low`/`high` are the concrete addresses of that inline instance. An
+instruction belongs to a frame when its address lies in `[low, high)`, so the
+list stays compact even for heavily inlined Rust functions. It is independent
+of `--no-cfg-instructions`. See
+[analysis-profile.md](analysis-profile.md) for the recommended build flags.
+
 ### Node semantics
 
 | Field | Meaning |
@@ -276,6 +305,7 @@ functions.
 | `cycles` | static instruction-cost sum for the block |
 | `terminator` | `fallthrough`, `call`, `return`, `branch`, `jump`, `unresolved` |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
+| `inline_frames` | unique `DW_TAG_inlined_subroutine` ranges inside the function |
 
 `indirect` is retained when known: `register`, `register-memory`, `memory`,
 `register-offset`, `indexed-memory`, `table-branch`, `table-load`, or
@@ -306,9 +336,11 @@ containing basic block, so they are kept at function level with
 - Calls end their basic block and return to a new block; call targets remain
   metadata, not intra-function CFG edges.
 - Recognized jump-table forms on x86-64, ARM Thumb/A32, common AArch64
-  relative-byte and absolute-pointer layouts, and RISC-V absolute-pointer and
-  table-relative offset layouts are expanded. Computed/indirect tables and
-  vtable dispatch on heap/stack objects remain unresolved indirect jumps.
+  relative byte/halfword/word and absolute-pointer layouts, and RISC-V
+  absolute-pointer and table-relative offset layouts are expanded. Guarded
+  tables larger than 256 entries are supported; unguarded scans stay
+  conservative. Computed/indirect tables and vtable dispatch on heap/stack
+  objects remain unresolved indirect jumps.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;

@@ -51,6 +51,10 @@ Implemented:
 - DWARF parsing recovers inlined subroutine call sites. Rust spawn/scope calls
   that disappear from the machine call graph at `-O1`/`-O2` are reconstructed
   from inline DIEs, including source-level call-site ranges and closure types.
+  CFG functions expose the unique `DW_TAG_inlined_subroutine` ranges as
+  `inline_frames`, with demangled names, concrete `low`/`high` addresses and
+  depth, so inlined functions such as `Mutex::lock` remain inspectable in
+  optimized code.
 - When an inlined spawn entry cannot be mapped to a callable symbol, M2 emits a
   synthetic zero-size `task-entry` function and matching context marked with
   `ext["elf2tdg.logical_task"]`, so the task stays visible without inventing an
@@ -81,11 +85,13 @@ Implemented:
   stubs when one exists. Switch jump tables are expanded into CFG case edges,
   bounded by a preceding comparison when available: x86-64 absolute and
   PIE-relative indexed tables, ARM Thumb `tbb`/`tbh`, common AArch64
-  byte-offset table sequences, ARM A32 `ldrls pc, [pc, rN, lsl #2]`
-  absolute-address tables and `addls pc, pc, rN, lsl #2` branch tables,
-  AArch64 absolute-pointer tables, and RISC-V absolute-pointer and
-  table-relative offset tables. Indirect jumps that stay in the function
-  become CFG edges; jumps that leave it become `tail: true` call edges.
+  byte/halfword/word-offset table sequences, ARM A32
+  `ldrls pc, [pc, rN, lsl #2]` absolute-address tables and
+  `addls pc, pc, rN, lsl #2` branch tables, AArch64 absolute-pointer
+  tables, and RISC-V absolute-pointer and table-relative offset tables.
+  Guarded tables may span up to 4096 entries; unguarded scans stay
+  conservative. Indirect jumps that stay in the function become CFG edges;
+  jumps that leave it become `tail: true` call edges.
   Caller-argument
   propagation resolves dispatch helpers and static C++ virtual calls when every
   known caller agrees on one target. These edges carry `direct: false` and
@@ -216,6 +222,8 @@ cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
 ```
 
 The CFG JSON format is documented in [docs/cfg-format.md](docs/cfg-format.md).
+For the recommended `opt-level=1` + full-debug-info firmware profile, see
+[docs/analysis-profile.md](docs/analysis-profile.md).
 
 Useful flags:
 
@@ -293,9 +301,10 @@ The [`examples/`](examples/) directory contains complete, reproducible examples
 with source, ELF, JSON, DOT and rendered SVG:
 
 - [`examples/rust-concurrency/`](examples/rust-concurrency/README.md) builds the
-  same Rust program at `-O0` and `-O2` and shows concrete thread/scope contexts
-  versus DWARF-recovered inline spawns and logical task entries, plus per-main
-  CFG JSON/SVG/Mermaid artifacts.
+  Rust program with the recommended `analysis` profile (`-O1`, full DWARF,
+  ThinLTO). It shows thread/scope contexts and DWARF-recovered inline spawns,
+  plus per-main CFG JSON/SVG/Mermaid artifacts. The DWARF integration test
+  additionally demonstrates inline `Mutex::lock` ranges.
 - [`examples/cortex-m0-isr/`](examples/cortex-m0-isr/README.md) is a small
   Cortex-M0 image with reset/main/ISR contexts, USART1 IRQ 37, direct calls,
   48 MHz cycle-to-nanosecond estimates, and a per-`main` CFG export.
@@ -313,6 +322,7 @@ crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rule
                           origin tracking, emitters, CLI
 docs/tdg-schema.md        graph and timing semantics
 docs/cfg-format.md        function CFG JSON, call/return blocks and CLI view
+docs/analysis-profile.md  recommended firmware build flags and inline DWARF
 docs/elf-view.md          loader-backed ELF layout, colors and disassembly limits
 docs/tdg-legend.md        diagram shapes, colors, edge styles and confidence
 schema/tdg.schema.json    generated JSON Schema (2020-12)
@@ -321,5 +331,7 @@ tests/fixtures/           C/Rust firmware fixtures
 ```
 
 See [docs/tdg-schema.md](docs/tdg-schema.md) for the TDG model,
-[docs/cfg-format.md](docs/cfg-format.md) for the CFG intermediate format, and
-[docs/elf-view.md](docs/elf-view.md) for the loader-backed ELF layout view.
+[docs/cfg-format.md](docs/cfg-format.md) for the CFG intermediate format,
+[docs/analysis-profile.md](docs/analysis-profile.md) for the recommended
+firmware build profile, and [docs/elf-view.md](docs/elf-view.md) for the
+loader-backed ELF layout view.
