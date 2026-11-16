@@ -27,11 +27,25 @@ pub fn resolve_argument_pointer(
     site: u64,
     arg_index: usize,
 ) -> Option<u64> {
-    let register = argument_register(image.arch, arg_index)?;
-    let before = decoded.partition_point(|instruction| instruction.address < site);
-    let value = resolve_register(image, decoded, before, register, 0)?;
+    let value = resolve_argument_value(image, decoded, site, arg_index)?;
     let canonical = image.canonical_address(value);
     image.is_executable(canonical).then_some(canonical)
+}
+
+/// Resolves the statically known value of an ABI argument at a call site.
+///
+/// The value may be a code address, a vtable/object address or another data
+/// address; callers decide whether code is required.
+#[must_use]
+pub fn resolve_argument_value(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    arg_index: usize,
+) -> Option<u64> {
+    let register = argument_register(image.arch, arg_index)?;
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    resolve_register(image, decoded, before, register, 0)
 }
 
 fn resolve_register(
@@ -55,9 +69,10 @@ fn resolve_register(
         match effect.source {
             ValueSource::Immediate(value) | ValueSource::Address(value) => return Some(value),
             ValueSource::LoadAddress(address) => {
-                let value = image.read_uint(address, pointer_size(image.arch))?;
-                let canonical = image.canonical_address(value);
-                return image.is_executable(canonical).then_some(canonical);
+                // Keep data addresses here: a loaded value can be a vtable or
+                // an object whose slot is dereferenced by the caller. The
+                // top-level indirect-target check still requires code.
+                return image.read_uint(address, pointer_size(image.arch));
             }
             ValueSource::LoadFromRegister { base, disp } => {
                 let base_value = if Some(base) == pc_register(image.arch) {
@@ -72,10 +87,7 @@ fn resolve_register(
                 if let Some(base_value) = base_value {
                     let address = base_value.wrapping_add_signed(disp);
                     if let Some(value) = image.read_uint(address, pointer_size(image.arch)) {
-                        let canonical = image.canonical_address(value);
-                        if image.is_executable(canonical) {
-                            return Some(canonical);
-                        }
+                        return Some(value);
                     }
                 }
                 // A stack spill is a common `-O0` pattern: the pointer is
@@ -160,6 +172,137 @@ fn memory_slot_source(
     })
 }
 
+/// A pointer expression rooted at an incoming ABI argument.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArgumentSpec {
+    /// Zero-based ABI argument index.
+    pub argument: usize,
+    /// Ordered address adjustments and pointer loads from the argument value.
+    pub steps: Vec<ArgumentStep>,
+}
+
+/// One step in an [`ArgumentSpec`] expression.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArgumentStep {
+    /// Signed displacement added before the optional load.
+    pub offset: i64,
+    /// Whether to load a pointer-sized value after adding the displacement.
+    pub dereference: bool,
+}
+
+/// Builds an argument-rooted pointer expression for an indirect call target.
+///
+/// For example, `mov rax, [rdi]; call [rax + 8]` becomes
+/// argument 0 with steps `[(0, load), (8, load)]`. Returns `None` when the
+/// target depends on a locally computed value or an unsupported operation.
+#[must_use]
+pub fn indirect_argument_spec(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    target: IndirectTarget,
+) -> Option<ArgumentSpec> {
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    match target {
+        IndirectTarget::Register(register) => trace_argument(image, decoded, before, register, 0),
+        IndirectTarget::RegisterMemory { base, disp } => {
+            let mut spec = trace_argument(image, decoded, before, base, 0)?;
+            spec.steps.push(ArgumentStep {
+                offset: disp,
+                dereference: true,
+            });
+            Some(spec)
+        }
+        IndirectTarget::RegisterOffset { register, offset } => {
+            let mut spec = trace_argument(image, decoded, before, register, 0)?;
+            spec.steps.push(ArgumentStep {
+                offset,
+                dereference: false,
+            });
+            Some(spec)
+        }
+        IndirectTarget::Memory(_) => None,
+    }
+}
+
+/// Evaluates an [`ArgumentSpec`] at a caller call site.
+#[must_use]
+pub fn evaluate_argument_spec(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    spec: &ArgumentSpec,
+) -> Option<u64> {
+    let mut value = resolve_argument_value(image, decoded, site, spec.argument)?;
+    for step in &spec.steps {
+        value = value.wrapping_add_signed(step.offset);
+        if step.dereference {
+            value = image.read_pointer(value)?;
+        }
+    }
+    Some(value)
+}
+
+fn trace_argument(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    before: usize,
+    register: capstone::RegId,
+    depth: usize,
+) -> Option<ArgumentSpec> {
+    if depth > 32 {
+        return None;
+    }
+    let mut register = register;
+    let mut before = before;
+    for _ in 0..64 {
+        let found = (0..before).rev().find_map(|index| {
+            let effect = decoded[index].value?;
+            (effect.dest == register).then_some((index, effect))
+        });
+        let Some((index, effect)) = found else {
+            let argument = argument_index_for_register(image.arch, register)?;
+            return Some(ArgumentSpec {
+                argument,
+                steps: Vec::new(),
+            });
+        };
+        match effect.source {
+            ValueSource::Copy(source) => {
+                register = source;
+                before = index;
+            }
+            ValueSource::AddImmediate { base, imm } => {
+                let mut spec = trace_argument(image, decoded, index, base, depth + 1)?;
+                spec.steps.push(ArgumentStep {
+                    offset: imm,
+                    dereference: false,
+                });
+                return Some(spec);
+            }
+            ValueSource::LoadFromRegister { base, disp } => {
+                if let Some((store_index, source)) = memory_slot_source(decoded, index, base, disp)
+                {
+                    register = source;
+                    before = store_index;
+                    continue;
+                }
+                let mut spec = trace_argument(image, decoded, index, base, depth + 1)?;
+                spec.steps.push(ArgumentStep {
+                    offset: disp,
+                    dereference: true,
+                });
+                return Some(spec);
+            }
+            ValueSource::Immediate(_)
+            | ValueSource::Address(_)
+            | ValueSource::LoadAddress(_)
+            | ValueSource::OrImmediate { .. } => return None,
+        }
+    }
+    None
+}
+
 /// Returns the caller ABI argument index forwarded to the spawn API argument
 /// register at `site`.
 ///
@@ -216,7 +359,10 @@ fn pc_value(arch: crate::loader::ArchKind, address: u64, size: u8) -> Option<u64
 
 #[cfg(test)]
 mod tests {
-    use super::{forwarded_argument_index, resolve_argument_pointer};
+    use super::{
+        evaluate_argument_spec, forwarded_argument_index, indirect_argument_spec,
+        resolve_argument_pointer, resolve_indirect_target,
+    };
     use crate::arch::Decoder;
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
 
@@ -391,6 +537,147 @@ mod tests {
         assert_eq!(
             resolve_argument_pointer(&image, &decoded, 0x2008, 0),
             Some(0x2024)
+        );
+    }
+
+    #[test]
+    fn resolves_x86_vtable_slot_through_static_pointer_chain() {
+        // mov rax, [rip + 0xff9]   ; rax = *0x2000 = 0x2010
+        // call qword ptr [rax + 8] ; vtable slot 0x2018 = 0x1010
+        let code = vec![0x48, 0x8b, 0x05, 0xf9, 0x0f, 0x00, 0x00, 0xff, 0x50, 0x08];
+        let mut vtable = vec![0u8; 16];
+        vtable[8..16].copy_from_slice(&0x1010u64.to_le_bytes());
+        let image = Image {
+            path: "vtable.elf".into(),
+            arch: ArchKind::X86_64,
+            byte_order: ByteOrder::Little,
+            elf_kind: ElfKind::Exec,
+            entry: 0x1000,
+            relocated_pointers: std::collections::BTreeMap::default(),
+            segments: Vec::new(),
+            sections: vec![
+                Section {
+                    name: ".text".to_owned(),
+                    address: 0x1000,
+                    size: 0x20,
+                    data: code,
+                    executable: true,
+                    writable: false,
+                    alloc: true,
+                },
+                Section {
+                    name: ".data".to_owned(),
+                    address: 0x2000,
+                    size: 8,
+                    data: 0x2010u64.to_le_bytes().to_vec(),
+                    executable: false,
+                    writable: true,
+                    alloc: true,
+                },
+                Section {
+                    name: ".rodata".to_owned(),
+                    address: 0x2010,
+                    size: 16,
+                    data: vtable,
+                    executable: false,
+                    writable: false,
+                    alloc: true,
+                },
+            ],
+            symbols: Vec::new(),
+            has_symbols: false,
+            has_debug_info: false,
+            has_relocations: false,
+            arm_cpu: None,
+            vector_table: Vec::new(),
+            dwarf: None,
+            dwarf_error: None,
+        };
+        let engine = Decoder::new(ArchKind::X86_64).unwrap();
+        let load = engine
+            .decode_one(&image.sections[0].data[..7], 0x1000)
+            .unwrap()
+            .expect("mov");
+        let call = engine
+            .decode_one(&image.sections[0].data[7..], 0x1007)
+            .unwrap()
+            .expect("call");
+        let indirect = call.indirect.expect("vtable call is indirect");
+        assert_eq!(
+            resolve_indirect_target(&image, &[load, call], 0x1007, indirect),
+            Some(0x1010)
+        );
+    }
+
+    #[test]
+    fn resolves_indirect_target_through_caller_argument() {
+        // callee: call qword ptr [rdi + 8]
+        // caller: lea rdi, [rip + disp] -> 0x2000
+        // object+8 contains the address of the target function (0x1010).
+        let mut object = vec![0u8; 16];
+        object[8..16].copy_from_slice(&0x1010u64.to_le_bytes());
+        let image = Image {
+            path: "vtable-arg.elf".into(),
+            arch: ArchKind::X86_64,
+            byte_order: ByteOrder::Little,
+            elf_kind: ElfKind::Exec,
+            entry: 0x1000,
+            relocated_pointers: std::collections::BTreeMap::default(),
+            segments: Vec::new(),
+            sections: vec![
+                Section {
+                    name: ".callee".to_owned(),
+                    address: 0x1000,
+                    size: 3,
+                    data: vec![0xff, 0x57, 0x08],
+                    executable: true,
+                    writable: false,
+                    alloc: true,
+                },
+                Section {
+                    name: ".caller".to_owned(),
+                    address: 0x3000,
+                    size: 7,
+                    data: vec![0x48, 0x8d, 0x3d, 0xf9, 0xef, 0xff, 0xff],
+                    executable: true,
+                    writable: false,
+                    alloc: true,
+                },
+                Section {
+                    name: ".objects".to_owned(),
+                    address: 0x2000,
+                    size: 16,
+                    data: object,
+                    executable: false,
+                    writable: true,
+                    alloc: true,
+                },
+            ],
+            symbols: Vec::new(),
+            has_symbols: false,
+            has_debug_info: false,
+            has_relocations: false,
+            arm_cpu: None,
+            vector_table: Vec::new(),
+            dwarf: None,
+            dwarf_error: None,
+        };
+        let engine = Decoder::new(ArchKind::X86_64).unwrap();
+        let call = engine
+            .decode_one(&image.sections[0].data, 0x1000)
+            .unwrap()
+            .expect("call");
+        let lea = engine
+            .decode_one(&image.sections[1].data, 0x3000)
+            .unwrap()
+            .expect("lea");
+        let target = call.indirect.expect("indirect call");
+        let spec =
+            indirect_argument_spec(&image, &[call], 0x1000, target).expect("argument dependency");
+        assert_eq!(spec.argument, 0);
+        assert_eq!(
+            evaluate_argument_spec(&image, &[lea], 0x3007, &spec),
+            Some(0x1010)
         );
     }
 }
