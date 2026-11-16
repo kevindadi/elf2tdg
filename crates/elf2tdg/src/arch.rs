@@ -998,7 +998,13 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
     let arm64::Arm64OperandType::Reg(dest) = &operands.first()?.op_type else {
         return None;
     };
-    let dest = aarch64_register(*dest);
+    let raw_dest = *dest;
+    let dest = aarch64_register(raw_dest);
+    let dest_width = if aarch64_register(raw_dest) == raw_dest {
+        8
+    } else {
+        4
+    };
     let mnemonic = mnemonic.strip_suffix(".w").unwrap_or(mnemonic);
     match mnemonic {
         "adr" | "adrp" => {
@@ -1028,7 +1034,7 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
                     "ldrsb" => (1, true),
                     "ldrh" => (2, false),
                     "ldrsh" => (2, true),
-                    _ => (8, false),
+                    _ => (dest_width, false),
                 };
                 Some(ValueEffect {
                     dest,

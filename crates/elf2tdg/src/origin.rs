@@ -250,6 +250,48 @@ pub fn resolve_table_branch(
     (!targets.is_empty()).then_some(targets)
 }
 
+/// Resolves an indexed table whose entries are absolute code pointers.
+///
+/// This covers `AArch64` `ldr xN, [table, xIndex, lsl #3]; br xN` and similar
+/// fixed-width pointer tables.
+#[must_use]
+pub fn resolve_indexed_pointer_table(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    jump_register: capstone::RegId,
+) -> Option<Vec<u64>> {
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    let (load_index, effect) = latest_definition(decoded, before, jump_register)?;
+    let ValueSource::IndexedLoad {
+        base: Some(table_register),
+        index,
+        scale,
+        disp,
+        ..
+    } = effect.source
+    else {
+        return None;
+    };
+    if !matches!(scale, 4 | 8) {
+        return None;
+    }
+    let table_base =
+        resolve_register(image, decoded, load_index, table_register, 0)?.wrapping_add_signed(disp);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let mut targets = Vec::new();
+    for raw in read_table_entries(image, table_base, usize::from(scale), limit) {
+        let target = image.canonical_address(raw);
+        if !image.is_executable(target) {
+            break;
+        }
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    (!targets.is_empty()).then_some(targets)
+}
+
 /// Resolves the common RISC-V switch sequence:
 ///
 /// `slli index, index, 2; ...; add index, index, table; lw target, 0(index); jr target`.

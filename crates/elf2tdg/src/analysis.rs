@@ -1104,6 +1104,9 @@ impl<'a> Analyzer<'a> {
                 .map(|target| vec![target])
                 .or_else(|| origin::resolve_offset_jump_table(self.image, decoded, site, register))
                 .or_else(|| origin::resolve_riscv_jump_table(self.image, decoded, site, register))
+                .or_else(|| {
+                    origin::resolve_indexed_pointer_table(self.image, decoded, site, register)
+                })
                 .unwrap_or_default()
         } else {
             origin::resolve_indirect_target(self.image, decoded, site, target)
