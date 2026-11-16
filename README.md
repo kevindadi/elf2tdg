@@ -94,6 +94,13 @@ Implemented:
   from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
   contains only functions reachable from `main`; `--reachable-from ROOT` picks
   another root, and `--all-functions` exports the complete image.
+- Loader/ELF view: `--view elf` renders the loaded ELF directly as a Mermaid
+  layout diagram, without running CFG or TDG analysis. It shows `PT_LOAD`
+  segments, allocated sections, file/memory sizes, entry point, permissions and
+  a color-coded linear disassembly. Segment colors distinguish RX/RW/R/RWX and
+  instruction colors distinguish calls, branches, returns, stack, memory,
+  arithmetic, system and other instructions. `--elf-max-insns N` caps the
+  disassembly per executable section (default 256; 0 means unlimited).
 - DOT/Mermaid render scopes, spawn/join edges and runtime contexts, with a
   concurrency-only projection and a built-in node/edge legend for large
   optimized binaries. The renderers mark synthesized logical/orphan task
@@ -156,6 +163,9 @@ dot -Tsvg tdg.dot -o tdg.svg
 # Mermaid
 cargo run -p elf2tdg -- firmware.elf --format mermaid --output tdg.mmd
 
+# Loader-backed ELF layout: colored segments, sections and disassembly
+cargo run -p elf2tdg -- firmware.elf --view elf --output elf-layout.mmd
+
 # Readable concurrency-only view with a legend (recommended for large Rust binaries)
 cargo run -p elf2tdg -- firmware.elf --format dot \
     --projection concurrency --legend --output tdg-concurrency.dot
@@ -195,8 +205,9 @@ Useful flags:
 | `--cpu cortex-m4` | explicit timing model; Cortex-M/RISC-V are auto-detected when omitted. `aarch64` and `x86-64` select statistical generic models |
 | `--freq 168MHz` | core clock; enables `time_ns` in blocks |
 | `--instructions` | include per-instruction text and cycle costs (requires a timing model) |
-| `--format json|dot|mermaid` | output format for the selected view |
-| `--view tdg|cfg` | final Task Dependency Graph (default) or per-function CFG |
+| `--format json|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
+| `--view tdg|cfg|elf` | final TDG (default), per-function CFG, or loader-backed ELF layout |
+| `--elf-max-insns N` | maximum disassembly instructions per executable section in `--view elf` (default 256; 0 = unlimited) |
 | `--function NAME|0xADDR` | select one function for CFG output |
 | `--reachable-from NAME|0xADDR` | export functions reachable from ROOT; defaults to `main` |
 | `--all-functions` | export CFGs for every function, including unreachable code |
@@ -221,6 +232,11 @@ creation; use `--all-functions` for a full-image CFG. CFG output includes
 instructions and raw bytes by default; DOT and Mermaid labels show the first
 eight instructions per block. Without them, blocks still retain addresses,
 terminators, timing and call sites.
+
+`--view elf` reads only the loader data and exits before analysis; it currently
+emits Mermaid only (the default format for that view). See
+[docs/elf-view.md](docs/elf-view.md) for the diagram semantics and color
+legend.
 
 ## Example
 
@@ -273,11 +289,13 @@ crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rule
                           origin tracking, emitters, CLI
 docs/tdg-schema.md        graph and timing semantics
 docs/cfg-format.md        function CFG JSON, call/return blocks and CLI view
+docs/elf-view.md          loader-backed ELF layout, colors and disassembly limits
 docs/tdg-legend.md        diagram shapes, colors, edge styles and confidence
 schema/tdg.schema.json    generated JSON Schema (2020-12)
 examples/                 worked Rust and Cortex-M examples plus artifacts
 tests/fixtures/           C/Rust firmware fixtures
 ```
 
-See [docs/tdg-schema.md](docs/tdg-schema.md) for the TDG model and
-[docs/cfg-format.md](docs/cfg-format.md) for the CFG intermediate format.
+See [docs/tdg-schema.md](docs/tdg-schema.md) for the TDG model,
+[docs/cfg-format.md](docs/cfg-format.md) for the CFG intermediate format, and
+[docs/elf-view.md](docs/elf-view.md) for the loader-backed ELF layout view.
