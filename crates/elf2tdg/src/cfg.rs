@@ -17,6 +17,8 @@ use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 use serde::Serialize;
 
+use crate::arch::Decoder;
+use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
@@ -177,6 +179,10 @@ pub struct FunctionCfg {
     /// They are not attached to a basic block because control flow into the
     /// gap is not proven, but they remain available to downstream analysis.
     pub recovered_calls: Vec<CfgCallSite>,
+    /// Executable addresses observed as data or literal pointers in this
+    /// function. They model callback/ISR/task entries that escape through
+    /// function pointers rather than direct call instructions.
+    pub referenced_addresses: Vec<u64>,
 }
 
 /// Input block for building a CFG before petgraph node indices exist.
@@ -256,6 +262,7 @@ impl FunctionCfg {
             graph,
             blocks_by_address,
             recovered_calls: Vec::new(),
+            referenced_addresses: Vec::new(),
         }
     }
 
@@ -414,8 +421,126 @@ impl ProgramCfg {
     /// Returns a human-readable error when the root selector matches no
     /// function or is ambiguous.
     pub fn reachable_from(&self, tdg: &Tdg, root: &str) -> Result<Vec<&CfgFunction>, String> {
-        let (seed_ids, mut selected_ids) = self.reachable_seeds(tdg, root)?;
-        let adjacency = tdg_reachability(tdg);
+        self.reachable_from_with_pruning(tdg, root, false)
+    }
+
+    /// Single-root reachability with optional runtime-boundary pruning.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable error when the root selector matches no
+    /// function or is ambiguous.
+    pub fn reachable_from_with_pruning(
+        &self,
+        tdg: &Tdg,
+        root: &str,
+        prune_runtime: bool,
+    ) -> Result<Vec<&CfgFunction>, String> {
+        let (seed_ids, selected_ids) = self.reachable_seeds(tdg, root)?;
+        let reachable = self.reachable_ids(tdg, seed_ids, prune_runtime);
+        Ok(self.selected_from_reachable(tdg, &reachable, selected_ids))
+    }
+
+    /// Collects asynchronous execution roots: main/startup/task contexts,
+    /// vector-table ISR entries, callbacks and the ELF entry point.
+    ///
+    /// Default handler stubs repeated across unused vectors are excluded.
+    #[must_use]
+    pub fn system_roots(&self, tdg: &Tdg, image: &Image) -> Vec<FunctionId> {
+        let mut roots = BTreeSet::new();
+        for context in &tdg.contexts {
+            let function = self.cfg_function_for_tdg_id(tdg, &context.entry);
+            let default = function.is_some_and(is_default_handler)
+                || tdg
+                    .functions
+                    .iter()
+                    .find(|function| function.id == context.entry)
+                    .is_some_and(|function| is_default_handler_name(&function.primary_name));
+            if !default {
+                roots.insert(context.entry.clone());
+            }
+        }
+        for vector in &image.vector_table {
+            let handler = image.canonical_address(vector.handler);
+            if is_default_handler_address(image, handler) {
+                continue;
+            }
+            if let Some(function) = self.function_covering(handler)
+                && !is_default_handler(function)
+            {
+                roots.insert(function.id.clone());
+            }
+        }
+        for target in riscv_trap_targets(image) {
+            if let Some(function) = self.function_covering(target)
+                && !is_default_handler(function)
+            {
+                roots.insert(function.id.clone());
+            }
+        }
+        for edge in &tdg.edges {
+            if let Edge::CallbackBind { callback, .. } = edge {
+                roots.insert(callback.clone());
+            }
+        }
+        if let Some(function) = self.function_covering(image.canonical_address(image.entry)) {
+            roots.insert(function.id.clone());
+        }
+        if roots.is_empty() {
+            for function in &self.functions {
+                let name = normalize_crate_hashes(&function.primary_name);
+                if name == "main" || name.ends_with("::main") {
+                    roots.insert(function.id.clone());
+                }
+            }
+        }
+        roots.into_iter().collect()
+    }
+
+    /// Runs multi-root worklist reachability from all asynchronous entry points.
+    ///
+    /// When `prune_runtime` is true, known panic/format/compiler-builtin and
+    /// drop-glue functions are retained as nodes but their callees are not
+    /// expanded.
+    #[must_use]
+    pub fn reachable_from_system(
+        &self,
+        tdg: &Tdg,
+        image: &Image,
+        prune_runtime: bool,
+    ) -> Vec<&CfgFunction> {
+        let roots = self.system_roots(tdg, image);
+        self.reachable_from_roots(tdg, &roots, prune_runtime)
+    }
+
+    /// Runs multi-root worklist reachability from an explicit root set.
+    #[must_use]
+    pub fn reachable_from_roots(
+        &self,
+        tdg: &Tdg,
+        roots: &[FunctionId],
+        prune_runtime: bool,
+    ) -> Vec<&CfgFunction> {
+        let mut seed_ids = Vec::new();
+        let mut selected_ids = BTreeSet::new();
+        for root in roots {
+            seed_ids.push(root.clone());
+            if let Some(function) = self.cfg_function_for_tdg_id(tdg, root) {
+                selected_ids.insert(function.id.clone());
+            }
+        }
+        let reachable = self.reachable_ids(tdg, seed_ids, prune_runtime);
+        self.selected_from_reachable(tdg, &reachable, selected_ids)
+    }
+
+    fn reachable_ids(
+        &self,
+        tdg: &Tdg,
+        seed_ids: Vec<FunctionId>,
+        prune_runtime: bool,
+    ) -> BTreeSet<FunctionId> {
+        let mut adjacency = tdg_reachability(tdg);
+        self.add_code_reference_edges(&mut adjacency);
         let mut reachable: BTreeSet<FunctionId> = BTreeSet::new();
         let mut pending: Vec<FunctionId> = Vec::new();
         for id in seed_ids {
@@ -427,6 +552,13 @@ impl ProgramCfg {
         while cursor < pending.len() {
             let current = pending[cursor].clone();
             cursor += 1;
+            if prune_runtime
+                && self
+                    .cfg_function_for_tdg_id(tdg, &current)
+                    .is_some_and(is_runtime_boundary)
+            {
+                continue;
+            }
             if let Some(next) = adjacency.get(&current) {
                 for id in next {
                     if reachable.insert(id.clone()) {
@@ -435,10 +567,33 @@ impl ProgramCfg {
                 }
             }
         }
+        reachable
+    }
 
+    fn add_code_reference_edges(&self, adjacency: &mut BTreeMap<FunctionId, Vec<FunctionId>>) {
+        for function in &self.functions {
+            for address in &function.cfg.referenced_addresses {
+                if let Some(target) = self.function_covering(*address)
+                    && target.id != function.id
+                {
+                    adjacency
+                        .entry(function.id.clone())
+                        .or_default()
+                        .push(target.id.clone());
+                }
+            }
+        }
+    }
+
+    fn selected_from_reachable(
+        &self,
+        tdg: &Tdg,
+        reachable: &BTreeSet<FunctionId>,
+        mut selected_ids: BTreeSet<FunctionId>,
+    ) -> Vec<&CfgFunction> {
         // Logical task entries in optimized images can be synthetic IDs such
         // as `fn:task:0x...` whose address lies inside a real CFG function.
-        for id in &reachable {
+        for id in reachable {
             if self.function(id).is_some() {
                 selected_ids.insert(id.clone());
                 continue;
@@ -450,11 +605,10 @@ impl ProgramCfg {
                 selected_ids.insert(cfg_function.id.clone());
             }
         }
-        Ok(self
-            .functions
+        self.functions
             .iter()
             .filter(|function| selected_ids.contains(&function.id))
-            .collect())
+            .collect()
     }
 
     fn reachable_seeds(
@@ -511,6 +665,71 @@ impl ProgramCfg {
             })
         })
     }
+}
+
+fn riscv_trap_targets(image: &Image) -> Vec<u64> {
+    if !matches!(image.arch, ArchKind::Riscv32 | ArchKind::Riscv64) {
+        return Vec::new();
+    }
+    let Ok(decoder) = Decoder::new(image.arch) else {
+        return Vec::new();
+    };
+    let mut targets = BTreeSet::new();
+    for section in image.sections.iter().filter(|section| {
+        section.executable && (section.name.contains("trap") || section.name.contains("vector"))
+    }) {
+        let mut offset = 0usize;
+        while offset < section.data.len() {
+            let address = section.address.saturating_add(offset as u64);
+            match decoder.decode_one(&section.data[offset..], address) {
+                Ok(Some(instruction)) => {
+                    if (instruction.is_jump || instruction.is_call)
+                        && !instruction.is_conditional
+                        && let Some(target) = instruction.direct_target
+                    {
+                        targets.insert(image.canonical_address(target));
+                    }
+                    offset = offset.saturating_add(usize::from(instruction.size.max(2)));
+                }
+                _ => offset = offset.saturating_add(2),
+            }
+        }
+    }
+    targets.into_iter().collect()
+}
+
+fn is_default_handler(function: &CfgFunction) -> bool {
+    is_default_handler_name(&function.primary_name)
+}
+
+fn is_default_handler_name(name: &str) -> bool {
+    let normalized = normalize_crate_hashes(name).to_ascii_lowercase();
+    normalized.contains("default_handler") || normalized.contains("defaulthandler")
+}
+
+fn is_default_handler_address(image: &Image, address: u64) -> bool {
+    let mut names = image
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.canonical_address == address)
+        .map(|symbol| symbol.name.as_str())
+        .peekable();
+    names.peek().is_some() && names.all(is_default_handler_name)
+}
+
+fn is_runtime_boundary(function: &CfgFunction) -> bool {
+    let name = normalize_crate_hashes(&function.primary_name);
+    [
+        "core::panicking::",
+        "std::panicking::",
+        "core::fmt::",
+        "alloc::fmt::",
+        "compiler_builtins::",
+        "core::ptr::drop_glue::",
+        "core::ptr::drop_in_place::",
+    ]
+    .iter()
+    .any(|prefix| name.contains(prefix))
 }
 
 fn tdg_reachability(tdg: &Tdg) -> BTreeMap<FunctionId, Vec<FunctionId>> {
@@ -1232,8 +1451,9 @@ fn mermaid_escape(value: &str) -> String {
 mod tests {
     use super::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
-        CfgTerminator, FunctionCfg, ProgramCfg,
+        CfgTerminator, FunctionCfg, ProgramCfg, riscv_trap_targets,
     };
+    use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
     use elf2tdg_schema::{FunctionId, FunctionKind, Language};
 
     fn instruction(address: u64, mnemonic: &str, is_call: bool) -> CfgInstruction {
@@ -1366,5 +1586,37 @@ mod tests {
         assert!(mermaid.contains("flowchart LR"));
         assert!(mermaid.contains("demo"));
         assert!(mermaid.contains("call"));
+    }
+
+    #[test]
+    fn extracts_riscv_trap_jump_targets() {
+        // jal zero, 8 at 0x1000 -> 0x1008.
+        let image = Image {
+            path: "trap.elf".into(),
+            arch: ArchKind::Riscv32,
+            byte_order: ByteOrder::Little,
+            elf_kind: ElfKind::Exec,
+            entry: 0x1000,
+            relocated_pointers: std::collections::BTreeMap::new(),
+            segments: Vec::new(),
+            sections: vec![Section {
+                name: ".trap".to_owned(),
+                address: 0x1000,
+                size: 4,
+                data: vec![0x6f, 0x00, 0x80, 0x00],
+                executable: true,
+                writable: false,
+                alloc: true,
+            }],
+            symbols: Vec::new(),
+            has_symbols: false,
+            has_debug_info: false,
+            has_relocations: false,
+            arm_cpu: None,
+            vector_table: Vec::new(),
+            dwarf: None,
+            dwarf_error: None,
+        };
+        assert_eq!(riscv_trap_targets(&image), vec![0x1008]);
     }
 }

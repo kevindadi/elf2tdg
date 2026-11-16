@@ -8,7 +8,7 @@ use clap::{Parser, ValueEnum};
 use elf2tdg::analysis::{AnalysisOptions, AnalysisOutput, analyze_with_cfg};
 use elf2tdg::cfg::{self, CfgFunction, ProgramCfg};
 use elf2tdg::elf_view;
-use elf2tdg::loader;
+use elf2tdg::loader::{self, Image};
 use elf2tdg::output::{self, GraphOptions};
 use elf2tdg::timing::parse_frequency;
 use elf2tdg_schema::Tdg;
@@ -48,18 +48,24 @@ struct Cli {
     function: Option<String>,
 
     /// Export CFGs for every analyzed function, including functions not
-    /// reachable from main.
+    /// reachable from any execution root.
     #[arg(long, conflicts_with = "function")]
     all_functions: bool,
 
     /// Export only functions reachable from ROOT through calls and task
-    /// creation. This is the default CFG scope, with ROOT set to main.
+    /// creation. Without this flag the CFG uses all asynchronous execution
+    /// roots: main, startup, ISR vectors, tasks and callbacks.
     #[arg(
         long,
         value_name = "NAME|0xADDR",
         conflicts_with_all = ["function", "all_functions"]
     )]
     reachable_from: Option<String>,
+
+    /// Do not stop call-graph expansion at panic/format/compiler-builtins and
+    /// drop-glue boundaries in CFG reachability.
+    #[arg(long)]
+    no_prune_runtime: bool,
 
     /// Omit concrete instructions from CFG JSON and DOT/Mermaid labels.
     #[arg(long)]
@@ -133,13 +139,16 @@ fn select_cfg_functions<'a>(
     cli: &Cli,
     program: &'a ProgramCfg,
     tdg: &Tdg,
+    image: &Image,
 ) -> std::result::Result<Vec<&'a CfgFunction>, String> {
     if let Some(selector) = cli.function.as_deref() {
         program.select(Some(selector))
     } else if cli.all_functions {
         Ok(program.functions.iter().collect())
+    } else if let Some(root) = cli.reachable_from.as_deref() {
+        program.reachable_from_with_pruning(tdg, root, !cli.no_prune_runtime)
     } else {
-        program.reachable_from(tdg, cli.reachable_from.as_deref().unwrap_or("main"))
+        Ok(program.reachable_from_system(tdg, image, !cli.no_prune_runtime))
     }
 }
 
@@ -221,10 +230,11 @@ fn main() -> Result<()> {
         && (cli.function.is_some()
             || cli.all_functions
             || cli.reachable_from.is_some()
+            || cli.no_prune_runtime
             || cli.no_cfg_instructions)
     {
         anyhow::bail!(
-            "--function, --all-functions, --reachable-from and --no-cfg-instructions are only supported with --view cfg"
+            "--function, --all-functions, --reachable-from, --no-prune-runtime and --no-cfg-instructions are only supported with --view cfg"
         );
     }
     if cli.view == View::Elf {
@@ -262,7 +272,7 @@ fn main() -> Result<()> {
     let analysis = analyze_with_cfg(&image, &options).context("analysis failed")?;
     let tdg = &analysis.tdg;
     let cfg_functions = if cli.view == View::Cfg {
-        select_cfg_functions(&cli, &analysis.cfg, tdg).map_err(anyhow::Error::msg)?
+        select_cfg_functions(&cli, &analysis.cfg, tdg, &image).map_err(anyhow::Error::msg)?
     } else {
         Vec::new()
     };

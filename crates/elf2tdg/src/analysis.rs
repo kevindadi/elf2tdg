@@ -9,7 +9,7 @@ use elf2tdg_schema::{
     SCHEMA_VERSION, Scheduling, Severity, SourceLoc, Tdg, TimingInfo, ToolInfo,
 };
 
-use crate::arch::{DecodedInsn, Decoder};
+use crate::arch::{DecodedInsn, Decoder, IndirectTarget, ValueSource};
 use crate::cfg;
 use crate::error::{Error, Result};
 use crate::loader::{ByteOrder, ElfKind, Image, VectorEntry};
@@ -1007,7 +1007,12 @@ impl<'a> Analyzer<'a> {
             .iter()
             .flat_map(|block| block.calls.iter().map(|call| call.site))
             .collect();
+        let mut referenced_addresses = BTreeSet::new();
+        for instruction in &decoded_sorted {
+            self.collect_code_references(instruction, &mut referenced_addresses);
+        }
         let mut function_cfg = cfg::FunctionCfg::build(block_drafts, edge_drafts, Some(start));
+        function_cfg.referenced_addresses = referenced_addresses.into_iter().collect();
         function_cfg.recovered_calls = call_sites
             .values()
             .filter(|call| !attached_calls.contains(&call.site))
@@ -1019,6 +1024,35 @@ impl<'a> Analyzer<'a> {
             function.analyzed = true;
         }
         self.calls.extend(calls);
+    }
+
+    fn collect_code_references(&self, instruction: &DecodedInsn, out: &mut BTreeSet<u64>) {
+        let mut values = Vec::new();
+        if let Some(effect) = instruction.value {
+            match effect.source {
+                ValueSource::Immediate(value) | ValueSource::Address(value) => values.push(value),
+                ValueSource::LoadAddress(address) => {
+                    if let Some(value) = self.image.read_pointer(address) {
+                        values.push(value);
+                    }
+                }
+                ValueSource::LoadFromRegister { .. }
+                | ValueSource::Copy(_)
+                | ValueSource::AddImmediate { .. }
+                | ValueSource::OrImmediate { .. } => {}
+            }
+        }
+        if let Some(IndirectTarget::Memory(address)) = instruction.indirect
+            && let Some(value) = self.image.read_pointer(address)
+        {
+            values.push(value);
+        }
+        for value in values {
+            let address = self.image.canonical_address(value);
+            if self.image.is_executable(address) {
+                out.insert(address);
+            }
+        }
     }
 
     fn cfg_terminator(&self, last: &DecodedInsn, start: u64, end: u64) -> cfg::CfgTerminator {
