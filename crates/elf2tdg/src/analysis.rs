@@ -10,6 +10,7 @@ use elf2tdg_schema::{
 };
 
 use crate::arch::{DecodedInsn, Decoder};
+use crate::cfg;
 use crate::error::{Error, Result};
 use crate::loader::{ByteOrder, ElfKind, Image, VectorEntry};
 use crate::origin;
@@ -49,6 +50,15 @@ impl Default for AnalysisOptions {
     }
 }
 
+/// Result of an analysis run: the validated TDG and the intermediate CFGs.
+#[derive(Clone, Debug)]
+pub struct AnalysisOutput {
+    /// Validated Task Dependency Graph.
+    pub tdg: Tdg,
+    /// Function-level control-flow graphs used to derive the TDG.
+    pub cfg: cfg::ProgramCfg,
+}
+
 /// Analyzes an image and returns a validated TDG.
 ///
 /// # Errors
@@ -57,6 +67,15 @@ impl Default for AnalysisOptions {
 /// resource limits and schema-validation failures. Recoverable problems are
 /// represented as TDG diagnostics.
 pub fn analyze(image: &Image, options: &AnalysisOptions) -> Result<Tdg> {
+    analyze_with_cfg(image, options).map(|output| output.tdg)
+}
+
+/// Analyzes an image and returns both the TDG and the function CFGs.
+///
+/// # Errors
+///
+/// Returns the same errors as [`analyze`].
+pub fn analyze_with_cfg(image: &Image, options: &AnalysisOptions) -> Result<AnalysisOutput> {
     Analyzer::new(image, options)?.run()
 }
 
@@ -92,17 +111,8 @@ struct FunctionDraft {
     demangled: Option<String>,
     language: Language,
     kind: FunctionKind,
-    blocks: Vec<BlockDraft>,
+    cfg: cfg::FunctionCfg,
     analyzed: bool,
-}
-
-#[derive(Clone, Debug)]
-struct BlockDraft {
-    address: u64,
-    size: u64,
-    instructions: Vec<DecodedInsn>,
-    successors: Vec<u64>,
-    cycles: Option<elf2tdg_schema::CostRange>,
 }
 
 #[derive(Clone, Debug)]
@@ -150,7 +160,7 @@ impl<'a> Analyzer<'a> {
         Ok(analyzer)
     }
 
-    fn run(mut self) -> Result<Tdg> {
+    fn run(mut self) -> Result<AnalysisOutput> {
         if let Some(error) = &self.image.dwarf_error {
             self.diag(
                 Severity::Warning,
@@ -409,7 +419,7 @@ impl<'a> Analyzer<'a> {
                     demangled: choice.demangled,
                     language: choice.language,
                     kind,
-                    blocks: Vec::new(),
+                    cfg: cfg::FunctionCfg::default(),
                     analyzed: false,
                 },
             );
@@ -682,6 +692,7 @@ impl<'a> Analyzer<'a> {
                     unresolved_indirect_calls.push((current, insn_text(&insn)));
                 }
                 if next < end {
+                    starts.insert(next);
                     work.push_back(next);
                 }
                 continue;
@@ -863,13 +874,56 @@ impl<'a> Analyzer<'a> {
                 Some(site),
             );
         }
-        self.decoded_by_function.insert(start, decoded_sorted);
+        self.decoded_by_function
+            .insert(start, decoded_sorted.clone());
+
+        let mut call_sites: BTreeMap<u64, cfg::CfgCallSite> = BTreeMap::new();
+        for call in &calls {
+            call_sites.insert(
+                call.site,
+                cfg::CfgCallSite {
+                    site: call.site,
+                    target: Some(call.target),
+                    target_function: self
+                        .functions
+                        .contains_key(&call.target)
+                        .then(|| function_id(call.target)),
+                    direct: call.direct,
+                    tail: call.tail,
+                    conditional: call.conditional,
+                    heuristic: call.heuristic,
+                    unresolved: false,
+                },
+            );
+        }
+        for insn in decoded_sorted.iter().filter(|insn| insn.is_call) {
+            call_sites.entry(insn.address).or_insert_with(|| {
+                let target = insn
+                    .direct_target
+                    .map(|target| self.image.canonical_address(target));
+                cfg::CfgCallSite {
+                    site: insn.address,
+                    target,
+                    target_function: target.and_then(|target| {
+                        self.functions
+                            .contains_key(&target)
+                            .then(|| function_id(target))
+                    }),
+                    direct: insn.direct_target.is_some(),
+                    tail: false,
+                    conditional: false,
+                    heuristic: false,
+                    unresolved: true,
+                }
+            });
+        }
 
         let block_starts: BTreeSet<u64> = starts
             .into_iter()
             .filter(|start| decoded.contains_key(start))
             .collect();
-        let mut blocks = Vec::new();
+        let mut block_drafts = Vec::new();
+        let mut edge_drafts = Vec::new();
         for block_start in &block_starts {
             let mut instructions = Vec::new();
             let mut cursor = *block_start;
@@ -905,22 +959,149 @@ impl<'a> Analyzer<'a> {
             }
             successors.sort_unstable();
             successors.dedup();
+            for successor in &successors {
+                let kind = if last.is_call {
+                    cfg::CfgEdgeKind::CallReturn
+                } else if last.is_conditional {
+                    if last
+                        .direct_target
+                        .map(|target| self.image.canonical_address(target))
+                        == Some(*successor)
+                    {
+                        cfg::CfgEdgeKind::Branch
+                    } else {
+                        cfg::CfgEdgeKind::Fallthrough
+                    }
+                } else if last.is_jump {
+                    cfg::CfgEdgeKind::Jump
+                } else {
+                    cfg::CfgEdgeKind::Fallthrough
+                };
+                edge_drafts.push(cfg::CfgEdgeDraft {
+                    from: *block_start,
+                    to: *successor,
+                    kind,
+                    site: last.address,
+                    conditional: last.is_conditional,
+                });
+            }
             let cycles = self.timing.map(|model| sum_costs(model, &instructions));
-            blocks.push(BlockDraft {
+            let cfg_instructions = instructions
+                .iter()
+                .map(|instruction| self.cfg_instruction(instruction))
+                .collect();
+            let calls = call_sites
+                .range(*block_start..block_end)
+                .map(|(_, call)| call.clone())
+                .collect();
+            block_drafts.push(cfg::CfgBlockDraft {
                 address: *block_start,
                 size: block_end.saturating_sub(*block_start),
-                instructions,
-                successors,
+                instructions: cfg_instructions,
+                calls,
                 cycles,
+                terminator: self.cfg_terminator(last, start, end),
             });
         }
-        blocks.sort_by_key(|block| block.address);
+        let attached_calls: BTreeSet<u64> = block_drafts
+            .iter()
+            .flat_map(|block| block.calls.iter().map(|call| call.site))
+            .collect();
+        let mut function_cfg = cfg::FunctionCfg::build(block_drafts, edge_drafts, Some(start));
+        function_cfg.recovered_calls = call_sites
+            .values()
+            .filter(|call| !attached_calls.contains(&call.site))
+            .cloned()
+            .collect();
 
         if let Some(function) = self.functions.get_mut(&address) {
-            function.blocks = blocks;
+            function.cfg = function_cfg;
             function.analyzed = true;
         }
         self.calls.extend(calls);
+    }
+
+    fn cfg_terminator(&self, last: &DecodedInsn, start: u64, end: u64) -> cfg::CfgTerminator {
+        if last.is_return {
+            return cfg::CfgTerminator::Return;
+        }
+        if last.is_call {
+            return cfg::CfgTerminator::Call;
+        }
+        if last.is_jump {
+            return match last
+                .direct_target
+                .map(|target| self.image.canonical_address(target))
+            {
+                Some(target) if target >= start && target < end => {
+                    if last.is_conditional {
+                        cfg::CfgTerminator::Branch
+                    } else {
+                        cfg::CfgTerminator::Jump
+                    }
+                }
+                Some(_) => cfg::CfgTerminator::Jump,
+                None => cfg::CfgTerminator::Unresolved,
+            };
+        }
+        cfg::CfgTerminator::Fallthrough
+    }
+
+    fn cfg_instruction(&self, instruction: &DecodedInsn) -> cfg::CfgInstruction {
+        let bytes = self
+            .image
+            .bytes_at(instruction.address, usize::from(instruction.size))
+            .map_or_else(Vec::new, <[u8]>::to_vec);
+        cfg::CfgInstruction {
+            address: instruction.address,
+            size: instruction.size,
+            bytes,
+            mnemonic: instruction.mnemonic.clone(),
+            operands: instruction.operands.clone(),
+            text: insn_text(instruction),
+            is_call: instruction.is_call,
+            is_jump: instruction.is_jump,
+            is_return: instruction.is_return,
+            is_conditional: instruction.is_conditional,
+            direct_target: instruction.direct_target,
+            indirect: instruction.indirect.map(|target| self.cfg_indirect(target)),
+            cycles: self.timing.map(|model| model.instruction_cost(instruction)),
+            source: self
+                .image
+                .dwarf
+                .as_ref()
+                .and_then(|dwarf| dwarf.source_at(instruction.address))
+                .map(|source| SourceLoc {
+                    file: source.file.clone(),
+                    line: source.line,
+                    column: source.column,
+                }),
+        }
+    }
+
+    fn cfg_indirect(&self, target: crate::arch::IndirectTarget) -> cfg::CfgIndirectTarget {
+        use crate::arch::IndirectTarget;
+        let name = |register| {
+            self.decoder
+                .register_name(register)
+                .unwrap_or_else(|| format!("reg{}", register.0))
+        };
+        match target {
+            IndirectTarget::Register(register) => cfg::CfgIndirectTarget::Register(name(register)),
+            IndirectTarget::RegisterMemory { base, disp } => {
+                cfg::CfgIndirectTarget::RegisterMemory {
+                    base: name(base),
+                    disp,
+                }
+            }
+            IndirectTarget::Memory(address) => cfg::CfgIndirectTarget::Memory(address),
+            IndirectTarget::RegisterOffset { register, offset } => {
+                cfg::CfgIndirectTarget::RegisterOffset {
+                    register: name(register),
+                    offset,
+                }
+            }
+        }
     }
 
     fn scan_undecoded_calls(
@@ -1019,7 +1200,7 @@ impl<'a> Analyzer<'a> {
                 demangled: None,
                 language: Language::Unknown,
                 kind: FunctionKind::Normal,
-                blocks: Vec::new(),
+                cfg: cfg::FunctionCfg::default(),
                 analyzed: false,
             },
         );
@@ -1047,8 +1228,8 @@ impl<'a> Analyzer<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn build_tdg(mut self) -> Result<Tdg> {
-        let calls = std::mem::take(&mut self.calls);
+    fn build_tdg(mut self) -> Result<AnalysisOutput> {
+        let program_cfg = self.build_program_cfg();
         let isr_vectors = std::mem::take(&mut self.isr_vectors);
         let startup_address = self.startup_address;
         let Some(startup_address) = startup_address else {
@@ -1103,16 +1284,35 @@ impl<'a> Analyzer<'a> {
 
         let mut edges: Vec<Edge> = Vec::new();
         let mut edge_ids: BTreeSet<String> = BTreeSet::new();
-        for call in &calls {
-            let Some(callee) = self.resolve_function_address(call.target) else {
+        let cfg_calls: Vec<(u64, cfg::CfgCallSite)> = self
+            .functions
+            .values()
+            .flat_map(|draft| {
+                draft
+                    .cfg
+                    .blocks_by_address
+                    .values()
+                    .flat_map(|node| draft.cfg.graph[*node].calls.iter().cloned())
+                    .chain(draft.cfg.recovered_calls.iter().cloned())
+                    .map(|call| (draft.address, call))
+            })
+            .collect();
+        for (caller, call) in &cfg_calls {
+            let Some(target) = call.target else {
+                continue;
+            };
+            if call.unresolved {
+                continue;
+            }
+            let Some(callee) = self.resolve_function_address(target) else {
                 self.diag(
                     Severity::Warning,
                     "call-target-unresolved",
                     format!(
-                        "call at 0x{:x} targets 0x{:x}, but no callee node exists",
-                        call.site, call.target
+                        "call at 0x{:x} targets 0x{target:x}, but no callee node exists",
+                        call.site
                     ),
-                    Some(call.caller),
+                    Some(*caller),
                     Some(call.site),
                 );
                 continue;
@@ -1121,17 +1321,17 @@ impl<'a> Analyzer<'a> {
                 Confidence::Low
             } else if !call.direct {
                 Confidence::Medium
-            } else if callee == call.target {
+            } else if callee == target {
                 Confidence::High
             } else {
                 self.diag(
                     Severity::Info,
                     "call-into-function-body",
                     format!(
-                        "call at 0x{:x} targets 0x{:x} inside function 0x{callee:x}",
-                        call.site, call.target
+                        "call at 0x{:x} targets 0x{target:x} inside function 0x{callee:x}",
+                        call.site
                     ),
-                    Some(call.caller),
+                    Some(*caller),
                     Some(call.site),
                 );
                 Confidence::Medium
@@ -1139,13 +1339,13 @@ impl<'a> Analyzer<'a> {
             if call.conditional && !call.heuristic {
                 confidence = Confidence::Medium;
             }
-            let id = format!("e:call:0x{:x}:0x{:x}", call.site, call.target);
+            let id = format!("e:call:0x{:x}:0x{target:x}", call.site);
             if !edge_ids.insert(id.clone()) {
                 continue;
             }
             edges.push(Edge::Call {
                 id: EdgeId::new(id),
-                caller: function_id(call.caller),
+                caller: function_id(*caller),
                 callee: function_id(callee),
                 site: Addr::new(call.site),
                 direct: call.direct,
@@ -1271,12 +1471,47 @@ impl<'a> Analyzer<'a> {
                 error.issues.iter().take(8).collect::<Vec<_>>()
             ))
         })?;
-        Ok(tdg)
+        Ok(AnalysisOutput {
+            tdg,
+            cfg: program_cfg,
+        })
     }
 
+    fn build_program_cfg(&self) -> cfg::ProgramCfg {
+        let functions = self
+            .functions
+            .values()
+            .map(|draft| cfg::CfgFunction {
+                id: function_id(draft.address),
+                primary_name: draft.display.clone(),
+                demangled_name: draft.demangled.clone(),
+                symbols: draft.names.clone(),
+                language: draft.language,
+                kind: draft.kind,
+                address: draft.address,
+                size: draft.size,
+                section: draft.section.clone(),
+                source: self
+                    .image
+                    .dwarf
+                    .as_ref()
+                    .and_then(|dwarf| dwarf.source_at(draft.address))
+                    .map(|source| SourceLoc {
+                        file: source.file.clone(),
+                        line: source.line,
+                        column: source.column,
+                    }),
+                cfg: draft.cfg.clone(),
+            })
+            .collect();
+        cfg::ProgramCfg::new(functions)
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn function_to_schema(&self, draft: &FunctionDraft) -> Function {
         let mut blocks = Vec::new();
-        for block in &draft.blocks {
+        for node in draft.cfg.blocks_by_address.values() {
+            let block = &draft.cfg.graph[*node];
             let timing = match (self.timing, block.cycles, self.options.frequency_hz) {
                 (Some(model), Some(cycles), frequency) => {
                     Some(model.block_timing(cycles, frequency))
@@ -1285,15 +1520,17 @@ impl<'a> Analyzer<'a> {
             };
             let instructions = if self.options.include_instructions {
                 match self.timing {
-                    Some(model) => block
+                    Some(_model) => block
                         .instructions
                         .iter()
                         .map(|insn| InstructionTiming {
                             address: Addr::new(insn.address),
                             size: insn.size,
                             mnemonic: insn.mnemonic.clone(),
-                            text: Some(insn_text(insn)),
-                            cycles: model.instruction_cost(insn),
+                            text: Some(insn.text.clone()),
+                            cycles: insn
+                                .cycles
+                                .unwrap_or_else(|| elf2tdg_schema::CostRange::exact(0.0)),
                             note: None,
                         })
                         .collect(),
@@ -1302,12 +1539,19 @@ impl<'a> Analyzer<'a> {
             } else {
                 Vec::new()
             };
+            let mut successors: Vec<u64> = draft
+                .cfg
+                .graph
+                .neighbors_directed(*node, petgraph::Direction::Outgoing)
+                .map(|successor| draft.cfg.graph[successor].address)
+                .collect();
+            successors.sort_unstable();
+            successors.dedup();
             blocks.push(BasicBlock {
                 id: block_id(block.address),
                 address: Addr::new(block.address),
                 size: block.size,
-                successors: block
-                    .successors
+                successors: successors
                     .iter()
                     .map(|address| block_id(*address))
                     .collect(),
@@ -1317,14 +1561,14 @@ impl<'a> Analyzer<'a> {
         }
 
         let timing = self.timing.and_then(|_model| {
-            if draft.blocks.is_empty() {
+            if draft.cfg.blocks_by_address.is_empty() {
                 return None;
             }
             let mut min = 0.0_f64;
             let mut max = 0.0_f64;
             let mut modeled = 0_u32;
-            for block in &draft.blocks {
-                if let Some(cycles) = block.cycles {
+            for node in draft.cfg.blocks_by_address.values() {
+                if let Some(cycles) = draft.cfg.graph[*node].cycles {
                     min += cycles.min;
                     max += cycles.max;
                     modeled += 1;
@@ -1333,7 +1577,7 @@ impl<'a> Analyzer<'a> {
             Some(FunctionTiming {
                 static_block_sum_cycles: elf2tdg_schema::CostRange::new(min, max),
                 modeled_blocks: modeled,
-                unmodeled_blocks: u32::try_from(draft.blocks.len())
+                unmodeled_blocks: u32::try_from(draft.cfg.blocks_by_address.len())
                     .unwrap_or(u32::MAX)
                     .saturating_sub(modeled),
                 caveats: vec![

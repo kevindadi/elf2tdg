@@ -203,6 +203,12 @@ impl Decoder {
         self.arch
     }
 
+    /// Returns Capstone's canonical name for a register.
+    #[must_use]
+    pub fn register_name(&self, register: RegId) -> Option<String> {
+        self.cs.reg_name(register)
+    }
+
     /// Decodes a single instruction at `address`.
     ///
     /// Returns `Ok(None)` when Capstone cannot decode an instruction from the

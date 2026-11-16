@@ -18,7 +18,9 @@ clap = { version = "4", features = ["derive"] }
 elf2tdg-schema = { path = "../elf2tdg-schema" }
 gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
+petgraph = { version = "0.8.3", default-features = false, features = ["std", "stable_graph"] }
 rustc-demangle = "0.1"
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 

@@ -2,6 +2,7 @@
 
 pub mod analysis;
 pub mod arch;
+pub mod cfg;
 pub mod dwarf;
 pub mod error;
 pub mod loader;
