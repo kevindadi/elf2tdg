@@ -24,6 +24,7 @@ color styling and Mermaid is limited to shapes and line styles.
 | box, dashed border | context color | synthesized logical task context, or orphan context created from a spawn API symbol |
 | dashed green ellipse | green | structured-concurrency scope |
 | orange diamond | orange | Cortex-M vector / IRQ source |
+| pale-yellow note | yellow | lock/semaphore acquire or release event |
 | gray note | gray | opaque target with unresolved candidates |
 
 Contexts also carry their kind as a second label line. A context points at its
@@ -44,6 +45,7 @@ the same relationship visible without duplicating arrows.
 | `callback <api>` | teal, dashed | callback/timer/workqueue registration |
 | `ISR` / `IRQ n` | orange, dashed | vector activates an ISR context |
 | `preempts` | orange, dotted | derived preemption relation |
+| `lock` | yellow, dotted | function → lock/semaphore event |
 | `entry` | blue, dotted | context entry function |
 | `in` / `member` | green, dotted | scope entering context / owned spawn relation |
 
@@ -68,8 +70,9 @@ example.
 `--projection concurrency` omits ordinary call edges and draws only:
 
 - contexts and their entry functions;
-- functions that originate a spawn/join/await/callback relation;
-- scopes, ISR vectors, opaque targets, and derived preemption edges.
+- functions that originate a spawn/join/await/callback or lock relation;
+- lock events, scopes, ISR vectors, opaque targets, and derived preemption
+  edges.
 
 This keeps optimized Rust binaries readable. `--legend` appends the key shown
 above to the DOT or Mermaid output.
@@ -77,7 +80,8 @@ above to the DOT or Mermaid output.
 ## Examples
 
 - [`examples/rust-concurrency/`](../examples/rust-concurrency/README.md) —
-  `thread::spawn`, `join`, `thread::scope`, and DWARF recovery at `-O2`.
+  `thread::spawn`, `join`, `thread::scope`, and DWARF recovery with the
+  recommended `analysis` profile.
 - [`examples/cortex-m0-isr/`](../examples/cortex-m0-isr/README.md) — reset/main
   contexts, vector 53 / IRQ 37, call graph, and Cortex-M0 cycle estimates.
 

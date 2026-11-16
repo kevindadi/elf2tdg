@@ -280,6 +280,7 @@ inlined subroutine ranges found inside it:
   {
     "name": "<std::sync::poison::mutex::Mutex<u64>>::lock",
     "linkage_name": "_ZN...",
+    "call_site": { "file": "src/main.rs", "line": 42, "column": 9 },
     "low": "0x148da",
     "high": "0x14903",
     "depth": 4
@@ -288,10 +289,11 @@ inlined subroutine ranges found inside it:
 ```
 
 Frames are ordered by address and depth; lower `depth` values are outer inline
-calls. `low`/`high` are the concrete addresses of that inline instance. An
-instruction belongs to a frame when its address lies in `[low, high)`, so the
-list stays compact even for heavily inlined Rust functions. It is independent
-of `--no-cfg-instructions`. See
+calls. `low`/`high` are the concrete addresses of that inline instance.
+`call_site` is recovered from `DW_AT_call_file`/`DW_AT_call_line` and points at
+the source call that was inlined. An instruction belongs to a frame when its
+address lies in `[low, high)`, so the list stays compact even for heavily
+inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 [analysis-profile.md](analysis-profile.md) for the recommended build flags.
 
 ### Node semantics

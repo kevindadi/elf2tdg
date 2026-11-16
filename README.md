@@ -52,9 +52,14 @@ Implemented:
   that disappear from the machine call graph at `-O1`/`-O2` are reconstructed
   from inline DIEs, including source-level call-site ranges and closure types.
   CFG functions expose the unique `DW_TAG_inlined_subroutine` ranges as
-  `inline_frames`, with demangled names, concrete `low`/`high` addresses and
-  depth, so inlined functions such as `Mutex::lock` remain inspectable in
-  optimized code.
+  `inline_frames`, with demangled/raw linkage names, source call sites, concrete
+  `low`/`high` addresses and depth, so inlined functions such as `Mutex::lock`
+  remain inspectable in optimized code.
+- Direct and DWARF-inlined lock operations produce typed TDG `locks` events:
+  acquire/try-acquire/release, lock/semaphore kind, concrete inline ranges,
+  source call sites and containing context. Rules cover Rust `Mutex`/`RwLock`
+  (including guard drops), parking_lot, pthread, FreeRTOS, Zephyr, ThreadX and
+  C++ `std::mutex`/`shared_mutex`. Lock identity/order is not guessed.
 - When an inlined spawn entry cannot be mapped to a callable symbol, M2 emits a
   synthetic zero-size `task-entry` function and matching context marked with
   `ext["elf2tdg.logical_task"]`, so the task stays visible without inventing an
@@ -302,9 +307,9 @@ with source, ELF, JSON, DOT and rendered SVG:
 
 - [`examples/rust-concurrency/`](examples/rust-concurrency/README.md) builds the
   Rust program with the recommended `analysis` profile (`-O1`, full DWARF,
-  ThinLTO). It shows thread/scope contexts and DWARF-recovered inline spawns,
-  plus per-main CFG JSON/SVG/Mermaid artifacts. The DWARF integration test
-  additionally demonstrates inline `Mutex::lock` ranges.
+  ThinLTO). It shows thread/scope contexts, DWARF-recovered inline spawns and
+  inline `Mutex::lock` acquire/release events, plus per-main CFG
+  JSON/SVG/Mermaid artifacts.
 - [`examples/cortex-m0-isr/`](examples/cortex-m0-isr/README.md) is a small
   Cortex-M0 image with reset/main/ISR contexts, USART1 IRQ 37, direct calls,
   48 MHz cycle-to-nanosecond estimates, and a per-`main` CFG export.

@@ -1,4 +1,4 @@
-# TDG schema v1.1
+# TDG schema v1.2
 
 This document defines the Task Dependency Graph (TDG) produced by `elf2tdg`.
 The Rust types in `crates/elf2tdg-schema` are the normative definition; the
@@ -43,6 +43,7 @@ IDs are strings with a fixed prefix:
 | Basic block | `bb:` | `bb:0x08000400` |
 | Context | `ctx:` | `ctx:thread:sensor` |
 | Edge | `e:` | `e:spawn:0x08000320` |
+| Lock event | `lock:` | `lock:0x08000240:acquire:Mutex::lock` |
 | Scope | `scope:` | `scope:0x08001300` |
 | Frequency domain | `clk:` | `clk:core` |
 
@@ -157,6 +158,26 @@ and may reference the scope that provides an implicit join. Like spawn, the
 target is resolved or opaque with candidate contexts. Thread handles are often
 unresolvable at `-O2` even when symbols are available, so this is a normal
 outcome, not an error.
+
+### Lock and semaphore events
+
+`locks` is a top-level list of acquire/try-acquire/release events rather than a
+graph edge: without points-to analysis the analyzer cannot prove which object
+instance is protected. Each event records:
+
+- the containing function and execution context (when reachable);
+- the direct-call site, or the concrete inline `[site, extent)` range;
+- the source-level inline call site from `DW_AT_call_file`/`DW_AT_call_line`;
+- runtime and API (`pthread_mutex_lock`, `Mutex::lock`, ...);
+- `lock_kind` (`mutex`, `rwlock`, `rwlock-read`, `rwlock-write`, `spinlock`,
+  `semaphore`, `other`) and `operation` (`acquire`, `try-acquire`, `release`);
+- `inlined`/`inline_depth` and confidence.
+
+Rules cover Rust `std::sync::Mutex`/`RwLock` including guard drops, parking_lot,
+pthread mutex/RW-lock/semaphores, FreeRTOS/Zephyr/ThreadX semaphores and mutexes,
+and C++ `std::mutex`/`shared_mutex`. Inlined events are found by matching the
+DWARF inline stack, not by requiring a machine call instruction. Lock ordering
+and deadlock claims are intentionally out of scope.
 
 Await targets use the same `resolution` tag with three states: a known context,
 a known function/future, or `opaque` with candidate functions. Rust async await
@@ -276,10 +297,10 @@ surface diagnostics rather than silently dropping uncertain edges.
 
 - schema major version;
 - ID prefixes and uniqueness;
-- all references (functions, blocks, contexts, edges, scopes, timing models,
-  frequency domains);
+- all references (functions, blocks, contexts, edges, lock events, scopes,
+  timing models, frequency domains);
 - block ownership and address ranges;
-- call/spawn/join sites inside their containing functions;
+- call/spawn/join/lock sites inside their containing functions;
 - spawn entry equals target-context entry;
 - ISR activation targets an `isr` context;
 - scope members are spawn edges and exit ≥ entry;
@@ -318,9 +339,10 @@ complete visual vocabulary is in [tdg-legend.md](tdg-legend.md).
 DOT and Mermaid accept two projections:
 
 - `full` (default): every function and call edge plus concurrency relations;
-- `concurrency`: contexts, scopes, spawn/join/await/callback/ISR/preemption
-  relations, and only the functions participating in them. Ordinary call edges
-  are omitted so large optimized Rust binaries remain readable.
+- `concurrency`: contexts, scopes, lock events,
+  spawn/join/await/callback/ISR/preemption relations, and only the functions
+  participating in them. Ordinary call edges are omitted so large optimized
+  Rust binaries remain readable.
 
 `--legend` appends a legend describing node kinds, relation styles and the
 confidence encoding. It is supported for DOT and Mermaid only; JSON is
@@ -390,9 +412,9 @@ cores still need calibration data for meaningful bounds.
 
 ## 12. Versioning and compatibility
 
-- `schema_version` is `1.1` for this document. Version 1.1 adds the optional
-  spawn `name` field and standardizes the `elf2tdg.logical_task` and
-  `elf2tdg.orphan_spawn_api` extension keys; v1.0 documents remain readable.
+- `schema_version` is `1.2` for this document. Version 1.2 adds the optional
+  top-level `locks` event list and lock/semaphore enums; v1.0/v1.1 documents
+  remain readable.
 - Minor versions add optional fields and new enum values; consumers should
   ignore unknown fields and treat unknown edge kinds/confidence values as
   `unknown` where their language permits.
@@ -408,8 +430,9 @@ cores still need calibration data for meaningful bounds.
 - Executing the firmware or reconstructing runtime traces.
 - Perfect recovery from fully stripped, LTO+ICF images (symbols are expected;
   best-effort diagnostics are still emitted).
-- Modeling every RTOS queue/semaphore/event primitive. The edge taxonomy is
-  extensible; spawn/join/scope/ISR are the v1 core.
+- Exhaustive RTOS queue/event/condition-variable modeling. Common mutex and
+  semaphore APIs are covered by lock events; spawn/join/scope/ISR/locks are the
+  v1 core.
 
 ## 14. M0/M1/M2 implementation notes
 
@@ -452,6 +475,7 @@ M2 adds debug-info-assisted recovery and hardened optimized-code heuristics:
 - logical task-entry functions and contexts for spawns whose concrete entry is
   not a callable symbol, marked with `ext["elf2tdg.logical_task"]`;
 - join/scope linkage from DWARF inline ranges, including scope exit sites;
+- inline and direct lock/semaphore event recovery with source call sites;
 - a bounded linear call scan of undecoded gaps after unresolved indirect jumps,
   accepting only direct calls to known function entries and marking them
   `low` confidence with a `heuristic-direct-calls` diagnostic;
@@ -483,13 +507,16 @@ M3 analysis extensions currently implement:
   medium confidence);
 - async-std/smol/Embassy handle-poll await rules;
 - DWARF line-program source file/line/column extraction for functions;
+- per-function DWARF inline-frame ranges with source call sites, and typed
+  lock/semaphore events for direct and inlined operations;
+- indexed jump tables and C++ vtable/function-pointer dispatch recovery;
 - stripped-image prologue seeding when no local code symbols exist;
 - real C, C++ and OpenMP integration fixtures in addition to the Rust fixtures.
 
-Still deferred: indexed jump tables, C++ vtable dispatch and arbitrary computed
-pointer targets; full C++ callable/type demangling; OpenMP task/barrier edges;
-general `.await` lowering; DWARF variable/type data; multi-level wrapper
-forwarding and transformed forwarded values. Function names still come from
+Still deferred: arbitrary computed pointer targets; full C++ callable/type
+demangling; OpenMP task/barrier edges; general `.await` lowering; DWARF
+variable/type data; multi-level wrapper forwarding and transformed forwarded
+values. Function names still come from
 the symbol table in normal images. M7 auto-detection from `7E-M` attributes
 falls back to the Cortex-M4 table, so use `--cpu cortex-m7` when the exact core
 is known.

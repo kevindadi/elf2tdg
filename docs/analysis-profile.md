@@ -72,6 +72,7 @@ list of the unique inline ranges inside them, ordered by address and depth:
   {
     "name": "<std::sync::poison::mutex::Mutex<u64>>::lock",
     "linkage_name": "_ZN...",
+    "call_site": { "file": "src/main.rs", "line": 42, "column": 9 },
     "low": "0x148da",
     "high": "0x14903",
     "depth": 4
@@ -92,6 +93,14 @@ instruction. The CFG remains the real instruction graph; inline frames are
 metadata on the instruction ranges. Runtime rules such as `thread::spawn`,
 `Scope::spawn` and `JoinHandle::join` still create the logical spawn/join edges
 described in [tdg-schema.md](tdg-schema.md), even when those calls were inlined.
+
+The TDG also exposes typed `locks` events for acquire/try-acquire/release
+operations. For the Mutex example above it records `Mutex::lock` as an inlined
+`acquire` with the concrete `[site, extent)` range and source call site, plus
+`MutexGuard::drop` as a `release`. The same rules cover Rust RwLock read/write
+sides, parking_lot, pthread mutex/RW-lock/semaphores, FreeRTOS/Zephyr/ThreadX
+semaphores/mutexes, and C++ `std::mutex`/`shared_mutex`. Lock identity and
+ordering are deliberately not guessed.
 
 ## Limits
 
