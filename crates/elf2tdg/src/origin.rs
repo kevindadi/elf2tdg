@@ -70,9 +70,10 @@ fn resolve_register(
             ValueSource::Immediate(value) | ValueSource::Address(value) => return Some(value),
             ValueSource::LoadAddress(address) => {
                 // Keep data addresses here: a loaded value can be a vtable or
-                // an object whose slot is dereferenced by the caller. The
-                // top-level indirect-target check still requires code.
-                return image.read_uint(address, pointer_size(image.arch));
+                // an object whose slot is dereferenced by the caller. Import
+                // GOT slots resolve to their synthetic external-function
+                // pseudo-address.
+                return memory_pointer_value(image, address);
             }
             ValueSource::LoadFromRegister { base, disp } => {
                 let base_value = if Some(base) == pc_register(image.arch) {
@@ -86,7 +87,7 @@ fn resolve_register(
                 };
                 if let Some(base_value) = base_value {
                     let address = base_value.wrapping_add_signed(disp);
-                    if let Some(value) = image.read_uint(address, pointer_size(image.arch)) {
+                    if let Some(value) = memory_pointer_value(image, address) {
                         return Some(value);
                     }
                 }
@@ -1397,6 +1398,132 @@ mod tests {
             },
         ];
         assert_eq!(read_table_entries(&image, 0x2000, 4, 100), vec![1, 2]);
+    }
+
+    #[test]
+    fn resolves_import_slot_loaded_into_a_register() {
+        // mov rbp, [rip + 0xff9] -> 0x2000; call rbp
+        let text = vec![0x48, 0x8b, 0x2d, 0xf9, 0x0f, 0x00, 0x00, 0xff, 0xd5];
+        let mut imported_slots = std::collections::BTreeMap::new();
+        imported_slots.insert(0x2000, "malloc".to_owned());
+        let image = Image {
+            path: "import-register.elf".into(),
+            arch: ArchKind::X86_64,
+            byte_order: ByteOrder::Little,
+            elf_kind: ElfKind::Dyn,
+            entry: 0x1000,
+            relocated_pointers: std::collections::BTreeMap::default(),
+            imported_slots,
+            segments: Vec::new(),
+            sections: vec![
+                Section {
+                    name: ".text".to_owned(),
+                    address: 0x1000,
+                    size: 9,
+                    data: text,
+                    executable: true,
+                    writable: false,
+                    alloc: true,
+                },
+                Section {
+                    name: ".got".to_owned(),
+                    address: 0x2000,
+                    size: 8,
+                    data: vec![0; 8],
+                    executable: false,
+                    writable: true,
+                    alloc: true,
+                },
+            ],
+            symbols: Vec::new(),
+            has_symbols: false,
+            has_debug_info: false,
+            has_relocations: true,
+            arm_cpu: None,
+            vector_table: Vec::new(),
+            dwarf: None,
+            dwarf_error: None,
+        };
+        let engine = Decoder::new(ArchKind::X86_64).unwrap();
+        let load = engine
+            .decode_one(&image.sections[0].data[..7], 0x1000)
+            .unwrap()
+            .expect("mov");
+        let call = engine
+            .decode_one(&image.sections[0].data[7..], 0x1007)
+            .unwrap()
+            .expect("call");
+        let target = call.indirect.expect("register target");
+        assert_eq!(
+            resolve_indirect_target(&image, &[load, call], 0x1007, target),
+            Some(0x2000)
+        );
+    }
+
+    #[test]
+    fn resolves_import_slot_loaded_through_a_got_pointer() {
+        // lea rax, [rip + 0xff9] -> 0x2000; mov rbp, [rax]; call rbp
+        let text = vec![
+            0x48, 0x8d, 0x05, 0xf9, 0x0f, 0x00, 0x00, 0x48, 0x8b, 0x28, 0xff, 0xd5,
+        ];
+        let mut imported_slots = std::collections::BTreeMap::new();
+        imported_slots.insert(0x2000, "free".to_owned());
+        let image = Image {
+            path: "import-got-pointer.elf".into(),
+            arch: ArchKind::X86_64,
+            byte_order: ByteOrder::Little,
+            elf_kind: ElfKind::Dyn,
+            entry: 0x1000,
+            relocated_pointers: std::collections::BTreeMap::default(),
+            imported_slots,
+            segments: Vec::new(),
+            sections: vec![
+                Section {
+                    name: ".text".to_owned(),
+                    address: 0x1000,
+                    size: 12,
+                    data: text,
+                    executable: true,
+                    writable: false,
+                    alloc: true,
+                },
+                Section {
+                    name: ".got".to_owned(),
+                    address: 0x2000,
+                    size: 8,
+                    data: vec![0; 8],
+                    executable: false,
+                    writable: true,
+                    alloc: true,
+                },
+            ],
+            symbols: Vec::new(),
+            has_symbols: false,
+            has_debug_info: false,
+            has_relocations: true,
+            arm_cpu: None,
+            vector_table: Vec::new(),
+            dwarf: None,
+            dwarf_error: None,
+        };
+        let engine = Decoder::new(ArchKind::X86_64).unwrap();
+        let lea = engine
+            .decode_one(&image.sections[0].data[..7], 0x1000)
+            .unwrap()
+            .expect("lea");
+        let load = engine
+            .decode_one(&image.sections[0].data[7..10], 0x1007)
+            .unwrap()
+            .expect("mov");
+        let call = engine
+            .decode_one(&image.sections[0].data[10..], 0x100a)
+            .unwrap()
+            .expect("call");
+        let target = call.indirect.expect("register target");
+        assert_eq!(
+            resolve_indirect_target(&image, &[lea, load, call], 0x100a, target),
+            Some(0x2000)
+        );
     }
 
     #[test]
