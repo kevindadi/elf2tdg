@@ -330,9 +330,12 @@ unaffected.
 CFG. CFG JSON uses its own `cfg_schema_version` (`1.0`), includes full
 instruction/raw-byte information by default, and can omit instruction arrays
 with `--no-cfg-instructions`. Without a selector, the CFG is limited to
-functions reachable from `main`; `--reachable-from ROOT` selects another root
-and `--all-functions` exports the complete image. DOT and Mermaid CFG views
-render function clusters, typed block edges and dashed call-target edges.
+functions reachable from a multi-root system scope (main/startup, vector-table
+ISRs, tasks and callbacks). `--reachable-from ROOT` selects one root and
+`--all-functions` exports the complete image. Default handler stubs for unused
+vectors are excluded; code-address escapes and pointer relocations extend the
+worklist. DOT and Mermaid CFG views render function clusters, typed block edges
+and dashed call-target edges.
 
 ## 10. Runtime coverage
 

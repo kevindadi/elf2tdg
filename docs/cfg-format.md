@@ -38,10 +38,12 @@ Use `--view cfg` for the intermediate CFG:
 elf2tdg firmware.elf --view cfg --format json \
     --function main --output main.cfg.json
 
-# Default global export: functions reachable from main
-elf2tdg firmware.elf --view cfg --format json --output reachable.cfg.json
+# Default system export: main + startup + ISR vectors + tasks + callbacks
+elf2tdg firmware.elf --view cfg --format json --output system.cfg.json
 
-# Reachability from another root
+# Single-root slice for focused analysis
+elf2tdg firmware.elf --view cfg --format json \
+    --reachable-from main --output main.cfg.json
 elf2tdg firmware.elf --view cfg --format json \
     --reachable-from sensor_task --output sensor-task.cfg.json
 
@@ -59,17 +61,38 @@ elf2tdg firmware.elf --view cfg --format json --function main \
 ```
 
 `--function` accepts an exact function name or symbol, a unique substring, or a
-`0x` address. Without a selector, CFG output contains every function reachable
-from `main` through ordinary calls, task/callback creation and context
-parenting. `--reachable-from ROOT` changes the root, and `--all-functions`
-exports the complete image.
+`0x` address. Without a selector, CFG output uses a multi-root system scope:
+functions reachable from main/startup, all valid vector-table ISRs, task/async
+contexts, callbacks and code addresses recovered from literal/function-pointer
+escapes. `--reachable-from ROOT` narrows this to one root, and
+`--all-functions` exports the complete image.
 
-Reachability is resolved from the TDG, so the default scope includes spawned
-thread/task entries and scoped-concurrency closures even when the spawn call
-was indirect. Interrupt handlers and other independent roots are not reachable
-from `main`; include them with `--all-functions` or select their root
-explicitly. Filtering happens after analysis, so it reduces export size and
-layout time but does not change ELF decoding or TDG construction time.
+Vector-table roots are read from `.vector_table`/`.isr_vector`-style sections.
+The initial stack word is skipped, Thumb bits are cleared and unused vectors
+that all point at a default handler symbol are excluded. The reset vector and
+real ISRs remain roots.
+
+Reachability follows TDG call, spawn, callback, join and await edges, plus CFG
+code-reference edges. It also resolves pointer-sized dynamic relocations (for
+example `R_X86_64_RELATIVE` GOT slots), so function pointers stored in
+`.got`/`.data.rel.ro` can become call or escape edges instead of remaining
+unresolved.
+
+By default, recursion stops at known runtime noise boundaries
+(`core::panicking`, `std::panicking`, `core::fmt`, `alloc::fmt`,
+`compiler_builtins`, `drop_glue`/`drop_in_place`). Boundary functions remain
+visible but their callees are not expanded. `--no-prune-runtime` disables this
+stop-at-boundary rule; use it when investigating panic formatting, allocation
+or destructor behavior.
+
+Filtering happens after analysis, so it reduces export size and layout time but
+does not change ELF decoding or TDG construction time.
+
+ARM Cortex-M vector tables are the primary static-root source. RISC-V
+`.trap`/vector sections are also scanned for direct jump/call targets
+(`jal`), so common trap tables become roots. Trap dispatch through
+`auipc`+`jalr` or other computed targets still needs `--reachable-from` or
+`--all-functions`.
 
 CFG output includes concrete instructions by default: JSON carries the full
 `instructions` arrays with raw bytes, and DOT/Mermaid block labels print the
@@ -77,6 +100,25 @@ first eight decoded instructions. `--no-cfg-instructions` omits the arrays and
 the label text while retaining addresses, sizes, cycle costs, terminators and
 call sites. The TDG-only flags `--instructions`, `--projection` and `--legend`
 do not change CFG output.
+
+## Unresolved call sites
+
+`unresolved: true` means the instruction was an indirect call and no static
+target could be recovered. Common causes in Rust images are:
+
+- calls through a register (`call rax`) where the value came from a closure,
+  vtable or other runtime computation;
+- calls through a GOT/`.data.rel.ro` slot whose dynamic relocation could not be
+  applied;
+- imported libc functions reached through an unresolved GOT slot;
+- calls through opaque async state machines or trait objects.
+
+Relative relocations for the supported architectures are applied when reading
+pointer-sized slots, which resolves many `R_*_RELATIVE` GOT entries. Remaining
+`call register` sites would require points-to/data-flow analysis and stay
+`unresolved` with an `unresolved-indirect-call` diagnostic rather than being
+guessed. The CFG JSON still records the raw instruction, call site and indirect
+target expression for each of them.
 
 ## JSON document
 

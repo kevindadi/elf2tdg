@@ -92,8 +92,10 @@ Implemented:
   edges, call/return blocks, call targets, indirect-target expressions, raw
   instruction bytes and source locations. Concrete instructions can be omitted
   from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
-  contains only functions reachable from `main`; `--reachable-from ROOT` picks
-  another root, and `--all-functions` exports the complete image.
+  is a multi-root system slice: main/startup, every valid vector-table ISR,
+  task/async contexts, callbacks and function-pointer escapes. Default-handler
+  stubs shared by unused vectors are excluded. `--reachable-from ROOT` narrows
+  the export to one root, and `--all-functions` exports the complete image.
 - Loader/ELF view: `--view elf` renders the loaded ELF directly as a Mermaid
   layout diagram, without running CFG or TDG analysis. It shows `PT_LOAD`
   segments, allocated sections, file/memory sizes, entry point, permissions and
@@ -185,13 +187,17 @@ cargo run -p elf2tdg -- firmware.elf --view cfg --format dot \
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
     --function main --no-cfg-instructions --output main-blocks.json
 
-# Global CFG: reachable from main by default, or from another root
+# Default CFG: all async roots (main, startup, ISR vectors, tasks, callbacks)
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
-    --output reachable-cfg.json
+    --output system-cfg.json
+
+# Single-root slice for focused analysis
+cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
+    --reachable-from main --output main-cfg.json
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
     --reachable-from sensor_task --output sensor-task-cfg.json
 
-# Complete image CFG, including functions unreachable from main
+# Complete image CFG, including functions unreachable from any root
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
     --all-functions --output full-cfg.json
 ```
@@ -209,7 +215,8 @@ Useful flags:
 | `--view tdg|cfg|elf` | final TDG (default), per-function CFG, or loader-backed ELF layout |
 | `--elf-max-insns N` | maximum disassembly instructions per executable section in `--view elf` (default 256; 0 = unlimited) |
 | `--function NAME|0xADDR` | select one function for CFG output |
-| `--reachable-from NAME|0xADDR` | export functions reachable from ROOT; defaults to `main` |
+| `--reachable-from NAME|0xADDR` | narrow the CFG to one reachability root |
+| `--no-prune-runtime` | expand panic/format/compiler-builtins/drop-glue boundaries during CFG reachability |
 | `--all-functions` | export CFGs for every function, including unreachable code |
 | `--no-cfg-instructions` | omit concrete instructions from CFG JSON and DOT/Mermaid labels |
 | `--projection full|concurrency` | TDG graph projection; `concurrency` omits ordinary call edges |
@@ -225,13 +232,17 @@ tables are opt-in because their results are statistical throughput estimates,
 not bounds for a specific core.
 
 `--instructions`, `--projection` and `--legend` apply to TDG output.
-`--function`, `--reachable-from`, `--all-functions` and
-`--no-cfg-instructions` apply only to `--view cfg`. With no CFG selector, the
-export is limited to functions reachable from `main` through calls and task
-creation; use `--all-functions` for a full-image CFG. CFG output includes
-instructions and raw bytes by default; DOT and Mermaid labels show the first
-eight instructions per block. Without them, blocks still retain addresses,
-terminators, timing and call sites.
+`--function`, `--reachable-from`, `--no-prune-runtime`,
+`--all-functions` and `--no-cfg-instructions` apply only to `--view cfg`.
+With no CFG selector, the export is a multi-root system slice: call, spawn,
+callback, join and await edges are followed from main/startup, vector-table
+ISRs, task contexts and callbacks, plus code addresses that escape through
+literal/function pointers. Recursion stops at panic/format/compiler-builtins
+and drop-glue boundaries by default; use `--no-prune-runtime` to expand them.
+Use `--reachable-from ROOT` for one root or `--all-functions` for the complete
+image. CFG output includes instructions and raw bytes by default; DOT and
+Mermaid labels show the first eight instructions per block. Without them,
+blocks still retain addresses, terminators, timing and call sites.
 
 `--view elf` reads only the loader data and exits before analysis; it currently
 emits Mermaid only (the default format for that view). See
