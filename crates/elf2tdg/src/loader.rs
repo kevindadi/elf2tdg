@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use object::{
-    Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, SectionFlags,
-    SectionKind, SymbolKind,
+    Object, ObjectSection, ObjectSegment, ObjectSymbol, RelocationFlags, RelocationTarget,
+    SectionFlags, SectionKind, SymbolKind,
 };
 
 use crate::error::{Error, Result};
@@ -108,6 +108,8 @@ pub struct Section {
     pub executable: bool,
     /// Writable permission.
     pub writable: bool,
+    /// Allocated in memory at run time (`SHF_ALLOC`).
+    pub alloc: bool,
 }
 
 impl Section {
@@ -115,6 +117,58 @@ impl Section {
     #[must_use]
     pub fn end(&self) -> u64 {
         self.address.saturating_add(self.size)
+    }
+
+    /// Whether the section has no file bytes and is zero-filled at run time.
+    #[must_use]
+    pub fn is_nobits(&self) -> bool {
+        self.size > 0 && self.data.is_empty()
+    }
+}
+
+/// One loadable ELF program segment (`PT_LOAD`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Segment {
+    /// Virtual address where the segment is mapped.
+    pub address: u64,
+    /// Size in memory.
+    pub size: u64,
+    /// File offset of the segment contents.
+    pub file_offset: u64,
+    /// Number of file-backed bytes.
+    pub file_size: u64,
+    /// Required alignment.
+    pub align: u64,
+    /// Read permission.
+    pub readable: bool,
+    /// Write permission.
+    pub writable: bool,
+    /// Execute permission.
+    pub executable: bool,
+}
+
+impl Segment {
+    /// Exclusive end address, saturating on overflow.
+    #[must_use]
+    pub fn end(&self) -> u64 {
+        self.address.saturating_add(self.size)
+    }
+
+    /// Permission string such as `R-X` or `RW-`.
+    #[must_use]
+    pub fn permissions(&self) -> String {
+        format!(
+            "{}{}{}",
+            if self.readable { 'R' } else { '-' },
+            if self.writable { 'W' } else { '-' },
+            if self.executable { 'X' } else { '-' }
+        )
+    }
+
+    /// Whether `section` belongs to this segment.
+    #[must_use]
+    pub fn contains_section(&self, section: &Section) -> bool {
+        section.alloc && section.address >= self.address && section.end() <= self.end()
     }
 }
 
@@ -161,6 +215,8 @@ pub struct Image {
     pub elf_kind: ElfKind,
     /// Raw ELF entry point.
     pub entry: u64,
+    /// Loaded program segments (`PT_LOAD`).
+    pub segments: Vec<Segment>,
     /// Loaded sections.
     pub sections: Vec<Section>,
     /// Function-like symbols in executable sections.
@@ -318,11 +374,25 @@ pub fn load(path: &Path) -> Result<Image> {
         }
         let kind = section.kind();
         let flags = section.flags();
-        let (executable, writable) = match flags {
-            SectionFlags::Elf { sh_flags } => (sh_flags & 0x4 != 0, sh_flags & 0x1 != 0),
+        let (executable, writable, alloc) = match flags {
+            SectionFlags::Elf { sh_flags } => (
+                sh_flags & 0x4 != 0,
+                sh_flags & 0x1 != 0,
+                sh_flags & 0x2 != 0,
+            ),
             _ => (
                 kind == SectionKind::Text,
                 matches!(kind, SectionKind::Data | SectionKind::UninitializedData),
+                matches!(
+                    kind,
+                    SectionKind::Text
+                        | SectionKind::Data
+                        | SectionKind::ReadOnlyData
+                        | SectionKind::ReadOnlyString
+                        | SectionKind::UninitializedData
+                        | SectionKind::Tls
+                        | SectionKind::UninitializedTls
+                ),
             ),
         };
         let data = match section.data() {
@@ -342,12 +412,31 @@ pub fn load(path: &Path) -> Result<Image> {
             data,
             executable,
             writable,
+            alloc,
         });
     }
 
     if executable_sections == 0 {
         return Err(Error::NoExecutableSections);
     }
+
+    let segments: Vec<Segment> = file
+        .segments()
+        .map(|segment| {
+            let permissions = segment.permissions();
+            let (file_offset, file_size) = segment.file_range();
+            Segment {
+                address: segment.address(),
+                size: segment.size(),
+                file_offset,
+                file_size,
+                align: segment.align(),
+                readable: permissions.readable(),
+                writable: permissions.writable(),
+                executable: permissions.executable(),
+            }
+        })
+        .collect();
 
     let arm_cpu = detect_arm_cpu(&sections);
     let arch = detect_arch(&file, entry, arm_cpu.as_deref())?;
@@ -416,6 +505,7 @@ pub fn load(path: &Path) -> Result<Image> {
         byte_order,
         elf_kind,
         entry,
+        segments,
         sections,
         symbols,
         has_symbols,
@@ -682,5 +772,14 @@ mod tests {
         assert!(!image.sections.is_empty());
         assert!(image.sections.iter().any(|section| section.executable));
         assert!(!image.symbols.is_empty());
+        assert_ne!(image.segments.len(), 0);
+        assert!(image.segments.iter().any(|segment| segment.executable));
+        assert!(image.segments.iter().all(|segment| segment.size > 0));
+        assert!(
+            image
+                .sections
+                .iter()
+                .any(|section| section.alloc && section.executable)
+        );
     }
 }

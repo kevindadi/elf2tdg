@@ -1815,6 +1815,7 @@ mod tests {
             byte_order: ByteOrder::Little,
             elf_kind: ElfKind::Exec,
             entry: 0x1000,
+            segments: Vec::new(),
             sections: vec![Section {
                 name: ".text".to_owned(),
                 address: 0x1000,
@@ -1822,6 +1823,7 @@ mod tests {
                 data: code,
                 executable: true,
                 writable: false,
+                alloc: true,
             }],
             symbols,
             has_symbols: true,
