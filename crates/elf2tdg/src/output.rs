@@ -80,6 +80,9 @@ impl<'a> Visible<'a> {
                     | Edge::Preempts { .. } => {}
                 }
             }
+            for event in &tdg.locks {
+                functions.insert(event.function.as_str());
+            }
         }
         Self {
             projection,
@@ -377,6 +380,31 @@ pub fn render_dot_with(tdg: &Tdg, options: GraphOptions) -> String {
         }
     }
 
+    for event in &tdg.locks {
+        if !visible.function_visible(&event.function) {
+            continue;
+        }
+        let node = format!("lock-node:{}", event.id.as_str());
+        let label = format!(
+            "lock {:?}\\n{}\\n0x{:x}",
+            event.operation,
+            event.api,
+            event.site.get()
+        );
+        let _ = writeln!(
+            out,
+            "  \"{}\" [label=\"{}\", shape=note, style=\"filled\", fillcolor=\"#fef9e7\", color=\"#b7950b\"];",
+            dot_escape(&node),
+            dot_escape(&label)
+        );
+        let _ = writeln!(
+            out,
+            "  \"{}\" -> \"{}\" [label=\"lock\", style=dotted, color=\"#b7950b\", fontcolor=\"#b7950b\"];",
+            dot_escape(event.function.as_str()),
+            dot_escape(&node)
+        );
+    }
+
     if options.legend {
         write_dot_legend(&mut out, options.projection);
     }
@@ -409,6 +437,14 @@ fn write_dot_legend(out: &mut String, projection: Projection) {
     let _ = writeln!(
         out,
         "    legend_vector [label=\"vector / IRQ\", shape=diamond, style=\"filled\", fillcolor=\"#fdebd0\", color=\"#b9770e\"];"
+    );
+    let _ = writeln!(
+        out,
+        "    legend_lock [label=\"lock event\", shape=note, style=\"filled\", fillcolor=\"#fef9e7\", color=\"#b7950b\"];"
+    );
+    let _ = writeln!(
+        out,
+        "    legend_function -> legend_lock [label=\"lock\", style=dotted, color=\"#b7950b\", fontcolor=\"#b7950b\"];"
     );
     let _ = writeln!(
         out,
@@ -761,6 +797,28 @@ pub fn render_mermaid_with(tdg: &Tdg, options: GraphOptions) -> String {
             }
         }
     }
+    for event in &tdg.locks {
+        if !visible.function_visible(&event.function) {
+            continue;
+        }
+        let key = format!("lock-node:{}", event.id.as_str());
+        let is_new = !ids.ids.contains_key(&key);
+        let node = ids.id_for(&key);
+        if is_new {
+            let label = mermaid_escape(&format!(
+                "lock {:?}<br/>{}<br/>0x{:x}",
+                event.operation,
+                event.api,
+                event.site.get()
+            ));
+            let _ = writeln!(out, "  {node}[\"{label}\"]");
+        }
+        let _ = writeln!(
+            out,
+            "  {} -.->|lock| {node}",
+            ids.id_for(event.function.as_str())
+        );
+    }
     if options.legend {
         write_mermaid_legend(&mut out, options.projection);
     }
@@ -775,6 +833,8 @@ fn write_mermaid_legend(out: &mut String, projection: Projection) {
     let _ = writeln!(out, "    legend_scope{{{{\"scope\"}}}}");
     let _ = writeln!(out, "    legend_opaque{{{{\"opaque target\"}}}}");
     let _ = writeln!(out, "    legend_vector{{{{\"vector / IRQ\"}}}}");
+    let _ = writeln!(out, "    legend_lock[\"lock event\"]");
+    let _ = writeln!(out, "    legend_function -.->|lock| legend_lock");
     let _ = writeln!(out, "    legend_function ==>|spawn| legend_context");
     let _ = writeln!(out, "    legend_function ==>|join| legend_context");
     let _ = writeln!(out, "    legend_context -.->|entry| legend_function");
@@ -895,6 +955,7 @@ mod tests {
         assert!(dot.contains("cluster_legend"));
         assert!(dot.contains("spawn"));
         assert!(dot.contains("ISR"));
+        assert!(dot.contains("pthread_mutex_lock"));
         assert!(!dot.contains("[label=\"call\""), "{dot}");
         assert!(!dot.contains("[label=\"tail\""), "{dot}");
     }
@@ -911,6 +972,7 @@ mod tests {
         assert!(mermaid.contains("concurrency projection"));
         assert!(mermaid.contains("subgraph Legend"));
         assert!(mermaid.contains("==>|spawn|"));
+        assert!(mermaid.contains("|lock|"));
         assert!(!mermaid.contains("fillcolor"), "{mermaid}");
         assert!(!mermaid.contains("[label="), "{mermaid}");
     }
