@@ -151,6 +151,7 @@ impl<'a> Analyzer<'a> {
             isr_vectors: Vec::new(),
         };
         analyzer.discover_functions()?;
+        analyzer.discover_external_imports()?;
         if analyzer.functions.is_empty() {
             return Err(Error::Elf(
                 "no function entry points could be recovered from symbols, the ELF entry or the vector table"
@@ -234,6 +235,44 @@ impl<'a> Analyzer<'a> {
         self.resolve_remaining_functions()?;
         self.resolve_calls();
         self.build_tdg()
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn discover_external_imports(&mut self) -> Result<()> {
+        for (slot, name) in &self.image.imported_slots {
+            if self.image.relocated_pointers.contains_key(slot) || self.functions.contains_key(slot)
+            {
+                continue;
+            }
+            let choice = choose_name(std::slice::from_ref(name));
+            self.functions.insert(
+                *slot,
+                FunctionDraft {
+                    address: *slot,
+                    size: 0,
+                    section: ".external".to_owned(),
+                    names: vec![name.clone()],
+                    display: if choice.display.is_empty() {
+                        name.clone()
+                    } else {
+                        choice.display
+                    },
+                    demangled: choice.demangled,
+                    language: choice.language,
+                    kind: FunctionKind::External,
+                    cfg: cfg::FunctionCfg::default(),
+                    analyzed: true,
+                },
+            );
+        }
+        if self.functions.len() > self.options.max_functions {
+            return Err(Error::Limit(format!(
+                "{} functions exceed the configured maximum of {}",
+                self.functions.len(),
+                self.options.max_functions
+            )));
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2257,6 +2296,7 @@ mod tests {
             elf_kind: ElfKind::Exec,
             entry: 0x1000,
             relocated_pointers: std::collections::BTreeMap::default(),
+            imported_slots: std::collections::BTreeMap::default(),
             segments: Vec::new(),
             sections: vec![Section {
                 name: ".text".to_owned(),

@@ -1754,6 +1754,7 @@ mod tests {
             elf_kind: ElfKind::Exec,
             entry: 0x1000,
             relocated_pointers: std::collections::BTreeMap::new(),
+            imported_slots: std::collections::BTreeMap::new(),
             segments: Vec::new(),
             sections: vec![Section {
                 name: ".trap".to_owned(),

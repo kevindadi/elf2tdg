@@ -148,7 +148,7 @@ pub fn resolve_indirect_target(
         IndirectTarget::RegisterOffset { register, offset } => {
             resolve_register(image, decoded, before, register, 0)?.wrapping_add_signed(offset)
         }
-        IndirectTarget::Memory(address) => image.read_uint(address, pointer_size(image.arch))?,
+        IndirectTarget::Memory(address) => memory_pointer_value(image, address)?,
         IndirectTarget::IndexedMemory { .. }
         | IndirectTarget::TableBranch { .. }
         | IndirectTarget::TableLoad { .. }
@@ -156,15 +156,28 @@ pub fn resolve_indirect_target(
         IndirectTarget::RegisterMemory { base, disp } => {
             if let Some(base_value) = resolve_register(image, decoded, before, base, 0) {
                 let address = base_value.wrapping_add_signed(disp);
-                image.read_uint(address, pointer_size(image.arch))?
+                memory_pointer_value(image, address)?
             } else {
                 let (store_index, source) = memory_slot_source(decoded, before, base, disp)?;
                 resolve_register(image, decoded, store_index, source, 0)?
             }
         }
     };
+    // A GOT slot without a local PLT stub resolves to a synthetic external
+    // function whose pseudo-address is the slot itself.
+    if image.import_name_at(value).is_some() {
+        return Some(image.canonical_address(value));
+    }
     let canonical = image.canonical_address(value);
     image.is_executable(canonical).then_some(canonical)
+}
+
+fn memory_pointer_value(image: &Image, address: u64) -> Option<u64> {
+    if image.import_name_at(address).is_some() {
+        Some(address)
+    } else {
+        image.read_uint(address, pointer_size(image.arch))
+    }
 }
 
 /// Maximum number of entries scanned when a comparison guard is recovered.
@@ -1084,6 +1097,7 @@ mod tests {
             elf_kind: ElfKind::Exec,
             entry: 0,
             relocated_pointers: std::collections::BTreeMap::default(),
+            imported_slots: std::collections::BTreeMap::default(),
             segments: Vec::new(),
             sections: vec![Section {
                 name: ".text".to_owned(),
@@ -1263,6 +1277,7 @@ mod tests {
             elf_kind: ElfKind::Exec,
             entry: 0x1000,
             relocated_pointers: std::collections::BTreeMap::default(),
+            imported_slots: std::collections::BTreeMap::default(),
             segments: Vec::new(),
             sections: vec![
                 Section {
@@ -1398,6 +1413,7 @@ mod tests {
             elf_kind: ElfKind::Exec,
             entry: 0x1000,
             relocated_pointers: std::collections::BTreeMap::default(),
+            imported_slots: std::collections::BTreeMap::default(),
             segments: Vec::new(),
             sections: vec![
                 Section {

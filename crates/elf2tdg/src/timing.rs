@@ -599,6 +599,7 @@ mod tests {
             elf_kind: ElfKind::Exec,
             entry: 0x1000,
             relocated_pointers: std::collections::BTreeMap::default(),
+            imported_slots: std::collections::BTreeMap::default(),
             segments: Vec::new(),
             sections: vec![Section {
                 name: ".text".to_owned(),

@@ -217,6 +217,9 @@ pub struct Image {
     pub entry: u64,
     /// Resolved pointer-sized memory slots from dynamic relocations.
     pub relocated_pointers: BTreeMap<u64, u64>,
+    /// Dynamic-import GOT slots that have no local PLT stub, keyed by slot
+    /// address.
+    pub imported_slots: BTreeMap<u64, String>,
     /// Loaded program segments (`PT_LOAD`).
     pub segments: Vec<Segment>,
     /// Loaded sections.
@@ -252,6 +255,16 @@ impl Image {
     #[must_use]
     pub fn is_executable(&self, address: u64) -> bool {
         self.executable_section_for(address).is_some()
+    }
+
+    /// Returns the imported symbol stored in a dynamic GOT slot that has no
+    /// local PLT stub.
+    #[must_use]
+    pub fn import_name_at(&self, address: u64) -> Option<&str> {
+        if self.relocated_pointers.contains_key(&address) {
+            return None;
+        }
+        self.imported_slots.get(&address).map(String::as_str)
     }
 
     /// Returns between 1 and `max_len` bytes at `address`, without crossing a
@@ -534,7 +547,7 @@ pub fn load(path: &Path) -> Result<Image> {
     } else {
         Vec::new()
     };
-    let relocated_pointers =
+    let (relocated_pointers, imported_slots) =
         collect_pointer_relocations(&file, &sections, byte_order, arch, &symbols);
     let (dwarf, dwarf_error) = if has_debug_info {
         match crate::dwarf::parse(&file, byte_order) {
@@ -552,6 +565,7 @@ pub fn load(path: &Path) -> Result<Image> {
         elf_kind,
         entry,
         relocated_pointers,
+        imported_slots,
         segments,
         sections,
         symbols,
@@ -571,9 +585,9 @@ fn collect_pointer_relocations(
     byte_order: ByteOrder,
     arch: ArchKind,
     symbols: &[ImageSymbol],
-) -> BTreeMap<u64, u64> {
+) -> (BTreeMap<u64, u64>, BTreeMap<u64, String>) {
     let Some(relocations) = file.dynamic_relocations() else {
-        return BTreeMap::new();
+        return (BTreeMap::new(), BTreeMap::new());
     };
     let pointer_size = match arch {
         ArchKind::Thumb | ArchKind::Arm | ArchKind::Riscv32 => 4,
@@ -587,6 +601,7 @@ fn collect_pointer_relocations(
         })
         .collect();
     let mut relocated = BTreeMap::new();
+    let mut imported = BTreeMap::new();
     for (address, relocation) in relocations {
         let flags = relocation.flags();
         if let RelocationFlags::Elf { r_type } = flags
@@ -598,6 +613,7 @@ fn collect_pointer_relocations(
             let Some((name, _)) = dynamic_symbols.get(&index.0) else {
                 continue;
             };
+            imported.insert(address, name.clone());
             if let Some(symbol) = symbols.iter().find(|symbol| {
                 symbol.name == *name
                     && symbol
@@ -657,7 +673,7 @@ fn collect_pointer_relocations(
             relocated.insert(address, value);
         }
     }
-    relocated
+    (relocated, imported)
 }
 
 fn import_relocation(arch: ArchKind, r_type: u32) -> bool {
