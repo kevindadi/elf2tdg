@@ -134,6 +134,20 @@ site with `tail: true`. Unresolved indirect jumps produce
 `unresolved-indirect-jump` diagnostics and, when they leave the function, an
 unresolved tail-call candidate in `calls`.
 
+### Jump tables
+
+x86-64 switch tables are recognized in two layouts:
+
+- direct indexed memory: `jmp qword ptr [table + index*8]`;
+- PIE-relative tables: `lea table(%rip), %rdx; movslq
+  (%rdx,%rdi,4), %rax; add %rdx,%rax; jmp *%rax`.
+
+Entries are read until the first non-executable target or the bound implied by
+a preceding `cmp index, N` guard (falling back to a 256-entry safety limit).
+Each valid entry becomes a CFG successor; entries outside the function become
+tail-call candidates. The instruction's `indirect` object is reported as
+`indexed-memory` with `base`, `index`, `scale` and `disp` when applicable.
+
 Caller-argument propagation accepts only a unique executable target across the
 known callers and marks the resulting call as indirect/medium confidence. If
 any known caller cannot be evaluated, the call stays unresolved.
@@ -242,9 +256,10 @@ functions.
 | `terminator` | `fallthrough`, `call`, `return`, `branch`, `jump`, `unresolved` |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
 
-`indirect` is retained when known: `register`, `register-memory`,
-`memory`, or `register-offset`, with register names and displacement/address.
-Unresolved indirect calls and jumps remain explicit rather than being guessed.
+`indirect` is retained when known: `register`, `register-memory`, `memory`,
+`register-offset`, or `indexed-memory`, with register names, displacement,
+address, index and scale. Unresolved indirect calls and jumps remain explicit
+rather than being guessed.
 
 ### Edge semantics
 
@@ -268,8 +283,9 @@ containing basic block, so they are kept at function level with
 
 - Calls end their basic block and return to a new block; call targets remain
   metadata, not intra-function CFG edges.
-- Indexed switch jump tables and vtable dispatch on heap/stack objects are not
-  expanded into CFG edges; those targets remain unresolved indirect jumps.
+- x86-64 switch tables are expanded when their base/index form is recognized;
+  computed tables on other architectures and vtable dispatch on heap/stack
+  objects remain unresolved indirect jumps.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
