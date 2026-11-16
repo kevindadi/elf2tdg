@@ -111761,6 +111761,17 @@
     },
     {
       "kind": "call",
+      "id": "e:call:0x202ff:0x2b0e0",
+      "caller": "fn:0x1cfe9",
+      "callee": "fn:0x2b0e0",
+      "site": "0x202ff",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
       "id": "e:call:0x2042c:0x19478",
       "caller": "fn:0x1cfe9",
       "callee": "fn:0x19478",
@@ -111824,6 +111835,17 @@
       "tail": false,
       "inlined": false,
       "confidence": "high"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x20626:0x2b0e0",
+      "caller": "fn:0x1cfe9",
+      "callee": "fn:0x2b0e0",
+      "site": "0x20626",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
     },
     {
       "kind": "call",
@@ -114148,6 +114170,17 @@
     },
     {
       "kind": "call",
+      "id": "e:call:0x2592d:0x57e84",
+      "caller": "fn:0x25690",
+      "callee": "fn:0x57e84",
+      "site": "0x2592d",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
       "id": "e:call:0x2595f:0x558f0",
       "caller": "fn:0x25690",
       "callee": "fn:0x558f0",
@@ -114324,6 +114357,17 @@
     },
     {
       "kind": "call",
+      "id": "e:call:0x26193:0x47370",
+      "caller": "fn:0x26130",
+      "callee": "fn:0x47370",
+      "site": "0x26193",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
       "id": "e:call:0x261aa:0x19478",
       "caller": "fn:0x26130",
       "callee": "fn:0x19478",
@@ -114372,6 +114416,17 @@
       "caller": "fn:0x262a0",
       "callee": "fn:0x52260",
       "site": "0x262be",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x26305:0x47390",
+      "caller": "fn:0x262a0",
+      "callee": "fn:0x47390",
+      "site": "0x26305",
       "direct": false,
       "tail": false,
       "inlined": false,
@@ -114922,6 +114977,17 @@
       "caller": "fn:0x2a920",
       "callee": "fn:0x553a0",
       "site": "0x2aa01",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x2aa09:0x57e84",
+      "caller": "fn:0x2a920",
+      "callee": "fn:0x57e84",
+      "site": "0x2aa09",
       "direct": false,
       "tail": false,
       "inlined": false,
@@ -121232,6 +121298,17 @@
     },
     {
       "kind": "call",
+      "id": "e:call:0x3d734:0x57e84",
+      "caller": "fn:0x3d600",
+      "callee": "fn:0x57e84",
+      "site": "0x3d734",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
       "id": "e:call:0x3d740:0x558f0",
       "caller": "fn:0x3d600",
       "callee": "fn:0x558f0",
@@ -121614,6 +121691,17 @@
       "tail": false,
       "inlined": false,
       "confidence": "high"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x3e545:0x182c0",
+      "caller": "fn:0x3e030",
+      "callee": "fn:0x182c0",
+      "site": "0x3e545",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
     },
     {
       "kind": "call",
@@ -126094,6 +126182,17 @@
     },
     {
       "kind": "call",
+      "id": "e:call:0x46faf:0x57e84",
+      "caller": "fn:0x46e50",
+      "callee": "fn:0x57e84",
+      "site": "0x46faf",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
       "id": "e:call:0x46fc3:0x558f0",
       "caller": "fn:0x46e50",
       "callee": "fn:0x558f0",
@@ -126175,6 +126274,17 @@
       "caller": "fn:0x47050",
       "callee": "fn:0x553a0",
       "site": "0x470f6",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x470ff:0x57e84",
+      "caller": "fn:0x47050",
+      "callee": "fn:0x57e84",
+      "site": "0x470ff",
       "direct": false,
       "tail": false,
       "inlined": false,
@@ -126307,6 +126417,17 @@
       "caller": "fn:0x47220",
       "callee": "fn:0x553a0",
       "site": "0x472c6",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x472cf:0x57e84",
+      "caller": "fn:0x47220",
+      "callee": "fn:0x57e84",
+      "site": "0x472cf",
       "direct": false,
       "tail": false,
       "inlined": false,
@@ -126571,6 +126692,17 @@
       "caller": "fn:0x47620",
       "callee": "fn:0x54763",
       "site": "0x476a2",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x476e0:0x47700",
+      "caller": "fn:0x476b0",
+      "callee": "fn:0x47700",
+      "site": "0x476e0",
       "direct": false,
       "tail": false,
       "inlined": false,
@@ -131495,10 +131627,54 @@
     },
     {
       "kind": "call",
+      "id": "e:call:0x531b6:0x43780",
+      "caller": "fn:0x53150",
+      "callee": "fn:0x43780",
+      "site": "0x531b6",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x53213:0x43780",
+      "caller": "fn:0x53150",
+      "callee": "fn:0x43780",
+      "site": "0x53213",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
       "id": "e:call:0x5322e:0x55a60",
       "caller": "fn:0x53150",
       "callee": "fn:0x55a60",
       "site": "0x5322e",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x532ee:0x441b0",
+      "caller": "fn:0x53290",
+      "callee": "fn:0x441b0",
+      "site": "0x532ee",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "medium"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x5334c:0x441b0",
+      "caller": "fn:0x53290",
+      "callee": "fn:0x441b0",
+      "site": "0x5334c",
       "direct": false,
       "tail": false,
       "inlined": false,
@@ -134439,13 +134615,6 @@
     {
       "code": "unresolved-indirect-call",
       "severity": "warning",
-      "message": "indirect call at 0x20626 (call qword ptr [rax + 0x20]) has no statically known target",
-      "function": "fn:0x1cfe9",
-      "site": "0x20626"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
       "message": "indirect call at 0x1d92c (call qword ptr [rip + 0x3db9e]) has no statically known target",
       "function": "fn:0x1cfe9",
       "site": "0x1d92c"
@@ -134477,13 +134646,6 @@
       "message": "indirect call at 0x1d9f3 (call qword ptr [rip + 0x3da8f]) has no statically known target",
       "function": "fn:0x1cfe9",
       "site": "0x1d9f3"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x202ff (call rax) has no statically known target",
-      "function": "fn:0x1cfe9",
-      "site": "0x202ff"
     },
     {
       "code": "unresolved-indirect-call",
@@ -135783,6 +135945,13 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x2592d to 0x57e84 from a register/memory pointer",
+      "function": "fn:0x25690",
+      "site": "0x2592d"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x2595f to 0x558f0 from a register/memory pointer",
       "function": "fn:0x25690",
       "site": "0x2595f"
@@ -135814,13 +135983,6 @@
       "message": "indirect call at 0x258e4 (call qword ptr [rip + 0x35c6e]) has no statically known target",
       "function": "fn:0x25690",
       "site": "0x258e4"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2592d (call qword ptr [rax + 0x10]) has no statically known target",
-      "function": "fn:0x25690",
-      "site": "0x2592d"
     },
     {
       "code": "unresolved-indirect-call",
@@ -135858,13 +136020,6 @@
       "site": "0x261aa"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x26193 (call r15) has no statically known target",
-      "function": "fn:0x26130",
-      "site": "0x26193"
-    },
-    {
       "code": "resolved-indirect-call",
       "severity": "info",
       "message": "resolved indirect call at 0x26209 to 0x52260 from a register/memory pointer",
@@ -135891,13 +136046,6 @@
       "message": "resolved indirect call at 0x2631c to 0x19478 from a register/memory pointer",
       "function": "fn:0x262a0",
       "site": "0x2631c"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x26305 (call r15) has no statically known target",
-      "function": "fn:0x262a0",
-      "site": "0x26305"
     },
     {
       "code": "resolved-indirect-call",
@@ -136010,6 +136158,34 @@
       "message": "indirect call at 0x2a794 (call qword ptr [rip + 0x30cee]) has no statically known target",
       "function": "fn:0x29f10",
       "site": "0x2a794"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x202ff to 0x2b0e0 through caller argument",
+      "function": "fn:0x1cfe9",
+      "site": "0x202ff"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x20626 to 0x2b0e0 through caller argument",
+      "function": "fn:0x1cfe9",
+      "site": "0x20626"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x26193 to 0x47370 through caller argument",
+      "function": "fn:0x26130",
+      "site": "0x26193"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x26305 to 0x47390 through caller argument",
+      "function": "fn:0x262a0",
+      "site": "0x26305"
     }
   ]
 }

@@ -1788,6 +1788,13 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x208ae to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x20870",
+      "site": "0x208ae"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x208bc to 0x2086d from a register/memory pointer",
       "function": "fn:0x20870",
       "site": "0x208bc"
@@ -1826,13 +1833,6 @@
       "message": "resolved indirect call at 0x2093a to 0x20858 from a register/memory pointer",
       "function": "fn:0x20870",
       "site": "0x2093a"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x208ae (call qword ptr [rip + 0x4214c]) has no statically known target",
-      "function": "fn:0x20870",
-      "site": "0x208ae"
     },
     {
       "code": "resolved-indirect-call",
@@ -2136,6 +2136,13 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x22312 to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x22250",
+      "site": "0x22312"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x22356 to 0x2086d from a register/memory pointer",
       "function": "fn:0x22250",
       "site": "0x22356"
@@ -2160,6 +2167,13 @@
       "message": "resolved indirect call at 0x2240a to 0x20850 from a register/memory pointer",
       "function": "fn:0x22250",
       "site": "0x2240a"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2242a to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x22250",
+      "site": "0x2242a"
     },
     {
       "code": "resolved-indirect-call",
@@ -2400,20 +2414,6 @@
       "site": "0x242b7"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x22312 (call qword ptr [rip + 0x406e8]) has no statically known target",
-      "function": "fn:0x22250",
-      "site": "0x22312"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2242a (call qword ptr [rip + 0x405d0]) has no statically known target",
-      "function": "fn:0x22250",
-      "site": "0x2242a"
-    },
-    {
       "code": "resolved-indirect-call",
       "severity": "info",
       "message": "resolved indirect call at 0x2431a to 0x35e30 from a register/memory pointer",
@@ -2534,6 +2534,13 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x24dd3 to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x24dd3"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x24df0 to 0x59ce0 from a register/memory pointer",
       "function": "fn:0x243c9",
       "site": "0x24df0"
@@ -2597,6 +2604,27 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x24ffb to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x24ffb"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x250ae to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x250ae"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2517d to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x2517d"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x25192 to 0x46970 from a register/memory pointer",
       "function": "fn:0x243c9",
       "site": "0x25192"
@@ -2607,6 +2635,13 @@
       "message": "resolved indirect call at 0x251cf to 0x5ea40 from a register/memory pointer",
       "function": "fn:0x243c9",
       "site": "0x251cf"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x252da to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x252da"
     },
     {
       "code": "resolved-indirect-call",
@@ -2642,6 +2677,20 @@
       "message": "resolved indirect call at 0x2544d to 0x36770 from a register/memory pointer",
       "function": "fn:0x243c9",
       "site": "0x2544d"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x254d6 to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x254d6"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x25580 to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x25580"
     },
     {
       "code": "resolved-indirect-call",
@@ -2684,6 +2733,20 @@
       "message": "resolved indirect call at 0x25ea0 to 0x20858 from a register/memory pointer",
       "function": "fn:0x243c9",
       "site": "0x25ea0"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x26598 to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x26598"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2666c to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x243c9",
+      "site": "0x2666c"
     },
     {
       "code": "resolved-indirect-call",
@@ -2898,37 +2961,9 @@
     {
       "code": "unresolved-indirect-call",
       "severity": "warning",
-      "message": "indirect call at 0x254d6 (call qword ptr [rip + 0x3d524]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x254d6"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
       "message": "indirect call at 0x258f0 (call qword ptr [rip + 0x3d34a]) has no statically known target",
       "function": "fn:0x243c9",
       "site": "0x258f0"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x25580 (call qword ptr [rip + 0x3d47a]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x25580"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x24ffb (call qword ptr [rip + 0x3d9ff]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x24ffb"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x27a06 (call qword ptr [rax + 0x20]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x27a06"
     },
     {
       "code": "unresolved-indirect-call",
@@ -2940,58 +2975,30 @@
     {
       "code": "unresolved-indirect-call",
       "severity": "warning",
-      "message": "indirect call at 0x250ae (call qword ptr [rip + 0x3d94c]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x250ae"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x252da (call qword ptr [rip + 0x3d720]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x252da"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2517d (call qword ptr [rip + 0x3d87d]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x2517d"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x24dd3 (call qword ptr [rip + 0x3dc27]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x24dd3"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x276df (call rax) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x276df"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
       "message": "indirect call at 0x27949 (call qword ptr [rbp - 0xa8]) has no statically known target",
       "function": "fn:0x243c9",
       "site": "0x27949"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x26598 (call qword ptr [rip + 0x3c462]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x26598"
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x281a7 to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x280b0",
+      "site": "0x281a7"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2666c (call qword ptr [rip + 0x3c38e]) has no statically known target",
-      "function": "fn:0x243c9",
-      "site": "0x2666c"
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2824d to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x280b0",
+      "site": "0x2824d"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2837f to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x280b0",
+      "site": "0x2837f"
     },
     {
       "code": "resolved-indirect-call",
@@ -3024,23 +3031,9 @@
     {
       "code": "unresolved-indirect-call",
       "severity": "warning",
-      "message": "indirect call at 0x281a7 (call qword ptr [rip + 0x3a853]) has no statically known target",
-      "function": "fn:0x280b0",
-      "site": "0x281a7"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
       "message": "indirect call at 0x281f8 (call qword ptr [rip + 0x3aa52]) has no statically known target",
       "function": "fn:0x280b0",
       "site": "0x281f8"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2824d (call qword ptr [rip + 0x3a7ad]) has no statically known target",
-      "function": "fn:0x280b0",
-      "site": "0x2824d"
     },
     {
       "code": "unresolved-indirect-call",
@@ -3050,18 +3043,32 @@
       "site": "0x28277"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2837f (call qword ptr [rip + 0x3a67b]) has no statically known target",
-      "function": "fn:0x280b0",
-      "site": "0x2837f"
-    },
-    {
       "code": "resolved-indirect-call",
       "severity": "info",
       "message": "resolved indirect call at 0x28788 to 0x20858 from a register/memory pointer",
       "function": "fn:0x284b0",
       "site": "0x28788"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x28944 to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x284b0",
+      "site": "0x28944"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x289ed to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x284b0",
+      "site": "0x289ed"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x28b0a to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x284b0",
+      "site": "0x28b0a"
     },
     {
       "code": "resolved-indirect-call",
@@ -3108,13 +3115,6 @@
     {
       "code": "unresolved-indirect-call",
       "severity": "warning",
-      "message": "indirect call at 0x28944 (call r13) has no statically known target",
-      "function": "fn:0x284b0",
-      "site": "0x28944"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
       "message": "indirect call at 0x28996 (call qword ptr [rip + 0x3a2b4]) has no statically known target",
       "function": "fn:0x284b0",
       "site": "0x28996"
@@ -3122,23 +3122,9 @@
     {
       "code": "unresolved-indirect-call",
       "severity": "warning",
-      "message": "indirect call at 0x289ed (call qword ptr [rip + 0x3a00d]) has no statically known target",
-      "function": "fn:0x284b0",
-      "site": "0x289ed"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
       "message": "indirect call at 0x28a12 (call qword ptr [rip + 0x3a238]) has no statically known target",
       "function": "fn:0x284b0",
       "site": "0x28a12"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x28b0a (call qword ptr [rip + 0x39ef0]) has no statically known target",
-      "function": "fn:0x284b0",
-      "site": "0x28b0a"
     },
     {
       "code": "resolved-indirect-call",
@@ -4111,6 +4097,13 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x2b03a to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x2af80",
+      "site": "0x2b03a"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x2b0e7 to 0x590c0 from a register/memory pointer",
       "function": "fn:0x2af80",
       "site": "0x2b0e7"
@@ -4177,13 +4170,6 @@
       "message": "resolved indirect call at 0x2b267 to 0x20858 from a register/memory pointer",
       "function": "fn:0x2af80",
       "site": "0x2b267"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2b03a (call qword ptr [rip + 0x379c0]) has no statically known target",
-      "function": "fn:0x2af80",
-      "site": "0x2b03a"
     },
     {
       "code": "resolved-indirect-call",
@@ -4270,6 +4256,13 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x2cd0d to 0x5f304 from a register/memory pointer",
+      "function": "fn:0x2ca70",
+      "site": "0x2cd0d"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x2cd3f to 0x5cd10 from a register/memory pointer",
       "function": "fn:0x2ca70",
       "site": "0x2cd3f"
@@ -4301,13 +4294,6 @@
       "message": "indirect call at 0x2ccc4 (call qword ptr [rip + 0x35fee]) has no statically known target",
       "function": "fn:0x2ca70",
       "site": "0x2ccc4"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2cd0d (call qword ptr [rax + 0x10]) has no statically known target",
-      "function": "fn:0x2ca70",
-      "site": "0x2cd0d"
     },
     {
       "code": "unresolved-indirect-call",
@@ -4345,13 +4331,6 @@
       "site": "0x2d58a"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2d573 (call r15) has no statically known target",
-      "function": "fn:0x2d510",
-      "site": "0x2d573"
-    },
-    {
       "code": "resolved-indirect-call",
       "severity": "info",
       "message": "resolved indirect call at 0x2d5e9 to 0x59640 from a register/memory pointer",
@@ -4380,13 +4359,6 @@
       "site": "0x2d6fc"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2d6e5 (call r15) has no statically known target",
-      "function": "fn:0x2d680",
-      "site": "0x2d6e5"
-    },
-    {
       "code": "resolved-indirect-call",
       "severity": "info",
       "message": "resolved indirect call at 0x2dec1 to 0x5cbf0 from a register/memory pointer",
@@ -4401,9 +4373,9 @@
       "site": "0x2e48f"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2e4a9 (call qword ptr [rip + 0x34551]) has no statically known target",
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2e4a9 to 0x5f380 from a register/memory pointer",
       "function": "fn:0x2ded0",
       "site": "0x2e4a9"
     },
@@ -4415,9 +4387,9 @@
       "site": "0x2ec36"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2ec4e (call qword ptr [rip + 0x33dac]) has no statically known target",
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2ec4e to 0x5f380 from a register/memory pointer",
       "function": "fn:0x2e4c0",
       "site": "0x2ec4e"
     },
@@ -4429,9 +4401,9 @@
       "site": "0x2f1a1"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2f1be (call qword ptr [rip + 0x3383c]) has no statically known target",
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2f1be to 0x5f380 from a register/memory pointer",
       "function": "fn:0x2ec60",
       "site": "0x2f1be"
     },
@@ -4443,9 +4415,9 @@
       "site": "0x2f91e"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2f936 (call qword ptr [rip + 0x330c4]) has no statically known target",
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2f936 to 0x5f380 from a register/memory pointer",
       "function": "fn:0x2f1d0",
       "site": "0x2f936"
     },
@@ -4492,9 +4464,9 @@
       "site": "0x31b5a"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x31b74 (call qword ptr [rip + 0x30e86]) has no statically known target",
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x31b74 to 0x5f380 from a register/memory pointer",
       "function": "fn:0x312f0",
       "site": "0x31b74"
     },
@@ -4543,9 +4515,23 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x31d6f to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x31d00",
+      "site": "0x31d6f"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x31de1 to 0x5c7c0 from a register/memory pointer",
       "function": "fn:0x31d00",
       "site": "0x31de1"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x31de9 to 0x5f304 from a register/memory pointer",
+      "function": "fn:0x31d00",
+      "site": "0x31de9"
     },
     {
       "code": "resolved-indirect-call",
@@ -4578,20 +4564,6 @@
     {
       "code": "unresolved-indirect-call",
       "severity": "warning",
-      "message": "indirect call at 0x31d6f (call qword ptr [rip + 0x30c8b]) has no statically known target",
-      "function": "fn:0x31d00",
-      "site": "0x31d6f"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x31de9 (call qword ptr [rax + 0x10]) has no statically known target",
-      "function": "fn:0x31d00",
-      "site": "0x31de9"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
       "message": "indirect call at 0x31dfc (call r12) has no statically known target",
       "function": "fn:0x31d00",
       "site": "0x31dfc"
@@ -4613,16 +4585,16 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x31ed1 to 0x5f380 from a register/memory pointer",
+      "function": "fn:0x31e90",
+      "site": "0x31ed1"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x31f07 to 0x594e1 from a register/memory pointer",
       "function": "fn:0x31e90",
       "site": "0x31f07"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x31ed1 (call qword ptr [rip + 0x30b29]) has no statically known target",
-      "function": "fn:0x31e90",
-      "site": "0x31ed1"
     },
     {
       "code": "resolved-indirect-call",
@@ -4651,6 +4623,34 @@
       "message": "resolved indirect call at 0x31f87 to 0x594e1 from a register/memory pointer",
       "function": "fn:0x31f10",
       "site": "0x31f87"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x276df to 0x324c0 through caller argument",
+      "function": "fn:0x243c9",
+      "site": "0x276df"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x27a06 to 0x324c0 through caller argument",
+      "function": "fn:0x243c9",
+      "site": "0x27a06"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2d573 to 0x4e750 through caller argument",
+      "function": "fn:0x2d510",
+      "site": "0x2d573"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2d6e5 to 0x4e770 through caller argument",
+      "function": "fn:0x2d680",
+      "site": "0x2d6e5"
     }
   ]
 }

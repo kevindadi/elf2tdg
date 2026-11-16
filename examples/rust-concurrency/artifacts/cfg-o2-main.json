@@ -16350,13 +16350,6 @@
     {
       "code": "unresolved-indirect-call",
       "severity": "warning",
-      "message": "indirect call at 0x20626 (call qword ptr [rax + 0x20]) has no statically known target",
-      "function": "fn:0x1cfe9",
-      "site": "0x20626"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
       "message": "indirect call at 0x1d92c (call qword ptr [rip + 0x3db9e]) has no statically known target",
       "function": "fn:0x1cfe9",
       "site": "0x1d92c"
@@ -16388,13 +16381,6 @@
       "message": "indirect call at 0x1d9f3 (call qword ptr [rip + 0x3da8f]) has no statically known target",
       "function": "fn:0x1cfe9",
       "site": "0x1d9f3"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x202ff (call rax) has no statically known target",
-      "function": "fn:0x1cfe9",
-      "site": "0x202ff"
     },
     {
       "code": "unresolved-indirect-call",
@@ -17694,6 +17680,13 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x2592d to 0x57e84 from a register/memory pointer",
+      "function": "fn:0x25690",
+      "site": "0x2592d"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x2595f to 0x558f0 from a register/memory pointer",
       "function": "fn:0x25690",
       "site": "0x2595f"
@@ -17725,13 +17718,6 @@
       "message": "indirect call at 0x258e4 (call qword ptr [rip + 0x35c6e]) has no statically known target",
       "function": "fn:0x25690",
       "site": "0x258e4"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x2592d (call qword ptr [rax + 0x10]) has no statically known target",
-      "function": "fn:0x25690",
-      "site": "0x2592d"
     },
     {
       "code": "unresolved-indirect-call",
@@ -17769,13 +17755,6 @@
       "site": "0x261aa"
     },
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x26193 (call r15) has no statically known target",
-      "function": "fn:0x26130",
-      "site": "0x26193"
-    },
-    {
       "code": "resolved-indirect-call",
       "severity": "info",
       "message": "resolved indirect call at 0x26209 to 0x52260 from a register/memory pointer",
@@ -17802,13 +17781,6 @@
       "message": "resolved indirect call at 0x2631c to 0x19478 from a register/memory pointer",
       "function": "fn:0x262a0",
       "site": "0x2631c"
-    },
-    {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x26305 (call r15) has no statically known target",
-      "function": "fn:0x262a0",
-      "site": "0x26305"
     },
     {
       "code": "resolved-indirect-call",
@@ -17921,6 +17893,34 @@
       "message": "indirect call at 0x2a794 (call qword ptr [rip + 0x30cee]) has no statically known target",
       "function": "fn:0x29f10",
       "site": "0x2a794"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x202ff to 0x2b0e0 through caller argument",
+      "function": "fn:0x1cfe9",
+      "site": "0x202ff"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x20626 to 0x2b0e0 through caller argument",
+      "function": "fn:0x1cfe9",
+      "site": "0x20626"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x26193 to 0x47370 through caller argument",
+      "function": "fn:0x26130",
+      "site": "0x26193"
+    },
+    {
+      "code": "resolved-forwarded-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x26305 to 0x47390 through caller argument",
+      "function": "fn:0x262a0",
+      "site": "0x26305"
     }
   ]
 }
