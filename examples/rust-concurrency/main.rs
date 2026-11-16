@@ -3,6 +3,7 @@
 //! It contains one ordinary worker thread and one structured-concurrency
 //! scope. Build it with `make` and inspect the generated TDG artifacts.
 
+use std::sync::Mutex;
 use std::thread;
 
 #[inline(never)]
@@ -27,6 +28,13 @@ fn main() {
         let handle = scope.spawn(|| process(sensor_sample(0xfeed_face)));
         handle.join().expect("scoped worker panicked")
     });
+
+    let observed = Mutex::new(0u64);
+    {
+        let mut guard = observed.lock().expect("counter lock");
+        *guard += u64::from(joined) + u64::from(scoped);
+        std::hint::black_box(*guard);
+    }
 
     println!("joined={joined:#010x} scoped={scoped:#010x}");
 }

@@ -30,6 +30,8 @@ digraph tdg {
     legend_scope [label="scope", shape=ellipse, style="dashed,filled", fillcolor="#eafaf1", color="#1e8449"];
     legend_opaque [label="opaque target", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
     legend_vector [label="vector / IRQ", shape=diamond, style="filled", fillcolor="#fdebd0", color="#b9770e"];
+    legend_lock [label="lock event", shape=note, style="filled", fillcolor="#fef9e7", color="#b7950b"];
+    legend_function -> legend_lock [label="lock", style=dotted, color="#b7950b", fontcolor="#b7950b"];
     legend_note [label="contexts: startup green, main blue, thread purple,\nISR orange, async lavender\ndashed border = synthesized logical/orphan task\nspawn/join/await: bold = high/medium confidence,\ndashed = low/unknown, ? = low/unknown or unresolved", shape=plaintext, fontsize=9];
     legend_function -> legend_context [label="spawn", color="#c0392b", fontcolor="#c0392b", style=bold];
     legend_function -> legend_context [label="join", color="#2471a3", fontcolor="#2471a3", style=bold];

@@ -25,6 +25,8 @@ flowchart LR
     legend_scope{{"scope"}}
     legend_opaque{{"opaque target"}}
     legend_vector{{"vector / IRQ"}}
+    legend_lock["lock event"]
+    legend_function -.->|lock| legend_lock
     legend_function ==>|spawn| legend_context
     legend_function ==>|join| legend_context
     legend_context -.->|entry| legend_function

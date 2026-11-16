@@ -486,7 +486,7 @@
     <div class="meta-stack" aria-label="环境与版本">
       <code>Rust 1.101 · x86-64</code>
       <code>ARM Cortex-M0 · 48 MHz</code>
-      <code>TDG schema 1.1</code>
+      <code>TDG schema 1.2</code>
       <span>结果可复现，命令见页尾。</span>
     </div>
   </header>
@@ -564,12 +564,14 @@
           <li><strong>2 条 join</strong>：普通线程与作用域线程。作用域本身带 1 个 member。</li>
           <li><strong>内联调用点可恢复</strong>：两条 spawn 从 DWARF <code>DW_TAG_inlined_subroutine</code> 记录恢复，入口标为逻辑 task entry。</li>
           <li><strong>不猜谜</strong>：第二个 join 同时看到两个候选，输出 opaque target 与候选列表。</li>
+          <li><strong>锁语义</strong>：<code>Mutex::lock</code> 与 <code>MutexGuard::drop</code> 从 DWARF 内联栈恢复为 acquire/release 事件，并保留源码调用行。</li>
         </ul>
         <div class="stat-row" aria-label="analysis 结果统计">
           <div class="stat"><b>4</b><span>contexts</span></div>
           <div class="stat"><b>2</b><span>spawn</span></div>
           <div class="stat"><b>2</b><span>join</span></div>
           <div class="stat"><b>1</b><span>scope</span></div>
+          <div class="stat"><b>5</b><span>lock events</span></div>
         </div>
       </aside>
     </div>
@@ -786,7 +788,7 @@ __attribute__((section(<span class="c">".isr_vector"</span>), used))
   </section>
 
   <footer>
-    <span>elf2tdg · schema 1.1 · Rust 优先的实时系统分析</span>
+    <span>elf2tdg · schema 1.2 · Rust 优先的实时系统分析</span>
     <span>ELF → CFG → Contexts → JSON / DOT / SVG / Mermaid</span>
   </footer>
 </main>

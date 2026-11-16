@@ -1,9 +1,9 @@
 flowchart LR
   %% concurrency projection: call edges are omitted
-  n0["_start<br/>0x14710"]
-  n1["rust_concurrency::main<br/>0x1f2f0"]
-  n2["rust_concurrency::main::(closure#0)<br/>0x1f2f0"]
-  n3["rust_concurrency::main::(closure#1)::(closure#0)<br/>0x1f888"]
+  n0["_start<br/>0x14820"]
+  n1["rust_concurrency::main<br/>0x1f510"]
+  n2["rust_concurrency::main::(closure#0)<br/>0x1f510"]
+  n3["rust_concurrency::main::(closure#1)::(closure#0)<br/>0x1faa8"]
   n4(["main"])
   n5(["rust_concurrency::main::(closure#1)::(closure#0)<br/>scoped-thread"])
   n6(["startup"])
@@ -20,6 +20,16 @@ flowchart LR
   n1 ==>|Join| n9
   n1 ==>|spawn| n7
   n1 ==>|spawn| n5
+  n10["lock Acquire<br/>Mutex::lock<br/>0x200c8"]
+  n1 -.->|lock| n10
+  n11["lock Release<br/>MutexGuard::drop<br/>0x20125"]
+  n1 -.->|lock| n11
+  n12["lock Acquire<br/>Mutex::lock<br/>0x20271"]
+  n1 -.->|lock| n12
+  n13["lock Release<br/>MutexGuard::drop<br/>0x2029b"]
+  n1 -.->|lock| n13
+  n14["lock Release<br/>MutexGuard::drop<br/>0x2035a"]
+  n1 -.->|lock| n14
   subgraph Legend
     direction LR
     legend_function["function"]
@@ -27,6 +37,8 @@ flowchart LR
     legend_scope{{"scope"}}
     legend_opaque{{"opaque target"}}
     legend_vector{{"vector / IRQ"}}
+    legend_lock["lock event"]
+    legend_function -.->|lock| legend_lock
     legend_function ==>|spawn| legend_context
     legend_function ==>|join| legend_context
     legend_context -.->|entry| legend_function

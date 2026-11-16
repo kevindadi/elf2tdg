@@ -33,7 +33,7 @@ The build needs the host `rustc`, `cargo`, and Graphviz `dot`. See
 | File | Contents |
 |---|---|
 | [`artifacts/rust-concurrency-analysis.elf`](artifacts/rust-concurrency-analysis.elf) | ELF built with the recommended `analysis` profile (`-O1`, full DWARF, ThinLTO) |
-| [`artifacts/tdg-analysis.json`](artifacts/tdg-analysis.json) | full TDG JSON for the `analysis` profile |
+| [`artifacts/tdg-analysis.json`](artifacts/tdg-analysis.json) | full TDG JSON for the `analysis` profile, including lock events |
 | [`artifacts/tdg-analysis-concurrency.dot`](artifacts/tdg-analysis-concurrency.dot) | Graphviz source, concurrency projection |
 | [`artifacts/tdg-analysis-concurrency.svg`](artifacts/tdg-analysis-concurrency.svg) | rendered concurrency TDG with legend |
 | [`artifacts/tdg-analysis-concurrency-compact.svg`](artifacts/tdg-analysis-concurrency-compact.svg) | same diagram without the embedded legend |
@@ -55,11 +55,12 @@ documented in [`../../docs/elf-view.md`](../../docs/elf-view.md).
 The analysis build keeps `-O1` machine code and full DWARF. It still removes
 wrapper/stack noise, while `inline_frames` in
 [`cfg-analysis-main.json`](artifacts/cfg-analysis-main.json) retain the concrete
-ranges of inlined `thread::spawn`, `Scope::spawn` and their nested
-implementation layers. Spawn/join/scope semantics are reconstructed from those
-ranges rather than from a call instruction that no longer exists. The
-integration test in `crates/elf2tdg/tests/inline_dwarf.rs` applies the same
-mechanism to `Mutex::lock`.
+ranges of inlined `thread::spawn`, `Scope::spawn`, `Mutex::lock` and their
+nested implementation layers. Spawn/join/scope semantics are reconstructed from
+those ranges rather than from a call instruction that no longer exists. The
+same DWARF matching emits typed TDG `locks` events: this example yields a
+`Mutex::lock` acquire and `MutexGuard::drop` release, including their concrete
+inline ranges and source call sites.
 
 The analyzer recovers four contexts from this build:
 
@@ -103,6 +104,7 @@ legend.
 
 ```sh
 jq '.contexts, (.edges[] | select(.kind == "spawn" or .kind == "join"))' artifacts/tdg-analysis.json
+jq '.locks' artifacts/tdg-analysis.json
 jq '.scopes' artifacts/tdg-analysis.json
 jq '.functions[0].inline_frames[] | select(.name | test("Mutex|spawn"))' \
     artifacts/cfg-analysis-main.json
