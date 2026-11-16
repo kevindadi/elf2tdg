@@ -1860,27 +1860,53 @@ impl<'a> Analyzer<'a> {
         let functions = self
             .functions
             .values()
-            .map(|draft| cfg::CfgFunction {
-                id: function_id(draft.address),
-                primary_name: draft.display.clone(),
-                demangled_name: draft.demangled.clone(),
-                symbols: draft.names.clone(),
-                language: draft.language,
-                kind: draft.kind,
-                address: draft.address,
-                size: draft.size,
-                section: draft.section.clone(),
-                source: self
-                    .image
-                    .dwarf
-                    .as_ref()
-                    .and_then(|dwarf| dwarf.source_at(draft.address))
-                    .map(|source| SourceLoc {
-                        file: source.file.clone(),
-                        line: source.line,
-                        column: source.column,
-                    }),
-                cfg: draft.cfg.clone(),
+            .map(|draft| {
+                let end = draft.address.saturating_add(draft.size);
+                let mut inline_frames = self.image.dwarf.as_ref().map_or_else(Vec::new, |dwarf| {
+                    dwarf
+                        .inline_frames_in(draft.address, end)
+                        .into_iter()
+                        .filter_map(|frame| {
+                            let name = frame.display_name.as_deref().or(frame.name.as_deref())?;
+                            Some(cfg::CfgInlineFrame {
+                                name: crate::rules::normalize_crate_hashes(name),
+                                linkage_name: frame.linkage_name.clone(),
+                                low_pc: frame.low_pc,
+                                high_pc: frame.high_pc,
+                                depth: frame.depth,
+                            })
+                        })
+                        .collect()
+                });
+                inline_frames.dedup_by(|left, right| {
+                    left.name == right.name
+                        && left.low_pc == right.low_pc
+                        && left.high_pc == right.high_pc
+                        && left.depth == right.depth
+                });
+                cfg::CfgFunction {
+                    id: function_id(draft.address),
+                    primary_name: draft.display.clone(),
+                    demangled_name: draft.demangled.clone(),
+                    symbols: draft.names.clone(),
+                    language: draft.language,
+                    kind: draft.kind,
+                    address: draft.address,
+                    size: draft.size,
+                    section: draft.section.clone(),
+                    source: self
+                        .image
+                        .dwarf
+                        .as_ref()
+                        .and_then(|dwarf| dwarf.source_at(draft.address))
+                        .map(|source| SourceLoc {
+                            file: source.file.clone(),
+                            line: source.line,
+                            column: source.column,
+                        }),
+                    inline_frames,
+                    cfg: draft.cfg.clone(),
+                }
             })
             .collect();
         cfg::ProgramCfg::new(functions)

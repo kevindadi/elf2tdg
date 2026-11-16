@@ -22,7 +22,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.0";
+pub const CFG_SCHEMA_VERSION: &str = "1.1";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -158,6 +158,21 @@ pub struct CfgInstruction {
     pub cycles: Option<CostRange>,
     /// Source location for this instruction, when DWARF describes it.
     pub source: Option<SourceLoc>,
+}
+
+/// One inlined subroutine range inside a function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CfgInlineFrame {
+    /// Demangled function name, falling back to the raw DWARF name.
+    pub name: String,
+    /// Raw linkage name, when available.
+    pub linkage_name: Option<String>,
+    /// Start of the concrete inline range.
+    pub low_pc: u64,
+    /// Exclusive end of the concrete inline range.
+    pub high_pc: u64,
+    /// DWARF DIE nesting depth. Lower values are outer inline calls.
+    pub depth: u32,
 }
 
 /// A call site retained inside its containing basic block.
@@ -338,6 +353,9 @@ pub struct CfgFunction {
     pub section: String,
     /// Source location.
     pub source: Option<SourceLoc>,
+    /// Inlined subroutine ranges inside this function, ordered by address and
+    /// depth.
+    pub inline_frames: Vec<CfgInlineFrame>,
     /// Function CFG.
     pub cfg: FunctionCfg,
 }
@@ -882,10 +900,22 @@ struct CfgFunctionView {
     size: u64,
     section: String,
     source: Option<SourceLoc>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    inline_frames: Vec<CfgInlineView>,
     entry: Option<BlockId>,
     blocks: Vec<CfgBlockView>,
     edges: Vec<CfgEdgeView>,
     recovered_calls: Vec<CfgCallView>,
+}
+
+#[derive(Serialize)]
+struct CfgInlineView {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linkage_name: Option<String>,
+    low: Addr,
+    high: Addr,
+    depth: u32,
 }
 
 #[derive(Serialize)]
@@ -1051,6 +1081,17 @@ fn function_view(
         .iter()
         .map(|call| call_view(program, call))
         .collect();
+    let inline_frames = function
+        .inline_frames
+        .iter()
+        .map(|frame| CfgInlineView {
+            name: frame.name.clone(),
+            linkage_name: frame.linkage_name.clone(),
+            low: Addr::new(frame.low_pc),
+            high: Addr::new(frame.high_pc),
+            depth: frame.depth,
+        })
+        .collect();
     CfgFunctionView {
         id: function.id.clone(),
         primary_name: function.primary_name.clone(),
@@ -1062,6 +1103,7 @@ fn function_view(
         size: function.size,
         section: function.section.clone(),
         source: function.source.clone(),
+        inline_frames,
         entry: cfg
             .entry
             .and_then(|node| cfg.graph.node_weight(node))
@@ -1683,6 +1725,7 @@ mod tests {
             size: 0x10,
             section: ".text".to_owned(),
             source: None,
+            inline_frames: Vec::new(),
             cfg,
         };
         let program = ProgramCfg::new(vec![function]);

@@ -24,12 +24,15 @@ const MAX_SOURCE_RANGES: usize = 500_000;
 pub struct DwarfInfo {
     /// Concrete subprograms.
     pub functions: Vec<DwarfFunction>,
-    /// Inlined subroutine instances and their concrete address ranges.
+    /// Inlined subroutine instances and their concrete address ranges, sorted
+    /// by `low_pc`.
     pub inlined_calls: Vec<DwarfInlinedCall>,
     /// Source-line ranges from the line-number programs.
     pub sources: Vec<DwarfSourceRange>,
     /// Extraction stopped at a safety limit.
     pub truncated: bool,
+    /// Prefix maximum of `high_pc`, parallel to `inlined_calls`.
+    inline_max_high: Vec<u64>,
 }
 
 impl DwarfInfo {
@@ -43,6 +46,83 @@ impl DwarfInfo {
             .checked_sub(1)?;
         let source = &self.sources[index];
         (address < source.high_pc).then_some(source)
+    }
+
+    /// Returns every inlined subroutine whose concrete range contains
+    /// `address`, outermost first.
+    ///
+    /// This is the address-level counterpart of `addr2line`'s inline frames:
+    /// nested calls such as `main -> spawn -> Builder::spawn` produce one
+    /// entry per inline DIE layer. Empty when the image has no debug info or
+    /// the address is not inside an inline range.
+    #[must_use]
+    pub fn inline_frames_at(&self, address: u64) -> Vec<&DwarfInlinedCall> {
+        let mut index = self
+            .inlined_calls
+            .partition_point(|call| call.low_pc <= address);
+        let mut frames = Vec::new();
+        while index > 0 {
+            index -= 1;
+            // Prefix maxima let us stop as soon as no earlier interval can
+            // reach the query address.
+            if self
+                .inline_max_high
+                .get(index)
+                .is_none_or(|high| *high <= address)
+            {
+                break;
+            }
+            let call = &self.inlined_calls[index];
+            if address < call.high_pc {
+                frames.push(call);
+            }
+        }
+        frames.sort_by_key(|call| (call.depth, call.low_pc, call.high_pc));
+        frames
+    }
+
+    /// Returns every inlined subroutine range that overlaps `[low, high)`.
+    ///
+    /// Ranges are ordered by start address, then depth. Used by CFG export to
+    /// attach a compact, unique inline list to each function instead of
+    /// repeating the same frame on every instruction.
+    #[must_use]
+    pub fn inline_frames_in(&self, low: u64, high: u64) -> Vec<&DwarfInlinedCall> {
+        if high <= low {
+            return Vec::new();
+        }
+        let mut index = self
+            .inlined_calls
+            .partition_point(|call| call.low_pc < high);
+        let mut frames = Vec::new();
+        while index > 0 {
+            index -= 1;
+            if self
+                .inline_max_high
+                .get(index)
+                .is_none_or(|max_high| *max_high <= low)
+            {
+                break;
+            }
+            let call = &self.inlined_calls[index];
+            if call.high_pc > low && call.low_pc < high {
+                frames.push(call);
+            }
+        }
+        frames.sort_by_key(|call| (call.low_pc, call.depth, call.high_pc));
+        frames
+    }
+
+    fn build_inline_index(&mut self) {
+        self.inlined_calls
+            .sort_by_key(|call| (call.low_pc, call.high_pc));
+        self.inline_max_high.clear();
+        self.inline_max_high.reserve(self.inlined_calls.len());
+        let mut max_high = 0;
+        for call in &self.inlined_calls {
+            max_high = max_high.max(call.high_pc);
+            self.inline_max_high.push(max_high);
+        }
     }
 }
 
@@ -79,6 +159,8 @@ pub struct DwarfInlinedCall {
     pub name: Option<String>,
     /// `DW_AT_linkage_name` from the concrete or abstract DIE.
     pub linkage_name: Option<String>,
+    /// Demangled display name, preferring `linkage_name`.
+    pub display_name: Option<String>,
     /// Start of the concrete inline range.
     pub low_pc: u64,
     /// End of the concrete inline range.
@@ -129,6 +211,7 @@ pub fn parse(file: &object::File<'_>, byte_order: ByteOrder) -> Result<DwarfInfo
                     }
                     if info.functions.len() >= MAX_DWARF_FUNCTIONS {
                         info.truncated = true;
+                        info.build_inline_index();
                         return Ok(info);
                     }
                 }
@@ -137,17 +220,20 @@ pub fn parse(file: &object::File<'_>, byte_order: ByteOrder) -> Result<DwarfInfo
                     if names.name.is_none() && names.linkage_name.is_none() {
                         continue;
                     }
+                    let display_name = display_name(&names);
                     let depth = u32::try_from(entry.depth().max(0)).unwrap_or(u32::MAX);
                     for (low_pc, high_pc) in die_ranges(&dwarf, &unit, entry)? {
                         info.inlined_calls.push(DwarfInlinedCall {
                             name: names.name.clone(),
                             linkage_name: names.linkage_name.clone(),
+                            display_name: display_name.clone(),
                             low_pc,
                             high_pc,
                             depth,
                         });
                         if info.inlined_calls.len() >= MAX_INLINED_CALLS {
                             info.truncated = true;
+                            info.build_inline_index();
                             return Ok(info);
                         }
                     }
@@ -161,7 +247,25 @@ pub fn parse(file: &object::File<'_>, byte_order: ByteOrder) -> Result<DwarfInfo
     }
     info.sources
         .sort_by_key(|source| (source.low_pc, source.high_pc));
+    info.build_inline_index();
     Ok(info)
+}
+
+fn display_name(names: &NameInfo) -> Option<String> {
+    let raw = names
+        .linkage_name
+        .as_deref()
+        .or(names.name.as_deref())?
+        .trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if (raw.starts_with("_R") || raw.starts_with("_ZN"))
+        && let Ok(demangled) = rustc_demangle::try_demangle(raw)
+    {
+        return Some(demangled.to_string());
+    }
+    Some(raw.to_owned())
 }
 
 fn collect_sources(

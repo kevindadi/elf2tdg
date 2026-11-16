@@ -44,7 +44,7 @@ fn cli_exports_cfg_json_and_dot_with_instructions() {
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&json_path).expect("CFG JSON"))
             .expect("parse CFG JSON");
-    assert_eq!(json["cfg_schema_version"], "1.0");
+    assert_eq!(json["cfg_schema_version"], elf2tdg::cfg::CFG_SCHEMA_VERSION);
     assert_eq!(json["functions"][0]["primary_name"], "main");
     assert!(json["functions"][0]["blocks"][0]["instructions"][0]["bytes"].is_string());
 

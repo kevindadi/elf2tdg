@@ -702,23 +702,6 @@ fn collect_hits(edges: &[Edge], functions: &BTreeMap<&FunctionId, &Function>) ->
     hits
 }
 
-fn inline_demangled_name(call: &crate::dwarf::DwarfInlinedCall) -> Option<String> {
-    let raw = call
-        .linkage_name
-        .as_deref()
-        .or(call.name.as_deref())?
-        .trim();
-    if raw.is_empty() {
-        return None;
-    }
-    if (raw.starts_with("_R") || raw.starts_with("_ZN"))
-        && let Ok(demangled) = rustc_demangle::try_demangle(raw)
-    {
-        return Some(demangled.to_string());
-    }
-    Some(raw.to_owned())
-}
-
 fn collect_inline_hits(image: &Image, functions: &[Function]) -> Vec<Hit> {
     let Some(dwarf) = &image.dwarf else {
         return Vec::new();
@@ -732,17 +715,17 @@ fn collect_inline_hits(image: &Image, functions: &[Function]) -> Vec<Hit> {
     let mut grouped: BTreeMap<(FunctionId, String), (u32, u8, Hit)> = BTreeMap::new();
     let mut simple_groups: BTreeMap<(FunctionId, &'static str), Vec<Hit>> = BTreeMap::new();
     for call in &dwarf.inlined_calls {
-        let Some(demangled) = inline_demangled_name(call) else {
+        let Some(demangled) = call.display_name.as_deref() else {
             continue;
         };
-        let Some(rule) = rules::match_demangled_name(&demangled) else {
+        let Some(rule) = rules::match_demangled_name(demangled) else {
             continue;
         };
         let Some(caller) = function_containing_sorted(&sorted, call.low_pc) else {
             continue;
         };
         let generic = if rule.closure_generic {
-            rules::extract_first_generic_arg(&demangled)
+            rules::extract_first_generic_arg(demangled)
         } else {
             None
         };
