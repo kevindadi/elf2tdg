@@ -1,0 +1,26 @@
+digraph tdg {
+  rankdir=LR;
+  graph [fontname="Helvetica", label="elf2tdg TDG (concurrency projection)", labelloc=t];
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#555555"];
+  edge [fontname="Helvetica", fontsize=9];
+  "fn:0x19c60" [label="_start\n0x19c60", fillcolor="#dff3df", color="#555555", style="rounded,filled"];
+  "fn:0x1dbe0" [label="main::main::{closure#1}::{closure#0}\n0x1dbe0", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
+  "fn:0x1dc00" [label="main::main::{closure#0}\n0x1dc00", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
+  "fn:0x1dc20" [label="main::main::{closure#1}\n0x1dc20", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
+  "fn:0x1de30" [label="main::main\n0x1de30", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
+  "ctx:main" [label="main", shape=box, style="filled", fillcolor="#eaf2f8", color="#444444"];
+  "ctx:main" -> "fn:0x1de30" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+  "ctx:scoped:0x1dc31" [label="main::main::{closure#1}::{closure#0}\nscoped-thread", shape=box, style="filled", fillcolor="#f4ecf7", color="#444444"];
+  "ctx:scoped:0x1dc31" -> "fn:0x1dbe0" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+  "ctx:startup" [label="startup", shape=box, style="filled", fillcolor="#e8f6ef", color="#444444"];
+  "ctx:startup" -> "fn:0x19c60" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+  "ctx:thread:0x1de3c" [label="main::main::{closure#0}\nthread", shape=box, style="filled", fillcolor="#f4ecf7", color="#444444"];
+  "ctx:thread:0x1de3c" -> "fn:0x1dc00" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+  "scope:0x1dea2" [label="thread scope\n0x1dea2\n1 members", shape=ellipse, style="dashed,filled", fillcolor="#eafaf1", color="#1e8449"];
+  "scope:0x1dea2" -> "ctx:main" [label="in", style=dotted, color="#1e8449", fontcolor="#1e8449"];
+  "scope:0x1dea2" -> "ctx:scoped:0x1dc31" [label="member", style=dotted, color="#1e8449"];
+  "fn:0x1dc20" -> "ctx:scoped:0x1dc31" [label="Join", color="#2471a3", fontcolor="#2471a3", style="bold"];
+  "fn:0x1de30" -> "ctx:thread:0x1de3c" [label="Join", color="#2471a3", fontcolor="#2471a3", style="bold"];
+  "fn:0x1dc20" -> "ctx:scoped:0x1dc31" [label="spawn (ScopedThread)", color="#c0392b", fontcolor="#c0392b", style="bold"];
+  "fn:0x1de30" -> "ctx:thread:0x1de3c" [label="spawn (OsThread)", color="#c0392b", fontcolor="#c0392b", style="bold"];
+}

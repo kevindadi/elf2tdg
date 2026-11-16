@@ -1,0 +1,37 @@
+flowchart LR
+  %% concurrency projection: call edges are omitted
+  n0["_start<br/>0x17a70"]
+  n1["main::main<br/>0x18510"]
+  n2["main::main::(closure#0)<br/>0x18510"]
+  n3["main::main::(closure#1)::(closure#0)<br/>0x188f4"]
+  n4(["main"])
+  n5(["main::main::(closure#1)::(closure#0)<br/>scoped-thread"])
+  n6(["startup"])
+  n7(["main::main::(closure#0)<br/>thread"])
+  n8{{"thread scope<br/>1 members"}}
+  n8 -.->|in| n4
+  n8 -.->|member| n5
+  n4 -.->|entry| n1
+  n5 -.->|entry| n3
+  n6 -.->|entry| n0
+  n7 -.->|entry| n2
+  n1 ==>|Join| n7
+  n9{{"join opaque (2)"}}
+  n1 ==>|Join| n9
+  n1 ==>|spawn| n7
+  n1 ==>|spawn| n5
+  subgraph Legend
+    direction LR
+    legend_function["function"]
+    legend_context(["context"])
+    legend_scope{{"scope"}}
+    legend_opaque{{"opaque target"}}
+    legend_vector{{"vector / IRQ"}}
+    legend_function ==>|spawn| legend_context
+    legend_function ==>|join| legend_context
+    legend_context -.->|entry| legend_function
+    legend_scope -.->|member| legend_context
+    legend_vector -.->|ISR| legend_context
+    legend_context -.->|opaque| legend_opaque
+    legend_note["bold = high/medium confidence<br/>dashed = low/unknown, ? = low/unknown or unresolved"]
+  end
