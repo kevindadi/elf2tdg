@@ -10,7 +10,9 @@ and scope-member relations.
 
 ## Build and analyze
 
-From this directory:
+The default build uses the recommended analysis profile from
+[`Cargo.toml`](Cargo.toml): `opt-level=1`, full DWARF, ThinLTO and no symbol
+stripping.
 
 ```sh
 make
@@ -22,66 +24,61 @@ Or with an offline cargo cache:
 make CARGO_FLAGS=--offline
 ```
 
-The build needs the host `rustc`, `cargo`, and Graphviz `dot`.
+The build needs the host `rustc`, `cargo`, and Graphviz `dot`. See
+[`../../docs/analysis-profile.md`](../../docs/analysis-profile.md) for why
+`-O1` + `debug = true` is the recommended starting point for static analysis.
 
 ## Artifacts
 
 | File | Contents |
 |---|---|
-| [`artifacts/rust-concurrency-o0.elf`](artifacts/rust-concurrency-o0.elf) | unoptimized ELF used for the first analysis |
-| [`artifacts/rust-concurrency-o2.elf`](artifacts/rust-concurrency-o2.elf) | optimized ELF with inlined spawn calls |
-| [`artifacts/tdg-o0.json`](artifacts/tdg-o0.json) | full TDG JSON for `-O0` |
-| [`artifacts/tdg-o0-concurrency.dot`](artifacts/tdg-o0-concurrency.dot) | Graphviz source, concurrency projection |
-| [`artifacts/tdg-o0-concurrency.svg`](artifacts/tdg-o0-concurrency.svg) | rendered concurrency TDG with legend |
-| [`artifacts/tdg-o0-concurrency-compact.svg`](artifacts/tdg-o0-concurrency-compact.svg) | same diagram without the embedded legend |
-| [`artifacts/tdg-o0-concurrency.mmd`](artifacts/tdg-o0-concurrency.mmd) | Mermaid source, concurrency projection |
-| [`artifacts/cfg-o0-main.json`](artifacts/cfg-o0-main.json) | lossless CFG JSON for `main::main` at `-O0` |
-| [`artifacts/cfg-o0-main.svg`](artifacts/cfg-o0-main.svg) | function CFG diagram for `-O0` |
-| [`artifacts/elf-layout-o0.mmd`](artifacts/elf-layout-o0.mmd) | loader-backed ELF layout for `-O0` |
-| [`artifacts/tdg-o2.json`](artifacts/tdg-o2.json) | full TDG JSON for `-O2` |
-| [`artifacts/tdg-o2-concurrency.svg`](artifacts/tdg-o2-concurrency.svg) | optimized-build TDG with legend |
-| [`artifacts/tdg-o2-concurrency-compact.svg`](artifacts/tdg-o2-concurrency-compact.svg) | same diagram without the embedded legend |
-| [`artifacts/tdg-o2-concurrency.mmd`](artifacts/tdg-o2-concurrency.mmd) | Mermaid source for the optimized build |
-| [`artifacts/cfg-o2-main.json`](artifacts/cfg-o2-main.json) | lossless CFG JSON for `main::main` at `-O2` |
-| [`artifacts/cfg-o2-main.svg`](artifacts/cfg-o2-main.svg) | function CFG diagram for `-O2` |
-| [`artifacts/elf-layout-o2.mmd`](artifacts/elf-layout-o2.mmd) | loader-backed ELF layout for `-O2` |
+| [`artifacts/rust-concurrency-analysis.elf`](artifacts/rust-concurrency-analysis.elf) | ELF built with the recommended `analysis` profile (`-O1`, full DWARF, ThinLTO) |
+| [`artifacts/tdg-analysis.json`](artifacts/tdg-analysis.json) | full TDG JSON for the `analysis` profile |
+| [`artifacts/tdg-analysis-concurrency.dot`](artifacts/tdg-analysis-concurrency.dot) | Graphviz source, concurrency projection |
+| [`artifacts/tdg-analysis-concurrency.svg`](artifacts/tdg-analysis-concurrency.svg) | rendered concurrency TDG with legend |
+| [`artifacts/tdg-analysis-concurrency-compact.svg`](artifacts/tdg-analysis-concurrency-compact.svg) | same diagram without the embedded legend |
+| [`artifacts/tdg-analysis-concurrency.mmd`](artifacts/tdg-analysis-concurrency.mmd) | Mermaid source, concurrency projection |
+| [`artifacts/cfg-analysis-main.json`](artifacts/cfg-analysis-main.json) | lossless CFG JSON for `rust_concurrency::main`, including `inline_frames` |
+| [`artifacts/cfg-analysis-main.svg`](artifacts/cfg-analysis-main.svg) | function CFG diagram for the analysis build |
+| [`artifacts/cfg-analysis-main.mmd`](artifacts/cfg-analysis-main.mmd) | Mermaid source for the analysis CFG |
+| [`artifacts/elf-layout-analysis.mmd`](artifacts/elf-layout-analysis.mmd) | loader-backed ELF layout for the analysis build |
 
-A browser walkthrough with both diagrams and the complete legend is
+A browser walkthrough with the diagram and the complete legend is
 [`../tdg-example.html`](../tdg-example.html). CFG output is documented in
 [`../../docs/cfg-format.md`](../../docs/cfg-format.md); the loader view is
 documented in [`../../docs/elf-view.md`](../../docs/elf-view.md).
 
-## The two diagrams
+## Recommended `analysis` profile
 
-### `-O0`: concrete closure functions
+![analysis-profile concurrency TDG](artifacts/tdg-analysis-concurrency.svg)
 
-![O0 concurrency TDG](artifacts/tdg-o0-concurrency.svg)
+The analysis build keeps `-O1` machine code and full DWARF. It still removes
+wrapper/stack noise, while `inline_frames` in
+[`cfg-analysis-main.json`](artifacts/cfg-analysis-main.json) retain the concrete
+ranges of inlined `thread::spawn`, `Scope::spawn` and their nested
+implementation layers. Spawn/join/scope semantics are reconstructed from those
+ranges rather than from a call instruction that no longer exists. The
+integration test in `crates/elf2tdg/tests/inline_dwarf.rs` applies the same
+mechanism to `Mutex::lock`.
 
-The analyzer recovers four contexts:
+The analyzer recovers four contexts from this build:
 
 - `startup` and `main`;
-- a `thread` context whose entry is `main::{closure#0}`;
+- a `thread` context whose entry is
+  `rust_concurrency::main::{closure#0}`;
 - a `scoped-thread` context whose entry is
-  `main::{closure#1}::{closure#0}`.
+  `rust_concurrency::main::{closure#1}::{closure#0}`.
 
-Both spawn sites are resolved (`thread::spawn` and `Scope::spawn`), both joins
-point at their contexts, and the `rust-thread-scope` scope owns the scoped
-spawn. Edges are solid because they are high-confidence symbol/patch evidence.
+Both spawn sites (`thread::spawn` and `Scope::spawn`) are recovered from DWARF
+inline records, even though they were inlined into `main`. Their entries are
+represented by logical `task-entry` functions/contexts marked
+`ext["elf2tdg.logical_task"]`. The first join resolves to the thread context.
+The second join follows both spawns in the same physical function and has two
+possible targets, so the TDG reports an **opaque join with two candidates**
+instead of guessing.
 
-### `-O2`: DWARF inline recovery
-
-![O2 concurrency TDG](artifacts/tdg-o2-concurrency.svg)
-
-The spawn calls are inlined into `main`, so there is no direct call edge to the
-`thread::spawn` or `Scope::spawn` wrappers. M2 recovers both call sites from
-DWARF `DW_TAG_inlined_subroutine` records. Their entries are represented by
-logical `task-entry` functions/contexts marked
-`ext["elf2tdg.logical_task"]`.
-
-The first join resolves to the thread context. The second join follows both
-spawns in the same physical function and has two possible targets, so the TDG
-reports an **opaque join with two candidates** instead of guessing. This is why
-the O2 diagram contains a `join opaque` node.
+See [`../../docs/analysis-profile.md`](../../docs/analysis-profile.md) for the
+profile, caveats and the `Mutex::lock` inline-frame example.
 
 ## What to look for in the diagram
 
@@ -105,9 +102,12 @@ legend.
 ## Inspect the result directly
 
 ```sh
-jq '.contexts, (.edges[] | select(.kind == "spawn" or .kind == "join"))' artifacts/tdg-o0.json
-jq '.scopes' artifacts/tdg-o0.json
-jq '.diagnostics | group_by(.code) | map({code: .[0].code, count: length})' artifacts/tdg-o2.json
+jq '.contexts, (.edges[] | select(.kind == "spawn" or .kind == "join"))' artifacts/tdg-analysis.json
+jq '.scopes' artifacts/tdg-analysis.json
+jq '.functions[0].inline_frames[] | select(.name | test("Mutex|spawn"))' \
+    artifacts/cfg-analysis-main.json
+jq '.diagnostics | group_by(.code) | map({code: .[0].code, count: length})' \
+    artifacts/tdg-analysis.json
 ```
 
 The JSON is the canonical output; the diagrams are projections of the same

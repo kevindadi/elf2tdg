@@ -1,13 +1,13 @@
 flowchart LR
   %% concurrency projection: call edges are omitted
-  n0["_start<br/>0x17a70"]
-  n1["main::main<br/>0x18510"]
-  n2["main::main::(closure#0)<br/>0x18510"]
-  n3["main::main::(closure#1)::(closure#0)<br/>0x188f4"]
+  n0["_start<br/>0x14710"]
+  n1["rust_concurrency::main<br/>0x1f2f0"]
+  n2["rust_concurrency::main::(closure#0)<br/>0x1f2f0"]
+  n3["rust_concurrency::main::(closure#1)::(closure#0)<br/>0x1f888"]
   n4(["main"])
-  n5(["main::main::(closure#1)::(closure#0)<br/>scoped-thread"])
+  n5(["rust_concurrency::main::(closure#1)::(closure#0)<br/>scoped-thread"])
   n6(["startup"])
-  n7(["main::main::(closure#0)<br/>thread"])
+  n7(["rust_concurrency::main::(closure#0)<br/>thread"])
   n8{{"thread scope<br/>1 members"}}
   n8 -.->|in| n4
   n8 -.->|member| n5

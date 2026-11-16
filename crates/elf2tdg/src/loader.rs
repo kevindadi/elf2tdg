@@ -966,7 +966,7 @@ mod tests {
     #[test]
     fn resolves_dynamic_function_pointer_relocations() {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/rust-concurrency/artifacts/rust-concurrency-o0.elf");
+            .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
         if !path.exists() {
             return;
         }

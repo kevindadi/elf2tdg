@@ -1,4 +1,5 @@
 /target
+examples/rust-concurrency/target
 **/*.rs.bk
 
 # Ad-hoc full-image CFG exports

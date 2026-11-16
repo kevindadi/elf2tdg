@@ -12,12 +12,11 @@ directly in a browser, or publish it as an HTML artifact.
 ## Rust concurrency
 
 [`rust-concurrency/`](rust-concurrency/README.md) exercises `std::thread`,
-`JoinHandle::join`, `thread::scope`, and `Scope::spawn`. It builds both `-O0`
-and `-O2` ELFs so you can compare concrete closure functions with DWARF-based
-inline recovery and logical task entries.
+`JoinHandle::join`, `thread::scope`, and `Scope::spawn`. It uses the recommended
+`analysis` Cargo profile (`-O1`, full DWARF, ThinLTO) and recovers inlined
+spawn/join/scope semantics and inline address ranges.
 
-- [O0 diagram](rust-concurrency/artifacts/tdg-o0-concurrency.svg)
-- [O2 diagram](rust-concurrency/artifacts/tdg-o2-concurrency.svg)
+- [Concurrency TDG](rust-concurrency/artifacts/tdg-analysis-concurrency.svg)
 
 ## Cortex-M0 interrupt and timing
 

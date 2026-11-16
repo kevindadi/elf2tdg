@@ -1,0 +1,24 @@
+[package]
+name = "rust-concurrency-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "rust-concurrency"
+path = "main.rs"
+
+# Recommended profile for static analysis:
+# - O1 removes most wrapper/stack noise without aggressive inlining;
+# - full debug info retains DW_TAG_inlined_subroutine ranges;
+# - ThinLTO removes dead code while keeping debug info;
+# - keeping symbols/debug sections makes function discovery and DWARF reliable.
+[profile.analysis]
+inherits = "release"
+opt-level = 1
+debug = true
+lto = "thin"
+strip = "none"
+
+# Keep this example independent from the elf2tdg workspace.
+[workspace]

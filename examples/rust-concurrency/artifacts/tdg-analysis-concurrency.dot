@@ -1,0 +1,41 @@
+digraph tdg {
+  rankdir=LR;
+  graph [fontname="Helvetica", label="elf2tdg TDG (concurrency projection)", labelloc=t];
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#555555"];
+  edge [fontname="Helvetica", fontsize=9];
+  "fn:0x14710" [label="_start\n0x14710", fillcolor="#dff3df", color="#555555", style="rounded,filled"];
+  "fn:0x1f2f0" [label="rust_concurrency::main\n0x1f2f0", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
+  "fn:task:0x1f2f0" [label="rust_concurrency::main::{closure#0}\n0x1f2f0", fillcolor="#f4ecf7", color="#7d3c98", style="rounded,filled,dashed"];
+  "fn:task:0x1f888" [label="rust_concurrency::main::{closure#1}::{closure#0}\n0x1f888", fillcolor="#f4ecf7", color="#7d3c98", style="rounded,filled,dashed"];
+  "ctx:main" [label="main", shape=box, style="filled", fillcolor="#eaf2f8", color="#444444"];
+  "ctx:main" -> "fn:0x1f2f0" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+  "ctx:scoped:0x1f888" [label="rust_concurrency::main::{closure#1}::{closure#0}\nscoped-thread", shape=box, style="filled,dashed", fillcolor="#f4ecf7", color="#7d3c98"];
+  "ctx:scoped:0x1f888" -> "fn:task:0x1f888" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+  "ctx:startup" [label="startup", shape=box, style="filled", fillcolor="#e8f6ef", color="#444444"];
+  "ctx:startup" -> "fn:0x14710" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+  "ctx:thread:0x1f2f0" [label="rust_concurrency::main::{closure#0}\nthread", shape=box, style="filled,dashed", fillcolor="#f4ecf7", color="#7d3c98"];
+  "ctx:thread:0x1f2f0" -> "fn:task:0x1f2f0" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+  "scope:0x1f7a7" [label="thread scope\n0x1f7a7\n1 members", shape=ellipse, style="dashed,filled", fillcolor="#eafaf1", color="#1e8449"];
+  "scope:0x1f7a7" -> "ctx:main" [label="in", style=dotted, color="#1e8449", fontcolor="#1e8449"];
+  "scope:0x1f7a7" -> "ctx:scoped:0x1f888" [label="member", style=dotted, color="#1e8449"];
+  "fn:0x1f2f0" -> "ctx:thread:0x1f2f0" [label="Join", color="#2471a3", fontcolor="#2471a3", style="bold"];
+  "opaque:e:join:0x1fd17" [label="join opaque (2 candidates)", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "fn:0x1f2f0" -> "opaque:e:join:0x1fd17" [label="Join?", color="#2471a3", fontcolor="#2471a3", style="bold"];
+  "fn:0x1f2f0" -> "ctx:thread:0x1f2f0" [label="spawn (OsThread)", color="#c0392b", fontcolor="#c0392b", style="bold"];
+  "fn:0x1f2f0" -> "ctx:scoped:0x1f888" [label="spawn (ScopedThread)", color="#c0392b", fontcolor="#c0392b", style="bold"];
+  subgraph cluster_legend {
+    label="Legend"; labeljust="l"; fontname="Helvetica"; fontsize=11; style="rounded,dashed"; color="#999999";
+    legend_function [label="function", fillcolor="#ffffff"];
+    legend_context [label="context", shape=box, style="filled", fillcolor="#eaf2f8", color="#444444"];
+    legend_scope [label="scope", shape=ellipse, style="dashed,filled", fillcolor="#eafaf1", color="#1e8449"];
+    legend_opaque [label="opaque target", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+    legend_vector [label="vector / IRQ", shape=diamond, style="filled", fillcolor="#fdebd0", color="#b9770e"];
+    legend_note [label="contexts: startup green, main blue, thread purple,\nISR orange, async lavender\ndashed border = synthesized logical/orphan task\nspawn/join/await: bold = high/medium confidence,\ndashed = low/unknown, ? = low/unknown or unresolved", shape=plaintext, fontsize=9];
+    legend_function -> legend_context [label="spawn", color="#c0392b", fontcolor="#c0392b", style=bold];
+    legend_function -> legend_context [label="join", color="#2471a3", fontcolor="#2471a3", style=bold];
+    legend_context -> legend_function [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];
+    legend_scope -> legend_context [label="member", style=dotted, color="#1e8449", fontcolor="#1e8449"];
+    legend_vector -> legend_context [label="ISR", style=dashed, color="#b9770e", fontcolor="#b9770e"];
+    legend_context -> legend_opaque [label="await? / spawn?", style="bold,dashed", color="#7d3c98", fontcolor="#7d3c98"];
+  }
+}

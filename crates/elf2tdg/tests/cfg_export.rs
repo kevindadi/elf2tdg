@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::cfg;
 use elf2tdg::loader;
-use elf2tdg_schema::Edge;
+use elf2tdg_schema::{ContextKind, Edge};
 
 fn fixture_elf() -> Option<PathBuf> {
     let path =
@@ -70,9 +70,9 @@ fn exports_function_cfg_for_main() {
 }
 
 #[test]
-fn reachable_from_main_includes_spawned_tasks_but_not_the_whole_image() {
+fn reachable_from_main_filters_runtime_but_keeps_task_semantics() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/rust-concurrency/artifacts/rust-concurrency-o0.elf");
+        .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
     if !path.exists() {
         return;
     }
@@ -99,16 +99,18 @@ fn reachable_from_main_includes_spawned_tasks_but_not_the_whole_image() {
             .any(|function| function.primary_name == "main"),
         "the C main wrapper should not replace the Rust main context"
     );
-    for suffix in [
-        "::main::{closure#0}",
-        "::main::{closure#1}",
-        "::main::{closure#1}::{closure#0}",
-    ] {
+    // At the recommended -O1+debug profile the closure bodies are inlined into
+    // the physical main function, so they are logical TDG task entries rather
+    // than separate CFG nodes.
+    for suffix in ["{closure#0}", "{closure#1}::{closure#0}"] {
         assert!(
-            reachable
-                .iter()
-                .any(|function| function.primary_name.ends_with(suffix)),
-            "spawned task entry {suffix} must be reachable from main"
+            analysis.tdg.contexts.iter().any(|context| {
+                matches!(
+                    context.kind,
+                    ContextKind::Thread | ContextKind::ScopedThread
+                ) && context.name.contains(suffix)
+            }),
+            "spawned task {suffix} must remain visible in the TDG"
         );
     }
 
@@ -124,7 +126,7 @@ fn reachable_from_main_includes_spawned_tasks_but_not_the_whole_image() {
 #[test]
 fn cfg_retains_gap_recovered_calls_and_tdg_parity() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/rust-concurrency/artifacts/rust-concurrency-o0.elf");
+        .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
     if !path.exists() {
         return;
     }
@@ -254,7 +256,7 @@ fn system_roots_include_vector_isrs_but_skip_default_handlers() {
 #[test]
 fn system_reachability_uses_code_refs_and_optional_runtime_pruning() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/rust-concurrency/artifacts/rust-concurrency-o0.elf");
+        .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
     if !path.exists() {
         return;
     }

@@ -515,8 +515,7 @@
         <h2 id="rust-title">线程、join 与作用域</h2>
       </div>
       <p>
-        同一份源码分别以 <code>-O0</code> 和 <code>-O2</code> 编译。前者保留真实闭包函数；
-        后者把 spawn 内联掉，改由 DWARF 恢复调用点。
+        源码使用推荐的分析构建配置（<code>-O1</code>、完整 DWARF、ThinLTO、不 strip）。内联后的 spawn 调用点由 DWARF 恢复。
       </p>
     </div>
 
@@ -563,10 +562,10 @@
           <li><strong>4 个执行上下文</strong>：startup、main、thread、scoped-thread。</li>
           <li><strong>2 条 spawn</strong>：<code>thread::spawn</code> 与 <code>Scope::spawn</code>，均为 high confidence。</li>
           <li><strong>2 条 join</strong>：普通线程与作用域线程。作用域本身带 1 个 member。</li>
-          <li><strong>-O2 下调用点消失</strong>：两条 spawn 从 DWARF 内联记录恢复，入口标为逻辑 task entry。</li>
+          <li><strong>内联调用点可恢复</strong>：两条 spawn 从 DWARF <code>DW_TAG_inlined_subroutine</code> 记录恢复，入口标为逻辑 task entry。</li>
           <li><strong>不猜谜</strong>：第二个 join 同时看到两个候选，输出 opaque target 与候选列表。</li>
         </ul>
-        <div class="stat-row" aria-label="O0 结果统计">
+        <div class="stat-row" aria-label="analysis 结果统计">
           <div class="stat"><b>4</b><span>contexts</span></div>
           <div class="stat"><b>2</b><span>spawn</span></div>
           <div class="stat"><b>2</b><span>join</span></div>
@@ -576,28 +575,15 @@
     </div>
 
     <figure class="card diagram-card">
-      <div class="card-head"><b>-O0 · concurrency projection</b><span>真实闭包函数 · 所有边已解析</span></div>
+      <div class="card-head"><b>analysis profile · concurrency projection</b><span>DWARF 内联恢复 · 逻辑 task entry</span></div>
       <div class="diagram-scroll">
-        <a href="rust-concurrency/artifacts/tdg-o0-concurrency.svg" target="_blank" rel="noopener">
-          <img src="rust-concurrency/artifacts/tdg-o0-concurrency-compact.svg" alt="Rust -O0 并发 TDG：startup、main、thread、scoped-thread 四个上下文，两条 spawn 与两条 join，以及一个 thread scope。">
+        <a href="rust-concurrency/artifacts/tdg-analysis-concurrency.svg" target="_blank" rel="noopener">
+          <img src="rust-concurrency/artifacts/tdg-analysis-concurrency-compact.svg" alt="Rust analysis profile 并发 TDG：startup、main、thread、scoped-thread 四个上下文，两条 spawn 与两条 join，以及一个 thread scope。">
         </a>
       </div>
       <figcaption class="diagram-note">
-        <span>页面内为紧凑图。<a href="rust-concurrency/artifacts/tdg-o0-concurrency.svg" target="_blank" rel="noopener">打开含图例的完整 SVG ↗</a></span>
+        <span>紫色虚线边框表示合成的 logical task；<span class="tag warn">Join? · 2 candidates</span> 表示目标未唯一确定。<a href="rust-concurrency/artifacts/tdg-analysis-concurrency.svg" target="_blank" rel="noopener">完整 SVG ↗</a></span>
         <span><code>--projection concurrency</code></span>
-      </figcaption>
-    </figure>
-
-    <figure class="card diagram-card">
-      <div class="card-head"><b>-O2 · concurrency projection</b><span>DWARF 内联恢复 · 逻辑 task entry</span></div>
-      <div class="diagram-scroll">
-        <a href="rust-concurrency/artifacts/tdg-o2-concurrency.svg" target="_blank" rel="noopener">
-          <img src="rust-concurrency/artifacts/tdg-o2-concurrency-compact.svg" alt="Rust -O2 并发 TDG：两个逻辑 task entry 使用虚线边框，spawn 由 DWARF 内联记录恢复，第二个 join 指向一个带两个候选的 opaque 节点。">
-        </a>
-      </div>
-      <figcaption class="diagram-note">
-        <span>紫色虚线边框表示合成的 logical task；<span class="tag warn">Join? · 2 candidates</span> 表示目标未唯一确定。<a href="rust-concurrency/artifacts/tdg-o2-concurrency.svg" target="_blank" rel="noopener">完整 SVG ↗</a></span>
-        <span><code>examples/rust-concurrency/</code></span>
       </figcaption>
     </figure>
 
@@ -773,7 +759,7 @@ __attribute__((section(<span class="c">".isr_vector"</span>), used))
         <div class="cmd-list">
           <code>make -C examples/rust-concurrency CARGO_FLAGS=--offline</code>
           <code>make -C examples/cortex-m0-isr CARGO_FLAGS=--offline</code>
-          <code>dot -Tsvg examples/rust-concurrency/artifacts/tdg-o0-concurrency.dot -o out.svg</code>
+          <code>dot -Tsvg examples/rust-concurrency/artifacts/tdg-analysis-concurrency.dot -o out.svg</code>
         </div>
         <p style="margin: 14px 0 0; color: var(--muted); font-size: 0.84rem;">
           Rust 示例需要 host <code>rustc</code>；嵌入式示例需要 <code>arm-none-eabi-gcc</code>。
@@ -787,8 +773,8 @@ __attribute__((section(<span class="c">".isr_vector"</span>), used))
           <table class="legend-table file-table">
             <tbody>
               <tr><td>Rust 源码</td><td>examples/rust-concurrency/main.rs</td></tr>
-              <tr><td>Rust ELF</td><td>examples/rust-concurrency/artifacts/rust-concurrency-o0.elf<br>examples/rust-concurrency/artifacts/rust-concurrency-o2.elf</td></tr>
-              <tr><td>Rust TDG</td><td>examples/rust-concurrency/artifacts/tdg-o0.json<br>examples/rust-concurrency/artifacts/tdg-o2.json</td></tr>
+              <tr><td>Rust ELF</td><td>examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf</td></tr>
+              <tr><td>Rust TDG</td><td>examples/rust-concurrency/artifacts/tdg-analysis.json</td></tr>
               <tr><td>C 源码</td><td>examples/cortex-m0-isr/main.c</td></tr>
               <tr><td>嵌入式 ELF</td><td>examples/cortex-m0-isr/artifacts/cortex-m0-isr.elf</td></tr>
               <tr><td>嵌入式 TDG</td><td>examples/cortex-m0-isr/artifacts/tdg.json</td></tr>

@@ -1,5 +1,5 @@
 {
-  "cfg_schema_version": "1.0",
+  "cfg_schema_version": "1.1",
   "image": {
     "path": "artifacts/cortex-m0-isr.elf",
     "arch": "thumb",
