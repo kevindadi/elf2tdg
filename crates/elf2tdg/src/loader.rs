@@ -1,0 +1,686 @@
+//! ELF loading into a small, architecture-neutral image model.
+//!
+//! Symbols, entry points, Cortex-M vector tables, DWARF sections and dynamic
+//! PLT imports are extracted here. PLT stubs receive synthetic names from the
+//! dynamic relocation table so later rule matching sees the imported API.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use object::{
+    Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, SectionFlags,
+    SectionKind, SymbolKind,
+};
+
+use crate::error::{Error, Result};
+
+/// Instruction-set family selected for decoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArchKind {
+    /// ARM Thumb/Thumb-2 (`Cortex-M`).
+    Thumb,
+    /// 32-bit ARM (A32).
+    Arm,
+    /// `AArch64`.
+    Aarch64,
+    /// 32-bit RISC-V.
+    Riscv32,
+    /// 64-bit RISC-V.
+    Riscv64,
+    /// x86-64.
+    X86_64,
+}
+
+impl ArchKind {
+    /// Architecture string used in the TDG schema.
+    #[must_use]
+    pub fn schema_name(self) -> &'static str {
+        match self {
+            Self::Thumb => "thumb",
+            Self::Arm => "arm",
+            Self::Aarch64 => "aarch64",
+            Self::Riscv32 => "riscv32",
+            Self::Riscv64 => "riscv64",
+            Self::X86_64 => "x86_64",
+        }
+    }
+
+    /// Whether this is an ARM-family architecture whose addresses may carry
+    /// the Thumb interworking bit.
+    #[must_use]
+    pub fn is_arm_family(self) -> bool {
+        matches!(self, Self::Thumb | Self::Arm)
+    }
+}
+
+/// ELF byte order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteOrder {
+    /// Little endian.
+    Little,
+    /// Big endian.
+    Big,
+}
+
+impl ByteOrder {
+    fn read_u16(self, bytes: &[u8], offset: usize) -> Option<u16> {
+        let raw: [u8; 2] = bytes.get(offset..offset + 2)?.try_into().ok()?;
+        Some(match self {
+            Self::Little => u16::from_le_bytes(raw),
+            Self::Big => u16::from_be_bytes(raw),
+        })
+    }
+
+    fn read_u32(self, bytes: &[u8], offset: usize) -> Option<u32> {
+        let raw: [u8; 4] = bytes.get(offset..offset + 4)?.try_into().ok()?;
+        Some(match self {
+            Self::Little => u32::from_le_bytes(raw),
+            Self::Big => u32::from_be_bytes(raw),
+        })
+    }
+}
+
+/// ELF file type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElfKind {
+    /// Relocatable object.
+    Rel,
+    /// Executable.
+    Exec,
+    /// Shared object / PIE.
+    Dyn,
+    /// Unknown.
+    Unknown,
+}
+
+/// One loaded section.
+#[derive(Clone, Debug)]
+pub struct Section {
+    /// Section name.
+    pub name: String,
+    /// Virtual address.
+    pub address: u64,
+    /// Size in memory.
+    pub size: u64,
+    /// File-backed bytes (may be shorter than `size`).
+    pub data: Vec<u8>,
+    /// Executable permission.
+    pub executable: bool,
+    /// Writable permission.
+    pub writable: bool,
+}
+
+impl Section {
+    /// Exclusive end address, saturating on overflow.
+    #[must_use]
+    pub fn end(&self) -> u64 {
+        self.address.saturating_add(self.size)
+    }
+}
+
+/// A symbol with an address in an executable section.
+#[derive(Clone, Debug)]
+pub struct ImageSymbol {
+    /// Raw symbol name.
+    pub name: String,
+    /// Raw ELF address (may retain the Thumb bit).
+    pub address: u64,
+    /// Canonical address (Thumb bit cleared).
+    pub canonical_address: u64,
+    /// Symbol size in bytes (zero if unknown).
+    pub size: u64,
+    /// ELF symbol kind.
+    pub kind: SymbolKind,
+    /// Section name, when known.
+    pub section: Option<String>,
+    /// Whether the raw address selected Thumb mode.
+    pub thumb: bool,
+}
+
+/// A Cortex-M vector table entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VectorEntry {
+    /// Raw word index in the vector table (0 is the initial SP).
+    pub index: u32,
+    /// Raw word value.
+    pub raw: u64,
+    /// Handler address with the Thumb bit cleared.
+    pub handler: u64,
+}
+
+/// Loaded image.
+#[derive(Clone, Debug)]
+pub struct Image {
+    /// Input path.
+    pub path: PathBuf,
+    /// Instruction-set family.
+    pub arch: ArchKind,
+    /// Byte order.
+    pub byte_order: ByteOrder,
+    /// ELF file type.
+    pub elf_kind: ElfKind,
+    /// Raw ELF entry point.
+    pub entry: u64,
+    /// Loaded sections.
+    pub sections: Vec<Section>,
+    /// Function-like symbols in executable sections.
+    pub symbols: Vec<ImageSymbol>,
+    /// Whether a symbol table exists.
+    pub has_symbols: bool,
+    /// Whether DWARF debug sections exist.
+    pub has_debug_info: bool,
+    /// Whether relocations exist.
+    pub has_relocations: bool,
+    /// ARM CPU name recovered from `.ARM.attributes`, if any.
+    pub arm_cpu: Option<String>,
+    /// Cortex-M vector table entries, excluding the initial SP.
+    pub vector_table: Vec<VectorEntry>,
+    /// Extracted DWARF subprograms/inlined subroutines, when available.
+    pub dwarf: Option<crate::dwarf::DwarfInfo>,
+    /// Non-fatal DWARF extraction error.
+    pub dwarf_error: Option<String>,
+}
+
+impl Image {
+    /// Returns the executable section containing `address`.
+    #[must_use]
+    pub fn executable_section_for(&self, address: u64) -> Option<&Section> {
+        self.sections
+            .iter()
+            .find(|section| section.executable && section.contains(address))
+    }
+
+    /// Returns whether `address` lies in an executable section.
+    #[must_use]
+    pub fn is_executable(&self, address: u64) -> bool {
+        self.executable_section_for(address).is_some()
+    }
+
+    /// Returns between 1 and `max_len` bytes at `address`, without crossing a
+    /// section boundary.
+    #[must_use]
+    pub fn bytes_at(&self, address: u64, max_len: usize) -> Option<&[u8]> {
+        let section = self.executable_section_for(address)?;
+        let offset = usize::try_from(address.checked_sub(section.address)?).ok()?;
+        let available = section.data.len().saturating_sub(offset);
+        if available == 0 {
+            return None;
+        }
+        let len = max_len.min(available);
+        Some(&section.data[offset..offset + len])
+    }
+
+    /// Returns the section end address for the executable section containing
+    /// `address`.
+    #[must_use]
+    pub fn section_end_for(&self, address: u64) -> Option<u64> {
+        self.executable_section_for(address).map(Section::end)
+    }
+
+    /// Returns the section name containing `address`.
+    #[must_use]
+    pub fn section_name_for(&self, address: u64) -> Option<&str> {
+        self.executable_section_for(address)
+            .map(|section| section.name.as_str())
+    }
+
+    /// Returns bytes at `address` from any section (not just executable ones).
+    /// This is used for literal pools and read-only pointer tables.
+    #[must_use]
+    pub fn bytes_at_any(&self, address: u64, max_len: usize) -> Option<&[u8]> {
+        let section = self
+            .sections
+            .iter()
+            .find(|section| section.contains(address))?;
+        let offset = usize::try_from(address.checked_sub(section.address)?).ok()?;
+        let available = section.data.len().saturating_sub(offset);
+        if available == 0 {
+            return None;
+        }
+        let len = max_len.min(available);
+        Some(&section.data[offset..offset + len])
+    }
+
+    /// Reads a 4- or 8-byte unsigned value at `address` using the image's byte
+    /// order.
+    #[must_use]
+    pub fn read_uint(&self, address: u64, size: usize) -> Option<u64> {
+        let bytes = self.bytes_at_any(address, size)?;
+        if bytes.len() < size {
+            return None;
+        }
+        match (self.byte_order, size) {
+            (ByteOrder::Little, 4) => {
+                Some(u64::from(u32::from_le_bytes(bytes[..4].try_into().ok()?)))
+            }
+            (ByteOrder::Little, 8) => Some(u64::from_le_bytes(bytes[..8].try_into().ok()?)),
+            (ByteOrder::Big, 4) => Some(u64::from(u32::from_be_bytes(bytes[..4].try_into().ok()?))),
+            (ByteOrder::Big, 8) => Some(u64::from_be_bytes(bytes[..8].try_into().ok()?)),
+            _ => None,
+        }
+    }
+
+    /// Returns the canonical address for the image's instruction set.
+    #[must_use]
+    pub fn canonical_address(&self, address: u64) -> u64 {
+        if self.arch.is_arm_family() {
+            address & !1
+        } else {
+            address
+        }
+    }
+}
+
+impl Section {
+    fn contains(&self, address: u64) -> bool {
+        address >= self.address && address < self.end()
+    }
+}
+
+/// Loads an ELF image from disk.
+///
+/// # Errors
+///
+/// Returns an error for I/O failures, malformed ELF files, unsupported
+/// architectures and images without executable sections.
+#[allow(clippy::too_many_lines)]
+pub fn load(path: &Path) -> Result<Image> {
+    let bytes = std::fs::read(path).map_err(|source| Error::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let file =
+        object::File::parse(bytes.as_slice()).map_err(|error| Error::Elf(error.to_string()))?;
+
+    let byte_order = match file.endianness() {
+        object::Endianness::Little => ByteOrder::Little,
+        object::Endianness::Big => ByteOrder::Big,
+    };
+    let elf_kind = elf_kind(&bytes, byte_order);
+    let entry = file.entry();
+
+    let mut sections = Vec::new();
+    let mut section_names: BTreeMap<usize, String> = BTreeMap::new();
+    let mut has_debug_info = false;
+    let mut has_relocations = false;
+    let mut executable_sections = 0usize;
+
+    for section in file.sections() {
+        let index = section.index();
+        let name = section.name().unwrap_or("<unnamed>").to_owned();
+        section_names.insert(index.0, name.clone());
+        if name.starts_with(".debug_") || name.starts_with(".zdebug_") {
+            has_debug_info = true;
+            continue;
+        }
+        if section.relocations().next().is_some() {
+            has_relocations = true;
+        }
+        let kind = section.kind();
+        let flags = section.flags();
+        let (executable, writable) = match flags {
+            SectionFlags::Elf { sh_flags } => (sh_flags & 0x4 != 0, sh_flags & 0x1 != 0),
+            _ => (
+                kind == SectionKind::Text,
+                matches!(kind, SectionKind::Data | SectionKind::UninitializedData),
+            ),
+        };
+        let data = match section.data() {
+            Ok(data) => data.to_vec(),
+            Err(_) => Vec::new(),
+        };
+        if data.is_empty() && section.size() == 0 {
+            continue;
+        }
+        if executable {
+            executable_sections += 1;
+        }
+        sections.push(Section {
+            name,
+            address: section.address(),
+            size: section.size(),
+            data,
+            executable,
+            writable,
+        });
+    }
+
+    if executable_sections == 0 {
+        return Err(Error::NoExecutableSections);
+    }
+
+    let arm_cpu = detect_arm_cpu(&sections);
+    let arch = detect_arch(&file, entry, arm_cpu.as_deref())?;
+
+    let mut symbols = Vec::new();
+    let mut seen = BTreeSet::new();
+    for symbol in file.symbols().chain(file.dynamic_symbols()) {
+        let kind = symbol.kind();
+        if !matches!(kind, SymbolKind::Text | SymbolKind::Unknown) {
+            continue;
+        }
+        let Ok(name) = symbol.name() else {
+            continue;
+        };
+        if name.is_empty() || name.starts_with('$') || name.starts_with(".L") {
+            continue;
+        }
+        let raw_address = symbol.address();
+        let canonical_address = if arch.is_arm_family() {
+            raw_address & !1
+        } else {
+            raw_address
+        };
+        if !is_executable_in(&sections, canonical_address) {
+            continue;
+        }
+        if kind == SymbolKind::Unknown && symbol.size() == 0 && !symbol.is_global() {
+            continue;
+        }
+        let size = symbol.size();
+        if !seen.insert((canonical_address, name.to_owned(), size)) {
+            continue;
+        }
+        symbols.push(ImageSymbol {
+            name: name.to_owned(),
+            address: raw_address,
+            canonical_address,
+            size,
+            kind,
+            section: symbol
+                .section_index()
+                .and_then(|index| section_names.get(&index.0).cloned()),
+            thumb: arch.is_arm_family() && raw_address & 1 == 1,
+        });
+    }
+
+    synthesize_plt_symbols(&file, &sections, arch, &mut seen, &mut symbols);
+    let has_symbols = !symbols.is_empty();
+    let vector_table = if matches!(arch, ArchKind::Thumb | ArchKind::Arm) {
+        detect_vector_table(&sections, byte_order)
+    } else {
+        Vec::new()
+    };
+    let (dwarf, dwarf_error) = if has_debug_info {
+        match crate::dwarf::parse(&file, byte_order) {
+            Ok(info) => (Some(info), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(Image {
+        path: path.to_path_buf(),
+        arch,
+        byte_order,
+        elf_kind,
+        entry,
+        sections,
+        symbols,
+        has_symbols,
+        has_debug_info,
+        has_relocations,
+        arm_cpu,
+        vector_table,
+        dwarf,
+        dwarf_error,
+    })
+}
+
+/// Adds synthetic function symbols for dynamic PLT stubs.
+///
+/// Calls in dynamic executables target PLT entries rather than the imported
+/// function itself. Without these symbols a whole PLT block can be folded into
+/// one function, so a call to `GOMP_parallel` or `std::thread::join` becomes a
+/// call into another stub's body and no runtime rule can match it.
+fn synthesize_plt_symbols(
+    file: &object::File<'_>,
+    sections: &[Section],
+    arch: ArchKind,
+    seen: &mut BTreeSet<(u64, String, u64)>,
+    symbols: &mut Vec<ImageSymbol>,
+) {
+    // The 16-byte entry layout below is the x86-64/AArch64/RISC-V convention.
+    if matches!(arch, ArchKind::Thumb | ArchKind::Arm) {
+        return;
+    }
+    let Some(relocations) = file.dynamic_relocations() else {
+        return;
+    };
+    // Relocation symbol indices refer to .dynsym, not to the unified symbol
+    // table indexed by Object::symbol_by_index.
+    let dynamic_names: BTreeMap<usize, String> = file
+        .dynamic_symbols()
+        .filter_map(|symbol| {
+            let name = symbol.name().ok()?;
+            (!name.is_empty()).then(|| (symbol.index().0, name.to_owned()))
+        })
+        .collect();
+    let mut jump_slots = Vec::new();
+    for (offset, relocation) in relocations {
+        let RelocationFlags::Elf { r_type } = relocation.flags() else {
+            continue;
+        };
+        if !is_plt_jump_slot(arch, r_type) {
+            continue;
+        }
+        let RelocationTarget::Symbol(index) = relocation.target() else {
+            continue;
+        };
+        if let Some(name) = dynamic_names.get(&index.0) {
+            jump_slots.push((offset, name.clone()));
+        }
+    }
+    if jump_slots.is_empty() {
+        return;
+    }
+
+    for section in sections
+        .iter()
+        .filter(|section| section.name == ".plt" || section.name == ".plt.sec")
+    {
+        let stub_size = 16u64;
+        let first = if section.name == ".plt" {
+            // x86-64 PLT0 is 16 bytes; AArch64/RISC-V reserve a 32-byte header.
+            let header = if arch == ArchKind::X86_64 { 16 } else { 32 };
+            section.address.saturating_add(header)
+        } else {
+            section.address
+        };
+        let mut address = first;
+        let mut ordered = jump_slots.iter();
+        while address.saturating_add(stub_size) <= section.end() {
+            let name = if arch == ArchKind::X86_64 {
+                plt_got_address(section, address).and_then(|got| {
+                    jump_slots
+                        .iter()
+                        .find(|(offset, _)| *offset == got)
+                        .map(|(_, name)| name.as_str())
+                })
+            } else {
+                ordered.next().map(|(_, name)| name.as_str())
+            };
+            if let Some(name) = name
+                && seen.insert((address, name.to_owned(), stub_size))
+            {
+                symbols.push(ImageSymbol {
+                    name: name.to_owned(),
+                    address,
+                    canonical_address: address,
+                    size: stub_size,
+                    kind: SymbolKind::Text,
+                    section: Some(section.name.clone()),
+                    thumb: false,
+                });
+            }
+            address = address.saturating_add(stub_size);
+        }
+    }
+}
+
+fn is_plt_jump_slot(arch: ArchKind, r_type: u32) -> bool {
+    match arch {
+        ArchKind::X86_64 => r_type == object::elf::R_X86_64_JUMP_SLOT,
+        ArchKind::Aarch64 => r_type == object::elf::R_AARCH64_JUMP_SLOT,
+        ArchKind::Riscv32 | ArchKind::Riscv64 => r_type == object::elf::R_RISCV_JUMP_SLOT,
+        ArchKind::Thumb | ArchKind::Arm => r_type == object::elf::R_ARM_JUMP_SLOT,
+    }
+}
+
+/// Extracts the GOT slot referenced by a 16-byte x86-64 PLT/PLT.sec stub.
+fn plt_got_address(section: &Section, address: u64) -> Option<u64> {
+    let offset = usize::try_from(address.checked_sub(section.address)?).ok()?;
+    let stub = section.data.get(offset..offset + 16)?;
+    let jmp = if stub.get(4..6) == Some(&[0xff, 0x25]) {
+        4
+    } else if stub.get(0..2) == Some(&[0xff, 0x25]) {
+        0
+    } else {
+        return None;
+    };
+    let displacement = i32::from_le_bytes(stub.get(jmp + 2..jmp + 6)?.try_into().ok()?);
+    Some(
+        address
+            .saturating_add(jmp as u64)
+            .saturating_add(6)
+            .wrapping_add_signed(i64::from(displacement)),
+    )
+}
+
+fn detect_arch(file: &object::File<'_>, entry: u64, arm_cpu: Option<&str>) -> Result<ArchKind> {
+    use object::Architecture;
+    match file.architecture() {
+        Architecture::Arm => {
+            let cpu_is_mclass = arm_cpu.is_some_and(|cpu| cpu.contains("Cortex-M"));
+            let entry_is_thumb = entry & 1 == 1;
+            let any_thumb_symbol = file.symbols().any(|symbol| {
+                symbol.kind() == SymbolKind::Text
+                    && symbol.address() != 0
+                    && symbol.address() & 1 == 1
+            });
+            if entry_is_thumb || any_thumb_symbol || cpu_is_mclass {
+                Ok(ArchKind::Thumb)
+            } else {
+                Ok(ArchKind::Arm)
+            }
+        }
+        Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => Ok(ArchKind::Aarch64),
+        Architecture::Riscv32 => Ok(ArchKind::Riscv32),
+        Architecture::Riscv64 => Ok(ArchKind::Riscv64),
+        Architecture::X86_64 | Architecture::X86_64_X32 => Ok(ArchKind::X86_64),
+        other => Err(Error::UnsupportedArchitecture(format!("{other:?}"))),
+    }
+}
+
+fn is_executable_in(sections: &[Section], address: u64) -> bool {
+    sections
+        .iter()
+        .any(|section| section.executable && section.contains(address))
+}
+
+fn elf_kind(bytes: &[u8], byte_order: ByteOrder) -> ElfKind {
+    if bytes.len() < 18 || &bytes[..4] != b"\x7fELF" {
+        return ElfKind::Unknown;
+    }
+    match byte_order.read_u16(bytes, 16) {
+        Some(1) => ElfKind::Rel,
+        Some(2) => ElfKind::Exec,
+        Some(3) => ElfKind::Dyn,
+        _ => ElfKind::Unknown,
+    }
+}
+
+fn detect_arm_cpu(sections: &[Section]) -> Option<String> {
+    // Prefer explicit CPU names. GCC often emits only the Tag_CPU_arch value
+    // (for example "6S-M" or "7E-M"), so map those to the closest M0 timing
+    // family. Users can always override with --cpu.
+    const MARKERS: &[(&[u8], &str)] = &[
+        (b"Cortex-M0+", "Cortex-M0+"),
+        (b"Cortex-M0", "Cortex-M0"),
+        (b"Cortex-M3", "Cortex-M3"),
+        (b"Cortex-M4", "Cortex-M4"),
+        (b"Cortex-M7", "Cortex-M7"),
+        (b"Cortex-M23", "Cortex-M23"),
+        (b"Cortex-M33", "Cortex-M33"),
+        (b"Cortex-M35P", "Cortex-M35P"),
+        (b"Cortex-M55", "Cortex-M55"),
+        (b"Cortex-M85", "Cortex-M85"),
+        (b"6S-M", "Cortex-M0"),
+        (b"6-M", "Cortex-M0"),
+        (b"7E-M", "Cortex-M4"),
+        (b"7-M", "Cortex-M3"),
+        (b"8-M", "Cortex-M33"),
+    ];
+    let attributes = sections
+        .iter()
+        .find(|section| section.name == ".ARM.attributes")?;
+    MARKERS
+        .iter()
+        .find(|(marker, _)| contains_ascii(&attributes.data, marker))
+        .map(|(_, cpu)| (*cpu).to_owned())
+}
+
+fn contains_ascii(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn detect_vector_table(sections: &[Section], byte_order: ByteOrder) -> Vec<VectorEntry> {
+    let Some(section) = sections.iter().find(|section| {
+        section.name == ".isr_vector"
+            || section.name == ".vector_table"
+            || section.name == ".vectors"
+            || section.name.ends_with("_vector_table")
+            || section.name.ends_with("_vectors")
+    }) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    let words = section.data.len() / 4;
+    for index in 1..words.min(1024) {
+        let Some(raw) = byte_order.read_u32(&section.data, index * 4) else {
+            break;
+        };
+        let raw = u64::from(raw);
+        if raw == 0 || raw == u64::from(u32::MAX) {
+            continue;
+        }
+        let handler = raw & !1;
+        if !is_executable_in(sections, handler) {
+            continue;
+        }
+        entries.push(VectorEntry {
+            index: u32::try_from(index).unwrap_or(u32::MAX),
+            raw,
+            handler,
+        });
+    }
+    entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ByteOrder, ElfKind, elf_kind, load};
+
+    #[test]
+    fn detects_elf_kind() {
+        let mut bytes = vec![0u8; 18];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[16] = 2;
+        assert_eq!(elf_kind(&bytes, ByteOrder::Little), ElfKind::Exec);
+        bytes[16] = 3;
+        assert_eq!(elf_kind(&bytes, ByteOrder::Little), ElfKind::Dyn);
+    }
+
+    #[test]
+    fn loads_current_test_executable() {
+        let exe = std::env::current_exe().expect("test executable path");
+        let image = load(&exe).expect("host test executable is a valid ELF");
+        assert!(!image.sections.is_empty());
+        assert!(image.sections.iter().any(|section| section.executable));
+        assert!(!image.symbols.is_empty());
+    }
+}

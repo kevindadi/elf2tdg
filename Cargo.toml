@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/elf2tdg-schema", "crates/elf2tdg"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/elf2tdg"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

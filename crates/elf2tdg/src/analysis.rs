@@ -1,0 +1,1800 @@
+//! Function discovery, CFG/call-graph recovery and TDG assembly for M0.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use elf2tdg_schema::{
+    Addr, BasicBlock, BlockId, Confidence, Context, ContextId, ContextKind, Diagnostic, Edge,
+    EdgeId, ElfType, Endianness, FrequencyDomain, FrequencyDomainId, FrequencySource, Function,
+    FunctionId, FunctionKind, FunctionTiming, ImageInfo, InstructionTiming, Language,
+    SCHEMA_VERSION, Scheduling, Severity, SourceLoc, Tdg, TimingInfo, ToolInfo,
+};
+
+use crate::arch::{DecodedInsn, Decoder};
+use crate::error::{Error, Result};
+use crate::loader::{ByteOrder, ElfKind, Image, VectorEntry};
+use crate::origin;
+use crate::timing::{CORE_DOMAIN, TimingModel};
+
+const DEFAULT_MAX_FUNCTIONS: usize = 20_000;
+const DEFAULT_MAX_INSTRUCTIONS_PER_FUNCTION: usize = 200_000;
+const DEFAULT_MAX_DIAGNOSTICS: usize = 500;
+
+/// Analysis configuration.
+#[derive(Clone, Debug)]
+pub struct AnalysisOptions {
+    /// Explicit CPU/timing model name. `None` auto-detects.
+    pub cpu: Option<String>,
+    /// Core frequency in Hz.
+    pub frequency_hz: Option<u64>,
+    /// Include per-instruction disassembly and timing.
+    pub include_instructions: bool,
+    /// Maximum number of function nodes.
+    pub max_functions: usize,
+    /// Maximum decoded instructions per function.
+    pub max_instructions_per_function: usize,
+    /// Maximum diagnostics retained in the TDG.
+    pub max_diagnostics: usize,
+}
+
+impl Default for AnalysisOptions {
+    fn default() -> Self {
+        Self {
+            cpu: None,
+            frequency_hz: None,
+            include_instructions: false,
+            max_functions: DEFAULT_MAX_FUNCTIONS,
+            max_instructions_per_function: DEFAULT_MAX_INSTRUCTIONS_PER_FUNCTION,
+            max_diagnostics: DEFAULT_MAX_DIAGNOSTICS,
+        }
+    }
+}
+
+/// Analyzes an image and returns a validated TDG.
+///
+/// # Errors
+///
+/// Returns an error for unsupported architectures, invalid configuration,
+/// resource limits and schema-validation failures. Recoverable problems are
+/// represented as TDG diagnostics.
+pub fn analyze(image: &Image, options: &AnalysisOptions) -> Result<Tdg> {
+    Analyzer::new(image, options)?.run()
+}
+
+struct Analyzer<'a> {
+    image: &'a Image,
+    options: &'a AnalysisOptions,
+    decoder: Decoder,
+    timing: Option<TimingModel>,
+    functions: BTreeMap<u64, FunctionDraft>,
+    queue: VecDeque<u64>,
+    calls: Vec<CallDraft>,
+    decoded_by_function: BTreeMap<u64, Vec<DecodedInsn>>,
+    diagnostics: Vec<Diagnostic>,
+    diagnostic_keys: BTreeSet<(String, Option<u64>, Option<u64>)>,
+    startup_address: Option<u64>,
+    isr_vectors: Vec<VectorEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct Seed {
+    names: Vec<String>,
+    size: u64,
+    section: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct FunctionDraft {
+    address: u64,
+    size: u64,
+    section: String,
+    names: Vec<String>,
+    display: String,
+    demangled: Option<String>,
+    language: Language,
+    kind: FunctionKind,
+    blocks: Vec<BlockDraft>,
+    analyzed: bool,
+}
+
+#[derive(Clone, Debug)]
+struct BlockDraft {
+    address: u64,
+    size: u64,
+    instructions: Vec<DecodedInsn>,
+    successors: Vec<u64>,
+    cycles: Option<elf2tdg_schema::CostRange>,
+}
+
+#[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)]
+struct CallDraft {
+    caller: u64,
+    site: u64,
+    target: u64,
+    tail: bool,
+    conditional: bool,
+    heuristic: bool,
+    direct: bool,
+}
+
+impl<'a> Analyzer<'a> {
+    fn new(image: &'a Image, options: &'a AnalysisOptions) -> Result<Self> {
+        if image.byte_order == ByteOrder::Big {
+            return Err(Error::Config(
+                "big-endian ELF images are not supported in M0".to_owned(),
+            ));
+        }
+        let decoder = Decoder::new(image.arch)?;
+        let timing = TimingModel::select(options.cpu.as_deref(), image)?;
+        let mut analyzer = Self {
+            image,
+            options,
+            decoder,
+            timing,
+            functions: BTreeMap::new(),
+            queue: VecDeque::new(),
+            calls: Vec::new(),
+            decoded_by_function: BTreeMap::new(),
+            diagnostics: Vec::new(),
+            diagnostic_keys: BTreeSet::new(),
+            startup_address: None,
+            isr_vectors: Vec::new(),
+        };
+        analyzer.discover_functions()?;
+        if analyzer.functions.is_empty() {
+            return Err(Error::Elf(
+                "no function entry points could be recovered from symbols, the ELF entry or the vector table"
+                    .to_owned(),
+            ));
+        }
+        Ok(analyzer)
+    }
+
+    fn run(mut self) -> Result<Tdg> {
+        if let Some(error) = &self.image.dwarf_error {
+            self.diag(
+                Severity::Warning,
+                "dwarf-parse-failed",
+                format!("DWARF inline information ignored: {error}"),
+                None,
+                None,
+            );
+        } else if self
+            .image
+            .dwarf
+            .as_ref()
+            .is_some_and(|dwarf| dwarf.truncated)
+        {
+            self.diag(
+                Severity::Warning,
+                "dwarf-truncated",
+                "DWARF extraction stopped at a safety limit; inline call coverage is partial",
+                None,
+                None,
+            );
+        }
+        if !self.image.has_symbols {
+            self.diag(
+                Severity::Warning,
+                "no-symbol-table",
+                "image has no usable function symbols; relying on the ELF entry point, vector table and direct call targets",
+                None,
+                None,
+            );
+        }
+        if self.timing.is_none() {
+            self.diag(
+                Severity::Info,
+                "timing-model-unavailable",
+                "no M0 instruction timing model is available for this architecture/CPU; cycles and times are omitted",
+                None,
+                None,
+            );
+        } else {
+            if self.options.cpu.is_none()
+                && let Some(model) = self.timing
+            {
+                self.diag(
+                    Severity::Info,
+                    "timing-model-auto-detected",
+                    format!(
+                        "auto-selected timing model {} ({}); use --cpu to override",
+                        model.id(),
+                        model.core()
+                    ),
+                    None,
+                    None,
+                );
+            }
+            if self.options.frequency_hz.is_none() {
+                self.diag(
+                    Severity::Info,
+                    "frequency-unknown",
+                    "no core frequency was supplied; block cycle counts are emitted without wall-clock time",
+                    None,
+                    None,
+                );
+            }
+        }
+
+        while let Some(address) = self.queue.pop_front() {
+            self.analyze_function(address);
+        }
+
+        let mut rounds = 0usize;
+        loop {
+            let missing: Vec<u64> = self
+                .calls
+                .iter()
+                .map(|call| call.target)
+                .filter(|target| {
+                    !self.functions.contains_key(target)
+                        && self.function_containing(*target).is_none()
+                        && self.image.is_executable(*target)
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if missing.is_empty() {
+                break;
+            }
+            for target in missing {
+                self.add_synthetic_function(target)?;
+            }
+            while let Some(address) = self.queue.pop_front() {
+                self.analyze_function(address);
+            }
+            rounds += 1;
+            if rounds > 32 {
+                return Err(Error::Limit(
+                    "synthetic function discovery did not converge".to_owned(),
+                ));
+            }
+        }
+
+        self.resolve_calls();
+        self.build_tdg()
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn discover_functions(&mut self) -> Result<()> {
+        let mut seeds: BTreeMap<u64, Seed> = BTreeMap::new();
+        for symbol in &self.image.symbols {
+            let address = symbol.canonical_address;
+            if !self.image.is_executable(address) {
+                continue;
+            }
+            let seed = seeds.entry(address).or_insert_with(|| Seed {
+                names: Vec::new(),
+                size: 0,
+                section: symbol.section.clone(),
+            });
+            if !seed.names.contains(&symbol.name) {
+                seed.names.push(symbol.name.clone());
+            }
+            seed.size = seed.size.max(symbol.size);
+            if seed.section.is_none() {
+                seed.section.clone_from(&symbol.section);
+            }
+        }
+
+        let entry = self.image.canonical_address(self.image.entry);
+        let entry_is_inside = self.image.symbols.iter().any(|symbol| {
+            symbol.size > 0
+                && entry >= symbol.canonical_address
+                && entry < symbol.canonical_address.saturating_add(symbol.size)
+        });
+        if self.image.is_executable(entry) && !entry_is_inside {
+            seeds.entry(entry).or_insert_with(|| Seed {
+                names: Vec::new(),
+                size: 0,
+                section: self.image.section_name_for(entry).map(str::to_owned),
+            });
+        }
+
+        for vector in &self.image.vector_table {
+            let handler = self.image.canonical_address(vector.handler);
+            if !self.image.is_executable(handler) {
+                continue;
+            }
+            let inside = self.image.symbols.iter().any(|symbol| {
+                symbol.size > 0
+                    && handler >= symbol.canonical_address
+                    && handler < symbol.canonical_address.saturating_add(symbol.size)
+            });
+            if !inside {
+                seeds.entry(handler).or_insert_with(|| Seed {
+                    names: Vec::new(),
+                    size: 0,
+                    section: self.image.section_name_for(handler).map(str::to_owned),
+                });
+            }
+        }
+
+        if !self.has_code_symbols() {
+            let heuristic = self.heuristic_function_seeds();
+            if !heuristic.is_empty() {
+                self.diag(
+                    Severity::Info,
+                    "stripped-heuristic-seeds",
+                    format!(
+                        "image has no code symbols; recovered {} additional function prologue seed(s)",
+                        heuristic.len()
+                    ),
+                    None,
+                    None,
+                );
+            }
+            for address in heuristic {
+                seeds.entry(address).or_insert_with(|| Seed {
+                    names: Vec::new(),
+                    size: 0,
+                    section: self.image.section_name_for(address).map(str::to_owned),
+                });
+            }
+        }
+
+        if seeds.is_empty() {
+            return Ok(());
+        }
+
+        let addresses: Vec<u64> = seeds.keys().copied().collect();
+        let reset = self
+            .image
+            .vector_table
+            .iter()
+            .find(|entry| entry.index == 1)
+            .map(|entry| self.image.canonical_address(entry.handler));
+        let isr_addresses: BTreeSet<u64> = self
+            .image
+            .vector_table
+            .iter()
+            .filter(|entry| entry.index >= 2)
+            .map(|entry| self.image.canonical_address(entry.handler))
+            .collect();
+        self.isr_vectors = self
+            .image
+            .vector_table
+            .iter()
+            .filter(|entry| entry.index >= 2)
+            .copied()
+            .collect();
+
+        for (index, address) in addresses.iter().copied().enumerate() {
+            let Some(seed) = seeds.get(&address) else {
+                continue;
+            };
+            let Some(section_end) = self.image.section_end_for(address) else {
+                continue;
+            };
+            let next = addresses
+                .get(index + 1)
+                .copied()
+                .filter(|next| *next < section_end)
+                .unwrap_or(section_end);
+            let limit = next.saturating_sub(address);
+            let size = if seed.size == 0 {
+                limit
+            } else {
+                seed.size.min(limit)
+            };
+            let mut choice = choose_name(&seed.names);
+            if choice.display.is_empty() {
+                choice.display = format!("sub_0x{address:x}");
+                choice.language = Language::Unknown;
+            }
+            let section = seed
+                .section
+                .clone()
+                .or_else(|| self.image.section_name_for(address).map(str::to_owned))
+                .unwrap_or_else(|| "<unknown>".to_owned());
+            let is_plt = section == ".plt" || section == ".plt.sec";
+            let kind = if reset == Some(address) || entry == address {
+                FunctionKind::Entry
+            } else if isr_addresses.contains(&address) {
+                FunctionKind::Isr
+            } else if is_plt {
+                FunctionKind::Plt
+            } else {
+                FunctionKind::Normal
+            };
+            self.functions.insert(
+                address,
+                FunctionDraft {
+                    address,
+                    size,
+                    section,
+                    names: seed.names.clone(),
+                    display: choice.display,
+                    demangled: choice.demangled,
+                    language: choice.language,
+                    kind,
+                    blocks: Vec::new(),
+                    analyzed: false,
+                },
+            );
+            // PLT entries are import trampolines, not user code. Keep a named
+            // node for call-graph resolution but do not recursively analyze
+            // their jump through the GOT.
+            if !is_plt {
+                self.queue.push_back(address);
+            }
+        }
+        if self.functions.len() > self.options.max_functions {
+            return Err(Error::Limit(format!(
+                "{} functions exceed the configured maximum of {}",
+                self.functions.len(),
+                self.options.max_functions
+            )));
+        }
+
+        self.startup_address = self.resolve_startup_address(reset, entry);
+        if let Some(startup) = self.startup_address
+            && let Some(function) = self.functions.get_mut(&startup)
+        {
+            function.kind = FunctionKind::Entry;
+        }
+        Ok(())
+    }
+
+    fn has_code_symbols(&self) -> bool {
+        self.image.symbols.iter().any(|symbol| {
+            symbol
+                .section
+                .as_deref()
+                .is_none_or(|section| section != ".plt" && section != ".plt.sec")
+        })
+    }
+
+    /// Scans executable bytes for common function prologues when the symbol
+    /// table is absent. This is deliberately conservative and only supplements
+    /// entry/vector/call-target seeds.
+    fn heuristic_function_seeds(&self) -> Vec<u64> {
+        let fallback_step = match self.image.arch {
+            crate::loader::ArchKind::X86_64 => 1,
+            crate::loader::ArchKind::Thumb
+            | crate::loader::ArchKind::Riscv32
+            | crate::loader::ArchKind::Riscv64 => 2,
+            crate::loader::ArchKind::Arm | crate::loader::ArchKind::Aarch64 => 4,
+        };
+        let mut seeds = BTreeSet::new();
+        let mut scanned = 0usize;
+        let limit = self.options.max_instructions_per_function.saturating_mul(8);
+        for section in self
+            .image
+            .sections
+            .iter()
+            .filter(|section| section.executable)
+        {
+            let mut address = section.address;
+            while address < section.end() && scanned < limit {
+                let Some(bytes) = self.image.bytes_at(address, 16) else {
+                    break;
+                };
+                let Ok(Some(insn)) = self.decoder.decode_one(bytes, address) else {
+                    address = address.saturating_add(fallback_step);
+                    scanned += 1;
+                    continue;
+                };
+                let size = u64::from(insn.size);
+                if size == 0 {
+                    address = address.saturating_add(fallback_step);
+                    scanned += 1;
+                    continue;
+                }
+                if self.is_prologue_seed(&insn, address) {
+                    seeds.insert(address);
+                }
+                address = address.saturating_add(size);
+                scanned += 1;
+            }
+        }
+        seeds.into_iter().collect()
+    }
+
+    fn is_prologue_seed(&self, insn: &DecodedInsn, address: u64) -> bool {
+        let operands = insn.operands.replace(' ', "");
+        match self.image.arch {
+            crate::loader::ArchKind::X86_64 => {
+                if matches!(insn.mnemonic.as_str(), "endbr64" | "endbr32") {
+                    return true;
+                }
+                if insn.mnemonic.starts_with("push") && operands.starts_with("rbp") {
+                    let next = address.saturating_add(u64::from(insn.size));
+                    return self
+                        .image
+                        .bytes_at(next, 16)
+                        .and_then(|bytes| self.decoder.decode_one(bytes, next).ok().flatten())
+                        .is_some_and(|next| {
+                            next.mnemonic == "mov"
+                                && next.operands.replace(' ', "").starts_with("rbp,rsp")
+                        });
+                }
+                false
+            }
+            crate::loader::ArchKind::Thumb | crate::loader::ArchKind::Arm => {
+                insn.mnemonic.starts_with("push") && operands.contains("lr")
+            }
+            crate::loader::ArchKind::Aarch64 => {
+                insn.mnemonic.starts_with("stp") && operands.starts_with("x29,x30")
+            }
+            crate::loader::ArchKind::Riscv32 | crate::loader::ArchKind::Riscv64 => {
+                insn.mnemonic == "addi" && operands.starts_with("sp,sp,-")
+            }
+        }
+    }
+
+    fn resolve_startup_address(&self, reset: Option<u64>, entry: u64) -> Option<u64> {
+        if let Some(reset) = reset
+            && let Some(address) = self.resolve_function_address(reset)
+        {
+            return Some(address);
+        }
+        if let Some(address) = self.resolve_function_address(entry) {
+            return Some(address);
+        }
+        self.functions.keys().next().copied()
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn analyze_function(&mut self, address: u64) {
+        let Some(function) = self.functions.get(&address) else {
+            return;
+        };
+        if function.analyzed {
+            return;
+        }
+        let start = function.address;
+        let size = function.size;
+        if size == 0 {
+            if let Some(function) = self.functions.get_mut(&address) {
+                function.analyzed = true;
+            }
+            self.diag(
+                Severity::Info,
+                "function-size-unknown",
+                "function has no known size; basic blocks were not recovered",
+                Some(start),
+                None,
+            );
+            return;
+        }
+        let Some(end) = start.checked_add(size) else {
+            self.diag(
+                Severity::Warning,
+                "function-range-overflow",
+                "function address range overflows u64",
+                Some(start),
+                None,
+            );
+            if let Some(function) = self.functions.get_mut(&address) {
+                function.analyzed = true;
+            }
+            return;
+        };
+
+        let mut decoded: BTreeMap<u64, DecodedInsn> = BTreeMap::new();
+        let mut starts: BTreeSet<u64> = BTreeSet::new();
+        starts.insert(start);
+        let mut work: VecDeque<u64> = VecDeque::new();
+        work.push_back(start);
+        let mut calls: Vec<CallDraft> = Vec::new();
+        let mut unresolved_indirect_calls: Vec<(u64, String)> = Vec::new();
+        let mut hit_instruction_limit = false;
+        let mut saw_indirect_jump = false;
+
+        while let Some(current) = work.pop_front() {
+            if current < start || current >= end {
+                continue;
+            }
+            if decoded.contains_key(&current) {
+                continue;
+            }
+            if decoded.len() >= self.options.max_instructions_per_function {
+                hit_instruction_limit = true;
+                break;
+            }
+            let remaining = end - current;
+            let max_len = usize::try_from(remaining.min(16)).unwrap_or(16);
+            let Some(bytes) = self.image.bytes_at(current, max_len) else {
+                self.diag(
+                    Severity::Warning,
+                    "missing-code-bytes",
+                    format!("no file-backed code bytes at 0x{current:x}"),
+                    Some(start),
+                    Some(current),
+                );
+                continue;
+            };
+            let insn = match self.decoder.decode_one(bytes, current) {
+                Ok(Some(insn)) => insn,
+                Ok(None) => {
+                    self.diag(
+                        Severity::Warning,
+                        "decode-failed",
+                        format!("could not decode an instruction at 0x{current:x}"),
+                        Some(start),
+                        Some(current),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    self.diag(
+                        Severity::Warning,
+                        "decode-failed",
+                        error.to_string(),
+                        Some(start),
+                        Some(current),
+                    );
+                    continue;
+                }
+            };
+            let insn_size = u64::from(insn.size);
+            let Some(next) = current.checked_add(insn_size) else {
+                break;
+            };
+            if insn_size == 0 || next > end {
+                self.diag(
+                    Severity::Warning,
+                    "truncated-instruction",
+                    format!(
+                        "instruction at 0x{current:x} ({} bytes) crosses the function end 0x{end:x}",
+                        insn.size
+                    ),
+                    Some(start),
+                    Some(current),
+                );
+                continue;
+            }
+            decoded.insert(current, insn.clone());
+            let target = insn
+                .direct_target
+                .map(|target| self.image.canonical_address(target));
+
+            if insn.is_call {
+                if let Some(target) = target {
+                    if self.image.is_executable(target) {
+                        calls.push(CallDraft {
+                            caller: start,
+                            site: current,
+                            target,
+                            tail: false,
+                            conditional: false,
+                            heuristic: false,
+                            direct: true,
+                        });
+                        if target >= start && target < end {
+                            starts.insert(target);
+                            work.push_back(target);
+                        }
+                    } else {
+                        self.diag(
+                            Severity::Warning,
+                            "call-target-outside-image",
+                            format!(
+                                "call at 0x{current:x} targets 0x{target:x}, which is not executable"
+                            ),
+                            Some(start),
+                            Some(current),
+                        );
+                    }
+                } else {
+                    unresolved_indirect_calls.push((current, insn_text(&insn)));
+                }
+                if next < end {
+                    work.push_back(next);
+                }
+                continue;
+            }
+
+            if insn.is_jump {
+                if let Some(target) = target {
+                    if target >= start && target < end {
+                        starts.insert(target);
+                        work.push_back(target);
+                    } else if self.image.is_executable(target) {
+                        calls.push(CallDraft {
+                            caller: start,
+                            site: current,
+                            target,
+                            tail: true,
+                            conditional: insn.is_conditional,
+                            heuristic: false,
+                            direct: true,
+                        });
+                        if insn.is_conditional {
+                            self.diag(
+                                Severity::Info,
+                                "conditional-external-branch",
+                                format!(
+                                    "conditional branch at 0x{current:x} leaves the function to 0x{target:x}; modeled as a tail call"
+                                ),
+                                Some(start),
+                                Some(current),
+                            );
+                        }
+                    } else {
+                        self.diag(
+                            Severity::Warning,
+                            "branch-target-outside-image",
+                            format!(
+                                "branch at 0x{current:x} targets 0x{target:x}, which is not executable"
+                            ),
+                            Some(start),
+                            Some(current),
+                        );
+                    }
+                } else {
+                    saw_indirect_jump = true;
+                    self.diag(
+                        Severity::Warning,
+                        "unresolved-indirect-jump",
+                        format!(
+                            "indirect jump at 0x{current:x} ({}) has no statically known target",
+                            insn_text(&insn)
+                        ),
+                        Some(start),
+                        Some(current),
+                    );
+                }
+                if insn.is_conditional && next < end {
+                    starts.insert(next);
+                    work.push_back(next);
+                }
+                continue;
+            }
+
+            if insn.is_return {
+                continue;
+            }
+            if next < end {
+                work.push_back(next);
+            }
+        }
+
+        if hit_instruction_limit {
+            self.diag(
+                Severity::Warning,
+                "instruction-limit-reached",
+                format!(
+                    "function at 0x{start:x} exceeded the {} instruction limit; CFG is partial",
+                    self.options.max_instructions_per_function
+                ),
+                Some(start),
+                None,
+            );
+        }
+
+        if saw_indirect_jump {
+            let mut seen: BTreeSet<(u64, u64)> =
+                calls.iter().map(|call| (call.site, call.target)).collect();
+            let mut recovered = Vec::new();
+            let mut gaps = Vec::new();
+            let mut intervals: Vec<(u64, u64)> = decoded
+                .values()
+                .map(|instruction| {
+                    (
+                        instruction.address,
+                        instruction.address + u64::from(instruction.size),
+                    )
+                })
+                .collect();
+            intervals.sort_unstable();
+            let mut cursor = start;
+            for (begin, end_of_instruction) in intervals {
+                if begin > cursor {
+                    gaps.push((cursor, begin));
+                }
+                cursor = cursor.max(end_of_instruction);
+            }
+            if cursor < end {
+                gaps.push((cursor, end));
+            }
+            for (gap_start, gap_end) in gaps {
+                self.scan_undecoded_calls(start, gap_start, gap_end, &mut seen, &mut recovered);
+            }
+            if !recovered.is_empty() {
+                self.diag(
+                    Severity::Info,
+                    "heuristic-direct-calls",
+                    format!(
+                        "recovered {} direct call site(s) after unresolved indirect jumps in 0x{start:x}; edges are low confidence",
+                        recovered.len()
+                    ),
+                    Some(start),
+                    None,
+                );
+                calls.extend(recovered);
+            }
+        }
+        let decoded_sorted: Vec<DecodedInsn> = decoded.values().cloned().collect();
+        let mut resolved_indirect = BTreeSet::new();
+        let mut resolved_indirect_sites = BTreeSet::new();
+        for insn in &decoded_sorted {
+            if !insn.is_call || insn.direct_target.is_some() {
+                continue;
+            }
+            let Some(reference) = insn.indirect else {
+                continue;
+            };
+            let Some(target) = origin::resolve_indirect_target(
+                self.image,
+                &decoded_sorted,
+                insn.address,
+                reference,
+            ) else {
+                continue;
+            };
+            if !self.functions.contains_key(&target)
+                || !resolved_indirect.insert((insn.address, target))
+            {
+                continue;
+            }
+            calls.push(CallDraft {
+                caller: start,
+                site: insn.address,
+                target,
+                tail: false,
+                conditional: false,
+                heuristic: false,
+                direct: false,
+            });
+            resolved_indirect_sites.insert(insn.address);
+            self.diag(
+                Severity::Info,
+                "resolved-indirect-call",
+                format!(
+                    "resolved indirect call at 0x{:x} to 0x{target:x} from a register/memory pointer",
+                    insn.address
+                ),
+                Some(start),
+                Some(insn.address),
+            );
+        }
+        for (site, text) in unresolved_indirect_calls {
+            if resolved_indirect_sites.contains(&site) {
+                continue;
+            }
+            self.diag(
+                Severity::Warning,
+                "unresolved-indirect-call",
+                format!("indirect call at 0x{site:x} ({text}) has no statically known target"),
+                Some(start),
+                Some(site),
+            );
+        }
+        self.decoded_by_function.insert(start, decoded_sorted);
+
+        let block_starts: BTreeSet<u64> = starts
+            .into_iter()
+            .filter(|start| decoded.contains_key(start))
+            .collect();
+        let mut blocks = Vec::new();
+        for block_start in &block_starts {
+            let mut instructions = Vec::new();
+            let mut cursor = *block_start;
+            while let Some(insn) = decoded.get(&cursor) {
+                let next = cursor + u64::from(insn.size);
+                instructions.push(insn.clone());
+                if next >= end || !decoded.contains_key(&next) || block_starts.contains(&next) {
+                    break;
+                }
+                cursor = next;
+            }
+            if instructions.is_empty() {
+                continue;
+            }
+            let last = instructions.last().expect("non-empty instructions");
+            let block_end = last.address + u64::from(last.size);
+            let mut successors = Vec::new();
+            if last.is_return {
+                // no successors
+            } else if last.is_jump {
+                if let Some(target) = last
+                    .direct_target
+                    .map(|target| self.image.canonical_address(target))
+                    && decoded.contains_key(&target)
+                {
+                    successors.push(target);
+                }
+                if last.is_conditional && decoded.contains_key(&block_end) {
+                    successors.push(block_end);
+                }
+            } else if decoded.contains_key(&block_end) {
+                successors.push(block_end);
+            }
+            successors.sort_unstable();
+            successors.dedup();
+            let cycles = self.timing.map(|model| sum_costs(model, &instructions));
+            blocks.push(BlockDraft {
+                address: *block_start,
+                size: block_end.saturating_sub(*block_start),
+                instructions,
+                successors,
+                cycles,
+            });
+        }
+        blocks.sort_by_key(|block| block.address);
+
+        if let Some(function) = self.functions.get_mut(&address) {
+            function.blocks = blocks;
+            function.analyzed = true;
+        }
+        self.calls.extend(calls);
+    }
+
+    fn scan_undecoded_calls(
+        &self,
+        caller: u64,
+        gap_start: u64,
+        gap_end: u64,
+        seen: &mut BTreeSet<(u64, u64)>,
+        calls: &mut Vec<CallDraft>,
+    ) {
+        let mut cursor = gap_start;
+        let mut budget = self.options.max_instructions_per_function;
+        let step = match self.image.arch {
+            crate::loader::ArchKind::Thumb | crate::loader::ArchKind::Arm => 2,
+            crate::loader::ArchKind::Aarch64
+            | crate::loader::ArchKind::Riscv32
+            | crate::loader::ArchKind::Riscv64 => 4,
+            crate::loader::ArchKind::X86_64 => 1,
+        };
+        while cursor < gap_end && budget > 0 {
+            let max_len = usize::try_from((gap_end - cursor).min(16)).unwrap_or(16);
+            let Some(bytes) = self.image.bytes_at(cursor, max_len) else {
+                break;
+            };
+            let Some(instruction) = self.decoder.decode_one(bytes, cursor).ok().flatten() else {
+                cursor = cursor.saturating_add(step);
+                continue;
+            };
+            let size = u64::from(instruction.size);
+            if size == 0 || cursor.saturating_add(size) > gap_end {
+                cursor = cursor.saturating_add(step);
+                continue;
+            }
+            if instruction.is_call
+                && let Some(target) = instruction.direct_target
+            {
+                let target = self.image.canonical_address(target);
+                if self.image.is_executable(target)
+                    && self.functions.contains_key(&target)
+                    && seen.insert((cursor, target))
+                {
+                    calls.push(CallDraft {
+                        caller,
+                        site: cursor,
+                        target,
+                        tail: false,
+                        conditional: false,
+                        heuristic: true,
+                        direct: true,
+                    });
+                }
+            }
+            cursor = cursor.saturating_add(size);
+            budget -= 1;
+        }
+    }
+
+    fn add_synthetic_function(&mut self, target: u64) -> Result<()> {
+        if self.functions.contains_key(&target) || self.function_containing(target).is_some() {
+            return Ok(());
+        }
+        if !self.image.is_executable(target) {
+            return Ok(());
+        }
+        if self.functions.len() >= self.options.max_functions {
+            return Err(Error::Limit(format!(
+                "synthetic function discovery exceeded the configured maximum of {} functions",
+                self.options.max_functions
+            )));
+        }
+        let Some(section_end) = self.image.section_end_for(target) else {
+            return Ok(());
+        };
+        let next = self
+            .functions
+            .keys()
+            .copied()
+            .filter(|address| *address > target)
+            .min()
+            .unwrap_or(section_end);
+        let end = next.min(section_end);
+        let size = end.saturating_sub(target);
+        let section = self
+            .image
+            .section_name_for(target)
+            .unwrap_or("<unknown>")
+            .to_owned();
+        self.functions.insert(
+            target,
+            FunctionDraft {
+                address: target,
+                size,
+                section,
+                names: Vec::new(),
+                display: format!("sub_0x{target:x}"),
+                demangled: None,
+                language: Language::Unknown,
+                kind: FunctionKind::Normal,
+                blocks: Vec::new(),
+                analyzed: false,
+            },
+        );
+        self.queue.push_back(target);
+        self.diag(
+            Severity::Info,
+            "synthetic-function",
+            format!("created a function node for direct call target 0x{target:x} without a symbol"),
+            Some(target),
+            None,
+        );
+        Ok(())
+    }
+
+    fn resolve_calls(&mut self) {
+        self.calls.sort_by(|left, right| {
+            (left.site, left.target, left.tail).cmp(&(right.site, right.target, right.tail))
+        });
+        self.calls.dedup_by(|left, right| {
+            left.caller == right.caller
+                && left.site == right.site
+                && left.target == right.target
+                && left.tail == right.tail
+        });
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn build_tdg(mut self) -> Result<Tdg> {
+        let calls = std::mem::take(&mut self.calls);
+        let isr_vectors = std::mem::take(&mut self.isr_vectors);
+        let startup_address = self.startup_address;
+        let Some(startup_address) = startup_address else {
+            return Err(Error::Elf(
+                "could not determine a startup function".to_owned(),
+            ));
+        };
+        let main_address = self
+            .find_main_address()
+            .filter(|main| *main != startup_address);
+        let frequency = self.options.frequency_hz;
+        let frequency_domain = frequency.map(|_| FrequencyDomainId::new(CORE_DOMAIN));
+        let timing = match self.timing {
+            Some(model) => model.timing_info(frequency),
+            None => frequency_only_timing_info(frequency),
+        };
+
+        let mut functions = Vec::new();
+        for draft in self.functions.values() {
+            functions.push(self.function_to_schema(draft));
+        }
+
+        let mut contexts = Vec::new();
+        contexts.push(Context {
+            id: ContextId::new("ctx:startup"),
+            name: "startup".to_owned(),
+            kind: ContextKind::Startup,
+            entry: function_id(startup_address),
+            parent: None,
+            scheduling: Scheduling::Unknown,
+            priority: None,
+            core: None,
+            frequency_domain: frequency_domain.clone(),
+            spawn_edge: None,
+            ext: BTreeMap::new(),
+        });
+        if let Some(main_address) = main_address {
+            contexts.push(Context {
+                id: ContextId::new("ctx:main"),
+                name: "main".to_owned(),
+                kind: ContextKind::Main,
+                entry: function_id(main_address),
+                parent: Some(ContextId::new("ctx:startup")),
+                scheduling: Scheduling::Preemptive,
+                priority: None,
+                core: None,
+                frequency_domain: frequency_domain.clone(),
+                spawn_edge: None,
+                ext: BTreeMap::new(),
+            });
+        }
+
+        let mut edges: Vec<Edge> = Vec::new();
+        let mut edge_ids: BTreeSet<String> = BTreeSet::new();
+        for call in &calls {
+            let Some(callee) = self.resolve_function_address(call.target) else {
+                self.diag(
+                    Severity::Warning,
+                    "call-target-unresolved",
+                    format!(
+                        "call at 0x{:x} targets 0x{:x}, but no callee node exists",
+                        call.site, call.target
+                    ),
+                    Some(call.caller),
+                    Some(call.site),
+                );
+                continue;
+            };
+            let mut confidence = if call.heuristic {
+                Confidence::Low
+            } else if !call.direct {
+                Confidence::Medium
+            } else if callee == call.target {
+                Confidence::High
+            } else {
+                self.diag(
+                    Severity::Info,
+                    "call-into-function-body",
+                    format!(
+                        "call at 0x{:x} targets 0x{:x} inside function 0x{callee:x}",
+                        call.site, call.target
+                    ),
+                    Some(call.caller),
+                    Some(call.site),
+                );
+                Confidence::Medium
+            };
+            if call.conditional && !call.heuristic {
+                confidence = Confidence::Medium;
+            }
+            let id = format!("e:call:0x{:x}:0x{:x}", call.site, call.target);
+            if !edge_ids.insert(id.clone()) {
+                continue;
+            }
+            edges.push(Edge::Call {
+                id: EdgeId::new(id),
+                caller: function_id(call.caller),
+                callee: function_id(callee),
+                site: Addr::new(call.site),
+                direct: call.direct,
+                tail: call.tail,
+                inlined: false,
+                confidence,
+            });
+        }
+
+        for vector in &isr_vectors {
+            let handler = self.image.canonical_address(vector.handler);
+            let Some(function_address) = self.resolve_function_address(handler) else {
+                continue;
+            };
+            let Some(function) = self.functions.get(&function_address) else {
+                continue;
+            };
+            if function_address == startup_address {
+                continue;
+            }
+            let lower = function.display.to_ascii_lowercase();
+            if lower.contains("default_handler") || lower.contains("defaulthandler") {
+                continue;
+            }
+            let irq = vector.index.checked_sub(16);
+            let context_name = if function.display.starts_with("sub_0x") {
+                irq.map_or_else(
+                    || format!("vector_{}", vector.index),
+                    |irq| format!("IRQ{irq}"),
+                )
+            } else {
+                function.display.clone()
+            };
+            let context_id = ContextId::new(format!("ctx:isr:{}", vector.index));
+            contexts.push(Context {
+                id: context_id.clone(),
+                name: context_name.clone(),
+                kind: ContextKind::Isr,
+                entry: function_id(function_address),
+                parent: None,
+                scheduling: Scheduling::Interrupt,
+                priority: None,
+                core: None,
+                frequency_domain: frequency_domain.clone(),
+                spawn_edge: None,
+                ext: BTreeMap::new(),
+            });
+            let id = format!("e:isr:{}", vector.index);
+            edges.push(Edge::IsrActivate {
+                id: EdgeId::new(id),
+                to_context: context_id,
+                vector: vector.index,
+                irq,
+                name: Some(context_name),
+                confidence: Confidence::High,
+            });
+        }
+
+        let mut scopes = Vec::new();
+        let logical_functions = crate::runtime::apply(
+            &functions,
+            &mut contexts,
+            &mut edges,
+            &mut scopes,
+            &mut self.diagnostics,
+            self.options.max_diagnostics,
+            frequency_domain.as_ref(),
+            &self.decoded_by_function,
+            self.image,
+        );
+        functions.extend(logical_functions);
+        functions.sort_by(|left, right| {
+            (left.address, left.id.as_str()).cmp(&(right.address, right.id.as_str()))
+        });
+
+        edges.sort_by(|left, right| left.id().as_str().cmp(right.id().as_str()));
+        contexts.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+        scopes.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+
+        let tool = ToolInfo {
+            name: "elf2tdg".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            rules_version: "m0".to_owned(),
+            timing_tables_version: "0.1.0-m0".to_owned(),
+        };
+        let image = ImageInfo {
+            path: Some(self.image.path.display().to_string()),
+            sha256: None,
+            build_id: None,
+            arch: self.image.arch.schema_name().to_owned(),
+            endianness: match self.image.byte_order {
+                ByteOrder::Little => Endianness::Little,
+                ByteOrder::Big => Endianness::Big,
+            },
+            entry: Addr::new(self.image.entry),
+            elf_type: match self.image.elf_kind {
+                ElfKind::Exec => ElfType::Exec,
+                ElfKind::Dyn => ElfType::Dyn,
+                ElfKind::Rel => ElfType::Rel,
+                ElfKind::Unknown => ElfType::Unknown,
+            },
+            has_symbols: self.image.has_symbols,
+            has_debug_info: self.image.has_debug_info,
+            has_relocations: self.image.has_relocations,
+            load_segments: Vec::new(),
+        };
+
+        let tdg = Tdg {
+            schema_version: SCHEMA_VERSION.to_owned(),
+            tool,
+            image,
+            timing,
+            functions,
+            contexts,
+            edges,
+            scopes,
+            diagnostics: self.diagnostics,
+            ext: BTreeMap::new(),
+        };
+        tdg.ensure_valid().map_err(|error| {
+            Error::Validation(format!(
+                "{error}; first issues: {:#?}",
+                error.issues.iter().take(8).collect::<Vec<_>>()
+            ))
+        })?;
+        Ok(tdg)
+    }
+
+    fn function_to_schema(&self, draft: &FunctionDraft) -> Function {
+        let mut blocks = Vec::new();
+        for block in &draft.blocks {
+            let timing = match (self.timing, block.cycles, self.options.frequency_hz) {
+                (Some(model), Some(cycles), frequency) => {
+                    Some(model.block_timing(cycles, frequency))
+                }
+                _ => None,
+            };
+            let instructions = if self.options.include_instructions {
+                match self.timing {
+                    Some(model) => block
+                        .instructions
+                        .iter()
+                        .map(|insn| InstructionTiming {
+                            address: Addr::new(insn.address),
+                            size: insn.size,
+                            mnemonic: insn.mnemonic.clone(),
+                            text: Some(insn_text(insn)),
+                            cycles: model.instruction_cost(insn),
+                            note: None,
+                        })
+                        .collect(),
+                    None => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+            blocks.push(BasicBlock {
+                id: block_id(block.address),
+                address: Addr::new(block.address),
+                size: block.size,
+                successors: block
+                    .successors
+                    .iter()
+                    .map(|address| block_id(*address))
+                    .collect(),
+                instructions,
+                timing,
+            });
+        }
+
+        let timing = self.timing.and_then(|_model| {
+            if draft.blocks.is_empty() {
+                return None;
+            }
+            let mut min = 0.0_f64;
+            let mut max = 0.0_f64;
+            let mut modeled = 0_u32;
+            for block in &draft.blocks {
+                if let Some(cycles) = block.cycles {
+                    min += cycles.min;
+                    max += cycles.max;
+                    modeled += 1;
+                }
+            }
+            Some(FunctionTiming {
+                static_block_sum_cycles: elf2tdg_schema::CostRange::new(min, max),
+                modeled_blocks: modeled,
+                unmodeled_blocks: u32::try_from(draft.blocks.len())
+                    .unwrap_or(u32::MAX)
+                    .saturating_sub(modeled),
+                caveats: vec![
+                    "Sum of static block costs; this is not a path time or a WCET bound."
+                        .to_owned(),
+                ],
+            })
+        });
+
+        Function {
+            id: function_id(draft.address),
+            primary_name: draft.display.clone(),
+            demangled_name: draft.demangled.clone(),
+            symbols: draft.names.clone(),
+            language: draft.language,
+            address: Addr::new(draft.address),
+            size: draft.size,
+            section: Some(draft.section.clone()),
+            kind: draft.kind,
+            blocks,
+            timing,
+            source: self
+                .image
+                .dwarf
+                .as_ref()
+                .and_then(|dwarf| dwarf.source_at(draft.address))
+                .map(|source| SourceLoc {
+                    file: source.file.clone(),
+                    line: source.line,
+                    column: source.column,
+                }),
+            inline_sites: Vec::new(),
+            ext: BTreeMap::new(),
+        }
+    }
+
+    fn find_main_address(&self) -> Option<u64> {
+        self.functions
+            .values()
+            .filter(|function| {
+                function.names.iter().any(|name| name == "main")
+                    || function.display == "main"
+                    || function.display.ends_with("::main")
+            })
+            .map(|function| function.address)
+            .min()
+    }
+
+    fn resolve_function_address(&self, address: u64) -> Option<u64> {
+        if self.functions.contains_key(&address) {
+            Some(address)
+        } else {
+            self.function_containing(address)
+        }
+    }
+
+    fn function_containing(&self, address: u64) -> Option<u64> {
+        self.functions
+            .range(..=address)
+            .next_back()
+            .and_then(|(start, function)| {
+                if address < start.saturating_add(function.size) {
+                    Some(*start)
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn diag(
+        &mut self,
+        severity: Severity,
+        code: &str,
+        message: impl Into<String>,
+        function: Option<u64>,
+        site: Option<u64>,
+    ) {
+        let key = (code.to_owned(), function, site);
+        if !self.diagnostic_keys.insert(key) {
+            return;
+        }
+        if self.diagnostics.len() >= self.options.max_diagnostics {
+            return;
+        }
+        self.diagnostics.push(Diagnostic {
+            code: code.to_owned(),
+            severity,
+            message: message.into(),
+            function: function.map(function_id),
+            context: None,
+            site: site.map(Addr::new),
+            details: BTreeMap::new(),
+        });
+    }
+}
+
+fn frequency_only_timing_info(frequency_hz: Option<u64>) -> TimingInfo {
+    let frequency_domains = frequency_hz
+        .map(|hz| {
+            vec![FrequencyDomain {
+                id: FrequencyDomainId::new(CORE_DOMAIN),
+                name: "core".to_owned(),
+                hz,
+                source: FrequencySource::Cli,
+                confidence: Confidence::High,
+            }]
+        })
+        .unwrap_or_default();
+    TimingInfo {
+        models: Vec::new(),
+        frequency_domains,
+        default_frequency_domain: frequency_hz.map(|_| FrequencyDomainId::new(CORE_DOMAIN)),
+        caveats: vec![
+            "No instruction timing model is available for this architecture in M0.".to_owned(),
+        ],
+    }
+}
+
+fn function_id(address: u64) -> FunctionId {
+    FunctionId::new(format!("fn:0x{address:x}"))
+}
+
+fn block_id(address: u64) -> BlockId {
+    BlockId::new(format!("bb:0x{address:x}"))
+}
+
+fn insn_text(insn: &DecodedInsn) -> String {
+    if insn.operands.is_empty() {
+        insn.mnemonic.clone()
+    } else {
+        format!("{} {}", insn.mnemonic, insn.operands)
+    }
+}
+
+fn sum_costs(model: TimingModel, instructions: &[DecodedInsn]) -> elf2tdg_schema::CostRange {
+    let mut min = 0.0_f64;
+    let mut max = 0.0_f64;
+    for instruction in instructions {
+        let cost = model.instruction_cost(instruction);
+        min += cost.min;
+        max += cost.max;
+    }
+    elf2tdg_schema::CostRange::new(min, max)
+}
+
+struct NameChoice {
+    display: String,
+    demangled: Option<String>,
+    language: Language,
+}
+
+fn choose_name(names: &[String]) -> NameChoice {
+    #[derive(Clone)]
+    struct Candidate {
+        score: u8,
+        display: String,
+        demangled: Option<String>,
+        language: Language,
+    }
+    let mut candidates = Vec::new();
+    for name in names {
+        if let Ok(demangled) = rustc_demangle::try_demangle(name) {
+            let display = demangled.to_string();
+            candidates.push(Candidate {
+                score: 0,
+                display: display.clone(),
+                demangled: Some(display),
+                language: Language::Rust,
+            });
+        } else if name.starts_with("_Z") {
+            candidates.push(Candidate {
+                score: 1,
+                display: name.clone(),
+                demangled: None,
+                language: Language::Cpp,
+            });
+        } else {
+            candidates.push(Candidate {
+                score: if name.starts_with('_') { 3 } else { 2 },
+                display: name.clone(),
+                demangled: None,
+                language: Language::C,
+            });
+        }
+    }
+    candidates.sort_by(|left, right| {
+        (left.score, left.display.len(), &left.display).cmp(&(
+            right.score,
+            right.display.len(),
+            &right.display,
+        ))
+    });
+    if let Some(candidate) = candidates.into_iter().next() {
+        NameChoice {
+            display: candidate.display,
+            demangled: candidate.demangled,
+            language: candidate.language,
+        }
+    } else {
+        NameChoice {
+            display: String::new(),
+            demangled: None,
+            language: Language::Unknown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AnalysisOptions, analyze};
+    use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, ImageSymbol, Section};
+    use elf2tdg_schema::FunctionKind;
+    use object::SymbolKind;
+
+    fn image_with_code(code: Vec<u8>, symbols: Vec<(&str, u64, u64)>) -> Image {
+        image_with_arch(ArchKind::X86_64, code, symbols)
+    }
+
+    fn image_with_arch(arch: ArchKind, code: Vec<u8>, symbols: Vec<(&str, u64, u64)>) -> Image {
+        let symbols = symbols
+            .into_iter()
+            .map(|(name, address, size)| ImageSymbol {
+                name: name.to_owned(),
+                address,
+                canonical_address: address & !1,
+                size,
+                kind: SymbolKind::Text,
+                section: Some(".text".to_owned()),
+                thumb: false,
+            })
+            .collect();
+        Image {
+            path: "synthetic.elf".into(),
+            arch,
+            byte_order: ByteOrder::Little,
+            elf_kind: ElfKind::Exec,
+            entry: 0x1000,
+            sections: vec![Section {
+                name: ".text".to_owned(),
+                address: 0x1000,
+                size: code.len() as u64,
+                data: code,
+                executable: true,
+                writable: false,
+            }],
+            symbols,
+            has_symbols: true,
+            has_debug_info: false,
+            has_relocations: false,
+            arm_cpu: None,
+            vector_table: Vec::new(),
+            dwarf: None,
+            dwarf_error: None,
+        }
+    }
+
+    #[test]
+    fn builds_call_graph_and_blocks() {
+        // 0x1000: call 0x1010
+        // 0x1005: ret
+        // 0x1010: ret
+        let image = image_with_code(
+            vec![
+                0xe8, 0x0b, 0x00, 0x00, 0x00, // call 0x1010
+                0xc3, // ret
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+                0xc3, // ret at 0x1010
+            ],
+            vec![("main", 0x1000, 6), ("callee", 0x1010, 1)],
+        );
+        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        assert_eq!(tdg.functions.len(), 2);
+        assert!(tdg.functions.iter().any(|function| {
+            function.primary_name == "main" && function.kind == FunctionKind::Entry
+        }));
+        let call = tdg
+            .edges
+            .iter()
+            .find(|edge| matches!(edge, elf2tdg_schema::Edge::Call { .. }))
+            .expect("call edge");
+        match call {
+            elf2tdg_schema::Edge::Call { caller, callee, .. } => {
+                assert_eq!(caller.as_str(), "fn:0x1000");
+                assert_eq!(callee.as_str(), "fn:0x1010");
+            }
+            _ => unreachable!(),
+        }
+        tdg.ensure_valid().expect("TDG must validate");
+    }
+
+    #[test]
+    fn recovers_unresolved_indirect_call_as_diagnostic() {
+        // call rax; ret
+        let image = image_with_code(vec![0xff, 0xd0, 0xc3], vec![("main", 0x1000, 3)]);
+        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        assert!(
+            tdg.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "unresolved-indirect-call")
+        );
+    }
+
+    #[test]
+    fn aarch64_direct_call_is_recovered() {
+        let image = image_with_arch(
+            ArchKind::Aarch64,
+            vec![
+                0x02, 0x00, 0x00, 0x94, // bl 0x1008
+                0xc0, 0x03, 0x5f, 0xd6, // ret
+                0xc0, 0x03, 0x5f, 0xd6, // ret at 0x1008
+            ],
+            vec![("main", 0x1000, 8), ("callee", 0x1008, 4)],
+        );
+        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        assert!(tdg.edges.iter().any(|edge| matches!(
+            edge,
+            elf2tdg_schema::Edge::Call { caller, callee, .. }
+                if caller.as_str() == "fn:0x1000" && callee.as_str() == "fn:0x1008"
+        )));
+        assert!(
+            tdg.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "timing-model-unavailable")
+        );
+    }
+
+    #[test]
+    fn riscv_direct_call_and_timing_are_recovered() {
+        let image = image_with_arch(
+            ArchKind::Riscv32,
+            vec![
+                0xef, 0x00, 0x80, 0x00, // jal ra, 0x1008
+                0x67, 0x80, 0x00, 0x00, // ret
+                0x67, 0x80, 0x00, 0x00, // ret at 0x1008
+            ],
+            vec![("main", 0x1000, 8), ("callee", 0x1008, 4)],
+        );
+        let options = AnalysisOptions {
+            frequency_hz: Some(32_000_000),
+            ..AnalysisOptions::default()
+        };
+        let tdg = analyze(&image, &options).expect("analysis succeeds");
+        assert_eq!(
+            tdg.timing.models.first().map(|model| model.id.as_str()),
+            Some("riscv32-generic")
+        );
+        assert!(tdg.edges.iter().any(|edge| matches!(
+            edge,
+            elf2tdg_schema::Edge::Call { caller, callee, .. }
+                if caller.as_str() == "fn:0x1000" && callee.as_str() == "fn:0x1008"
+        )));
+        assert!(tdg.functions.iter().any(|function| {
+            function.id.as_str() == "fn:0x1000"
+                && function
+                    .blocks
+                    .first()
+                    .and_then(|block| block.timing.as_ref())
+                    .and_then(|timing| timing.time_ns)
+                    .is_some()
+        }));
+    }
+
+    #[test]
+    fn detects_c_runtime_spawn_as_opaque_edge() {
+        // main: call pthread_create; ret
+        // pthread_create: ret
+        let image = image_with_code(
+            vec![
+                0xe8, 0x0b, 0x00, 0x00, 0x00, // call 0x1010
+                0xc3, // ret
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+                0xc3, // ret at 0x1010
+            ],
+            vec![("main", 0x1000, 6), ("pthread_create", 0x1010, 1)],
+        );
+        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        let spawn = tdg
+            .edges
+            .iter()
+            .find_map(|edge| match edge {
+                elf2tdg_schema::Edge::Spawn {
+                    runtime,
+                    target: elf2tdg_schema::SpawnTarget::Opaque { .. },
+                    ..
+                } => Some(runtime),
+                _ => None,
+            })
+            .expect("pthread spawn edge");
+        assert_eq!(spawn.as_str(), "pthread");
+    }
+
+    #[test]
+    fn resolves_pthread_create_entry_argument() {
+        // 0x1000: lea rdx, [rip + 9]  -> 0x1010
+        // 0x1007: call 0x1020          (pthread_create)
+        // 0x100c: ret
+        // 0x1010: ret                  (task)
+        // 0x1020: ret                  (pthread_create)
+        let mut code = vec![
+            0x48, 0x8d, 0x15, 0x09, 0x00, 0x00, 0x00, // lea rdx, [rip + 9]
+            0xe8, 0x14, 0x00, 0x00, 0x00, // call 0x1020
+            0xc3, // ret
+        ];
+        code.resize(0x10, 0x90);
+        code.push(0xc3); // task at 0x1010
+        code.resize(0x20, 0x90);
+        code.push(0xc3); // pthread_create at 0x1020
+        let image = image_with_code(
+            code,
+            vec![
+                ("main", 0x1000, 13),
+                ("task", 0x1010, 1),
+                ("pthread_create", 0x1020, 1),
+            ],
+        );
+        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        tdg.ensure_valid().expect("TDG must validate");
+        let (context, entry) = tdg
+            .edges
+            .iter()
+            .find_map(|edge| match edge {
+                elf2tdg_schema::Edge::Spawn {
+                    runtime,
+                    target: elf2tdg_schema::SpawnTarget::Context { context, entry, .. },
+                    ..
+                } if runtime.as_str() == "pthread" => Some((context, entry)),
+                _ => None,
+            })
+            .expect("resolved pthread spawn");
+        assert_eq!(entry.as_str(), "fn:0x1010");
+        let context = tdg
+            .contexts
+            .iter()
+            .find(|candidate| &candidate.id == context)
+            .expect("thread context");
+        assert_eq!(context.kind, elf2tdg_schema::ContextKind::Thread);
+        assert_eq!(context.entry.as_str(), "fn:0x1010");
+    }
+
+    #[test]
+    fn creates_synthetic_callee_without_symbol() {
+        // call 0x1008; ret; ret
+        let image = image_with_code(
+            vec![
+                0xe8, 0x03, 0x00, 0x00, 0x00, // call 0x1008
+                0xc3, // ret
+                0x90, 0x90, // padding
+                0xc3, // ret at 0x1008
+            ],
+            vec![("main", 0x1000, 6)],
+        );
+        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        assert!(
+            tdg.functions
+                .iter()
+                .any(|function| function.id.as_str() == "fn:0x1008")
+        );
+        assert!(
+            tdg.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "synthetic-function")
+        );
+    }
+}
