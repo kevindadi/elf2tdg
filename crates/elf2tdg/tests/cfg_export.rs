@@ -214,3 +214,87 @@ fn cfg_blocks_match_tdg_blocks() {
         );
     }
 }
+
+#[test]
+fn system_roots_include_vector_isrs_but_skip_default_handlers() {
+    let Some(path) = fixture_elf() else {
+        return;
+    };
+    let image = loader::load(&path).expect("fixture must load");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let roots = analysis.cfg.system_roots(&analysis.tdg, &image);
+    assert_ne!(roots.len(), 0);
+    let reachable = analysis
+        .cfg
+        .reachable_from_system(&analysis.tdg, &image, false);
+    let names: Vec<&str> = reachable
+        .iter()
+        .map(|function| function.primary_name.as_str())
+        .collect();
+    assert!(names.contains(&"main"));
+    assert!(names.contains(&"USART1_IRQHandler"));
+    assert!(names.contains(&"Reset_Handler"));
+    assert!(
+        !names.contains(&"Default_Handler"),
+        "unused default vectors must not become roots"
+    );
+    let main_only = analysis
+        .cfg
+        .reachable_from(&analysis.tdg, "main")
+        .expect("main reachability");
+    assert!(
+        reachable.len() > main_only.len(),
+        "multi-root scope should include asynchronous entries"
+    );
+}
+
+#[test]
+fn system_reachability_uses_code_refs_and_optional_runtime_pruning() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/rust-concurrency/artifacts/rust-concurrency-o0.elf");
+    if !path.exists() {
+        return;
+    }
+    let image = loader::load(&path).expect("example ELF must load");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let referenced: usize = analysis
+        .cfg
+        .functions
+        .iter()
+        .map(|function| function.cfg.referenced_addresses.len())
+        .sum();
+    assert!(
+        referenced > 0,
+        "relocated function pointers and literals should produce code references"
+    );
+    let resolved_indirect = analysis.cfg.functions.iter().any(|function| {
+        function.cfg.blocks_by_address.values().any(|node| {
+            function.cfg.graph[*node]
+                .calls
+                .iter()
+                .any(|call| !call.direct && call.target_function.is_some())
+        })
+    });
+    assert!(
+        resolved_indirect,
+        "at least one indirect call should be resolved statically"
+    );
+
+    let unpruned = analysis
+        .cfg
+        .reachable_from_system(&analysis.tdg, &image, false);
+    let pruned = analysis
+        .cfg
+        .reachable_from_system(&analysis.tdg, &image, true);
+    assert!(
+        pruned.len() < unpruned.len(),
+        "runtime boundary pruning should reduce the reachable set"
+    );
+    assert!(
+        pruned
+            .iter()
+            .any(|function| function.primary_name.contains("main"))
+    );
+}

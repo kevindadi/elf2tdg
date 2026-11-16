@@ -72,7 +72,7 @@ fn cli_exports_cfg_json_and_dot_with_instructions() {
 }
 
 #[test]
-fn cli_defaults_to_main_reachability_and_all_functions_is_opt_in() {
+fn cli_defaults_to_system_reachability_and_all_functions_is_opt_in() {
     let Some((fixture, directory)) = temp_dir("reachable") else {
         eprintln!("skipping CFG CLI test: fixture is absent");
         return;
@@ -96,7 +96,9 @@ fn cli_defaults_to_main_reachability_and_all_functions_is_opt_in() {
         .collect();
     assert!(default_names.contains(&"main"));
     assert!(default_names.contains(&"sensor_task"));
-    assert!(!default_names.contains(&"USART1_IRQHandler"));
+    assert!(default_names.contains(&"USART1_IRQHandler"));
+    assert!(default_names.contains(&"Reset_Handler"));
+    assert!(!default_names.contains(&"Default_Handler"));
 
     let all_path = directory.join("all.json");
     let status = Command::new(env!("CARGO_BIN_EXE_elf2tdg"))
@@ -123,6 +125,7 @@ fn cli_defaults_to_main_reachability_and_all_functions_is_opt_in() {
         .map(|function| function["primary_name"].as_str().expect("name"))
         .collect();
     assert!(all_names.contains(&"USART1_IRQHandler"));
+    assert!(all_names.contains(&"Default_Handler"));
     assert!(all_names.len() > default_names.len());
 
     let _ = std::fs::remove_dir_all(&directory);
