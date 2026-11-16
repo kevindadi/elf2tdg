@@ -26,6 +26,13 @@ A function can be reachable from several contexts. The schema does not
 duplicate a function per context; consumers compute the may-run sets by
 reachability from each context entry.
 
+The TDG is not built directly from a loose block list. The analyzer first
+builds a per-function `FunctionCfg` using `petgraph::StableDiGraph`, preserving
+typed edges, raw instruction bytes, call sites, indirect-target expressions,
+timing and source locations. TDG function blocks and call edges are derived
+from these CFGs; concurrency-control edges are added on top. The intermediate
+format is documented in [cfg-format.md](cfg-format.md).
+
 ## 2. IDs and addresses
 
 IDs are strings with a fixed prefix:
@@ -79,6 +86,13 @@ entries and direct call targets. When no local code symbols exist, common
 prologue patterns add conservative seeds and a `stripped-heuristic-seeds`
 diagnostic. `Function.source` is filled from the DWARF line program when
 available; it is informational and does not affect graph identity.
+
+The CFG layer records block terminators (`fallthrough`, `call`, `return`,
+`branch`, `jump`, `unresolved`), typed edges (`fallthrough`, `call-return`,
+`branch`, `jump`), per-block calls, raw instruction bytes and static
+instruction costs. Calls are block-owned metadata, not intra-function edges;
+every call ends its basic block and returns to a new continuation block.
+`--view cfg` exports this format.
 
 ## 4. Contexts
 
@@ -312,6 +326,14 @@ DOT and Mermaid accept two projections:
 confidence encoding. It is supported for DOT and Mermaid only; JSON is
 unaffected.
 
+`--view cfg` switches the output from the TDG to the intermediate function
+CFG. CFG JSON uses its own `cfg_schema_version` (`1.0`), includes full
+instruction/raw-byte information by default, and can omit instruction arrays
+with `--no-cfg-instructions`. Without a selector, the CFG is limited to
+functions reachable from `main`; `--reachable-from ROOT` selects another root
+and `--all-functions` exports the complete image. DOT and Mermaid CFG views
+render function clusters, typed block edges and dashed call-target edges.
+
 ## 10. Runtime coverage
 
 Rust concurrency is the first priority:
@@ -433,6 +455,9 @@ M2 adds debug-info-assisted recovery and hardened optimized-code heuristics:
 
 M3 analysis extensions currently implement:
 
+- a petgraph-based `FunctionCfg` intermediate representation, CFG JSON/DOT/
+  Mermaid output, function selection, raw instruction/byte retention and
+  call-return block boundaries;
 - AArch64 entry recovery through absolute `adr`/`adrp` + `add`, literal `ldr`,
   register loads, copies and `movz`/`movk` chains;
 - RISC-V entry recovery through `auipc` + `addi`, `lui` + `addi`, loads,

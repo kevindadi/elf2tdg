@@ -4,6 +4,12 @@ Static Task Dependency Graph (TDG) extraction for embedded real-time ELF
 images. The target input is a linked ELF produced by Rust, C or C++ toolchains;
 the target output is a versioned JSON graph plus human-readable diagrams.
 
+The analyzer keeps an explicit per-function **control-flow graph** (`FunctionCfg`,
+backed by `petgraph::StableDiGraph`) between the ELF and the TDG. Basic blocks,
+raw instruction bytes, typed edges, call sites, timing and source locations are
+preserved for the CLI and a future IDA-style UI. TDG blocks and call edges are
+derived from this CFG; cross-function task/concurrency edges are layered on top.
+
 ## Status: M0 + M1 + M2 complete; M3 core analysis implemented
 
 Implemented:
@@ -11,8 +17,12 @@ Implemented:
 - ELF loading via `object`: sections, symbols, entry point, ARM attributes,
   Cortex-M vector tables, relocation/debug-info flags.
 - Capstone decoding for Thumb/A32, AArch64, RISC-V 32/64 and x86-64.
-- Symbol/entry/vector-seeded function discovery, basic-block CFG with
-  recursive descent, direct call and tail-call edges.
+- Symbol/entry/vector-seeded function discovery and recursive-descent basic
+  blocks, represented as `FunctionCfg` values in a petgraph
+  `StableDiGraph`. Typed intra-function edges, call sites, raw instruction
+  bytes and terminators are retained for the CFG view and downstream consumers.
+- TDG function blocks and call edges are derived from the CFG instead of a
+  second control-flow representation.
 - Startup/main/ISR contexts; Cortex-M vector activation edges
   (`isr-activate`, vector/IRQ numbers).
 - Timing models for Cortex-M0/M0+/M3/M4/M7/M33 and generic in-order RV32/RV64:
@@ -77,6 +87,13 @@ Implemented:
   seeds are supplemented by architecture-aware prologue scanning
   (`endbr64`/`push rbp; mov rbp,rsp`, `push {...,lr}`, `stp x29,x30`, RISC-V
   stack adjustment), with a `stripped-heuristic-seeds` diagnostic.
+- CFG CLI view: `--view cfg` exports lossless per-function JSON or
+  DOT/Mermaid CFGs, with function selection (`--function`), typed control-flow
+  edges, call/return blocks, call targets, indirect-target expressions, raw
+  instruction bytes and source locations. Concrete instructions can be omitted
+  from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
+  contains only functions reachable from `main`; `--reachable-from ROOT` picks
+  another root, and `--all-functions` exports the complete image.
 - DOT/Mermaid render scopes, spawn/join edges and runtime contexts, with a
   concurrency-only projection and a built-in node/edge legend for large
   optimized binaries. The renderers mark synthesized logical/orphan task
@@ -147,7 +164,29 @@ dot -Tsvg tdg-concurrency.dot -o tdg-concurrency.svg
 # Dynamic C/C++/OpenMP host binary: PLT imports become named function nodes
 cargo run -p elf2tdg -- app.elf --cpu x86-64 --freq 3GHz \
     --format json --output app-tdg.json
+
+# Lossless function CFG for one function
+cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
+    --function main --output main-cfg.json
+
+# Readable CFG and compact CFG JSON
+cargo run -p elf2tdg -- firmware.elf --view cfg --format dot \
+    --function main --output main.dot
+cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
+    --function main --no-cfg-instructions --output main-blocks.json
+
+# Global CFG: reachable from main by default, or from another root
+cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
+    --output reachable-cfg.json
+cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
+    --reachable-from sensor_task --output sensor-task-cfg.json
+
+# Complete image CFG, including functions unreachable from main
+cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
+    --all-functions --output full-cfg.json
 ```
+
+The CFG JSON format is documented in [docs/cfg-format.md](docs/cfg-format.md).
 
 Useful flags:
 
@@ -156,9 +195,14 @@ Useful flags:
 | `--cpu cortex-m4` | explicit timing model; Cortex-M/RISC-V are auto-detected when omitted. `aarch64` and `x86-64` select statistical generic models |
 | `--freq 168MHz` | core clock; enables `time_ns` in blocks |
 | `--instructions` | include per-instruction text and cycle costs (requires a timing model) |
-| `--format json|dot|mermaid` | output view |
-| `--projection full|concurrency` | graph projection; `concurrency` omits ordinary call edges |
-| `--legend` | append a node/edge legend to DOT or Mermaid output |
+| `--format json|dot|mermaid` | output format for the selected view |
+| `--view tdg|cfg` | final Task Dependency Graph (default) or per-function CFG |
+| `--function NAME|0xADDR` | select one function for CFG output |
+| `--reachable-from NAME|0xADDR` | export functions reachable from ROOT; defaults to `main` |
+| `--all-functions` | export CFGs for every function, including unreachable code |
+| `--no-cfg-instructions` | omit concrete instructions from CFG JSON and DOT/Mermaid labels |
+| `--projection full|concurrency` | TDG graph projection; `concurrency` omits ordinary call edges |
+| `--legend` | append a TDG node/edge legend to DOT or Mermaid output |
 | `--output PATH` | write to a file instead of stdout |
 | `--max-diagnostics N` | cap retained diagnostics (default 500) |
 | `--verbose` | print a summary to stderr |
@@ -168,6 +212,15 @@ Cortex-M auto-detection maps ARM `Tag_CPU_arch` values (`6S-M`, `7-M`, `7E-M`,
 pass `--cpu cortex-m7` if it is actually an M7. Generic AArch64/x86-64 cycle
 tables are opt-in because their results are statistical throughput estimates,
 not bounds for a specific core.
+
+`--instructions`, `--projection` and `--legend` apply to TDG output.
+`--function`, `--reachable-from`, `--all-functions` and
+`--no-cfg-instructions` apply only to `--view cfg`. With no CFG selector, the
+export is limited to functions reachable from `main` through calls and task
+creation; use `--all-functions` for a full-image CFG. CFG output includes
+instructions and raw bytes by default; DOT and Mermaid labels show the first
+eight instructions per block. Without them, blocks still retain addresses,
+terminators, timing and call sites.
 
 ## Example
 
@@ -201,10 +254,11 @@ with source, ELF, JSON, DOT and rendered SVG:
 
 - [`examples/rust-concurrency/`](examples/rust-concurrency/README.md) builds the
   same Rust program at `-O0` and `-O2` and shows concrete thread/scope contexts
-  versus DWARF-recovered inline spawns and logical task entries.
+  versus DWARF-recovered inline spawns and logical task entries, plus per-main
+  CFG JSON/SVG/Mermaid artifacts.
 - [`examples/cortex-m0-isr/`](examples/cortex-m0-isr/README.md) is a small
-  Cortex-M0 image with reset/main/ISR contexts, USART1 IRQ 37, direct calls and
-  48 MHz cycle-to-nanosecond estimates.
+  Cortex-M0 image with reset/main/ISR contexts, USART1 IRQ 37, direct calls,
+  48 MHz cycle-to-nanosecond estimates, and a per-`main` CFG export.
 
 A rendered walkthrough with both diagrams and the full legend is in
 [`examples/tdg-example.html`](examples/tdg-example.html). See
@@ -218,10 +272,12 @@ crates/elf2tdg-schema/    TDG data model, validation, JSON Schema
 crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rules,
                           origin tracking, emitters, CLI
 docs/tdg-schema.md        graph and timing semantics
+docs/cfg-format.md        function CFG JSON, call/return blocks and CLI view
 docs/tdg-legend.md        diagram shapes, colors, edge styles and confidence
 schema/tdg.schema.json    generated JSON Schema (2020-12)
 examples/                 worked Rust and Cortex-M examples plus artifacts
 tests/fixtures/           C/Rust firmware fixtures
 ```
 
-See [docs/tdg-schema.md](docs/tdg-schema.md) for the model.
+See [docs/tdg-schema.md](docs/tdg-schema.md) for the TDG model and
+[docs/cfg-format.md](docs/cfg-format.md) for the CFG intermediate format.
