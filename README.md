@@ -81,8 +81,9 @@ Implemented:
   stubs when one exists. Switch jump tables are expanded into CFG case edges,
   bounded by a preceding comparison when available: x86-64 absolute and
   PIE-relative indexed tables, ARM Thumb `tbb`/`tbh`, common AArch64
-  byte-offset table sequences, and RISC-V absolute-pointer tables.
-  Indirect jumps that stay in the function become
+  byte-offset table sequences, ARM A32 `ldrls pc, [pc, rN, lsl #2]`
+  absolute-address tables, and RISC-V absolute-pointer tables. Indirect jumps
+  that stay in the function become
   CFG edges; jumps that leave it become `tail: true` call edges.
   Caller-argument
   propagation resolves dispatch helpers and static C++ virtual calls when every
