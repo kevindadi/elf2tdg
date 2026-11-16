@@ -1,0 +1,58 @@
+digraph cfg {
+  rankdir=LR;
+  graph [fontname="Helvetica", label="elf2tdg function CFG", labelloc=t];
+  node [fontname="Helvetica", fontsize=9, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#555555"];
+  edge [fontname="Helvetica", fontsize=8];
+  subgraph cluster_cfg_0 {
+    label="SystemInit\n0x80000d8"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x80000d8" [label="bb 0x80000d8\n8 insn\npush {r7, lr}\nadd r7, sp, #0\nldr r3, [pc, #8]\nmovs r2, #0\nstr r2, [r3]\nmov r8, r8\nmov sp, r7\npop {r7, pc}"];
+  }
+  subgraph cluster_cfg_1 {
+    label="delay\n0x80000ec"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x80000ec" [label="bb 0x80000ec\n5 insn\npush {r7, lr}\nsub sp, #8\nadd r7, sp, #0\nstr r0, [r7, #4]\nb #0x8000100"];
+    "bb:0x80000f6" [label="bb 0x80000f6\n5 insn\nldr r3, [pc, #0x1c]\nldr r3, [r3]\nadds r2, r3, #1\nldr r3, [pc, #0x14]\nstr r2, [r3]"];
+    "bb:0x8000100" [label="bb 0x8000100\n5 insn\nldr r3, [r7, #4]\nsubs r2, r3, #1\nstr r2, [r7, #4]\ncmp r3, #0\nbne #0x80000f6"];
+    "bb:0x800010a" [label="bb 0x800010a\n5 insn\nmov r8, r8\nmov r8, r8\nmov sp, r7\nadd sp, #8\npop {r7, pc}"];
+    "bb:0x80000ec" -> "bb:0x8000100" [label="jump", color="#333333", style="bold"];
+    "bb:0x80000f6" -> "bb:0x8000100" [label="fallthrough", color="#777777", style="solid"];
+    "bb:0x8000100" -> "bb:0x80000f6" [label="branch", color="#2471a3", style="solid"];
+    "bb:0x8000100" -> "bb:0x800010a" [label="fallthrough", color="#777777", style="solid"];
+  }
+  subgraph cluster_cfg_2 {
+    label="sensor_task\n0x8000118"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x8000118" [label="bb 0x8000118\n4 insn\npush {r7, lr}\nadd r7, sp, #0\nmovs r0, #3\nbl #0x80000ec\n1 call(s)"];
+    "bb:0x8000122" [label="bb 0x8000122\n9 insn\nldr r3, [pc, #0x10]\nldr r3, [r3]\nmovs r2, #1\neors r2, r3\nldr r3, [pc, #8]\nstr r2, [r3]\nmov r8, r8\nmov sp, r7\n... +1 insn"];
+    "bb:0x8000118" -> "bb:0x8000122" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x8000118" -> "call:fn:0x80000ec" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+  }
+  subgraph cluster_cfg_3 {
+    label="USART1_IRQHandler\n0x8000138"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x8000138" [label="bb 0x8000138\n10 insn\npush {r7, lr}\nadd r7, sp, #0\nldr r3, [pc, #0xc]\nldr r3, [r3]\nadds r2, r3, #1\nldr r3, [pc, #8]\nstr r2, [r3]\nmov r8, r8\n... +2 insn"];
+  }
+  subgraph cluster_cfg_4 {
+    label="main\n0x8000150"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x8000150" [label="bb 0x8000150\n3 insn\npush {r7, lr}\nadd r7, sp, #0\nbl #0x8000118\n1 call(s)"];
+    "bb:0x8000158" [label="bb 0x8000158\n2 insn\nmovs r0, #0x64\nbl #0x80000ec\n1 call(s)"];
+    "bb:0x800015e" [label="bb 0x800015e\n1 insn\nb #0x8000158"];
+    "bb:0x8000150" -> "bb:0x8000158" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x8000158" -> "bb:0x800015e" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x800015e" -> "bb:0x8000158" [label="jump", color="#333333", style="bold"];
+    "bb:0x8000150" -> "call:fn:0x8000118" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x8000158" -> "call:fn:0x80000ec" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+  }
+  subgraph cluster_cfg_5 {
+    label="Reset_Handler\n0x8000160"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x8000160" [label="bb 0x8000160\n3 insn\npush {r7, lr}\nadd r7, sp, #0\nbl #0x80000d8\n1 call(s)"];
+    "bb:0x8000168" [label="bb 0x8000168\n1 insn\nbl #0x8000150\n1 call(s)"];
+    "bb:0x800016c" [label="bb 0x800016c\n2 insn\nmov r8, r8\nb #0x800016c"];
+    "bb:0x8000160" -> "bb:0x8000168" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x8000168" -> "bb:0x800016c" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x800016c" -> "bb:0x800016c" [label="jump", color="#333333", style="bold"];
+    "bb:0x8000160" -> "call:fn:0x80000d8" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x8000168" -> "call:fn:0x8000150" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+  }
+  "call:fn:0x80000d8" [label="SystemInit\n0x80000d8", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x80000ec" [label="delay\n0x80000ec", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x8000118" [label="sensor_task\n0x8000118", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x8000150" [label="main\n0x8000150", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+}

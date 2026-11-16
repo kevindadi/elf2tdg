@@ -1,0 +1,1674 @@
+{
+  "cfg_schema_version": "1.0",
+  "image": {
+    "path": "artifacts/cortex-m0-isr.elf",
+    "arch": "thumb",
+    "endianness": "little",
+    "entry": "0x8000161",
+    "elf_type": "exec",
+    "has_symbols": true,
+    "has_debug_info": true,
+    "has_relocations": true
+  },
+  "functions": [
+    {
+      "id": "fn:0x80000d8",
+      "primary_name": "SystemInit",
+      "demangled_name": null,
+      "symbols": [
+        "SystemInit"
+      ],
+      "language": "c",
+      "kind": "normal",
+      "address": "0x80000d8",
+      "size": 20,
+      "section": ".text",
+      "source": {
+        "file": "main.c",
+        "line": 19,
+        "column": 49
+      },
+      "entry": "bb:0x80000d8",
+      "blocks": [
+        {
+          "id": "bb:0x80000d8",
+          "address": "0x80000d8",
+          "size": 16,
+          "instructions": [
+            {
+              "address": "0x80000d8",
+              "size": 2,
+              "bytes": "80b5",
+              "mnemonic": "push",
+              "operands": "{r7, lr}",
+              "text": "push {r7, lr}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 19,
+                "column": 49
+              }
+            },
+            {
+              "address": "0x80000da",
+              "size": 2,
+              "bytes": "00af",
+              "mnemonic": "add",
+              "operands": "r7, sp, #0",
+              "text": "add r7, sp, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 19,
+                "column": 49
+              }
+            },
+            {
+              "address": "0x80000dc",
+              "size": 2,
+              "bytes": "024b",
+              "mnemonic": "ldr",
+              "operands": "r3, [pc, #8]",
+              "text": "ldr r3, [pc, #8]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 20,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x80000de",
+              "size": 2,
+              "bytes": "0022",
+              "mnemonic": "movs",
+              "operands": "r2, #0",
+              "text": "movs r2, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 20,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x80000e0",
+              "size": 2,
+              "bytes": "1a60",
+              "mnemonic": "str",
+              "operands": "r2, [r3]",
+              "text": "str r2, [r3]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 20,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x80000e2",
+              "size": 2,
+              "bytes": "c046",
+              "mnemonic": "mov",
+              "operands": "r8, r8",
+              "text": "mov r8, r8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 21,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x80000e4",
+              "size": 2,
+              "bytes": "bd46",
+              "mnemonic": "mov",
+              "operands": "sp, r7",
+              "text": "mov sp, r7",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 21,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x80000e6",
+              "size": 2,
+              "bytes": "80bd",
+              "mnemonic": "pop",
+              "operands": "{r7, pc}",
+              "text": "pop {r7, pc}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": true,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 21,
+                "column": 1
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 12.0,
+            "max": 16.0
+          },
+          "terminator": "return"
+        }
+      ],
+      "edges": [],
+      "recovered_calls": []
+    },
+    {
+      "id": "fn:0x80000ec",
+      "primary_name": "delay",
+      "demangled_name": null,
+      "symbols": [
+        "delay"
+      ],
+      "language": "c",
+      "kind": "normal",
+      "address": "0x80000ec",
+      "size": 44,
+      "section": ".text",
+      "source": {
+        "file": "main.c",
+        "line": 23,
+        "column": 65
+      },
+      "entry": "bb:0x80000ec",
+      "blocks": [
+        {
+          "id": "bb:0x80000ec",
+          "address": "0x80000ec",
+          "size": 10,
+          "instructions": [
+            {
+              "address": "0x80000ec",
+              "size": 2,
+              "bytes": "80b5",
+              "mnemonic": "push",
+              "operands": "{r7, lr}",
+              "text": "push {r7, lr}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 23,
+                "column": 65
+              }
+            },
+            {
+              "address": "0x80000ee",
+              "size": 2,
+              "bytes": "82b0",
+              "mnemonic": "sub",
+              "operands": "sp, #8",
+              "text": "sub sp, #8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 23,
+                "column": 65
+              }
+            },
+            {
+              "address": "0x80000f0",
+              "size": 2,
+              "bytes": "00af",
+              "mnemonic": "add",
+              "operands": "r7, sp, #0",
+              "text": "add r7, sp, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 23,
+                "column": 65
+              }
+            },
+            {
+              "address": "0x80000f2",
+              "size": 2,
+              "bytes": "7860",
+              "mnemonic": "str",
+              "operands": "r0, [r7, #4]",
+              "text": "str r0, [r7, #4]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 23,
+                "column": 65
+              }
+            },
+            {
+              "address": "0x80000f4",
+              "size": 2,
+              "bytes": "04e0",
+              "mnemonic": "b",
+              "operands": "#0x8000100",
+              "text": "b #0x8000100",
+              "is_call": false,
+              "is_jump": true,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x8000100",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 24,
+                "column": 11
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 7.0,
+            "max": 11.0
+          },
+          "terminator": "jump"
+        },
+        {
+          "id": "bb:0x80000f6",
+          "address": "0x80000f6",
+          "size": 10,
+          "instructions": [
+            {
+              "address": "0x80000f6",
+              "size": 2,
+              "bytes": "074b",
+              "mnemonic": "ldr",
+              "operands": "r3, [pc, #0x1c]",
+              "text": "ldr r3, [pc, #0x1c]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 25,
+                "column": 14
+              }
+            },
+            {
+              "address": "0x80000f8",
+              "size": 2,
+              "bytes": "1b68",
+              "mnemonic": "ldr",
+              "operands": "r3, [r3]",
+              "text": "ldr r3, [r3]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 25,
+                "column": 14
+              }
+            },
+            {
+              "address": "0x80000fa",
+              "size": 2,
+              "bytes": "5a1c",
+              "mnemonic": "adds",
+              "operands": "r2, r3, #1",
+              "text": "adds r2, r3, #1",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 25,
+                "column": 14
+              }
+            },
+            {
+              "address": "0x80000fc",
+              "size": 2,
+              "bytes": "054b",
+              "mnemonic": "ldr",
+              "operands": "r3, [pc, #0x14]",
+              "text": "ldr r3, [pc, #0x14]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 25,
+                "column": 14
+              }
+            },
+            {
+              "address": "0x80000fe",
+              "size": 2,
+              "bytes": "1a60",
+              "mnemonic": "str",
+              "operands": "r2, [r3]",
+              "text": "str r2, [r3]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 25,
+                "column": 14
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 9.0,
+            "max": 9.0
+          },
+          "terminator": "fallthrough"
+        },
+        {
+          "id": "bb:0x8000100",
+          "address": "0x8000100",
+          "size": 10,
+          "instructions": [
+            {
+              "address": "0x8000100",
+              "size": 2,
+              "bytes": "7b68",
+              "mnemonic": "ldr",
+              "operands": "r3, [r7, #4]",
+              "text": "ldr r3, [r7, #4]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 24,
+                "column": 17
+              }
+            },
+            {
+              "address": "0x8000102",
+              "size": 2,
+              "bytes": "5a1e",
+              "mnemonic": "subs",
+              "operands": "r2, r3, #1",
+              "text": "subs r2, r3, #1",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 24,
+                "column": 17
+              }
+            },
+            {
+              "address": "0x8000104",
+              "size": 2,
+              "bytes": "7a60",
+              "mnemonic": "str",
+              "operands": "r2, [r7, #4]",
+              "text": "str r2, [r7, #4]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 24,
+                "column": 17
+              }
+            },
+            {
+              "address": "0x8000106",
+              "size": 2,
+              "bytes": "002b",
+              "mnemonic": "cmp",
+              "operands": "r3, #0",
+              "text": "cmp r3, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 24,
+                "column": 12
+              }
+            },
+            {
+              "address": "0x8000108",
+              "size": 2,
+              "bytes": "f5d1",
+              "mnemonic": "bne",
+              "operands": "#0x80000f6",
+              "text": "bne #0x80000f6",
+              "is_call": false,
+              "is_jump": true,
+              "is_return": false,
+              "is_conditional": true,
+              "direct_target": "0x80000f6",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 24,
+                "column": 12
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 7.0,
+            "max": 9.0
+          },
+          "terminator": "branch"
+        },
+        {
+          "id": "bb:0x800010a",
+          "address": "0x800010a",
+          "size": 10,
+          "instructions": [
+            {
+              "address": "0x800010a",
+              "size": 2,
+              "bytes": "c046",
+              "mnemonic": "mov",
+              "operands": "r8, r8",
+              "text": "mov r8, r8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 27,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x800010c",
+              "size": 2,
+              "bytes": "c046",
+              "mnemonic": "mov",
+              "operands": "r8, r8",
+              "text": "mov r8, r8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 27,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x800010e",
+              "size": 2,
+              "bytes": "bd46",
+              "mnemonic": "mov",
+              "operands": "sp, r7",
+              "text": "mov sp, r7",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 27,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x8000110",
+              "size": 2,
+              "bytes": "02b0",
+              "mnemonic": "add",
+              "operands": "sp, #8",
+              "text": "add sp, #8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 27,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x8000112",
+              "size": 2,
+              "bytes": "80bd",
+              "mnemonic": "pop",
+              "operands": "{r7, pc}",
+              "text": "pop {r7, pc}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": true,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 27,
+                "column": 1
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 6.0,
+            "max": 8.0
+          },
+          "terminator": "return"
+        }
+      ],
+      "edges": [
+        {
+          "from": "bb:0x80000ec",
+          "to": "bb:0x8000100",
+          "kind": "jump",
+          "site": "0x80000f4",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x80000f6",
+          "to": "bb:0x8000100",
+          "kind": "fallthrough",
+          "site": "0x80000fe",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x8000100",
+          "to": "bb:0x80000f6",
+          "kind": "branch",
+          "site": "0x8000108",
+          "conditional": true
+        },
+        {
+          "from": "bb:0x8000100",
+          "to": "bb:0x800010a",
+          "kind": "fallthrough",
+          "site": "0x8000108",
+          "conditional": true
+        }
+      ],
+      "recovered_calls": []
+    },
+    {
+      "id": "fn:0x8000118",
+      "primary_name": "sensor_task",
+      "demangled_name": null,
+      "symbols": [
+        "sensor_task"
+      ],
+      "language": "c",
+      "kind": "normal",
+      "address": "0x8000118",
+      "size": 32,
+      "section": ".text",
+      "source": {
+        "file": "main.c",
+        "line": 29,
+        "column": 50
+      },
+      "entry": "bb:0x8000118",
+      "blocks": [
+        {
+          "id": "bb:0x8000118",
+          "address": "0x8000118",
+          "size": 10,
+          "instructions": [
+            {
+              "address": "0x8000118",
+              "size": 2,
+              "bytes": "80b5",
+              "mnemonic": "push",
+              "operands": "{r7, lr}",
+              "text": "push {r7, lr}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 29,
+                "column": 50
+              }
+            },
+            {
+              "address": "0x800011a",
+              "size": 2,
+              "bytes": "00af",
+              "mnemonic": "add",
+              "operands": "r7, sp, #0",
+              "text": "add r7, sp, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 29,
+                "column": 50
+              }
+            },
+            {
+              "address": "0x800011c",
+              "size": 2,
+              "bytes": "0320",
+              "mnemonic": "movs",
+              "operands": "r0, #3",
+              "text": "movs r0, #3",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 30,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x800011e",
+              "size": 4,
+              "bytes": "fff7e5ff",
+              "mnemonic": "bl",
+              "operands": "#0x80000ec",
+              "text": "bl #0x80000ec",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x80000ec",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 30,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x800011e",
+              "target": "0x80000ec",
+              "target_function": "fn:0x80000ec",
+              "target_name": "delay",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": {
+            "min": 6.0,
+            "max": 10.0
+          },
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x8000122",
+          "address": "0x8000122",
+          "size": 18,
+          "instructions": [
+            {
+              "address": "0x8000122",
+              "size": 2,
+              "bytes": "044b",
+              "mnemonic": "ldr",
+              "operands": "r3, [pc, #0x10]",
+              "text": "ldr r3, [pc, #0x10]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 31,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x8000124",
+              "size": 2,
+              "bytes": "1b68",
+              "mnemonic": "ldr",
+              "operands": "r3, [r3]",
+              "text": "ldr r3, [r3]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 31,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x8000126",
+              "size": 2,
+              "bytes": "0122",
+              "mnemonic": "movs",
+              "operands": "r2, #1",
+              "text": "movs r2, #1",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 31,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x8000128",
+              "size": 2,
+              "bytes": "5a40",
+              "mnemonic": "eors",
+              "operands": "r2, r3",
+              "text": "eors r2, r3",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 31,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x800012a",
+              "size": 2,
+              "bytes": "024b",
+              "mnemonic": "ldr",
+              "operands": "r3, [pc, #8]",
+              "text": "ldr r3, [pc, #8]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 31,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x800012c",
+              "size": 2,
+              "bytes": "1a60",
+              "mnemonic": "str",
+              "operands": "r2, [r3]",
+              "text": "str r2, [r3]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 31,
+                "column": 11
+              }
+            },
+            {
+              "address": "0x800012e",
+              "size": 2,
+              "bytes": "c046",
+              "mnemonic": "mov",
+              "operands": "r8, r8",
+              "text": "mov r8, r8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 32,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x8000130",
+              "size": 2,
+              "bytes": "bd46",
+              "mnemonic": "mov",
+              "operands": "sp, r7",
+              "text": "mov sp, r7",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 32,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x8000132",
+              "size": 2,
+              "bytes": "80bd",
+              "mnemonic": "pop",
+              "operands": "{r7, pc}",
+              "text": "pop {r7, pc}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": true,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 32,
+                "column": 1
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 14.0,
+            "max": 16.0
+          },
+          "terminator": "return"
+        }
+      ],
+      "edges": [
+        {
+          "from": "bb:0x8000118",
+          "to": "bb:0x8000122",
+          "kind": "call-return",
+          "site": "0x800011e",
+          "conditional": false
+        }
+      ],
+      "recovered_calls": []
+    },
+    {
+      "id": "fn:0x8000138",
+      "primary_name": "USART1_IRQHandler",
+      "demangled_name": null,
+      "symbols": [
+        "USART1_IRQHandler"
+      ],
+      "language": "c",
+      "kind": "isr",
+      "address": "0x8000138",
+      "size": 24,
+      "section": ".text",
+      "source": {
+        "file": "main.c",
+        "line": 34,
+        "column": 30
+      },
+      "entry": "bb:0x8000138",
+      "blocks": [
+        {
+          "id": "bb:0x8000138",
+          "address": "0x8000138",
+          "size": 20,
+          "instructions": [
+            {
+              "address": "0x8000138",
+              "size": 2,
+              "bytes": "80b5",
+              "mnemonic": "push",
+              "operands": "{r7, lr}",
+              "text": "push {r7, lr}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 34,
+                "column": 30
+              }
+            },
+            {
+              "address": "0x800013a",
+              "size": 2,
+              "bytes": "00af",
+              "mnemonic": "add",
+              "operands": "r7, sp, #0",
+              "text": "add r7, sp, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 34,
+                "column": 30
+              }
+            },
+            {
+              "address": "0x800013c",
+              "size": 2,
+              "bytes": "034b",
+              "mnemonic": "ldr",
+              "operands": "r3, [pc, #0xc]",
+              "text": "ldr r3, [pc, #0xc]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 35,
+                "column": 10
+              }
+            },
+            {
+              "address": "0x800013e",
+              "size": 2,
+              "bytes": "1b68",
+              "mnemonic": "ldr",
+              "operands": "r3, [r3]",
+              "text": "ldr r3, [r3]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 35,
+                "column": 10
+              }
+            },
+            {
+              "address": "0x8000140",
+              "size": 2,
+              "bytes": "5a1c",
+              "mnemonic": "adds",
+              "operands": "r2, r3, #1",
+              "text": "adds r2, r3, #1",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 35,
+                "column": 10
+              }
+            },
+            {
+              "address": "0x8000142",
+              "size": 2,
+              "bytes": "024b",
+              "mnemonic": "ldr",
+              "operands": "r3, [pc, #8]",
+              "text": "ldr r3, [pc, #8]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 35,
+                "column": 10
+              }
+            },
+            {
+              "address": "0x8000144",
+              "size": 2,
+              "bytes": "1a60",
+              "mnemonic": "str",
+              "operands": "r2, [r3]",
+              "text": "str r2, [r3]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 35,
+                "column": 10
+              }
+            },
+            {
+              "address": "0x8000146",
+              "size": 2,
+              "bytes": "c046",
+              "mnemonic": "mov",
+              "operands": "r8, r8",
+              "text": "mov r8, r8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 36,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x8000148",
+              "size": 2,
+              "bytes": "bd46",
+              "mnemonic": "mov",
+              "operands": "sp, r7",
+              "text": "mov sp, r7",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 36,
+                "column": 1
+              }
+            },
+            {
+              "address": "0x800014a",
+              "size": 2,
+              "bytes": "80bd",
+              "mnemonic": "pop",
+              "operands": "{r7, pc}",
+              "text": "pop {r7, pc}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": true,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 36,
+                "column": 1
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 16.0,
+            "max": 20.0
+          },
+          "terminator": "return"
+        }
+      ],
+      "edges": [],
+      "recovered_calls": []
+    },
+    {
+      "id": "fn:0x8000150",
+      "primary_name": "main",
+      "demangled_name": null,
+      "symbols": [
+        "main"
+      ],
+      "language": "c",
+      "kind": "normal",
+      "address": "0x8000150",
+      "size": 16,
+      "section": ".text",
+      "source": {
+        "file": "main.c",
+        "line": 38,
+        "column": 16
+      },
+      "entry": "bb:0x8000150",
+      "blocks": [
+        {
+          "id": "bb:0x8000150",
+          "address": "0x8000150",
+          "size": 8,
+          "instructions": [
+            {
+              "address": "0x8000150",
+              "size": 2,
+              "bytes": "80b5",
+              "mnemonic": "push",
+              "operands": "{r7, lr}",
+              "text": "push {r7, lr}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 38,
+                "column": 16
+              }
+            },
+            {
+              "address": "0x8000152",
+              "size": 2,
+              "bytes": "00af",
+              "mnemonic": "add",
+              "operands": "r7, sp, #0",
+              "text": "add r7, sp, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 38,
+                "column": 16
+              }
+            },
+            {
+              "address": "0x8000154",
+              "size": 4,
+              "bytes": "fff7e0ff",
+              "mnemonic": "bl",
+              "operands": "#0x8000118",
+              "text": "bl #0x8000118",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x8000118",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 39,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x8000154",
+              "target": "0x8000118",
+              "target_function": "fn:0x8000118",
+              "target_name": "sensor_task",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": {
+            "min": 5.0,
+            "max": 9.0
+          },
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x8000158",
+          "address": "0x8000158",
+          "size": 6,
+          "instructions": [
+            {
+              "address": "0x8000158",
+              "size": 2,
+              "bytes": "6420",
+              "mnemonic": "movs",
+              "operands": "r0, #0x64",
+              "text": "movs r0, #0x64",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 41,
+                "column": 9
+              }
+            },
+            {
+              "address": "0x800015a",
+              "size": 4,
+              "bytes": "fff7c7ff",
+              "mnemonic": "bl",
+              "operands": "#0x80000ec",
+              "text": "bl #0x80000ec",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x80000ec",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 41,
+                "column": 9
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x800015a",
+              "target": "0x80000ec",
+              "target_function": "fn:0x80000ec",
+              "target_name": "delay",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": {
+            "min": 3.0,
+            "max": 5.0
+          },
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x800015e",
+          "address": "0x800015e",
+          "size": 2,
+          "instructions": [
+            {
+              "address": "0x800015e",
+              "size": 2,
+              "bytes": "fbe7",
+              "mnemonic": "b",
+              "operands": "#0x8000158",
+              "text": "b #0x8000158",
+              "is_call": false,
+              "is_jump": true,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x8000158",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 41,
+                "column": 9
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 1.0,
+            "max": 3.0
+          },
+          "terminator": "jump"
+        }
+      ],
+      "edges": [
+        {
+          "from": "bb:0x8000150",
+          "to": "bb:0x8000158",
+          "kind": "call-return",
+          "site": "0x8000154",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x8000158",
+          "to": "bb:0x800015e",
+          "kind": "call-return",
+          "site": "0x800015a",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x800015e",
+          "to": "bb:0x8000158",
+          "kind": "jump",
+          "site": "0x800015e",
+          "conditional": false
+        }
+      ],
+      "recovered_calls": []
+    },
+    {
+      "id": "fn:0x8000160",
+      "primary_name": "Reset_Handler",
+      "demangled_name": null,
+      "symbols": [
+        "Reset_Handler"
+      ],
+      "language": "c",
+      "kind": "entry",
+      "address": "0x8000160",
+      "size": 16,
+      "section": ".text",
+      "source": {
+        "file": "main.c",
+        "line": 45,
+        "column": 26
+      },
+      "entry": "bb:0x8000160",
+      "blocks": [
+        {
+          "id": "bb:0x8000160",
+          "address": "0x8000160",
+          "size": 8,
+          "instructions": [
+            {
+              "address": "0x8000160",
+              "size": 2,
+              "bytes": "80b5",
+              "mnemonic": "push",
+              "operands": "{r7, lr}",
+              "text": "push {r7, lr}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 45,
+                "column": 26
+              }
+            },
+            {
+              "address": "0x8000162",
+              "size": 2,
+              "bytes": "00af",
+              "mnemonic": "add",
+              "operands": "r7, sp, #0",
+              "text": "add r7, sp, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 45,
+                "column": 26
+              }
+            },
+            {
+              "address": "0x8000164",
+              "size": 4,
+              "bytes": "fff7b8ff",
+              "mnemonic": "bl",
+              "operands": "#0x80000d8",
+              "text": "bl #0x80000d8",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x80000d8",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 46,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x8000164",
+              "target": "0x80000d8",
+              "target_function": "fn:0x80000d8",
+              "target_name": "SystemInit",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": {
+            "min": 5.0,
+            "max": 9.0
+          },
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x8000168",
+          "address": "0x8000168",
+          "size": 4,
+          "instructions": [
+            {
+              "address": "0x8000168",
+              "size": 4,
+              "bytes": "fff7f2ff",
+              "mnemonic": "bl",
+              "operands": "#0x8000150",
+              "text": "bl #0x8000150",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x8000150",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 47,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x8000168",
+              "target": "0x8000150",
+              "target_function": "fn:0x8000150",
+              "target_name": "main",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": {
+            "min": 2.0,
+            "max": 4.0
+          },
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x800016c",
+          "address": "0x800016c",
+          "size": 4,
+          "instructions": [
+            {
+              "address": "0x800016c",
+              "size": 2,
+              "bytes": "c046",
+              "mnemonic": "mov",
+              "operands": "r8, r8",
+              "text": "mov r8, r8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 48,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x800016e",
+              "size": 2,
+              "bytes": "fde7",
+              "mnemonic": "b",
+              "operands": "#0x800016c",
+              "text": "b #0x800016c",
+              "is_call": false,
+              "is_jump": true,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x800016c",
+              "indirect": null,
+              "source": {
+                "file": "main.c",
+                "line": 48,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 2.0,
+            "max": 4.0
+          },
+          "terminator": "jump"
+        }
+      ],
+      "edges": [
+        {
+          "from": "bb:0x8000160",
+          "to": "bb:0x8000168",
+          "kind": "call-return",
+          "site": "0x8000164",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x8000168",
+          "to": "bb:0x800016c",
+          "kind": "call-return",
+          "site": "0x8000168",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x800016c",
+          "to": "bb:0x800016c",
+          "kind": "jump",
+          "site": "0x800016e",
+          "conditional": false
+        }
+      ],
+      "recovered_calls": []
+    }
+  ],
+  "diagnostics": []
+}

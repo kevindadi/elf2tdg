@@ -29,7 +29,7 @@ digraph cfg {
     "bb:0x1dea7" -> "call:fn:0x19d50" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
     "bb:0x1ded4" -> "call:fn:0x19d50" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
     "bb:0x1dee3" -> "call:fn:0x1a130" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
-    "bb:0x1df1c" -> "call:unresolved:0x1df22" [label="call?", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x1df1c" -> "call:fn:0x468a0" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
   }
   "call:fn:0x19d50" [label="<core::fmt::rt::Argument>::new_lower_hex::<u32>\n0x19d50", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
   "call:fn:0x1a130" [label="<core::fmt::Arguments>::new::<34usize, 2usize>\n0x1a130", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
@@ -37,5 +37,5 @@ digraph cfg {
   "call:fn:0x1b7e0" [label="std::thread::functions::spawn::<main::main::{...\n0x1b7e0", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
   "call:fn:0x1df60" [label="<core::result::Result<u32, alloc::boxed::Box<...\n0x1df60", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
   "call:fn:0x1e360" [label="<std::thread::join_handle::JoinHandle<u32>>::...\n0x1e360", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
-  "call:unresolved:0x1df22" [label="unresolved call", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x468a0" [label="std::io::stdio::_print\n0x468a0", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
 }

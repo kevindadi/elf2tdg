@@ -38,6 +38,13 @@ analyze: $(ELF)
 	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format mermaid \
 		--function main --output $(ARTIFACTS)/cfg-main.mmd
 	$(TOOL) $(ELF) --view elf --output $(ARTIFACTS)/elf-layout.mmd
+	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format json \
+		--output $(ARTIFACTS)/cfg-system.json
+	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format dot \
+		--output $(ARTIFACTS)/cfg-system.dot
+	dot -Tsvg $(ARTIFACTS)/cfg-system.dot -o $(ARTIFACTS)/cfg-system.svg
+	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format mermaid \
+		--output $(ARTIFACTS)/cfg-system.mmd
 
 clean:
 	rm -rf $(ARTIFACTS)

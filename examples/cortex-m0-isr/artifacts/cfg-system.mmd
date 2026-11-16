@@ -1,0 +1,53 @@
+flowchart LR
+  subgraph cfg0["SystemInit\n0x80000d8"]
+    direction LR
+    b0_134217944["bb 0x80000d8<br/>8 insn<br/>push (r7, lr)<br/>add r7, sp, #0<br/>ldr r3, (pc, #8)<br/>movs r2, #0<br/>str r2, (r3)<br/>mov r8, r8<br/>mov sp, r7<br/>pop (r7, pc)"]
+  end
+  subgraph cfg1["delay\n0x80000ec"]
+    direction LR
+    b1_134217964["bb 0x80000ec<br/>5 insn<br/>push (r7, lr)<br/>sub sp, #8<br/>add r7, sp, #0<br/>str r0, (r7, #4)<br/>b #0x8000100"]
+    b1_134217974["bb 0x80000f6<br/>5 insn<br/>ldr r3, (pc, #0x1c)<br/>ldr r3, (r3)<br/>adds r2, r3, #1<br/>ldr r3, (pc, #0x14)<br/>str r2, (r3)"]
+    b1_134217984["bb 0x8000100<br/>5 insn<br/>ldr r3, (r7, #4)<br/>subs r2, r3, #1<br/>str r2, (r7, #4)<br/>cmp r3, #0<br/>bne #0x80000f6"]
+    b1_134217994["bb 0x800010a<br/>5 insn<br/>mov r8, r8<br/>mov r8, r8<br/>mov sp, r7<br/>add sp, #8<br/>pop (r7, pc)"]
+    b1_134217964 ==>|jump| b1_134217984
+    b1_134217974 -->|fallthrough| b1_134217984
+    b1_134217984 -->|branch| b1_134217974
+    b1_134217984 -->|fallthrough| b1_134217994
+  end
+  subgraph cfg2["sensor_task\n0x8000118"]
+    direction LR
+    b2_134218008["bb 0x8000118<br/>4 insn<br/>push (r7, lr)<br/>add r7, sp, #0<br/>movs r0, #3<br/>bl #0x80000ec<br/>1 call(s)"]
+    b2_134218018["bb 0x8000122<br/>9 insn<br/>ldr r3, (pc, #0x10)<br/>ldr r3, (r3)<br/>movs r2, #1<br/>eors r2, r3<br/>ldr r3, (pc, #8)<br/>str r2, (r3)<br/>mov r8, r8<br/>mov sp, r7<br/>... +1 insn"]
+    b2_134218008 -->|return| b2_134218018
+  end
+  subgraph cfg3["USART1_IRQHandler\n0x8000138"]
+    direction LR
+    b3_134218040["bb 0x8000138<br/>10 insn<br/>push (r7, lr)<br/>add r7, sp, #0<br/>ldr r3, (pc, #0xc)<br/>ldr r3, (r3)<br/>adds r2, r3, #1<br/>ldr r3, (pc, #8)<br/>str r2, (r3)<br/>mov r8, r8<br/>... +2 insn"]
+  end
+  subgraph cfg4["main\n0x8000150"]
+    direction LR
+    b4_134218064["bb 0x8000150<br/>3 insn<br/>push (r7, lr)<br/>add r7, sp, #0<br/>bl #0x8000118<br/>1 call(s)"]
+    b4_134218072["bb 0x8000158<br/>2 insn<br/>movs r0, #0x64<br/>bl #0x80000ec<br/>1 call(s)"]
+    b4_134218078["bb 0x800015e<br/>1 insn<br/>b #0x8000158"]
+    b4_134218064 -->|return| b4_134218072
+    b4_134218072 -->|return| b4_134218078
+    b4_134218078 ==>|jump| b4_134218072
+  end
+  subgraph cfg5["Reset_Handler\n0x8000160"]
+    direction LR
+    b5_134218080["bb 0x8000160<br/>3 insn<br/>push (r7, lr)<br/>add r7, sp, #0<br/>bl #0x80000d8<br/>1 call(s)"]
+    b5_134218088["bb 0x8000168<br/>1 insn<br/>bl #0x8000150<br/>1 call(s)"]
+    b5_134218092["bb 0x800016c<br/>2 insn<br/>mov r8, r8<br/>b #0x800016c"]
+    b5_134218080 -->|return| b5_134218088
+    b5_134218088 -->|return| b5_134218092
+    b5_134218092 ==>|jump| b5_134218092
+  end
+  call0["delay<br/>0x80000ec"]
+  b2_134218008 -.->|call| call0
+  call1["sensor_task<br/>0x8000118"]
+  b4_134218064 -.->|call| call1
+  b4_134218072 -.->|call| call0
+  call2["SystemInit<br/>0x80000d8"]
+  b5_134218080 -.->|call| call2
+  call3["main<br/>0x8000150"]
+  b5_134218088 -.->|call| call3

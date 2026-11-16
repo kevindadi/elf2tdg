@@ -34,6 +34,10 @@ Requirements: `arm-none-eabi-gcc`, `cargo`, and Graphviz `dot`.
 | [`artifacts/cfg-main.dot`](artifacts/cfg-main.dot) | Graphviz source for the `main` CFG |
 | [`artifacts/cfg-main.svg`](artifacts/cfg-main.svg) | rendered `main` CFG |
 | [`artifacts/cfg-main.mmd`](artifacts/cfg-main.mmd) | Mermaid source for the `main` CFG |
+| [`artifacts/cfg-system.json`](artifacts/cfg-system.json) | multi-root system CFG JSON (main + reset + ISR) |
+| [`artifacts/cfg-system.dot`](artifacts/cfg-system.dot) | Graphviz source for the system CFG |
+| [`artifacts/cfg-system.svg`](artifacts/cfg-system.svg) | rendered system CFG including the USART1 ISR |
+| [`artifacts/cfg-system.mmd`](artifacts/cfg-system.mmd) | Mermaid source for the system CFG |
 | [`artifacts/elf-layout.mmd`](artifacts/elf-layout.mmd) | loader-backed ELF layout with colored segments and disassembly |
 
 A browser walkthrough with both examples and the complete legend is

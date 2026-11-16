@@ -383,110 +383,82 @@ flowchart LR
     b0_102454 -->|return| b0_102463
     b0_102463 ==>|jump| b0_101492
   end
-  call0["unresolved call"]
-  b0_99673 -.->|call?| call0
-  call1["unresolved call"]
-  b0_99707 -.->|call?| call1
-  call2["unresolved call"]
-  b0_99985 -.->|call?| call2
-  call3["unresolved call"]
-  b0_100010 -.->|call?| call3
-  call4["unresolved call"]
-  b0_100024 -.->|call?| call4
-  call5["unresolved call"]
-  b0_100036 -.->|call?| call5
-  call6["unresolved call"]
-  b0_100060 -.->|call?| call6
-  call7["unresolved call"]
-  b0_100092 -.->|call?| call7
-  call8["unresolved call"]
-  b0_100204 -.->|call?| call8
-  call9["unresolved call"]
-  b0_100214 -.->|call?| call9
-  call10["unresolved call"]
-  b0_100250 -.->|call?| call10
-  call11["unresolved call"]
-  b0_100316 -.->|call?| call11
-  call12["unresolved call"]
-  b0_100349 -.->|call?| call12
-  call13["unresolved call"]
-  b0_100374 -.->|call?| call13
-  call14["<std::thread::lifecycle::JoinInner<u32>>::join<br/>0x19100"]
-  b0_100413 -.->|call| call14
-  call15["unresolved call"]
-  b0_100468 -.->|call?| call15
-  call16["unresolved call"]
-  b0_100488 -.->|call?| call16
-  call17["unresolved call"]
-  b0_100534 -.->|call?| call17
-  call18["unresolved call"]
-  b0_100663 -.->|call?| call18
-  call19["unresolved call"]
-  b0_100697 -.->|call?| call19
-  call20["unresolved call"]
-  b0_100980 -.->|call?| call20
-  call21["unresolved call"]
-  b0_101005 -.->|call?| call21
-  call22["unresolved call"]
-  b0_101011 -.->|call?| call22
-  call23["unresolved call"]
-  b0_101028 -.->|call?| call23
-  call24["unresolved call"]
-  b0_101052 -.->|call?| call24
-  call25["unresolved call"]
-  b0_101090 -.->|call?| call25
-  call26["unresolved call"]
-  b0_101199 -.->|call?| call26
-  call27["unresolved call"]
-  b0_101209 -.->|call?| call27
-  call28["unresolved call"]
-  b0_101245 -.->|call?| call28
-  call29["unresolved call"]
-  b0_101311 -.->|call?| call29
-  call30["unresolved call"]
-  b0_101344 -.->|call?| call30
-  call31["unresolved call"]
-  b0_101369 -.->|call?| call31
-  b0_101408 -.->|call| call14
-  call32["unresolved call"]
-  b0_101513 -.->|call?| call32
-  call33["<alloc::rcs::arc::Arc<std::thread::scoped::Sc...<br/>0x19270"]
-  b0_101558 -.->|call| call33
-  call34["unresolved call"]
-  b0_101571 -.->|call?| call34
-  call35["unresolved call"]
-  b0_101672 -.->|call?| call35
-  call36["unresolved call"]
-  b0_101698 -.->|call?| call36
-  call37["unresolved call"]
-  b0_101719 -.->|call?| call37
-  call38["core::result::unwrap_failed::<alloc::boxed::B...<br/>0x18150"]
-  b0_101740 -.->|call| call38
-  call39["unresolved call"]
-  b0_101772 -.->|call?| call39
-  call40["unresolved call"]
-  b0_101798 -.->|call?| call40
-  call41["unresolved call"]
-  b0_101824 -.->|call?| call41
-  call42["unresolved call"]
-  b0_101854 -.->|call?| call42
-  call43["unresolved call"]
-  b0_101875 -.->|call?| call43
-  b0_101896 -.->|call| call38
-  call44["<alloc::rcs::arc::Arc<std::thread::lifecycle:...<br/>0x19200"]
-  b0_101942 -.->|call| call44
-  call45["unresolved call"]
-  b0_101966 -.->|call?| call45
-  call46["core::result::unwrap_failed::<core::io::error...<br/>0x181d0"]
-  b0_101977 -.->|call| call46
-  call47["unresolved call"]
-  b0_101992 -.->|call?| call47
-  b0_102020 -.->|call| call44
-  call48["unresolved call"]
-  b0_102041 -.->|call?| call48
-  b0_102052 -.->|call| call46
-  call49["unresolved call"]
-  b0_102081 -.->|call?| call49
-  b0_102370 -.->|call| call33
-  call50["unresolved call"]
-  b0_102454 -.->|call?| call50
+  call0["std::sys::env::unix::getenv<br/>0x40610"]
+  b0_99673 -.->|call| call0
+  call1["core::str::converts::from_utf8<br/>0x54e80"]
+  b0_99707 -.->|call| call1
+  call2["__rustc::__rust_dealloc<br/>0x19478"]
+  b0_99985 -.->|call| call2
+  call3["<std::thread::id::ThreadId>::new<br/>0x2cd70"]
+  b0_100010 -.->|call| call3
+  call4["<std::thread::thread::Thread>::new<br/>0x35430"]
+  b0_100024 -.->|call| call4
+  call5["std::thread::spawnhook::run_spawn_hooks<br/>0x3fa60"]
+  b0_100036 -.->|call| call5
+  call6["__rustc::__rust_no_alloc_shim_is_unstable_v2<br/>0x1948d"]
+  b0_100060 -.->|call| call6
+  call7["__rustc::__rust_alloc<br/>0x19470"]
+  b0_100092 -.->|call| call7
+  call8["<std::thread::scoped::ScopeData>::increment_n...<br/>0x2cdf0"]
+  b0_100204 -.->|call| call8
+  b0_100214 -.->|call| call6
+  b0_100250 -.->|call| call7
+  b0_100316 -.->|call| call6
+  b0_100349 -.->|call| call7
+  call9["<std::sys::thread::unix::Thread>::new<br/>0x2e790"]
+  b0_100374 -.->|call| call9
+  call10["<std::thread::lifecycle::JoinInner<u32>>::join<br/>0x19100"]
+  b0_100413 -.->|call| call10
+  call11["std::thread::current::current_or_unnamed<br/>0x3f9d0"]
+  b0_100468 -.->|call| call11
+  b0_100488 -.->|call| call6
+  b0_100534 -.->|call| call7
+  b0_100663 -.->|call| call0
+  b0_100697 -.->|call| call1
+  b0_100980 -.->|call| call2
+  b0_101005 -.->|call| call3
+  b0_101011 -.->|call| call4
+  b0_101028 -.->|call| call5
+  b0_101052 -.->|call| call6
+  b0_101090 -.->|call| call7
+  b0_101199 -.->|call| call8
+  b0_101209 -.->|call| call6
+  b0_101245 -.->|call| call7
+  b0_101311 -.->|call| call6
+  b0_101344 -.->|call| call7
+  b0_101369 -.->|call| call9
+  b0_101408 -.->|call| call10
+  call12["<std::thread::thread::Thread>::park<br/>0x35540"]
+  b0_101513 -.->|call| call12
+  call13["<alloc::rcs::arc::Arc<std::thread::scoped::Sc...<br/>0x19270"]
+  b0_101558 -.->|call| call13
+  call14["std::io::stdio::_print<br/>0x3f4c0"]
+  b0_101571 -.->|call| call14
+  call15["alloc::alloc::handle_alloc_error<br/>0x520ee"]
+  b0_101672 -.->|call| call15
+  b0_101698 -.->|call| call15
+  b0_101719 -.->|call| call15
+  call16["core::result::unwrap_failed::<alloc::boxed::B...<br/>0x18150"]
+  b0_101740 -.->|call| call16
+  b0_101772 -.->|call| call15
+  b0_101798 -.->|call| call15
+  call17["core::panicking::panic_fmt<br/>0x547c0"]
+  b0_101824 -.->|call| call17
+  b0_101854 -.->|call| call15
+  b0_101875 -.->|call| call15
+  b0_101896 -.->|call| call16
+  call18["<alloc::rcs::arc::Arc<std::thread::lifecycle:...<br/>0x19200"]
+  b0_101942 -.->|call| call18
+  call19["<alloc::rcs::arc::Arc<std::thread::thread::In...<br/>0x3d9c0"]
+  b0_101966 -.->|call| call19
+  call20["core::result::unwrap_failed::<core::io::error...<br/>0x181d0"]
+  b0_101977 -.->|call| call20
+  call21["std::panic::resume_unwind<br/>0x3ebb0"]
+  b0_101992 -.->|call| call21
+  b0_102020 -.->|call| call18
+  b0_102041 -.->|call| call19
+  b0_102052 -.->|call| call20
+  b0_102081 -.->|call| call2
+  b0_102370 -.->|call| call13
+  call22["std::panicking::catch_unwind::cleanup<br/>0x42d3b"]
+  b0_102454 -.->|call| call22
