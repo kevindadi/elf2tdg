@@ -598,3 +598,36 @@ fn resolves_arm_a32_ldr_pc_jump_table_edges() {
     };
     assert_jump_table_resolved(&binary, 16);
 }
+
+#[test]
+fn resolves_arm_a32_add_pc_branch_table_edges() {
+    let source = r"
+.syntax unified
+.arm
+.text
+.global dispatch
+.type dispatch,%function
+dispatch:
+    cmp r0, #3
+    addls pc, pc, r0, lsl #2
+    b def
+    b c0
+    b c1
+    b c2
+    b c3
+c0: mov r0, #10
+    bx lr
+c1: mov r0, #11
+    bx lr
+c2: mov r0, #12
+    bx lr
+c3: mov r0, #13
+    bx lr
+def: mov r0, #-1
+    bx lr
+";
+    let Some(binary) = compile_arm("switch_addpc.s", source) else {
+        return;
+    };
+    assert_jump_table_resolved(&binary, 4);
+}
