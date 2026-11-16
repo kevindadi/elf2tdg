@@ -147,7 +147,7 @@ pub fn resolve_indirect_target(
             resolve_register(image, decoded, before, register, 0)?.wrapping_add_signed(offset)
         }
         IndirectTarget::Memory(address) => image.read_uint(address, pointer_size(image.arch))?,
-        IndirectTarget::IndexedMemory { .. } => return None,
+        IndirectTarget::IndexedMemory { .. } | IndirectTarget::TableBranch { .. } => return None,
         IndirectTarget::RegisterMemory { base, disp } => {
             if let Some(base_value) = resolve_register(image, decoded, before, base, 0) {
                 let address = base_value.wrapping_add_signed(disp);
@@ -201,11 +201,57 @@ pub fn resolve_jump_table(
     (!targets.is_empty()).then_some(targets)
 }
 
-/// Resolves the common PIE switch sequence:
-///
-/// `lea table(%rip), %rdx; movslq (%rdx,%rdi,4), %rax; add %rdx,%rax; jmp *%rax`.
+/// Resolves ARM `tbb`/`tbh` table branches.
 #[must_use]
-pub fn resolve_pie_jump_table(
+pub fn resolve_table_branch(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    target: IndirectTarget,
+) -> Option<Vec<u64>> {
+    let IndirectTarget::TableBranch {
+        base,
+        index,
+        halfword,
+    } = target
+    else {
+        return None;
+    };
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    let table_base = if let Some(base) = base {
+        resolve_register(image, decoded, before, base, 0)?
+    } else {
+        match image.arch {
+            crate::loader::ArchKind::Thumb => site.checked_add(4)?,
+            crate::loader::ArchKind::Arm => site.checked_add(8)?,
+            _ => return None,
+        }
+    };
+    let entry_size = if halfword { 2 } else { 1 };
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let mut targets = Vec::new();
+    for raw in read_table_entries(image, table_base, entry_size, limit) {
+        let Some(offset) = raw.checked_mul(2) else {
+            break;
+        };
+        let target = image.canonical_address(table_base.wrapping_add(offset));
+        if !image.is_executable(target) {
+            break;
+        }
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    (!targets.is_empty()).then_some(targets)
+}
+
+/// Resolves a switch table whose entry is added to a base address.
+///
+/// Supported patterns include PIE x86-64
+/// `lea table; movslq [table+index*4]; add table; jmp` and `AArch64`
+/// `adr base; adrp/add table; ldrb [table+index]; add base, base, entry, lsl #2; br`.
+#[must_use]
+pub fn resolve_offset_jump_table(
     image: &Image,
     decoded: &[DecodedInsn],
     site: u64,
@@ -214,15 +260,27 @@ pub fn resolve_pie_jump_table(
     let before = decoded.partition_point(|instruction| instruction.address < site);
     let (add_index, add_effect) = latest_definition(decoded, before, jump_register)?;
     let ValueSource::AddRegister {
-        base: load_register,
-        addend: table_register,
+        base,
+        addend,
+        shift,
     } = add_effect.source
     else {
         return None;
     };
-    let (_, load_effect) = latest_definition(decoded, add_index, load_register)?;
+    let (load_effect, code_register) = if let Some((_, effect)) =
+        latest_definition(decoded, add_index, addend)
+        && matches!(effect.source, ValueSource::IndexedLoad { .. })
+    {
+        (effect, base)
+    } else if let Some((_, effect)) = latest_definition(decoded, add_index, base)
+        && matches!(effect.source, ValueSource::IndexedLoad { .. })
+    {
+        (effect, addend)
+    } else {
+        return None;
+    };
     let ValueSource::IndexedLoad {
-        base: Some(load_base),
+        base: Some(table_register),
         index,
         scale,
         disp,
@@ -231,14 +289,61 @@ pub fn resolve_pie_jump_table(
     else {
         return None;
     };
-    if load_base != table_register || !signed || !matches!(scale, 4 | 8) {
+    if !matches!(scale, 1 | 2 | 4 | 8) {
         return None;
     }
     let table_base =
         resolve_register(image, decoded, add_index, table_register, 0)?.wrapping_add_signed(disp);
+    let code_base = resolve_register(image, decoded, add_index, code_register, 0)?;
     let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
-    let targets = enumerate_jump_table(image, table_base, usize::from(scale), true, limit);
+    let mut targets = Vec::new();
+    for raw in read_table_entries(image, table_base, usize::from(scale), limit) {
+        let value = if signed {
+            sign_extend(raw, scale)
+        } else {
+            i64::from_ne_bytes(raw.to_ne_bytes())
+        };
+        let Some(offset) = value.checked_shl(u32::from(shift)) else {
+            break;
+        };
+        let target = image.canonical_address(code_base.wrapping_add_signed(offset));
+        if !image.is_executable(target) {
+            break;
+        }
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
     (!targets.is_empty()).then_some(targets)
+}
+
+fn read_table_entries(image: &Image, table_base: u64, entry_size: usize, limit: usize) -> Vec<u64> {
+    let mut entries = Vec::new();
+    for index in 0..limit.min(MAX_JUMP_TABLE_ENTRIES) {
+        let Some(offset) = u64::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(u64::try_from(entry_size).ok()?))
+        else {
+            break;
+        };
+        let Some(address) = table_base.checked_add(offset) else {
+            break;
+        };
+        let Some(raw) = image.read_uint(address, entry_size) else {
+            break;
+        };
+        entries.push(raw);
+    }
+    entries
+}
+
+fn sign_extend(raw: u64, size: u8) -> i64 {
+    let bits = u32::from(size) * 8;
+    let Some(shift) = 64u32.checked_sub(bits) else {
+        return i64::from_ne_bytes(raw.to_ne_bytes());
+    };
+    let signed = raw << shift;
+    i64::from_ne_bytes(signed.to_ne_bytes()) >> shift
 }
 
 fn enumerate_jump_table(
@@ -290,18 +395,23 @@ fn jump_table_bound(
     register: capstone::RegId,
 ) -> Option<usize> {
     let before = decoded.partition_point(|instruction| instruction.address < site);
-    decoded[..before]
-        .iter()
-        .rev()
-        .take(32)
-        .find_map(|instruction| {
-            let (compared, value) = instruction.compare?;
-            (compared == register).then(|| {
-                usize::try_from(value)
-                    .ok()
-                    .map(|value| value.saturating_add(1))
-            })?
+    let candidates = decoded[..before].iter().rev().take(32);
+    let exact = candidates.clone().find_map(|instruction| {
+        let (compared, value) = instruction.compare?;
+        (compared == register).then(|| {
+            usize::try_from(value)
+                .ok()
+                .map(|value| value.saturating_add(1))
+        })?
+    });
+    exact.or_else(|| {
+        candidates.take(16).find_map(|instruction| {
+            let (_, value) = instruction.compare?;
+            usize::try_from(value)
+                .ok()
+                .map(|value| value.saturating_add(1))
         })
+    })
 }
 
 fn latest_definition(
@@ -376,7 +486,9 @@ pub fn indirect_argument_spec(
             });
             Some(spec)
         }
-        IndirectTarget::Memory(_) | IndirectTarget::IndexedMemory { .. } => None,
+        IndirectTarget::Memory(_)
+        | IndirectTarget::IndexedMemory { .. }
+        | IndirectTarget::TableBranch { .. } => None,
     }
 }
 

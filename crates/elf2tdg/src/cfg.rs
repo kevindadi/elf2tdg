@@ -99,6 +99,15 @@ pub enum CfgIndirectTarget {
         /// Signed displacement.
         disp: i64,
     },
+    /// ARM `tbb`/`tbh` table branch.
+    TableBranch {
+        /// Optional table base register.
+        base: Option<String>,
+        /// Index register.
+        index: String,
+        /// Whether the table contains halfword offsets.
+        halfword: bool,
+    },
 }
 
 /// One decoded instruction, including raw bytes and control-flow metadata.
@@ -910,6 +919,8 @@ struct CfgIndirectView {
     index: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scale: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    halfword: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -1087,6 +1098,7 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 offset: None,
                 index: None,
                 scale: None,
+                halfword: None,
             },
             CfgIndirectTarget::RegisterMemory { base, disp } => CfgIndirectView {
                 kind: "register-memory",
@@ -1097,6 +1109,7 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 offset: None,
                 index: None,
                 scale: None,
+                halfword: None,
             },
             CfgIndirectTarget::Memory(address) => CfgIndirectView {
                 kind: "memory",
@@ -1107,6 +1120,7 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 offset: None,
                 index: None,
                 scale: None,
+                halfword: None,
             },
             CfgIndirectTarget::RegisterOffset { register, offset } => CfgIndirectView {
                 kind: "register-offset",
@@ -1117,6 +1131,7 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 offset: Some(*offset),
                 index: None,
                 scale: None,
+                halfword: None,
             },
             CfgIndirectTarget::IndexedMemory {
                 base,
@@ -1132,6 +1147,22 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 offset: None,
                 index: Some(index.clone()),
                 scale: Some(*scale),
+                halfword: None,
+            },
+            CfgIndirectTarget::TableBranch {
+                base,
+                index,
+                halfword,
+            } => CfgIndirectView {
+                kind: "table-branch",
+                register: None,
+                base: base.clone(),
+                disp: None,
+                address: None,
+                offset: None,
+                index: Some(index.clone()),
+                scale: Some(if *halfword { 2 } else { 1 }),
+                halfword: Some(*halfword),
             },
         }),
     }

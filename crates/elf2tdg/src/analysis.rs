@@ -1096,10 +1096,12 @@ impl<'a> Analyzer<'a> {
         };
         if matches!(target, IndirectTarget::IndexedMemory { .. }) {
             origin::resolve_jump_table(self.image, decoded, site, target).unwrap_or_default()
+        } else if matches!(target, IndirectTarget::TableBranch { .. }) {
+            origin::resolve_table_branch(self.image, decoded, site, target).unwrap_or_default()
         } else if let IndirectTarget::Register(register) = target {
             origin::resolve_indirect_target(self.image, decoded, site, target)
                 .map(|target| vec![target])
-                .or_else(|| origin::resolve_pie_jump_table(self.image, decoded, site, register))
+                .or_else(|| origin::resolve_offset_jump_table(self.image, decoded, site, register))
                 .unwrap_or_default()
         } else {
             origin::resolve_indirect_target(self.image, decoded, site, target)
@@ -1239,6 +1241,15 @@ impl<'a> Analyzer<'a> {
                 index: name(index),
                 scale,
                 disp,
+            },
+            IndirectTarget::TableBranch {
+                base,
+                index,
+                halfword,
+            } => cfg::CfgIndirectTarget::TableBranch {
+                base: base.map(name),
+                index: name(index),
+                halfword,
             },
         }
     }
@@ -2163,7 +2174,7 @@ fn choose_name(names: &[String]) -> NameChoice {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnalysisOptions, analyze};
+    use super::{AnalysisOptions, analyze, analyze_with_cfg};
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, ImageSymbol, Section};
     use elf2tdg_schema::FunctionKind;
     use object::SymbolKind;
@@ -2245,6 +2256,30 @@ mod tests {
             _ => unreachable!(),
         }
         tdg.ensure_valid().expect("TDG must validate");
+    }
+
+    #[test]
+    fn recovers_gap_call_after_unresolved_indirect_jump() {
+        // jmp rax; padding with a direct call to 0x1020; ret.
+        let mut code = vec![0xff, 0xe0];
+        code.resize(0x10, 0x90);
+        code.extend_from_slice(&[0xe8, 0x0b, 0x00, 0x00, 0x00]);
+        code.push(0xc3);
+        code.resize(0x20, 0x90);
+        code.push(0xc3);
+        let image = image_with_code(code, vec![("main", 0x1000, 0x20), ("callee", 0x1020, 1)]);
+        let analysis =
+            analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        let main = analysis
+            .cfg
+            .function(&elf2tdg_schema::FunctionId::new("fn:0x1000"))
+            .expect("main CFG");
+        assert!(
+            main.cfg
+                .recovered_calls
+                .iter()
+                .any(|call| { call.target == Some(0x1020) && call.heuristic && !call.unresolved })
+        );
     }
 
     #[test]

@@ -42,12 +42,14 @@ pub enum ValueSource {
         /// Unsigned immediate.
         imm: u64,
     },
-    /// Add another register to a register value.
+    /// Add a shifted register to a register value.
     AddRegister {
         /// Base register (the old destination value).
         base: RegId,
         /// Register added to the base.
         addend: RegId,
+        /// Left shift applied to the addend.
+        shift: u8,
     },
     /// Signed or unsigned load from an indexed table entry.
     IndexedLoad {
@@ -104,6 +106,15 @@ pub enum IndirectTarget {
         scale: u8,
         /// Signed displacement from the base or absolute table address.
         disp: i64,
+    },
+    /// ARM `tbb`/`tbh` table branch.
+    TableBranch {
+        /// Optional table base register; `None` means the PC-relative table.
+        base: Option<RegId>,
+        /// Index register.
+        index: RegId,
+        /// Whether entries are halfwords (`tbh`) instead of bytes (`tbb`).
+        halfword: bool,
     },
 }
 
@@ -301,7 +312,12 @@ impl Decoder {
         } else {
             None
         };
-        let compare = x86_compare(&detail, &mnemonic);
+        let compare = match self.arch {
+            ArchKind::X86_64 => x86_compare(&detail, &mnemonic),
+            ArchKind::Aarch64 => aarch64_compare(&detail, &mnemonic),
+            ArchKind::Thumb | ArchKind::Arm => arm_compare(&detail, &mnemonic),
+            ArchKind::Riscv32 | ArchKind::Riscv64 => None,
+        };
 
         Ok(Some(DecodedInsn {
             address,
@@ -368,6 +384,176 @@ fn x86_indirect_target(
         }
         _ => None,
     }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+fn aarch64_register(register: RegId) -> RegId {
+    const MAPPING: &[(u16, u16)] = &[
+        (
+            arm64::Arm64Reg::ARM64_REG_W0 as u16,
+            arm64::Arm64Reg::ARM64_REG_X0 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W1 as u16,
+            arm64::Arm64Reg::ARM64_REG_X1 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W2 as u16,
+            arm64::Arm64Reg::ARM64_REG_X2 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W3 as u16,
+            arm64::Arm64Reg::ARM64_REG_X3 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W4 as u16,
+            arm64::Arm64Reg::ARM64_REG_X4 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W5 as u16,
+            arm64::Arm64Reg::ARM64_REG_X5 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W6 as u16,
+            arm64::Arm64Reg::ARM64_REG_X6 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W7 as u16,
+            arm64::Arm64Reg::ARM64_REG_X7 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W8 as u16,
+            arm64::Arm64Reg::ARM64_REG_X8 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W9 as u16,
+            arm64::Arm64Reg::ARM64_REG_X9 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W10 as u16,
+            arm64::Arm64Reg::ARM64_REG_X10 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W11 as u16,
+            arm64::Arm64Reg::ARM64_REG_X11 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W12 as u16,
+            arm64::Arm64Reg::ARM64_REG_X12 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W13 as u16,
+            arm64::Arm64Reg::ARM64_REG_X13 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W14 as u16,
+            arm64::Arm64Reg::ARM64_REG_X14 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W15 as u16,
+            arm64::Arm64Reg::ARM64_REG_X15 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W16 as u16,
+            arm64::Arm64Reg::ARM64_REG_X16 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W17 as u16,
+            arm64::Arm64Reg::ARM64_REG_X17 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W18 as u16,
+            arm64::Arm64Reg::ARM64_REG_X18 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W19 as u16,
+            arm64::Arm64Reg::ARM64_REG_X19 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W20 as u16,
+            arm64::Arm64Reg::ARM64_REG_X20 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W21 as u16,
+            arm64::Arm64Reg::ARM64_REG_X21 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W22 as u16,
+            arm64::Arm64Reg::ARM64_REG_X22 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W23 as u16,
+            arm64::Arm64Reg::ARM64_REG_X23 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W24 as u16,
+            arm64::Arm64Reg::ARM64_REG_X24 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W25 as u16,
+            arm64::Arm64Reg::ARM64_REG_X25 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W26 as u16,
+            arm64::Arm64Reg::ARM64_REG_X26 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W27 as u16,
+            arm64::Arm64Reg::ARM64_REG_X27 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W28 as u16,
+            arm64::Arm64Reg::ARM64_REG_X28 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W29 as u16,
+            arm64::Arm64Reg::ARM64_REG_X29 as u16,
+        ),
+        (
+            arm64::Arm64Reg::ARM64_REG_W30 as u16,
+            arm64::Arm64Reg::ARM64_REG_X30 as u16,
+        ),
+    ];
+    MAPPING
+        .iter()
+        .find_map(|(from, to)| (register.0 == *from).then_some(RegId(*to)))
+        .unwrap_or(register)
+}
+
+fn aarch64_compare(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<(RegId, u64)> {
+    if mnemonic != "cmp" {
+        return None;
+    }
+    let ArchDetail::Arm64Detail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let operands: Vec<_> = detail.operands().collect();
+    let arm64::Arm64OperandType::Reg(register) = &operands.first()?.op_type else {
+        return None;
+    };
+    let arm64::Arm64OperandType::Imm(value) = &operands.get(1)?.op_type else {
+        return None;
+    };
+    u64::try_from(*value)
+        .ok()
+        .map(|value| (aarch64_register(*register), value))
+}
+
+fn arm_compare(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<(RegId, u64)> {
+    if !mnemonic.starts_with("cmp") {
+        return None;
+    }
+    let ArchDetail::ArmDetail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let operands: Vec<_> = detail.operands().collect();
+    let arm::ArmOperandType::Reg(register) = &operands.first()?.op_type else {
+        return None;
+    };
+    let arm::ArmOperandType::Imm(value) = &operands.get(1)?.op_type else {
+        return None;
+    };
+    u64::try_from(*value).ok().map(|value| (*register, value))
 }
 
 fn x86_compare(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<(RegId, u64)> {
@@ -508,7 +694,25 @@ fn indirect_target(
             Some(IndirectTarget::Register(*register))
         }
         ArchKind::Thumb | ArchKind::Arm => {
-            if !matches!(mnemonic, "blx" | "bx" | "bxj") {
+            let normalized = mnemonic
+                .strip_suffix(".w")
+                .or_else(|| mnemonic.strip_suffix(".n"))
+                .unwrap_or(mnemonic);
+            if matches!(normalized, "tbb" | "tbh") {
+                let ArchDetail::ArmDetail(detail) = detail.arch_detail() else {
+                    return None;
+                };
+                let arm::ArmOperandType::Mem(memory) = detail.operands().next()?.op_type else {
+                    return None;
+                };
+                let pc = RegId(arm::ArmReg::ARM_REG_PC as u16);
+                return Some(IndirectTarget::TableBranch {
+                    base: (memory.base() != pc).then_some(memory.base()),
+                    index: memory.index(),
+                    halfword: normalized == "tbh",
+                });
+            }
+            if !matches!(normalized, "blx" | "bx" | "bxj") {
                 return None;
             }
             let ArchDetail::ArmDetail(detail) = detail.arch_detail() else {
@@ -678,6 +882,7 @@ fn arm64_shift(shift: arm64::Arm64Shift) -> u32 {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<ValueEffect> {
     let ArchDetail::Arm64Detail(detail) = detail.arch_detail() else {
         return None;
@@ -686,7 +891,7 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
     let arm64::Arm64OperandType::Reg(dest) = &operands.first()?.op_type else {
         return None;
     };
-    let dest = *dest;
+    let dest = aarch64_register(*dest);
     let mnemonic = mnemonic.strip_suffix(".w").unwrap_or(mnemonic);
     match mnemonic {
         "adr" | "adrp" => {
@@ -698,7 +903,7 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
                 source: ValueSource::Address(u64::try_from(*value).ok()?),
             })
         }
-        "ldr" | "ldur" => match &operands.get(1)?.op_type {
+        "ldr" | "ldur" | "ldrb" | "ldrh" | "ldrsb" | "ldrsh" => match &operands.get(1)?.op_type {
             arm64::Arm64OperandType::Imm(value) => Some(ValueEffect {
                 dest,
                 source: ValueSource::LoadAddress(u64::try_from(*value).ok()?),
@@ -706,15 +911,36 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
             arm64::Arm64OperandType::Mem(memory) if memory.index().0 == 0 => Some(ValueEffect {
                 dest,
                 source: ValueSource::LoadFromRegister {
-                    base: memory.base(),
+                    base: aarch64_register(memory.base()),
                     disp: i64::from(memory.disp()),
                 },
             }),
+            arm64::Arm64OperandType::Mem(memory) => {
+                let (scale, signed) = match mnemonic {
+                    "ldrb" => (1, false),
+                    "ldrsb" => (1, true),
+                    "ldrh" => (2, false),
+                    "ldrsh" => (2, true),
+                    _ => (8, false),
+                };
+                Some(ValueEffect {
+                    dest,
+                    source: ValueSource::IndexedLoad {
+                        base: (memory.base().0 != 0).then(|| aarch64_register(memory.base())),
+                        index: aarch64_register(memory.index()),
+                        scale,
+                        disp: i64::from(memory.disp()),
+                        signed,
+                    },
+                })
+            }
             _ => None,
         },
         "mov" => {
             let source = match &operands.get(1)?.op_type {
-                arm64::Arm64OperandType::Reg(register) => ValueSource::Copy(*register),
+                arm64::Arm64OperandType::Reg(register) => {
+                    ValueSource::Copy(aarch64_register(*register))
+                }
                 arm64::Arm64OperandType::Imm(value) => {
                     ValueSource::Immediate(u64::try_from(*value).ok()?)
                 }
@@ -726,18 +952,31 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
             let arm64::Arm64OperandType::Reg(base) = &operands.get(1)?.op_type else {
                 return None;
             };
-            let arm64::Arm64OperandType::Imm(value) = &operands.get(2)?.op_type else {
-                return None;
-            };
-            let shift = arm64_shift(operands.get(2)?.shift);
-            let value = value.checked_shl(shift).unwrap_or(*value);
-            Some(ValueEffect {
-                dest,
-                source: ValueSource::AddImmediate {
-                    base: *base,
-                    imm: value,
-                },
-            })
+            match &operands.get(2)?.op_type {
+                arm64::Arm64OperandType::Imm(value) => {
+                    let shift = arm64_shift(operands.get(2)?.shift);
+                    let value = value.checked_shl(shift).unwrap_or(*value);
+                    Some(ValueEffect {
+                        dest,
+                        source: ValueSource::AddImmediate {
+                            base: aarch64_register(*base),
+                            imm: value,
+                        },
+                    })
+                }
+                arm64::Arm64OperandType::Reg(addend) => {
+                    let shift = u8::try_from(arm64_shift(operands.get(2)?.shift)).ok()?;
+                    Some(ValueEffect {
+                        dest,
+                        source: ValueSource::AddRegister {
+                            base: aarch64_register(*base),
+                            addend: aarch64_register(*addend),
+                            shift,
+                        },
+                    })
+                }
+                _ => None,
+            }
         }
         "movz" => {
             let arm64::Arm64OperandType::Imm(value) = &operands.get(1)?.op_type else {
@@ -1011,6 +1250,7 @@ fn x86_value_effect(
                 ValueSource::AddRegister {
                     base: dest,
                     addend: source,
+                    shift: 0,
                 }
             } else {
                 ValueSource::Copy(source)

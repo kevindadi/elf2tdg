@@ -317,10 +317,15 @@ impl Image {
             return None;
         }
         match (self.byte_order, size) {
+            (_, 1) => Some(u64::from(bytes[0])),
+            (ByteOrder::Little, 2) => {
+                Some(u64::from(u16::from_le_bytes(bytes[..2].try_into().ok()?)))
+            }
             (ByteOrder::Little, 4) => {
                 Some(u64::from(u32::from_le_bytes(bytes[..4].try_into().ok()?)))
             }
             (ByteOrder::Little, 8) => Some(u64::from_le_bytes(bytes[..8].try_into().ok()?)),
+            (ByteOrder::Big, 2) => Some(u64::from(u16::from_be_bytes(bytes[..2].try_into().ok()?))),
             (ByteOrder::Big, 4) => Some(u64::from(u32::from_be_bytes(bytes[..4].try_into().ok()?))),
             (ByteOrder::Big, 8) => Some(u64::from_be_bytes(bytes[..8].try_into().ok()?)),
             _ => None,
