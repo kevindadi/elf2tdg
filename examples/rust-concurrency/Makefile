@@ -33,6 +33,13 @@ analyze: $(ELF_O0) $(ELF_O2)
 		-o $(ARTIFACTS)/tdg-o0-concurrency-compact.svg
 	$(TOOL) $(ELF_O0) --format mermaid --projection concurrency --legend \
 		--output $(ARTIFACTS)/tdg-o0-concurrency.mmd
+	$(TOOL) $(ELF_O0) --view cfg --format json --function main::main \
+		--output $(ARTIFACTS)/cfg-o0-main.json
+	$(TOOL) $(ELF_O0) --view cfg --format dot --function main::main \
+		--output $(ARTIFACTS)/cfg-o0-main.dot
+	dot -Tsvg $(ARTIFACTS)/cfg-o0-main.dot -o $(ARTIFACTS)/cfg-o0-main.svg
+	$(TOOL) $(ELF_O0) --view cfg --format mermaid --function main::main \
+		--output $(ARTIFACTS)/cfg-o0-main.mmd
 	$(TOOL) $(ELF_O2) --format json --output $(ARTIFACTS)/tdg-o2.json --verbose
 	$(TOOL) $(ELF_O2) --format dot --projection concurrency --legend \
 		--output $(ARTIFACTS)/tdg-o2-concurrency.dot
@@ -44,6 +51,13 @@ analyze: $(ELF_O0) $(ELF_O2)
 		-o $(ARTIFACTS)/tdg-o2-concurrency-compact.svg
 	$(TOOL) $(ELF_O2) --format mermaid --projection concurrency --legend \
 		--output $(ARTIFACTS)/tdg-o2-concurrency.mmd
+	$(TOOL) $(ELF_O2) --view cfg --format json --function main::main \
+		--output $(ARTIFACTS)/cfg-o2-main.json
+	$(TOOL) $(ELF_O2) --view cfg --format dot --function main::main \
+		--output $(ARTIFACTS)/cfg-o2-main.dot
+	dot -Tsvg $(ARTIFACTS)/cfg-o2-main.dot -o $(ARTIFACTS)/cfg-o2-main.svg
+	$(TOOL) $(ELF_O2) --view cfg --format mermaid --function main::main \
+		--output $(ARTIFACTS)/cfg-o2-main.mmd
 
 clean:
 	rm -rf $(ARTIFACTS)

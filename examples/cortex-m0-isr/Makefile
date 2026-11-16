@@ -30,6 +30,13 @@ analyze: $(ELF)
 		-o $(ARTIFACTS)/tdg-full-compact.svg
 	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --format mermaid --legend \
 		--output $(ARTIFACTS)/tdg-full.mmd
+	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format json \
+		--function main --output $(ARTIFACTS)/cfg-main.json
+	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format dot \
+		--function main --output $(ARTIFACTS)/cfg-main.dot
+	dot -Tsvg $(ARTIFACTS)/cfg-main.dot -o $(ARTIFACTS)/cfg-main.svg
+	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format mermaid \
+		--function main --output $(ARTIFACTS)/cfg-main.mmd
 
 clean:
 	rm -rf $(ARTIFACTS)

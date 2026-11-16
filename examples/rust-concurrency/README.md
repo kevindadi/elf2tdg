@@ -35,13 +35,18 @@ The build needs the host `rustc`, `cargo`, and Graphviz `dot`.
 | [`artifacts/tdg-o0-concurrency.svg`](artifacts/tdg-o0-concurrency.svg) | rendered concurrency TDG with legend |
 | [`artifacts/tdg-o0-concurrency-compact.svg`](artifacts/tdg-o0-concurrency-compact.svg) | same diagram without the embedded legend |
 | [`artifacts/tdg-o0-concurrency.mmd`](artifacts/tdg-o0-concurrency.mmd) | Mermaid source, concurrency projection |
+| [`artifacts/cfg-o0-main.json`](artifacts/cfg-o0-main.json) | lossless CFG JSON for `main::main` at `-O0` |
+| [`artifacts/cfg-o0-main.svg`](artifacts/cfg-o0-main.svg) | function CFG diagram for `-O0` |
 | [`artifacts/tdg-o2.json`](artifacts/tdg-o2.json) | full TDG JSON for `-O2` |
 | [`artifacts/tdg-o2-concurrency.svg`](artifacts/tdg-o2-concurrency.svg) | optimized-build TDG with legend |
 | [`artifacts/tdg-o2-concurrency-compact.svg`](artifacts/tdg-o2-concurrency-compact.svg) | same diagram without the embedded legend |
 | [`artifacts/tdg-o2-concurrency.mmd`](artifacts/tdg-o2-concurrency.mmd) | Mermaid source for the optimized build |
+| [`artifacts/cfg-o2-main.json`](artifacts/cfg-o2-main.json) | lossless CFG JSON for `main::main` at `-O2` |
+| [`artifacts/cfg-o2-main.svg`](artifacts/cfg-o2-main.svg) | function CFG diagram for `-O2` |
 
 A browser walkthrough with both diagrams and the complete legend is
-[`../tdg-example.html`](../tdg-example.html).
+[`../tdg-example.html`](../tdg-example.html). CFG output is documented in
+[`../../docs/cfg-format.md`](../../docs/cfg-format.md).
 
 ## The two diagrams
 

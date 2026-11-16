@@ -1,0 +1,4656 @@
+{
+  "cfg_schema_version": "1.0",
+  "image": {
+    "path": "artifacts/rust-concurrency-o0.elf",
+    "arch": "x86_64",
+    "endianness": "little",
+    "entry": "0x19c60",
+    "elf_type": "dyn",
+    "has_symbols": true,
+    "has_debug_info": true,
+    "has_relocations": false
+  },
+  "functions": [
+    {
+      "id": "fn:0x1de30",
+      "primary_name": "main[30b91b5a34f3fd07]::main",
+      "demangled_name": "main[30b91b5a34f3fd07]::main",
+      "symbols": [
+        "_RNvCs4blOerqzFE9_4main4main"
+      ],
+      "language": "rust",
+      "kind": "normal",
+      "address": "0x1de30",
+      "size": 256,
+      "section": ".text",
+      "source": {
+        "file": "main.rs",
+        "line": 22
+      },
+      "entry": "bb:0x1de30",
+      "blocks": [
+        {
+          "id": "bb:0x1de30",
+          "address": "0x1de30",
+          "size": 17,
+          "instructions": [
+            {
+              "address": "0x1de30",
+              "size": 7,
+              "bytes": "4881eca8000000",
+              "mnemonic": "sub",
+              "operands": "rsp, 0xa8",
+              "text": "sub rsp, 0xa8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 22
+              }
+            },
+            {
+              "address": "0x1de37",
+              "size": 5,
+              "bytes": "488d7c2408",
+              "mnemonic": "lea",
+              "operands": "rdi, [rsp + 8]",
+              "text": "lea rdi, [rsp + 8]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 23,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1de3c",
+              "size": 5,
+              "bytes": "e89fd9ffff",
+              "mnemonic": "call",
+              "operands": "0x1b7e0",
+              "text": "call 0x1b7e0",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x1b7e0",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 23,
+                "column": 18
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x1de3c",
+              "target": "0x1b7e0",
+              "target_function": "fn:0x1b7e0",
+              "target_name": "std::thread::functions::spawn::<main::main::{closure#0}, u32>",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": null,
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x1de41",
+          "address": "0x1de41",
+          "size": 57,
+          "instructions": [
+            {
+              "address": "0x1de41",
+              "size": 5,
+              "bytes": "488b442408",
+              "mnemonic": "mov",
+              "operands": "rax, qword ptr [rsp + 8]",
+              "text": "mov rax, qword ptr [rsp + 8]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1de46",
+              "size": 8,
+              "bytes": "4889842480000000",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0x80], rax",
+              "text": "mov qword ptr [rsp + 0x80], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1de4e",
+              "size": 5,
+              "bytes": "488b442410",
+              "mnemonic": "mov",
+              "operands": "rax, qword ptr [rsp + 0x10]",
+              "text": "mov rax, qword ptr [rsp + 0x10]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1de53",
+              "size": 8,
+              "bytes": "4889842488000000",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0x88], rax",
+              "text": "mov qword ptr [rsp + 0x88], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1de5b",
+              "size": 5,
+              "bytes": "488b442418",
+              "mnemonic": "mov",
+              "operands": "rax, qword ptr [rsp + 0x18]",
+              "text": "mov rax, qword ptr [rsp + 0x18]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1de60",
+              "size": 8,
+              "bytes": "4889842490000000",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0x90], rax",
+              "text": "mov qword ptr [rsp + 0x90], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1de68",
+              "size": 5,
+              "bytes": "488d7c2428",
+              "mnemonic": "lea",
+              "operands": "rdi, [rsp + 0x28]",
+              "text": "lea rdi, [rsp + 0x28]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 25
+              }
+            },
+            {
+              "address": "0x1de6d",
+              "size": 8,
+              "bytes": "488db42480000000",
+              "mnemonic": "lea",
+              "operands": "rsi, [rsp + 0x80]",
+              "text": "lea rsi, [rsp + 0x80]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 25
+              }
+            },
+            {
+              "address": "0x1de75",
+              "size": 5,
+              "bytes": "e8e6040000",
+              "mnemonic": "call",
+              "operands": "0x1e360",
+              "text": "call 0x1e360",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x1e360",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 25
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x1de75",
+              "target": "0x1e360",
+              "target_function": "fn:0x1e360",
+              "target_name": "<std::thread::join_handle::JoinHandle<u32>>::join",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": null,
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x1de7a",
+          "address": "0x1de7a",
+          "size": 29,
+          "instructions": [
+            {
+              "address": "0x1de7a",
+              "size": 5,
+              "bytes": "488d7c2428",
+              "mnemonic": "lea",
+              "operands": "rdi, [rsp + 0x28]",
+              "text": "lea rdi, [rsp + 0x28]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 32
+              }
+            },
+            {
+              "address": "0x1de7f",
+              "size": 7,
+              "bytes": "488d3587defeff",
+              "mnemonic": "lea",
+              "operands": "rsi, [rip - 0x12179]",
+              "text": "lea rsi, [rip - 0x12179]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 32
+              }
+            },
+            {
+              "address": "0x1de86",
+              "size": 5,
+              "bytes": "ba0f000000",
+              "mnemonic": "mov",
+              "operands": "edx, 0xf",
+              "text": "mov edx, 0xf",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 32
+              }
+            },
+            {
+              "address": "0x1de8b",
+              "size": 7,
+              "bytes": "488d0d9e270400",
+              "mnemonic": "lea",
+              "operands": "rcx, [rip + 0x4279e]",
+              "text": "lea rcx, [rip + 0x4279e]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 32
+              }
+            },
+            {
+              "address": "0x1de92",
+              "size": 5,
+              "bytes": "e8c9000000",
+              "mnemonic": "call",
+              "operands": "0x1df60",
+              "text": "call 0x1df60",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x1df60",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 32
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x1de92",
+              "target": "0x1df60",
+              "target_function": "fn:0x1df60",
+              "target_name": "<core::result::Result<u32, alloc::boxed::Box<dyn core::any::Any + core::marker::Send>>>::expect",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": null,
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x1de97",
+          "address": "0x1de97",
+          "size": 16,
+          "instructions": [
+            {
+              "address": "0x1de97",
+              "size": 4,
+              "bytes": "89442424",
+              "mnemonic": "mov",
+              "operands": "dword ptr [rsp + 0x24], eax",
+              "text": "mov dword ptr [rsp + 0x24], eax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 24,
+                "column": 32
+              }
+            },
+            {
+              "address": "0x1de9b",
+              "size": 7,
+              "bytes": "488d3da6270400",
+              "mnemonic": "lea",
+              "operands": "rdi, [rip + 0x427a6]",
+              "text": "lea rdi, [rip + 0x427a6]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 26,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1dea2",
+              "size": 5,
+              "bytes": "e899d5ffff",
+              "mnemonic": "call",
+              "operands": "0x1b440",
+              "text": "call 0x1b440",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x1b440",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 26,
+                "column": 18
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x1dea2",
+              "target": "0x1b440",
+              "target_function": "fn:0x1b440",
+              "target_name": "std::thread::scoped::scope::<main::main::{closure#1}, u32>",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": null,
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x1dea7",
+          "address": "0x1dea7",
+          "size": 45,
+          "instructions": [
+            {
+              "address": "0x1dea7",
+              "size": 4,
+              "bytes": "8944243c",
+              "mnemonic": "mov",
+              "operands": "dword ptr [rsp + 0x3c], eax",
+              "text": "mov dword ptr [rsp + 0x3c], eax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 26,
+                "column": 18
+              }
+            },
+            {
+              "address": "0x1deab",
+              "size": 5,
+              "bytes": "488d442424",
+              "mnemonic": "lea",
+              "operands": "rax, [rsp + 0x24]",
+              "text": "lea rax, [rsp + 0x24]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1deb0",
+              "size": 8,
+              "bytes": "4889842498000000",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0x98], rax",
+              "text": "mov qword ptr [rsp + 0x98], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1deb8",
+              "size": 5,
+              "bytes": "488d44243c",
+              "mnemonic": "lea",
+              "operands": "rax, [rsp + 0x3c]",
+              "text": "lea rax, [rsp + 0x3c]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1debd",
+              "size": 8,
+              "bytes": "48898424a0000000",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0xa0], rax",
+              "text": "mov qword ptr [rsp + 0xa0], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1dec5",
+              "size": 5,
+              "bytes": "488d7c2460",
+              "mnemonic": "lea",
+              "operands": "rdi, [rsp + 0x60]",
+              "text": "lea rdi, [rsp + 0x60]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1deca",
+              "size": 5,
+              "bytes": "488d742424",
+              "mnemonic": "lea",
+              "operands": "rsi, [rsp + 0x24]",
+              "text": "lea rsi, [rsp + 0x24]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1decf",
+              "size": 5,
+              "bytes": "e87cbeffff",
+              "mnemonic": "call",
+              "operands": "0x19d50",
+              "text": "call 0x19d50",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x19d50",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x1decf",
+              "target": "0x19d50",
+              "target_function": "fn:0x19d50",
+              "target_name": "<core::fmt::rt::Argument>::new_lower_hex::<u32>",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": null,
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x1ded4",
+          "address": "0x1ded4",
+          "size": 15,
+          "instructions": [
+            {
+              "address": "0x1ded4",
+              "size": 5,
+              "bytes": "488d7c2470",
+              "mnemonic": "lea",
+              "operands": "rdi, [rsp + 0x70]",
+              "text": "lea rdi, [rsp + 0x70]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1ded9",
+              "size": 5,
+              "bytes": "488d74243c",
+              "mnemonic": "lea",
+              "operands": "rsi, [rsp + 0x3c]",
+              "text": "lea rsi, [rsp + 0x3c]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1dede",
+              "size": 5,
+              "bytes": "e86dbeffff",
+              "mnemonic": "call",
+              "operands": "0x19d50",
+              "text": "call 0x19d50",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x19d50",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x1dede",
+              "target": "0x19d50",
+              "target_function": "fn:0x19d50",
+              "target_name": "<core::fmt::rt::Argument>::new_lower_hex::<u32>",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": null,
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x1dee3",
+          "address": "0x1dee3",
+          "size": 57,
+          "instructions": [
+            {
+              "address": "0x1dee3",
+              "size": 5,
+              "bytes": "488b442460",
+              "mnemonic": "mov",
+              "operands": "rax, qword ptr [rsp + 0x60]",
+              "text": "mov rax, qword ptr [rsp + 0x60]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1dee8",
+              "size": 5,
+              "bytes": "4889442440",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0x40], rax",
+              "text": "mov qword ptr [rsp + 0x40], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1deed",
+              "size": 5,
+              "bytes": "488b442468",
+              "mnemonic": "mov",
+              "operands": "rax, qword ptr [rsp + 0x68]",
+              "text": "mov rax, qword ptr [rsp + 0x68]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1def2",
+              "size": 5,
+              "bytes": "4889442448",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0x48], rax",
+              "text": "mov qword ptr [rsp + 0x48], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1def7",
+              "size": 5,
+              "bytes": "488b442470",
+              "mnemonic": "mov",
+              "operands": "rax, qword ptr [rsp + 0x70]",
+              "text": "mov rax, qword ptr [rsp + 0x70]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1defc",
+              "size": 5,
+              "bytes": "4889442450",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0x50], rax",
+              "text": "mov qword ptr [rsp + 0x50], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1df01",
+              "size": 5,
+              "bytes": "488b442478",
+              "mnemonic": "mov",
+              "operands": "rax, qword ptr [rsp + 0x78]",
+              "text": "mov rax, qword ptr [rsp + 0x78]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1df06",
+              "size": 5,
+              "bytes": "4889442458",
+              "mnemonic": "mov",
+              "operands": "qword ptr [rsp + 0x58], rax",
+              "text": "mov qword ptr [rsp + 0x58], rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1df0b",
+              "size": 7,
+              "bytes": "488d3d0adefeff",
+              "mnemonic": "lea",
+              "operands": "rdi, [rip - 0x121f6]",
+              "text": "lea rdi, [rip - 0x121f6]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1df12",
+              "size": 5,
+              "bytes": "488d742440",
+              "mnemonic": "lea",
+              "operands": "rsi, [rsp + 0x40]",
+              "text": "lea rsi, [rsp + 0x40]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1df17",
+              "size": 5,
+              "bytes": "e814c2ffff",
+              "mnemonic": "call",
+              "operands": "0x1a130",
+              "text": "call 0x1a130",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x1a130",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x1df17",
+              "target": "0x1a130",
+              "target_function": "fn:0x1a130",
+              "target_name": "<core::fmt::Arguments>::new::<34usize, 2usize>",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": null,
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x1df1c",
+          "address": "0x1df1c",
+          "size": 12,
+          "instructions": [
+            {
+              "address": "0x1df1c",
+              "size": 3,
+              "bytes": "4889c7",
+              "mnemonic": "mov",
+              "operands": "rdi, rax",
+              "text": "mov rdi, rax",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1df1f",
+              "size": 3,
+              "bytes": "4889d6",
+              "mnemonic": "mov",
+              "operands": "rsi, rdx",
+              "text": "mov rsi, rdx",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x1df22",
+              "size": 6,
+              "bytes": "ff15484b0400",
+              "mnemonic": "call",
+              "operands": "qword ptr [rip + 0x44b48]",
+              "text": "call qword ptr [rip + 0x44b48]",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": {
+                "kind": "memory",
+                "address": "0x62a70"
+              },
+              "source": {
+                "file": "main.rs",
+                "line": 31,
+                "column": 5
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x1df22",
+              "target": null,
+              "target_function": null,
+              "target_name": null,
+              "direct": false,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": true
+            }
+          ],
+          "cycles": null,
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x1df28",
+          "address": "0x1df28",
+          "size": 8,
+          "instructions": [
+            {
+              "address": "0x1df28",
+              "size": 7,
+              "bytes": "4881c4a8000000",
+              "mnemonic": "add",
+              "operands": "rsp, 0xa8",
+              "text": "add rsp, 0xa8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 32,
+                "column": 2
+              }
+            },
+            {
+              "address": "0x1df2f",
+              "size": 1,
+              "bytes": "c3",
+              "mnemonic": "ret",
+              "operands": "",
+              "text": "ret",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": true,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 32,
+                "column": 2
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": null,
+          "terminator": "return"
+        }
+      ],
+      "edges": [
+        {
+          "from": "bb:0x1de30",
+          "to": "bb:0x1de41",
+          "kind": "call-return",
+          "site": "0x1de3c",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x1de41",
+          "to": "bb:0x1de7a",
+          "kind": "call-return",
+          "site": "0x1de75",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x1de7a",
+          "to": "bb:0x1de97",
+          "kind": "call-return",
+          "site": "0x1de92",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x1de97",
+          "to": "bb:0x1dea7",
+          "kind": "call-return",
+          "site": "0x1dea2",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x1dea7",
+          "to": "bb:0x1ded4",
+          "kind": "call-return",
+          "site": "0x1decf",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x1ded4",
+          "to": "bb:0x1dee3",
+          "kind": "call-return",
+          "site": "0x1dede",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x1dee3",
+          "to": "bb:0x1df1c",
+          "kind": "call-return",
+          "site": "0x1df17",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x1df1c",
+          "to": "bb:0x1df28",
+          "kind": "call-return",
+          "site": "0x1df22",
+          "conditional": false
+        }
+      ],
+      "recovered_calls": []
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "timing-model-unavailable",
+      "severity": "info",
+      "message": "no M0 instruction timing model is available for this architecture/CPU; cycles and times are omitted"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x19c7f (call qword ptr [rip + 0x48cb3]) has no statically known target",
+      "function": "fn:0x19c60",
+      "site": "0x19c7f"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x19caf (jmp rax) has no statically known target",
+      "function": "fn:0x19c90",
+      "site": "0x19caf"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x19cf0 (jmp rax) has no statically known target",
+      "function": "fn:0x19cc0",
+      "site": "0x19cf0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1a4a5 (call rax) has no statically known target",
+      "function": "fn:0x1a490",
+      "site": "0x1a4a5"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1a522 (call rax) has no statically known target",
+      "function": "fn:0x1a4f0",
+      "site": "0x1a522"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1a5a2 (call rax) has no statically known target",
+      "function": "fn:0x1a570",
+      "site": "0x1a5a2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1a605 (call qword ptr [rip + 0x483ad]) has no statically known target",
+      "function": "fn:0x1a600",
+      "site": "0x1a605"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1a825 (call qword ptr [rip + 0x48195]) has no statically known target",
+      "function": "fn:0x1a820",
+      "site": "0x1a825"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1a8f5 (call rax) has no statically known target",
+      "function": "fn:0x1a8e0",
+      "site": "0x1a8f5"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1aa9b (call rax) has no statically known target",
+      "function": "fn:0x1aa70",
+      "site": "0x1aa9b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1aabd (call qword ptr [rip + 0x47ee5]) has no statically known target",
+      "function": "fn:0x1aa70",
+      "site": "0x1aabd"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1aaf6 (call rax) has no statically known target",
+      "function": "fn:0x1aad0",
+      "site": "0x1aaf6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1ab16 (call qword ptr [rip + 0x47e8c]) has no statically known target",
+      "function": "fn:0x1aad0",
+      "site": "0x1ab16"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1ab61 (call qword ptr [rip + 0x47e71]) has no statically known target",
+      "function": "fn:0x1ab30",
+      "site": "0x1ab61"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1abab (call qword ptr [rip + 0x47e2f]) has no statically known target",
+      "function": "fn:0x1ab70",
+      "site": "0x1abab"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1abfa (call rax) has no statically known target",
+      "function": "fn:0x1abc0",
+      "site": "0x1abfa"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1ac9e (call rax) has no statically known target",
+      "function": "fn:0x1abc0",
+      "site": "0x1ac9e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1acb0 (call qword ptr [rip + 0x47cf2]) has no statically known target",
+      "function": "fn:0x1abc0",
+      "site": "0x1acb0"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x1acef (jmp rax) has no statically known target",
+      "function": "fn:0x1acc0",
+      "site": "0x1acef"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x1adaf (jmp rax) has no statically known target",
+      "function": "fn:0x1ad80",
+      "site": "0x1adaf"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x1ae89 (jmp rax) has no statically known target",
+      "function": "fn:0x1ae50",
+      "site": "0x1ae89"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x1af7d (jmp rax) has no statically known target",
+      "function": "fn:0x1af20",
+      "site": "0x1af7d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1b496 (call qword ptr [rip + 0x4755c]) has no statically known target",
+      "function": "fn:0x1b440",
+      "site": "0x1b496"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1b6d3 (call rax) has no statically known target",
+      "function": "fn:0x1b440",
+      "site": "0x1b6d3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1b700 (call rax) has no statically known target",
+      "function": "fn:0x1b440",
+      "site": "0x1b700"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1b771 (call rax) has no statically known target",
+      "function": "fn:0x1b440",
+      "site": "0x1b771"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1ba00 (call rax) has no statically known target",
+      "function": "fn:0x1b8d0",
+      "site": "0x1ba00"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1ba49 (call rax) has no statically known target",
+      "function": "fn:0x1b8d0",
+      "site": "0x1ba49"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1ba81 (call rax) has no statically known target",
+      "function": "fn:0x1b8d0",
+      "site": "0x1ba81"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1bdba (call rax) has no statically known target",
+      "function": "fn:0x1b8d0",
+      "site": "0x1bdba"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1c037 (call rax) has no statically known target",
+      "function": "fn:0x1b8d0",
+      "site": "0x1c037"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1c320 (call rax) has no statically known target",
+      "function": "fn:0x1c1f0",
+      "site": "0x1c320"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1c369 (call rax) has no statically known target",
+      "function": "fn:0x1c1f0",
+      "site": "0x1c369"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1c3a1 (call rax) has no statically known target",
+      "function": "fn:0x1c1f0",
+      "site": "0x1c3a1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1c6da (call rax) has no statically known target",
+      "function": "fn:0x1c1f0",
+      "site": "0x1c6da"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1c957 (call rax) has no statically known target",
+      "function": "fn:0x1c1f0",
+      "site": "0x1c957"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x1cb89 (jmp rax) has no statically known target",
+      "function": "fn:0x1cb10",
+      "site": "0x1cb89"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 3 direct call site(s) after unresolved indirect jumps in 0x1cb10; edges are low confidence",
+      "function": "fn:0x1cb10"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1cb9e (call qword ptr [rip + 0x45e9c]) has no statically known target",
+      "function": "fn:0x1cb10",
+      "site": "0x1cb9e"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x1cd19 (jmp rax) has no statically known target",
+      "function": "fn:0x1cca0",
+      "site": "0x1cd19"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 3 direct call site(s) after unresolved indirect jumps in 0x1cca0; edges are low confidence",
+      "function": "fn:0x1cca0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1cd2e (call qword ptr [rip + 0x45d0c]) has no statically known target",
+      "function": "fn:0x1cca0",
+      "site": "0x1cd2e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1cf47 (call rax) has no statically known target",
+      "function": "fn:0x1cf20",
+      "site": "0x1cf47"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1cfa7 (call rax) has no statically known target",
+      "function": "fn:0x1cf80",
+      "site": "0x1cfa7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1d007 (call rax) has no statically known target",
+      "function": "fn:0x1cfe0",
+      "site": "0x1d007"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1d067 (call rax) has no statically known target",
+      "function": "fn:0x1d040",
+      "site": "0x1d067"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1d832 (call rax) has no statically known target",
+      "function": "fn:0x1d800",
+      "site": "0x1d832"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1d9e2 (call rax) has no statically known target",
+      "function": "fn:0x1d9b0",
+      "site": "0x1d9e2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1db8c (call qword ptr [rip + 0x44ed6]) has no statically known target",
+      "function": "fn:0x1db60",
+      "site": "0x1db8c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1dbcc (call qword ptr [rip + 0x44e96]) has no statically known target",
+      "function": "fn:0x1dba0",
+      "site": "0x1dbcc"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1df22 (call qword ptr [rip + 0x44b48]) has no statically known target",
+      "function": "fn:0x1de30",
+      "site": "0x1df22"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e081 (call qword ptr [rip + 0x44969]) has no statically known target",
+      "function": "fn:0x1dfe0",
+      "site": "0x1e081"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e101 (call qword ptr [rip + 0x448e9]) has no statically known target",
+      "function": "fn:0x1e0b0",
+      "site": "0x1e101"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e25e (call qword ptr [rip + 0x44814]) has no statically known target",
+      "function": "fn:0x1e190",
+      "site": "0x1e25e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e241 (call qword ptr [rip + 0x44831]) has no statically known target",
+      "function": "fn:0x1e190",
+      "site": "0x1e241"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e26e (call qword ptr [rip + 0x44814]) has no statically known target",
+      "function": "fn:0x1e190",
+      "site": "0x1e26e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e251 (call qword ptr [rip + 0x44829]) has no statically known target",
+      "function": "fn:0x1e190",
+      "site": "0x1e251"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x1e3e9 (jmp rax) has no statically known target",
+      "function": "fn:0x1e3a0",
+      "site": "0x1e3e9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e4e6 (call rax) has no statically known target",
+      "function": "fn:0x1e4b0",
+      "site": "0x1e4e6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e54a (call rax) has no statically known target",
+      "function": "fn:0x1e4b0",
+      "site": "0x1e54a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e5e2 (call rax) has no statically known target",
+      "function": "fn:0x1e4b0",
+      "site": "0x1e5e2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1ec53 (call qword ptr [rip + 0x43e57]) has no statically known target",
+      "function": "fn:0x1ec00",
+      "site": "0x1ec53"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1f161 (call qword ptr [rip + 0x43951]) has no statically known target",
+      "function": "fn:0x1f0d0",
+      "site": "0x1f161"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x1f406 (jmp rax) has no statically known target",
+      "function": "fn:0x1f3e0",
+      "site": "0x1f406"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1f4e7 (call qword ptr [rip + 0x435d3]) has no statically known target",
+      "function": "fn:0x1f450",
+      "site": "0x1f4e7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1f54b (call qword ptr [rip + 0x4356f]) has no statically known target",
+      "function": "fn:0x1f500",
+      "site": "0x1f54b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1f5a1 (call qword ptr [rip + 0x43519]) has no statically known target",
+      "function": "fn:0x1f560",
+      "site": "0x1f5a1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1f5da (call qword ptr [rip + 0x434e0]) has no statically known target",
+      "function": "fn:0x1f5b0",
+      "site": "0x1f5da"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1f687 (call qword ptr [rip + 0x43433]) has no statically known target",
+      "function": "fn:0x1f5e0",
+      "site": "0x1f687"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1f777 (call qword ptr [rip + 0x43343]) has no statically known target",
+      "function": "fn:0x1f6d0",
+      "site": "0x1f777"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1f90d (call qword ptr [rip + 0x430dd]) has no statically known target",
+      "function": "fn:0x1f7c0",
+      "site": "0x1f90d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1fb92 (call rax) has no statically known target",
+      "function": "fn:0x1fa30",
+      "site": "0x1fb92"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1fbc0 (call qword ptr [rip + 0x42f1a]) has no statically known target",
+      "function": "fn:0x1fa30",
+      "site": "0x1fbc0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1fb98 (call qword ptr [rip + 0x42e0a]) has no statically known target",
+      "function": "fn:0x1fa30",
+      "site": "0x1fb98"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1fc0f (call qword ptr [rip + 0x42ed3]) has no statically known target",
+      "function": "fn:0x1fbd0",
+      "site": "0x1fc0f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1fccf (call qword ptr [rip + 0x42e1b]) has no statically known target",
+      "function": "fn:0x1fcc0",
+      "site": "0x1fccf"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1fdfa (call qword ptr [rip + 0x42cf8]) has no statically known target",
+      "function": "fn:0x1fdb0",
+      "site": "0x1fdfa"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1fe5a (call qword ptr [rip + 0x42ca0]) has no statically known target",
+      "function": "fn:0x1fe10",
+      "site": "0x1fe5a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20211 (call qword ptr [rip + 0x427d1]) has no statically known target",
+      "function": "fn:0x20190",
+      "site": "0x20211"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x204cb (call qword ptr [rip + 0x42637]) has no statically known target",
+      "function": "fn:0x204b0",
+      "site": "0x204cb"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x204e9 (call rdi) has no statically known target",
+      "function": "fn:0x204e0",
+      "site": "0x204e9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20604 (call qword ptr [rip + 0x4250e]) has no statically known target",
+      "function": "fn:0x205c0",
+      "site": "0x20604"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x206c3 (call rax) has no statically known target",
+      "function": "fn:0x205c0",
+      "site": "0x206c3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20809 (call rax) has no statically known target",
+      "function": "fn:0x207f0",
+      "site": "0x20809"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x20901 (jmp qword ptr [rip + 0x422e9]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x20901"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x208bc (call qword ptr [rip + 0x421b6]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x208bc"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20889 (call qword ptr [rip + 0x421e9]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x20889"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x208cc (call qword ptr [rip + 0x421ae]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x208cc"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20897 (call qword ptr [rip + 0x421e3]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x20897"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20911 (call qword ptr [rip + 0x421a1]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x20911"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20921 (call qword ptr [rip + 0x422d1]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x20921"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x208ae (call qword ptr [rip + 0x4214c]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x208ae"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x208f0 (call qword ptr [rip + 0x422f2]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x208f0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2093a (call qword ptr [rip + 0x421a8]) has no statically known target",
+      "function": "fn:0x20870",
+      "site": "0x2093a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20987 (call qword ptr [rip + 0x42063]) has no statically known target",
+      "function": "fn:0x20950",
+      "site": "0x20987"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x209dd (call qword ptr [rip + 0x4200d]) has no statically known target",
+      "function": "fn:0x20990",
+      "site": "0x209dd"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21158 (call qword ptr [rip + 0x41892]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x21158"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21165 (call qword ptr [rip + 0x4193d]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x21165"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21172 (call qword ptr [rip + 0x419d0]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x21172"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20bd3 (call qword ptr [rip + 0x42027]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x20bd3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21040 (call qword ptr [rip + 0x41aa2]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x21040"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20ffe (call qword ptr [rip + 0x41b2c]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x20ffe"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x210b8 (call qword ptr [rip + 0x41a2a]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x210b8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21081 (call qword ptr [rip + 0x41aa9]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x21081"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21015 (call qword ptr [rip + 0x41bdd]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x21015"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x210a0 (call qword ptr [rip + 0x41b52]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x210a0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20c6d (call qword ptr [rip + 0x41ecd]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x20c6d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20f5a (call qword ptr [rip + 0x41b88]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x20f5a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x20f80 (call qword ptr [rip + 0x41b62]) has no statically known target",
+      "function": "fn:0x209f0",
+      "site": "0x20f80"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x21933 (jmp rdx) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21933"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2198f (jmp rdx) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x2198f"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 6 direct call site(s) after unresolved indirect jumps in 0x21220; edges are low confidence",
+      "function": "fn:0x21220"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21e9f (call qword ptr [rip + 0x40c43]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21e9f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2219c (call qword ptr [rip + 0x4084e]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x2219c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x221ad (call qword ptr [rip + 0x409ad]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x221ad"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21fc0 (call qword ptr [rip + 0x40b22]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21fc0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21f43 (call qword ptr [rip + 0x40be7]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21f43"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x22041 (call qword ptr [rip + 0x40aa1]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x22041"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x22008 (call qword ptr [rip + 0x40b22]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x22008"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21f59 (call qword ptr [rip + 0x40c99]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21f59"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x22026 (call qword ptr [rip + 0x40bcc]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x22026"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x215a0 (call qword ptr [rip + 0x4165a]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x215a0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x214b5 (call qword ptr [rip + 0x41745]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x214b5"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21e14 (call qword ptr [rip + 0x40cce]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21e14"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21e5f (call qword ptr [rip + 0x40c83]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21e5f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21e7a (call qword ptr [rip + 0x40c68]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21e7a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2161e (call qword ptr [rip + 0x4151c]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x2161e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21c6e (call qword ptr [rip + 0x40edc]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21c6e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21cbc (call qword ptr [rip + 0x40e8e]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21cbc"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21d37 (call qword ptr [rip + 0x40e1b]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21d37"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x21bfd (call qword ptr [rip + 0x40f4d]) has no statically known target",
+      "function": "fn:0x21220",
+      "site": "0x21bfd"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x22928 (jmp rcx) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x22928"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x23017 (jmp rax) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23017"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x229d3 (jmp rsi) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x229d3"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 13 direct call site(s) after unresolved indirect jumps in 0x22250; edges are low confidence",
+      "function": "fn:0x22250"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x222e5 (call qword ptr [rip + 0x4078d]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x222e5"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x222f3 (call qword ptr [rip + 0x40787]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x222f3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2407f (call qword ptr [rip + 0x3eb73]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x2407f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x22312 (call qword ptr [rip + 0x406e8]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x22312"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x22356 (call qword ptr [rip + 0x4071c]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x22356"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2408d (call qword ptr [rip + 0x3eb65]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x2408d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x22364 (call qword ptr [rip + 0x40716]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x22364"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2412e (call qword ptr [rip + 0x3e9b4]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x2412e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x223fc (call qword ptr [rip + 0x40676]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x223fc"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2240a (call qword ptr [rip + 0x40670]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x2240a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x22467 (call qword ptr [rip + 0x4060b]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x22467"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x240a0 (call qword ptr [rip + 0x3eb52]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x240a0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2242a (call qword ptr [rip + 0x405d0]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x2242a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x242b7 (call qword ptr [rip + 0x3e82b]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x242b7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2247c (call qword ptr [rip + 0x405fe]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x2247c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x240b4 (call qword ptr [rip + 0x3eb3e]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x240b4"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x240ef (call qword ptr [rip + 0x3ea83]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x240ef"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x239e3 (call qword ptr [rip + 0x3f167]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x239e3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x239d3 (call qword ptr [rip + 0x3f177]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x239d3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23c29 (call qword ptr [rip + 0x3eeb9]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23c29"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23ec6 (call qword ptr [rip + 0x3ec1c]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23ec6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23ee8 (call qword ptr [rip + 0x3ebfa]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23ee8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23087 (call qword ptr [rip + 0x3fadb]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23087"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23c9f (call qword ptr [rip + 0x3ee43]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23c9f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23f0a (call qword ptr [rip + 0x3ebd8]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23f0a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23bc0 (call qword ptr [rip + 0x3ef6a]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23bc0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23f2c (call qword ptr [rip + 0x3ebb6]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23f2c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23dbb (call qword ptr [rip + 0x3ed27]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23dbb"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23afe (call qword ptr [rip + 0x3f04c]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23afe"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23d11 (call qword ptr [rip + 0x3edd1]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23d11"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23bda (call qword ptr [rip + 0x3f018]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23bda"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23f52 (call qword ptr [rip + 0x3eb90]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23f52"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23ce3 (call qword ptr [rip + 0x3ee47]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23ce3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23d3a (call qword ptr [rip + 0x3eda8]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23d3a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23d5c (call qword ptr [rip + 0x3ed86]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23d5c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23fbf (call qword ptr [rip + 0x3eb23]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23fbf"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24102 (call qword ptr [rip + 0x3eaf0]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x24102"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23b51 (call qword ptr [rip + 0x3ef91]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23b51"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23d7e (call qword ptr [rip + 0x3ed64]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23d7e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23fa2 (call r12) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23fa2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23da8 (call qword ptr [rip + 0x3ed3a]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23da8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24071 (call qword ptr [rip + 0x3e979]) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x24071"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2431a (call qword ptr [rip + 0x3e860]) has no statically known target",
+      "function": "fn:0x242d2",
+      "site": "0x2431a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24372 (call qword ptr [rip + 0x3e808]) has no statically known target",
+      "function": "fn:0x24326",
+      "site": "0x24372"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x243bd (call qword ptr [rip + 0x3e7bd]) has no statically known target",
+      "function": "fn:0x2437e",
+      "site": "0x243bd"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x26465 (jmp rdx) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26465"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 7 direct call site(s) after unresolved indirect jumps in 0x243c9; edges are low confidence",
+      "function": "fn:0x243c9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2445e (call qword ptr [rip + 0x3e7b4]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2445e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x244c6 (call qword ptr [rip + 0x3e4f4]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x244c6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x244ff (call qword ptr [rip + 0x3e683]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x244ff"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2471b (call qword ptr [rip + 0x3e507]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2471b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27a56 (call qword ptr [rip + 0x3b0c4]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27a56"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27af2 (call qword ptr [rip + 0x3b150]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27af2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27a66 (call qword ptr [rip + 0x3b0b4]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27a66"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27a73 (call qword ptr [rip + 0x3b02f]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27a73"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24557 (call qword ptr [rip + 0x3e6c3]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24557"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2454b (call qword ptr [rip + 0x3e597]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2454b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2452f (call qword ptr [rip + 0x3e48b]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2452f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x246d6 (call qword ptr [rip + 0x3e544]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x246d6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x246ca (call qword ptr [rip + 0x3e418]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x246ca"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x245d2 (call qword ptr [rip + 0x3e5b8]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x245d2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x247a3 (call qword ptr [rip + 0x3e33f]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x247a3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x254d6 (call qword ptr [rip + 0x3d524]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x254d6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24781 (call rbx) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24781"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24f01 (call qword ptr [rip + 0x3dab9]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24f01"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24f3a (call qword ptr [rip + 0x3dc60]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24f3a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x258f0 (call qword ptr [rip + 0x3d34a]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x258f0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24e75 (call qword ptr [rip + 0x3dc6d]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24e75"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24f57 (call qword ptr [rip + 0x3dc4b]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24f57"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24e53 (call r13) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24e53"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24632 (call qword ptr [rip + 0x3e560]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24632"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x25580 (call qword ptr [rip + 0x3d47a]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x25580"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2563f (call qword ptr [rip + 0x3d4a3]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2563f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x255a7 (call qword ptr [rip + 0x3d603]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x255a7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24f9b (call qword ptr [rip + 0x3dad7]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24f9b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24f8e (call qword ptr [rip + 0x3dc64]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24f8e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24fab (call qword ptr [rip + 0x3dacf]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24fab"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2569c (call qword ptr [rip + 0x3d446]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2569c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x255e8 (call qword ptr [rip + 0x3d3d2]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x255e8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24ce5 (call qword ptr [rip + 0x3df45]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24ce5"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x256b7 (call qword ptr [rip + 0x3d42b]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x256b7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24ffb (call qword ptr [rip + 0x3d9ff]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24ffb"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27a06 (call qword ptr [rax + 0x20]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27a06"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27b54 (call qword ptr [rip + 0x3b0ee]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27b54"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24d0c (call qword ptr [rip + 0x3df26]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24d0c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x250ae (call qword ptr [rip + 0x3d94c]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x250ae"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x279c8 (call qword ptr [rip + 0x3b11a]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x279c8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x25192 (call qword ptr [rip + 0x3da18]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x25192"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x252da (call qword ptr [rip + 0x3d720]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x252da"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x252fe (call qword ptr [rip + 0x3d8ac]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x252fe"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x25ea0 (call qword ptr [rip + 0x3cc42]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x25ea0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2517d (call qword ptr [rip + 0x3d87d]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2517d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24dd3 (call qword ptr [rip + 0x3dc27]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24dd3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27675 (call qword ptr [rip + 0x3b46d]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27675"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x251cf (call qword ptr [rip + 0x3d7eb]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x251cf"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24df0 (call qword ptr [rip + 0x3de22]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24df0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x25374 (call qword ptr [rip + 0x3d836]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x25374"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x25337 (call qword ptr [rip + 0x3d683]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x25337"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x276df (call rax) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x276df"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2544d (call qword ptr [rip + 0x3d765]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2544d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x253ad (call qword ptr [rip + 0x3d60d]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x253ad"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x24bd2 (call qword ptr [rip + 0x3df10]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x24bd2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2780c (call qword ptr [rip + 0x3b2d6]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2780c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x278d8 (call qword ptr [rip + 0x3b20a]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x278d8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27949 (call qword ptr [rbp - 0xa8]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27949"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x26c5a (call qword ptr [rip + 0x3be88]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26c5a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x26c7b (call qword ptr [rip + 0x3bf47]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26c7b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x26598 (call qword ptr [rip + 0x3c462]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26598"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2666c (call qword ptr [rip + 0x3c38e]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2666c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x26cdb (call qword ptr [rip + 0x3bee7]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26cdb"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x26c1e (call qword ptr [rip + 0x3bec4]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26c1e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x266c8 (call qword ptr [rip + 0x3c4f2]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x266c8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2761c (call qword ptr [rip + 0x3b3ce]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2761c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2744c (call qword ptr [rip + 0x3b776]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2744c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27a9d (call qword ptr [rip + 0x3b07d]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27a9d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27583 (call qword ptr [rip + 0x3b4ef]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27583"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27591 (call qword ptr [rip + 0x3b4e9]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27591"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27b86 (call qword ptr [rip + 0x3af2c]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27b86"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2701d (call qword ptr [rip + 0x3ba55]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2701d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2702b (call qword ptr [rip + 0x3ba4f]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x2702b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27add (call qword ptr [rip + 0x3afd5]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27add"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x26bb8 (call qword ptr [rip + 0x3beba]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26bb8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x26bc6 (call qword ptr [rip + 0x3beb4]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26bc6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x27a86 (call qword ptr [rip + 0x3b02c]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x27a86"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x26c03 (call qword ptr [rip + 0x3bedf]) has no statically known target",
+      "function": "fn:0x243c9",
+      "site": "0x26c03"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2848f (call qword ptr [rip + 0x3a5ab]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x2848f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x284a8 (call qword ptr [rip + 0x3a592]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x284a8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28178 (call qword ptr [rip + 0x3aad2]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x28178"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x281a7 (call qword ptr [rip + 0x3a853]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x281a7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x281f8 (call qword ptr [rip + 0x3aa52]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x281f8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2824d (call qword ptr [rip + 0x3a7ad]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x2824d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28277 (call qword ptr [rip + 0x3a9d3]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x28277"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28443 (call qword ptr [rip + 0x3a69f]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x28443"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2837f (call qword ptr [rip + 0x3a67b]) has no statically known target",
+      "function": "fn:0x280b0",
+      "site": "0x2837f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28510 (call qword ptr [rip + 0x3a73a]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28510"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2856c (call qword ptr [rip + 0x3a6de]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x2856c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28c64 (call qword ptr [rip + 0x39d86]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28c64"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28c8c (call qword ptr [rip + 0x39e56]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28c8c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28c49 (call qword ptr [rip + 0x39df1]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28c49"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28914 (call rax) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28914"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28944 (call r13) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28944"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28996 (call qword ptr [rip + 0x3a2b4]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28996"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x289ed (call qword ptr [rip + 0x3a00d]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x289ed"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28a12 (call qword ptr [rip + 0x3a238]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28a12"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28788 (call qword ptr [rip + 0x3a35a]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28788"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28b0a (call qword ptr [rip + 0x39ef0]) has no statically known target",
+      "function": "fn:0x284b0",
+      "site": "0x28b0a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28cea (call qword ptr [rip + 0x39d88]) has no statically known target",
+      "function": "fn:0x28ca0",
+      "site": "0x28cea"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28cf8 (call qword ptr [rip + 0x39d82]) has no statically known target",
+      "function": "fn:0x28ca0",
+      "site": "0x28cf8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28f4c (call qword ptr [rip + 0x39ca6]) has no statically known target",
+      "function": "fn:0x28ca0",
+      "site": "0x28f4c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28f2f (call qword ptr [rip + 0x39bb3]) has no statically known target",
+      "function": "fn:0x28ca0",
+      "site": "0x28f2f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28f6b (call qword ptr [rip + 0x39b77]) has no statically known target",
+      "function": "fn:0x28ca0",
+      "site": "0x28f6b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28e74 (call qword ptr [rip + 0x39d5e]) has no statically known target",
+      "function": "fn:0x28ca0",
+      "site": "0x28e74"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29056 (jmp qword ptr [rip + 0x39a8c]) has no statically known target",
+      "function": "fn:0x28f80",
+      "site": "0x29056"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 3 direct call site(s) after unresolved indirect jumps in 0x28f80; edges are low confidence",
+      "function": "fn:0x28f80"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28f9d (call qword ptr [rip + 0x39c25]) has no statically known target",
+      "function": "fn:0x28f80",
+      "site": "0x28f9d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28fb9 (call qword ptr [rip + 0x39b29]) has no statically known target",
+      "function": "fn:0x28f80",
+      "site": "0x28fb9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x28fe6 (call qword ptr [rip + 0x39afc]) has no statically known target",
+      "function": "fn:0x28f80",
+      "site": "0x28fe6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29034 (call r12) has no statically known target",
+      "function": "fn:0x28f80",
+      "site": "0x29034"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x290f1 (jmp qword ptr [rip + 0x39a09]) has no statically known target",
+      "function": "fn:0x290c0",
+      "site": "0x290f1"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x290c0; edges are low confidence",
+      "function": "fn:0x290c0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x290d6 (call qword ptr [rip + 0x398ec]) has no statically known target",
+      "function": "fn:0x290c0",
+      "site": "0x290d6"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x291ca (jmp qword ptr [rip + 0x39918]) has no statically known target",
+      "function": "fn:0x29130",
+      "site": "0x291ca"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2915e (call qword ptr [rip + 0x39984]) has no statically known target",
+      "function": "fn:0x29130",
+      "site": "0x2915e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29180 (call qword ptr [rip + 0x39962]) has no statically known target",
+      "function": "fn:0x29130",
+      "site": "0x29180"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x291a2 (call qword ptr [rip + 0x39940]) has no statically known target",
+      "function": "fn:0x29130",
+      "site": "0x291a2"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2924e (jmp qword ptr [rip + 0x39894]) has no statically known target",
+      "function": "fn:0x291e0",
+      "site": "0x2924e"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x291e0; edges are low confidence",
+      "function": "fn:0x291e0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29214 (call qword ptr [rip + 0x399ae]) has no statically known target",
+      "function": "fn:0x291e0",
+      "site": "0x29214"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2922e (call qword ptr [rip + 0x3999c]) has no statically known target",
+      "function": "fn:0x291e0",
+      "site": "0x2922e"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29350 (jmp qword ptr [rip + 0x39792]) has no statically known target",
+      "function": "fn:0x29280",
+      "site": "0x29350"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29322 (call qword ptr [rip + 0x397c0]) has no statically known target",
+      "function": "fn:0x29280",
+      "site": "0x29322"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x292f2 (call r13) has no statically known target",
+      "function": "fn:0x29280",
+      "site": "0x292f2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2930c (call r13) has no statically known target",
+      "function": "fn:0x29280",
+      "site": "0x2930c"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x293c1 (jmp qword ptr [rip + 0x39899]) has no statically known target",
+      "function": "fn:0x29370",
+      "site": "0x293c1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x293c7 (call qword ptr [rip + 0x3989b]) has no statically known target",
+      "function": "fn:0x29370",
+      "site": "0x293c7"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x294d3 (jmp qword ptr [rip + 0x3960f]) has no statically known target",
+      "function": "fn:0x293e0",
+      "site": "0x294d3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2943c (call r13) has no statically known target",
+      "function": "fn:0x293e0",
+      "site": "0x2943c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x294a2 (call r12) has no statically known target",
+      "function": "fn:0x293e0",
+      "site": "0x294a2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29452 (call qword ptr [rip + 0x39690]) has no statically known target",
+      "function": "fn:0x293e0",
+      "site": "0x29452"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x294f9 (jmp qword ptr [rip + 0x395e9]) has no statically known target",
+      "function": "fn:0x294e0",
+      "site": "0x294f9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29528 (call qword ptr [rip + 0x39492]) has no statically known target",
+      "function": "fn:0x294e0",
+      "site": "0x29528"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2956d (call qword ptr [rip + 0x3944d]) has no statically known target",
+      "function": "fn:0x29540",
+      "site": "0x2956d"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x295e6 (jmp qword ptr [rip + 0x394fc]) has no statically known target",
+      "function": "fn:0x29590",
+      "site": "0x295e6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x295c1 (call qword ptr [rip + 0x39521]) has no statically known target",
+      "function": "fn:0x29590",
+      "site": "0x295c1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2964e (call qword ptr [rip + 0x3936c]) has no statically known target",
+      "function": "fn:0x29620",
+      "site": "0x2964e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29691 (call qword ptr [rip + 0x39329]) has no statically known target",
+      "function": "fn:0x29660",
+      "site": "0x29691"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x296db (jmp qword ptr [rip + 0x39407]) has no statically known target",
+      "function": "fn:0x296a0",
+      "site": "0x296db"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x296a0; edges are low confidence",
+      "function": "fn:0x296a0"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2975e (jmp qword ptr [rip + 0x39384]) has no statically known target",
+      "function": "fn:0x29720",
+      "site": "0x2975e"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x29720; edges are low confidence",
+      "function": "fn:0x29720"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29847 (jmp qword ptr [rip + 0x3929b]) has no statically known target",
+      "function": "fn:0x297a0",
+      "site": "0x29847"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29802 (call r13) has no statically known target",
+      "function": "fn:0x297a0",
+      "site": "0x29802"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2981c (call r13) has no statically known target",
+      "function": "fn:0x297a0",
+      "site": "0x2981c"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x298d7 (jmp qword ptr [rip + 0x3920b]) has no statically known target",
+      "function": "fn:0x29860",
+      "site": "0x298d7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x298ac (call r13) has no statically known target",
+      "function": "fn:0x29860",
+      "site": "0x298ac"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2996b (jmp qword ptr [rip + 0x39177]) has no statically known target",
+      "function": "fn:0x298f0",
+      "site": "0x2996b"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29944 (call r13) has no statically known target",
+      "function": "fn:0x298f0",
+      "site": "0x29944"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29991 (jmp qword ptr [rip + 0x39151]) has no statically known target",
+      "function": "fn:0x29980",
+      "site": "0x29991"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x299d7 (jmp qword ptr [rip + 0x3910b]) has no statically known target",
+      "function": "fn:0x299a0",
+      "site": "0x299d7"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x299a0; edges are low confidence",
+      "function": "fn:0x299a0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x299bb (call rax) has no statically known target",
+      "function": "fn:0x299a0",
+      "site": "0x299bb"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29a73 (jmp qword ptr [rip + 0x3906f]) has no statically known target",
+      "function": "fn:0x29a10",
+      "site": "0x29a73"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x29a10; edges are low confidence",
+      "function": "fn:0x29a10"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29a2a (call qword ptr [rip + 0x390c8]) has no statically known target",
+      "function": "fn:0x29a10",
+      "site": "0x29a2a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29a44 (call rax) has no statically known target",
+      "function": "fn:0x29a10",
+      "site": "0x29a44"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29a58 (call qword ptr [rip + 0x3908a]) has no statically known target",
+      "function": "fn:0x29a10",
+      "site": "0x29a58"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29b6a (jmp qword ptr [rip + 0x38f78]) has no statically known target",
+      "function": "fn:0x29ad0",
+      "site": "0x29b6a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29b2f (call r12) has no statically known target",
+      "function": "fn:0x29ad0",
+      "site": "0x29b2f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29b47 (call r12) has no statically known target",
+      "function": "fn:0x29ad0",
+      "site": "0x29b47"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29bed (jmp qword ptr [rip + 0x38ef5]) has no statically known target",
+      "function": "fn:0x29b80",
+      "site": "0x29bed"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29bca (call r12) has no statically known target",
+      "function": "fn:0x29b80",
+      "site": "0x29bca"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29c2d (call qword ptr [rip + 0x38f9d]) has no statically known target",
+      "function": "fn:0x29c10",
+      "site": "0x29c2d"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29ce9 (jmp qword ptr [rip + 0x38df9]) has no statically known target",
+      "function": "fn:0x29c90",
+      "site": "0x29ce9"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x29c90; edges are low confidence",
+      "function": "fn:0x29c90"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29cb2 (call qword ptr [rip + 0x38e30]) has no statically known target",
+      "function": "fn:0x29c90",
+      "site": "0x29cb2"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29d96 (jmp qword ptr [rip + 0x38d4c]) has no statically known target",
+      "function": "fn:0x29d20",
+      "site": "0x29d96"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29d74 (call r12) has no statically known target",
+      "function": "fn:0x29d20",
+      "site": "0x29d74"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29e06 (jmp qword ptr [rip + 0x38cdc]) has no statically known target",
+      "function": "fn:0x29db0",
+      "site": "0x29e06"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29de1 (call qword ptr [rip + 0x38d01]) has no statically known target",
+      "function": "fn:0x29db0",
+      "site": "0x29de1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29e28 (call qword ptr [rip + 0x38e4a]) has no statically known target",
+      "function": "fn:0x29e20",
+      "site": "0x29e28"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29e51 (call qword ptr [rip + 0x38e29]) has no statically known target",
+      "function": "fn:0x29e20",
+      "site": "0x29e51"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29ef1 (jmp qword ptr [rip + 0x38bf1]) has no statically known target",
+      "function": "fn:0x29e60",
+      "site": "0x29ef1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29e85 (call qword ptr [rip + 0x38c5d]) has no statically known target",
+      "function": "fn:0x29e60",
+      "site": "0x29e85"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29ea7 (call qword ptr [rip + 0x38c3b]) has no statically known target",
+      "function": "fn:0x29e60",
+      "site": "0x29ea7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29ec9 (call qword ptr [rip + 0x38c19]) has no statically known target",
+      "function": "fn:0x29e60",
+      "site": "0x29ec9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29f20 (call qword ptr [rip + 0x38caa]) has no statically known target",
+      "function": "fn:0x29f00",
+      "site": "0x29f20"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29f63 (call qword ptr [rip + 0x38c5f]) has no statically known target",
+      "function": "fn:0x29f40",
+      "site": "0x29f63"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29fa9 (jmp qword ptr [rip + 0x38cd9]) has no statically known target",
+      "function": "fn:0x29fa0",
+      "site": "0x29fa9"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x29fb9 (jmp qword ptr [rip + 0x38b41]) has no statically known target",
+      "function": "fn:0x29fb0",
+      "site": "0x29fb9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x29fe3 (call qword ptr [rip + 0x38bdf]) has no statically known target",
+      "function": "fn:0x29fc0",
+      "site": "0x29fe3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a092 (call qword ptr [rip + 0x38a50]) has no statically known target",
+      "function": "fn:0x2a020",
+      "site": "0x2a092"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a078 (call r13) has no statically known target",
+      "function": "fn:0x2a020",
+      "site": "0x2a078"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a0f7 (jmp qword ptr [rip + 0x389eb]) has no statically known target",
+      "function": "fn:0x2a0c0",
+      "site": "0x2a0f7"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x2a0c0; edges are low confidence",
+      "function": "fn:0x2a0c0"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a15f (jmp qword ptr [rip + 0x38afb]) has no statically known target",
+      "function": "fn:0x2a130",
+      "site": "0x2a15f"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a3a0 (jmp qword ptr [rip + 0x38742]) has no statically known target",
+      "function": "fn:0x2a170",
+      "site": "0x2a3a0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a268 (call r15) has no statically known target",
+      "function": "fn:0x2a170",
+      "site": "0x2a268"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a2ad (call r15) has no statically known target",
+      "function": "fn:0x2a170",
+      "site": "0x2a2ad"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a429 (call qword ptr [rip + 0x386b9]) has no statically known target",
+      "function": "fn:0x2a3d0",
+      "site": "0x2a429"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a412 (call qword ptr [rip + 0x385a8]) has no statically known target",
+      "function": "fn:0x2a3d0",
+      "site": "0x2a412"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a4a8 (jmp qword ptr [rip + 0x387b2]) has no statically known target",
+      "function": "fn:0x2a460",
+      "site": "0x2a4a8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a4b1 (call qword ptr [rip + 0x387b1]) has no statically known target",
+      "function": "fn:0x2a460",
+      "site": "0x2a4b1"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a4e7 (jmp qword ptr [rip + 0x38783]) has no statically known target",
+      "function": "fn:0x2a4d0",
+      "site": "0x2a4e7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a522 (call qword ptr [rip + 0x38498]) has no statically known target",
+      "function": "fn:0x2a4f0",
+      "site": "0x2a522"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a541 (jmp qword ptr [rip + 0x385a1]) has no statically known target",
+      "function": "fn:0x2a530",
+      "site": "0x2a541"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a561 (jmp qword ptr [rip + 0x38581]) has no statically known target",
+      "function": "fn:0x2a550",
+      "site": "0x2a561"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a59c (call qword ptr [rip + 0x3841e]) has no statically known target",
+      "function": "fn:0x2a570",
+      "site": "0x2a59c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a621 (call qword ptr [rip + 0x384c1]) has no statically known target",
+      "function": "fn:0x2a5b0",
+      "site": "0x2a621"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a608 (call r13) has no statically known target",
+      "function": "fn:0x2a5b0",
+      "site": "0x2a608"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a85d (jmp qword ptr [rip + 0x38285]) has no statically known target",
+      "function": "fn:0x2a650",
+      "site": "0x2a85d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a72c (call r13) has no statically known target",
+      "function": "fn:0x2a650",
+      "site": "0x2a72c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a775 (call qword ptr [rip + 0x3836d]) has no statically known target",
+      "function": "fn:0x2a650",
+      "site": "0x2a775"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a8a1 (jmp qword ptr [rip + 0x38241]) has no statically known target",
+      "function": "fn:0x2a890",
+      "site": "0x2a8a1"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a8c1 (jmp qword ptr [rip + 0x38221]) has no statically known target",
+      "function": "fn:0x2a8b0",
+      "site": "0x2a8c1"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a8f5 (jmp qword ptr [rip + 0x38205]) has no statically known target",
+      "function": "fn:0x2a8d0",
+      "site": "0x2a8f5"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x2a8d0; edges are low confidence",
+      "function": "fn:0x2a8d0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a8da (call qword ptr [rip + 0x380e8]) has no statically known target",
+      "function": "fn:0x2a8d0",
+      "site": "0x2a8da"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2a989 (jmp qword ptr [rip + 0x38171]) has no statically known target",
+      "function": "fn:0x2a930",
+      "site": "0x2a989"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x2a930; edges are low confidence",
+      "function": "fn:0x2a930"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a951 (call rax) has no statically known target",
+      "function": "fn:0x2a930",
+      "site": "0x2a951"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a965 (call qword ptr [rip + 0x3817d]) has no statically known target",
+      "function": "fn:0x2a930",
+      "site": "0x2a965"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a9fe (call qword ptr [rip + 0x37fec]) has no statically known target",
+      "function": "fn:0x2a9e0",
+      "site": "0x2a9fe"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2aa4c (jmp qword ptr [rip + 0x38096]) has no statically known target",
+      "function": "fn:0x2aa10",
+      "site": "0x2aa4c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2aa2a (call qword ptr [rip + 0x380b8]) has no statically known target",
+      "function": "fn:0x2aa10",
+      "site": "0x2aa2a"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2aa78 (jmp qword ptr [rip + 0x3806a]) has no statically known target",
+      "function": "fn:0x2aa60",
+      "site": "0x2aa78"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2ab48 (jmp qword ptr [rip + 0x37f9a]) has no statically known target",
+      "function": "fn:0x2aa80",
+      "site": "0x2ab48"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2aae9 (call qword ptr [rip + 0x37ff9]) has no statically known target",
+      "function": "fn:0x2aa80",
+      "site": "0x2aae9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2aacc (call r13) has no statically known target",
+      "function": "fn:0x2aa80",
+      "site": "0x2aacc"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ab19 (call r13) has no statically known target",
+      "function": "fn:0x2aa80",
+      "site": "0x2ab19"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2ab60 (jmp qword ptr [rip + 0x3812a]) has no statically known target",
+      "function": "fn:0x2ab60",
+      "site": "0x2ab60"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2abab (jmp qword ptr [rip + 0x37f37]) has no statically known target",
+      "function": "fn:0x2ab70",
+      "site": "0x2abab"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x2ab70; edges are low confidence",
+      "function": "fn:0x2ab70"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ab8f (call rax) has no statically known target",
+      "function": "fn:0x2ab70",
+      "site": "0x2ab8f"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2abf1 (jmp qword ptr [rip + 0x37ef1]) has no statically known target",
+      "function": "fn:0x2abe0",
+      "site": "0x2abf1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ac51 (call rax) has no statically known target",
+      "function": "fn:0x2ac00",
+      "site": "0x2ac51"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ac63 (call qword ptr [rip + 0x37e7f]) has no statically known target",
+      "function": "fn:0x2ac00",
+      "site": "0x2ac63"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ad4c (call r15) has no statically known target",
+      "function": "fn:0x2ace0",
+      "site": "0x2ad4c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ae54 (call qword ptr [rip + 0x37de6]) has no statically known target",
+      "function": "fn:0x2ae10",
+      "site": "0x2ae54"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ae40 (call qword ptr [rip + 0x37ca2]) has no statically known target",
+      "function": "fn:0x2ae10",
+      "site": "0x2ae40"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2aee6 (call qword ptr [rip + 0x37ae4]) has no statically known target",
+      "function": "fn:0x2aec0",
+      "site": "0x2aee6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2af17 (call qword ptr [rip + 0x37ab3]) has no statically known target",
+      "function": "fn:0x2aef0",
+      "site": "0x2af17"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2af33 (call qword ptr [rip + 0x37baf]) has no statically known target",
+      "function": "fn:0x2aef0",
+      "site": "0x2af33"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2af70 (call qword ptr [rip + 0x37d22]) has no statically known target",
+      "function": "fn:0x2af41",
+      "site": "0x2af70"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2afc9 (call qword ptr [rip + 0x37cd1]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2afc9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b011 (call qword ptr [rip + 0x37a61]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b011"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b01f (call qword ptr [rip + 0x37a5b]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b01f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b21d (call qword ptr [rip + 0x379d5]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b21d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b03a (call qword ptr [rip + 0x379c0]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b03a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b17f (call qword ptr [rip + 0x37b1b]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b17f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b24a (call qword ptr [rip + 0x37898]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b24a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b267 (call qword ptr [rip + 0x3787b]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b267"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b0e7 (call qword ptr [rip + 0x37bb3]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b0e7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b1d4 (call qword ptr [rip + 0x37ace]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b1d4"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b1c5 (call qword ptr [rip + 0x3791d]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b1c5"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b1ea (call qword ptr [rip + 0x378f8]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b1ea"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b113 (call qword ptr [rip + 0x37b8f]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b113"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b129 (call qword ptr [rip + 0x379b9]) has no statically known target",
+      "function": "fn:0x2af80",
+      "site": "0x2b129"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b40a (call qword ptr [rip + 0x377f0]) has no statically known target",
+      "function": "fn:0x2b280",
+      "site": "0x2b40a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b4a3 (call qword ptr [rip + 0x37697]) has no statically known target",
+      "function": "fn:0x2b280",
+      "site": "0x2b4a3"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2b885 (call qword ptr [rip + 0x3724d]) has no statically known target",
+      "function": "fn:0x2b860",
+      "site": "0x2b885"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2b988 (jmp rdi) has no statically known target",
+      "function": "fn:0x2b890",
+      "site": "0x2b988"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2bb97 (call qword ptr [rip + 0x36f0b]) has no statically known target",
+      "function": "fn:0x2b890",
+      "site": "0x2bb97"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2bbc9 (jmp r8) has no statically known target",
+      "function": "fn:0x2bba0",
+      "site": "0x2bbc9"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x2bba0; edges are low confidence",
+      "function": "fn:0x2bba0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2c53b (call qword ptr [rip + 0x36567]) has no statically known target",
+      "function": "fn:0x2c450",
+      "site": "0x2c53b"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2c5c1 (jmp r12) has no statically known target",
+      "function": "fn:0x2c550",
+      "site": "0x2c5c1"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x2c611 (jmp r10) has no statically known target",
+      "function": "fn:0x2c550",
+      "site": "0x2c611"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x2c550; edges are low confidence",
+      "function": "fn:0x2c550"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ce2c (call qword ptr [rip + 0x35cee]) has no statically known target",
+      "function": "fn:0x2ca70",
+      "site": "0x2ce2c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ce49 (call qword ptr [rip + 0x35b59]) has no statically known target",
+      "function": "fn:0x2ca70",
+      "site": "0x2ce49"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2cc99 (call qword ptr [rip + 0x36011]) has no statically known target",
+      "function": "fn:0x2ca70",
+      "site": "0x2cc99"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ccc4 (call qword ptr [rip + 0x35fee]) has no statically known target",
+      "function": "fn:0x2ca70",
+      "site": "0x2ccc4"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2cd3f (call qword ptr [rip + 0x35f83]) has no statically known target",
+      "function": "fn:0x2ca70",
+      "site": "0x2cd3f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2cd05 (call qword ptr [rip + 0x35d85]) has no statically known target",
+      "function": "fn:0x2ca70",
+      "site": "0x2cd05"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2cd0d (call qword ptr [rax + 0x10]) has no statically known target",
+      "function": "fn:0x2ca70",
+      "site": "0x2cd0d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2cd2a (call qword ptr [rip + 0x35f80]) has no statically known target",
+      "function": "fn:0x2ca70",
+      "site": "0x2cd2a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d474 (call qword ptr [rip + 0x3587e]) has no statically known target",
+      "function": "fn:0x2d460",
+      "site": "0x2d474"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d4cd (call qword ptr [rip + 0x35615]) has no statically known target",
+      "function": "fn:0x2d460",
+      "site": "0x2d4cd"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d529 (call qword ptr [rip + 0x357c9]) has no statically known target",
+      "function": "fn:0x2d510",
+      "site": "0x2d529"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d573 (call r15) has no statically known target",
+      "function": "fn:0x2d510",
+      "site": "0x2d573"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d58a (call qword ptr [rip + 0x35558]) has no statically known target",
+      "function": "fn:0x2d510",
+      "site": "0x2d58a"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d5e9 (call qword ptr [rip + 0x35709]) has no statically known target",
+      "function": "fn:0x2d5d0",
+      "site": "0x2d5e9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d647 (call qword ptr [rip + 0x3549b]) has no statically known target",
+      "function": "fn:0x2d5d0",
+      "site": "0x2d647"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d69e (call qword ptr [rip + 0x35654]) has no statically known target",
+      "function": "fn:0x2d680",
+      "site": "0x2d69e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d6e5 (call r15) has no statically known target",
+      "function": "fn:0x2d680",
+      "site": "0x2d6e5"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2d6fc (call qword ptr [rip + 0x353e6]) has no statically known target",
+      "function": "fn:0x2d680",
+      "site": "0x2d6fc"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2dec1 (call qword ptr [rip + 0x34e39]) has no statically known target",
+      "function": "fn:0x2db50",
+      "site": "0x2dec1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2e48f (call qword ptr [rip + 0x3486b]) has no statically known target",
+      "function": "fn:0x2ded0",
+      "site": "0x2e48f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2e4a9 (call qword ptr [rip + 0x34551]) has no statically known target",
+      "function": "fn:0x2ded0",
+      "site": "0x2e4a9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ec36 (call qword ptr [rip + 0x340c4]) has no statically known target",
+      "function": "fn:0x2e4c0",
+      "site": "0x2ec36"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2ec4e (call qword ptr [rip + 0x33dac]) has no statically known target",
+      "function": "fn:0x2e4c0",
+      "site": "0x2ec4e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2f1a1 (call qword ptr [rip + 0x33b59]) has no statically known target",
+      "function": "fn:0x2ec60",
+      "site": "0x2f1a1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2f1be (call qword ptr [rip + 0x3383c]) has no statically known target",
+      "function": "fn:0x2ec60",
+      "site": "0x2f1be"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2f91e (call qword ptr [rip + 0x333dc]) has no statically known target",
+      "function": "fn:0x2f1d0",
+      "site": "0x2f91e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2f936 (call qword ptr [rip + 0x330c4]) has no statically known target",
+      "function": "fn:0x2f1d0",
+      "site": "0x2f936"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x304e7 (jmp qword ptr [rip + 0x3281b]) has no statically known target",
+      "function": "fn:0x300e0",
+      "site": "0x304e7"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x309d5 (jmp qword ptr [rip + 0x32335]) has no statically known target",
+      "function": "fn:0x304f0",
+      "site": "0x309d5"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x30ddb (jmp qword ptr [rip + 0x31f37]) has no statically known target",
+      "function": "fn:0x309e0",
+      "site": "0x30ddb"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x312da (jmp qword ptr [rip + 0x31a40]) has no statically known target",
+      "function": "fn:0x30df0",
+      "site": "0x312da"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x31700 (jmp qword ptr [rip + 0x31622]) has no statically known target",
+      "function": "fn:0x312f0",
+      "site": "0x31700"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31b74 (call qword ptr [rip + 0x30e86]) has no statically known target",
+      "function": "fn:0x312f0",
+      "site": "0x31b74"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31b5a (call qword ptr [rip + 0x311a0]) has no statically known target",
+      "function": "fn:0x312f0",
+      "site": "0x31b5a"
+    },
+    {
+      "code": "unresolved-indirect-jump",
+      "severity": "warning",
+      "message": "indirect jump at 0x31ba2 (jmp qword ptr [rip + 0x310e0]) has no statically known target",
+      "function": "fn:0x31b90",
+      "site": "0x31ba2"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31bbd (call qword ptr [rip + 0x30e05]) has no statically known target",
+      "function": "fn:0x31bb0",
+      "site": "0x31bbd"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31bd4 (call qword ptr [rip + 0x30f26]) has no statically known target",
+      "function": "fn:0x31bb0",
+      "site": "0x31bd4"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31c7e (call qword ptr [rip + 0x30f74]) has no statically known target",
+      "function": "fn:0x31c10",
+      "site": "0x31c7e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31c8c (call qword ptr [rip + 0x30f66]) has no statically known target",
+      "function": "fn:0x31c10",
+      "site": "0x31c8c"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31cb0 (call qword ptr [rip + 0x30ce2]) has no statically known target",
+      "function": "fn:0x31ca0",
+      "site": "0x31cb0"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31d2d (call qword ptr [rip + 0x30f7d]) has no statically known target",
+      "function": "fn:0x31d00",
+      "site": "0x31d2d"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31d95 (call qword ptr [rip + 0x30f1d]) has no statically known target",
+      "function": "fn:0x31d00",
+      "site": "0x31d95"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31e42 (call qword ptr [rip + 0x30cd8]) has no statically known target",
+      "function": "fn:0x31d00",
+      "site": "0x31e42"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31e0e (call qword ptr [rip + 0x30eb4]) has no statically known target",
+      "function": "fn:0x31d00",
+      "site": "0x31e0e"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31d6f (call qword ptr [rip + 0x30c8b]) has no statically known target",
+      "function": "fn:0x31d00",
+      "site": "0x31d6f"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31de1 (call qword ptr [rip + 0x30ca9]) has no statically known target",
+      "function": "fn:0x31d00",
+      "site": "0x31de1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31de9 (call qword ptr [rax + 0x10]) has no statically known target",
+      "function": "fn:0x31d00",
+      "site": "0x31de9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31dfc (call r12) has no statically known target",
+      "function": "fn:0x31d00",
+      "site": "0x31dfc"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31ea8 (call qword ptr [rip + 0x30bca]) has no statically known target",
+      "function": "fn:0x31e90",
+      "site": "0x31ea8"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31eb6 (call qword ptr [rip + 0x30bc4]) has no statically known target",
+      "function": "fn:0x31e90",
+      "site": "0x31eb6"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31f07 (call qword ptr [rip + 0x30ceb]) has no statically known target",
+      "function": "fn:0x31e90",
+      "site": "0x31f07"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31ed1 (call qword ptr [rip + 0x30b29]) has no statically known target",
+      "function": "fn:0x31e90",
+      "site": "0x31ed1"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31f28 (call qword ptr [rip + 0x30b4a]) has no statically known target",
+      "function": "fn:0x31f10",
+      "site": "0x31f28"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31f77 (call qword ptr [rip + 0x30b2b]) has no statically known target",
+      "function": "fn:0x31f10",
+      "site": "0x31f77"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31f38 (call qword ptr [rip + 0x30b42]) has no statically known target",
+      "function": "fn:0x31f10",
+      "site": "0x31f38"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x31f87 (call qword ptr [rip + 0x30c6b]) has no statically known target",
+      "function": "fn:0x31f10",
+      "site": "0x31f87"
+    }
+  ]
+}

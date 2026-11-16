@@ -1,0 +1,41 @@
+digraph cfg {
+  rankdir=LR;
+  graph [fontname="Helvetica", label="elf2tdg function CFG", labelloc=t];
+  node [fontname="Helvetica", fontsize=9, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#555555"];
+  edge [fontname="Helvetica", fontsize=8];
+  subgraph cluster_cfg_0 {
+    label="main::main\n0x1de30"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x1de30" [label="bb 0x1de30\n3 insn\nsub rsp, 0xa8\nlea rdi, [rsp + 8]\ncall 0x1b7e0\n1 call(s)"];
+    "bb:0x1de41" [label="bb 0x1de41\n9 insn\nmov rax, qword ptr [rsp + 8]\nmov qword ptr [rsp + 0x80], rax\nmov rax, qword ptr [rsp + 0x10]\nmov qword ptr [rsp + 0x88], rax\nmov rax, qword ptr [rsp + 0x18]\nmov qword ptr [rsp + 0x90], rax\nlea rdi, [rsp + 0x28]\nlea rsi, [rsp + 0x80]\n... +1 insn\n1 call(s)"];
+    "bb:0x1de7a" [label="bb 0x1de7a\n5 insn\nlea rdi, [rsp + 0x28]\nlea rsi, [rip - 0x12179]\nmov edx, 0xf\nlea rcx, [rip + 0x4279e]\ncall 0x1df60\n1 call(s)"];
+    "bb:0x1de97" [label="bb 0x1de97\n3 insn\nmov dword ptr [rsp + 0x24], eax\nlea rdi, [rip + 0x427a6]\ncall 0x1b440\n1 call(s)"];
+    "bb:0x1dea7" [label="bb 0x1dea7\n8 insn\nmov dword ptr [rsp + 0x3c], eax\nlea rax, [rsp + 0x24]\nmov qword ptr [rsp + 0x98], rax\nlea rax, [rsp + 0x3c]\nmov qword ptr [rsp + 0xa0], rax\nlea rdi, [rsp + 0x60]\nlea rsi, [rsp + 0x24]\ncall 0x19d50\n1 call(s)"];
+    "bb:0x1ded4" [label="bb 0x1ded4\n3 insn\nlea rdi, [rsp + 0x70]\nlea rsi, [rsp + 0x3c]\ncall 0x19d50\n1 call(s)"];
+    "bb:0x1dee3" [label="bb 0x1dee3\n11 insn\nmov rax, qword ptr [rsp + 0x60]\nmov qword ptr [rsp + 0x40], rax\nmov rax, qword ptr [rsp + 0x68]\nmov qword ptr [rsp + 0x48], rax\nmov rax, qword ptr [rsp + 0x70]\nmov qword ptr [rsp + 0x50], rax\nmov rax, qword ptr [rsp + 0x78]\nmov qword ptr [rsp + 0x58], rax\n... +3 insn\n1 call(s)"];
+    "bb:0x1df1c" [label="bb 0x1df1c\n3 insn\nmov rdi, rax\nmov rsi, rdx\ncall qword ptr [rip + 0x44b48]\n1 call(s)"];
+    "bb:0x1df28" [label="bb 0x1df28\n2 insn\nadd rsp, 0xa8\nret"];
+    "bb:0x1de30" -> "bb:0x1de41" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x1de41" -> "bb:0x1de7a" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x1de7a" -> "bb:0x1de97" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x1de97" -> "bb:0x1dea7" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x1dea7" -> "bb:0x1ded4" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x1ded4" -> "bb:0x1dee3" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x1dee3" -> "bb:0x1df1c" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x1df1c" -> "bb:0x1df28" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x1de30" -> "call:fn:0x1b7e0" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x1de41" -> "call:fn:0x1e360" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x1de7a" -> "call:fn:0x1df60" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x1de97" -> "call:fn:0x1b440" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x1dea7" -> "call:fn:0x19d50" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x1ded4" -> "call:fn:0x19d50" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x1dee3" -> "call:fn:0x1a130" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x1df1c" -> "call:unresolved:0x1df22" [label="call?", color="#117a65", fontcolor="#117a65", style=dashed];
+  }
+  "call:fn:0x19d50" [label="<core::fmt::rt::Argument>::new_lower_hex::<u32>\n0x19d50", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x1a130" [label="<core::fmt::Arguments>::new::<34usize, 2usize>\n0x1a130", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x1b440" [label="std::thread::scoped::scope::<main::main::{clo...\n0x1b440", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x1b7e0" [label="std::thread::functions::spawn::<main::main::{...\n0x1b7e0", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x1df60" [label="<core::result::Result<u32, alloc::boxed::Box<...\n0x1df60", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x1e360" [label="<std::thread::join_handle::JoinHandle<u32>>::...\n0x1e360", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:unresolved:0x1df22" [label="unresolved call", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+}

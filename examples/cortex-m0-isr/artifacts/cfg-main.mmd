@@ -1,0 +1,14 @@
+flowchart LR
+  subgraph cfg0["main\n0x8000150"]
+    direction LR
+    b0_134218064["bb 0x8000150<br/>3 insn<br/>push (r7, lr)<br/>add r7, sp, #0<br/>bl #0x8000118<br/>1 call(s)"]
+    b0_134218072["bb 0x8000158<br/>2 insn<br/>movs r0, #0x64<br/>bl #0x80000ec<br/>1 call(s)"]
+    b0_134218078["bb 0x800015e<br/>1 insn<br/>b #0x8000158"]
+    b0_134218064 -->|return| b0_134218072
+    b0_134218072 -->|return| b0_134218078
+    b0_134218078 ==>|jump| b0_134218072
+  end
+  call0["sensor_task<br/>0x8000118"]
+  b0_134218064 -.->|call| call0
+  call1["delay<br/>0x80000ec"]
+  b0_134218072 -.->|call| call1

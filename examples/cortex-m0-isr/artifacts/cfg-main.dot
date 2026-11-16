@@ -1,0 +1,19 @@
+digraph cfg {
+  rankdir=LR;
+  graph [fontname="Helvetica", label="elf2tdg function CFG", labelloc=t];
+  node [fontname="Helvetica", fontsize=9, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#555555"];
+  edge [fontname="Helvetica", fontsize=8];
+  subgraph cluster_cfg_0 {
+    label="main\n0x8000150"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x8000150" [label="bb 0x8000150\n3 insn\npush {r7, lr}\nadd r7, sp, #0\nbl #0x8000118\n1 call(s)"];
+    "bb:0x8000158" [label="bb 0x8000158\n2 insn\nmovs r0, #0x64\nbl #0x80000ec\n1 call(s)"];
+    "bb:0x800015e" [label="bb 0x800015e\n1 insn\nb #0x8000158"];
+    "bb:0x8000150" -> "bb:0x8000158" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x8000158" -> "bb:0x800015e" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x800015e" -> "bb:0x8000158" [label="jump", color="#333333", style="bold"];
+    "bb:0x8000150" -> "call:fn:0x8000118" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x8000158" -> "call:fn:0x80000ec" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+  }
+  "call:fn:0x80000ec" [label="delay\n0x80000ec", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x8000118" [label="sensor_task\n0x8000118", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+}

@@ -30,9 +30,14 @@ Requirements: `arm-none-eabi-gcc`, `cargo`, and Graphviz `dot`.
 | [`artifacts/tdg-full.svg`](artifacts/tdg-full.svg) | rendered full TDG with legend |
 | [`artifacts/tdg-full-compact.svg`](artifacts/tdg-full-compact.svg) | same diagram without the embedded legend |
 | [`artifacts/tdg-full.mmd`](artifacts/tdg-full.mmd) | Mermaid source |
+| [`artifacts/cfg-main.json`](artifacts/cfg-main.json) | lossless CFG JSON for `main` |
+| [`artifacts/cfg-main.dot`](artifacts/cfg-main.dot) | Graphviz source for the `main` CFG |
+| [`artifacts/cfg-main.svg`](artifacts/cfg-main.svg) | rendered `main` CFG |
+| [`artifacts/cfg-main.mmd`](artifacts/cfg-main.mmd) | Mermaid source for the `main` CFG |
 
 A browser walkthrough with both examples and the complete legend is
-[`../tdg-example.html`](../tdg-example.html).
+[`../tdg-example.html`](../tdg-example.html). CFG output is documented in
+[`../../docs/cfg-format.md`](../../docs/cfg-format.md).
 
 ## Diagram
 

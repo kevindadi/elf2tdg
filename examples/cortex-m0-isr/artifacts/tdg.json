@@ -241,16 +241,41 @@
         {
           "id": "bb:0x8000118",
           "address": "0x8000118",
-          "size": 28,
+          "size": 10,
+          "successors": [
+            "bb:0x8000122"
+          ],
           "timing": {
             "model": "cortex-m0",
             "cycles": {
-              "min": 20.0,
-              "max": 26.0
+              "min": 6.0,
+              "max": 10.0
             },
             "time_ns": {
-              "min": 416.66666666666663,
-              "max": 541.6666666666666
+              "min": 125.0,
+              "max": 208.33333333333331
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x8000122",
+          "address": "0x8000122",
+          "size": 18,
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 14.0,
+              "max": 16.0
+            },
+            "time_ns": {
+              "min": 291.66666666666663,
+              "max": 333.3333333333333
             },
             "frequency_domain": "clk:core",
             "confidence": "medium",
@@ -266,7 +291,7 @@
           "min": 20.0,
           "max": 26.0
         },
-        "modeled_blocks": 1,
+        "modeled_blocks": 2,
         "unmodeled_blocks": 0,
         "caveats": [
           "Sum of static block costs; this is not a path time or a WCET bound."
@@ -370,19 +395,44 @@
         {
           "id": "bb:0x8000158",
           "address": "0x8000158",
-          "size": 8,
+          "size": 6,
+          "successors": [
+            "bb:0x800015e"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 3.0,
+              "max": 5.0
+            },
+            "time_ns": {
+              "min": 62.5,
+              "max": 104.16666666666666
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x800015e",
+          "address": "0x800015e",
+          "size": 2,
           "successors": [
             "bb:0x8000158"
           ],
           "timing": {
             "model": "cortex-m0",
             "cycles": {
-              "min": 4.0,
-              "max": 8.0
+              "min": 1.0,
+              "max": 3.0
             },
             "time_ns": {
-              "min": 83.33333333333333,
-              "max": 166.66666666666666
+              "min": 20.833333333333332,
+              "max": 62.5
             },
             "frequency_domain": "clk:core",
             "confidence": "medium",
@@ -398,7 +448,7 @@
           "min": 9.0,
           "max": 17.0
         },
-        "modeled_blocks": 2,
+        "modeled_blocks": 3,
         "unmodeled_blocks": 0,
         "caveats": [
           "Sum of static block costs; this is not a path time or a WCET bound."
@@ -425,19 +475,44 @@
         {
           "id": "bb:0x8000160",
           "address": "0x8000160",
-          "size": 12,
+          "size": 8,
+          "successors": [
+            "bb:0x8000168"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 5.0,
+              "max": 9.0
+            },
+            "time_ns": {
+              "min": 104.16666666666666,
+              "max": 187.5
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x8000168",
+          "address": "0x8000168",
+          "size": 4,
           "successors": [
             "bb:0x800016c"
           ],
           "timing": {
             "model": "cortex-m0",
             "cycles": {
-              "min": 7.0,
-              "max": 13.0
+              "min": 2.0,
+              "max": 4.0
             },
             "time_ns": {
-              "min": 145.83333333333331,
-              "max": 270.8333333333333
+              "min": 41.666666666666664,
+              "max": 83.33333333333333
             },
             "frequency_domain": "clk:core",
             "confidence": "medium",
@@ -478,7 +553,7 @@
           "min": 9.0,
           "max": 17.0
         },
-        "modeled_blocks": 2,
+        "modeled_blocks": 3,
         "unmodeled_blocks": 0,
         "caveats": [
           "Sum of static block costs; this is not a path time or a WCET bound."
