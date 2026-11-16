@@ -10,6 +10,7 @@ use std::process::Command;
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::cfg;
 use elf2tdg::loader;
+use elf2tdg_schema::{LockKind, LockOperation};
 
 fn compile_fixture() -> Option<PathBuf> {
     let rustc_available = Command::new("rustc")
@@ -64,6 +65,7 @@ fn is_mutex_lock(name: &str) -> bool {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn cfg_instructions_carry_inlined_mutex_lock_ranges() {
     let Some(binary) = compile_fixture() else {
         return;
@@ -78,6 +80,43 @@ fn cfg_instructions_carry_inlined_mutex_lock_ranges() {
         .filter(|function| function.primary_name.ends_with("::main"))
         .max_by_key(|function| function.size)
         .expect("Rust main function");
+
+    let acquire = analysis
+        .tdg
+        .locks
+        .iter()
+        .find(|event| {
+            event.api == "Mutex::lock"
+                && event.operation == LockOperation::Acquire
+                && event
+                    .call_site
+                    .as_ref()
+                    .is_some_and(|site| site.file.ends_with("inline_mutex.rs") && site.line > 0)
+        })
+        .expect("inlined Mutex::lock acquire event");
+    assert_eq!(acquire.lock_kind, LockKind::Mutex);
+    assert!(acquire.inlined);
+    assert!(acquire.extent.is_some_and(|extent| extent > acquire.site));
+    assert_eq!(
+        acquire
+            .context
+            .as_ref()
+            .map(elf2tdg_schema::ContextId::as_str),
+        Some("ctx:main")
+    );
+    let release = analysis
+        .tdg
+        .locks
+        .iter()
+        .find(|event| event.api == "MutexGuard::drop" && event.operation == LockOperation::Release)
+        .expect("guard drop should produce a release event");
+    assert!(
+        release
+            .call_site
+            .as_ref()
+            .is_some_and(|site| { site.file.ends_with("inline_mutex.rs") && site.line > 0 }),
+        "drop_glue inline range should retain the user call site"
+    );
 
     let mut lock_frames = Vec::new();
     for frame in &main.inline_frames {
