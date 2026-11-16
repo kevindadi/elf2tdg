@@ -53,7 +53,7 @@
       "type": "string"
     },
     "scopes": {
-      "description": "Structured-concurrency scopes (Rust `thread::scope`, Rayon scopes, ...).",
+      "description": "Structured-concurrency scopes (for example OpenMP parallel regions).",
       "type": "array",
       "items": {
         "$ref": "#/$defs/Scope"
@@ -694,7 +694,7 @@
               ]
             },
             "runtime": {
-              "description": "Runtime that defined the API, for example `freertos` or `rust-tokio`.",
+              "description": "Runtime that defined the API, for example `freertos` or\n`rust-embassy`.",
               "$ref": "#/$defs/RuntimeId"
             },
             "site": {
@@ -1606,7 +1606,7 @@
       "type": "object",
       "properties": {
         "api": {
-          "description": "API symbol/name, for example `Mutex::lock`.",
+          "description": "API symbol/name, for example `pthread_mutex_lock`.",
           "type": "string"
         },
         "call_site": {
@@ -1677,7 +1677,7 @@
           "$ref": "#/$defs/LockOperation"
         },
         "runtime": {
-          "description": "Runtime that defined the API, for example `rust-std` or `pthread`.",
+          "description": "Runtime that defined the API, for example `pthread` or `freertos`.",
           "$ref": "#/$defs/RuntimeId"
         },
         "site": {
@@ -1800,7 +1800,7 @@
       ]
     },
     "RuntimeId": {
-      "description": "Names a concurrency runtime (for example `freertos`, `zephyr`,\n`rust-std`, `rust-rayon`, `rust-tokio`, `openmp`).",
+      "description": "Names a concurrency runtime (for example `freertos`, `zephyr`,\n`rust-embassy`, `rust-rtic`, `pthread`, `openmp`).",
       "type": "string"
     },
     "Scheduling": {
@@ -1889,10 +1889,10 @@
       "type": "string"
     },
     "ScopeKind": {
-      "description": "Flavor of a structured-concurrency scope.",
+      "description": "Flavor of a structured-concurrency scope.\n\nThe enum retains variants for compatibility. The default no-std Rust\nprofile emits OpenMP parallel-region scopes only.",
       "oneOf": [
         {
-          "description": "Rust `std::thread::scope`.",
+          "description": "Rust `std::thread::scope` (schema vocabulary).",
           "type": "string",
           "const": "rust-thread-scope"
         },

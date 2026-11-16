@@ -35,7 +35,7 @@ pub struct Tdg {
     /// Lock/semaphore acquire and release events, including inlined sites.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub locks: Vec<LockEvent>,
-    /// Structured-concurrency scopes (Rust `thread::scope`, Rayon scopes, ...).
+    /// Structured-concurrency scopes (for example OpenMP parallel regions).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<Scope>,
     /// Analyzer diagnostics. A document may still be valid with diagnostics.
@@ -437,7 +437,8 @@ pub enum Edge {
         target: SpawnTarget,
         /// Spawn call-site address in `from_function`.
         site: Addr,
-        /// Runtime that defined the API, for example `freertos` or `rust-tokio`.
+        /// Runtime that defined the API, for example `freertos` or
+        /// `rust-embassy`.
         runtime: RuntimeId,
         /// API symbol/name, for example `xTaskCreate`.
         api: String,
@@ -601,9 +602,9 @@ pub struct LockEvent {
     /// Source call site from `DW_AT_call_file`/`DW_AT_call_line` when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_site: Option<SourceLoc>,
-    /// Runtime that defined the API, for example `rust-std` or `pthread`.
+    /// Runtime that defined the API, for example `pthread` or `freertos`.
     pub runtime: RuntimeId,
-    /// API symbol/name, for example `Mutex::lock`.
+    /// API symbol/name, for example `pthread_mutex_lock`.
     pub api: String,
     /// Kind of lock or synchronization primitive.
     pub lock_kind: LockKind,
@@ -796,10 +797,13 @@ pub struct Scope {
 }
 
 /// Flavor of a structured-concurrency scope.
+///
+/// The enum retains variants for compatibility. The default no-std Rust
+/// profile emits OpenMP parallel-region scopes only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScopeKind {
-    /// Rust `std::thread::scope`.
+    /// Rust `std::thread::scope` (schema vocabulary).
     RustThreadScope,
     /// Rayon `scope`.
     RayonScope,

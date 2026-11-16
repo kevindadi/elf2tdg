@@ -11,10 +11,12 @@ directly in a browser, or publish it as an HTML artifact.
 
 ## Rust concurrency
 
-[`rust-concurrency/`](rust-concurrency/README.md) exercises `std::thread`,
-`JoinHandle::join`, `thread::scope`, and `Scope::spawn`. It uses the recommended
-`analysis` Cargo profile (`-O1`, full DWARF, ThinLTO) and recovers inlined
-spawn/join/scope semantics and inline address ranges.
+[`rust-concurrency/`](rust-concurrency/README.md) is a `#![no_std]`
+Cortex-M Embassy image. It exercises `embassy_executor::Spawner::spawn`, async
+task contexts, inline DWARF recovery, and Cortex-M vector-table default-handler
+filtering. It uses the recommended `analysis` Cargo profile (`-O1`, full DWARF,
+ThinLTO, `panic=abort`). `std::thread`, Tokio, Rayon, crossbeam, async-std and
+smol are not part of the supported Rust profile.
 
 - [Concurrency TDG](rust-concurrency/artifacts/tdg-analysis-concurrency.svg)
 

@@ -26,12 +26,15 @@ opt-level = 1          # optimize away wrapper/stack noise, but inline less than
 debug = true           # full DWARF, including inlined_subroutine DIEs
 lto = "thin"           # remove dead code, retain cross-crate debug information
 strip = "none"         # keep .symtab and .debug_* sections
+panic = "abort"        # no unwind tables; panic must not be a control-flow path
 ```
 
 Build and analyze it with:
 
 ```sh
 cargo build --profile analysis
+# For the bundled Cortex-M example:
+cargo build --profile analysis --target thumbv7em-none-eabi
 
 elf2tdg target/analysis/firmware --view cfg --format json \
     --function my_crate::main --output main-cfg.json
@@ -60,6 +63,43 @@ linker; do not let a packaging step run `strip` on the final image. Keep
   important than the LTO choice.
 - `inherits = "release"` makes this an opt-in profile. Normal `cargo build`
   behavior is unchanged; use `--profile analysis` for the analyzed image.
+- `panic = "abort"` treats panics as fatal rather than recoverable control
+  flow. It removes unwind landing pads and makes the image a closer match for
+  an embedded real-time target. For a `std` image, it is not a general fix:
+  precompiled `std` still contains panic/formatting paths. The supported Rust
+  profile is `no_std`, so the application does not link that runtime at all.
+
+## Rust support profile: no_std only
+
+The Rust side of this project targets freestanding embedded images:
+
+- Embassy (`embassy_executor::Spawner::spawn`, task polling) and RTIC;
+- `core` and optional `alloc` code in the analyzed image;
+- no `std::thread`, Tokio, async-std, smol, Rayon, or crossbeam rules.
+
+C/C++/OpenMP and native RTOS APIs remain supported separately. A Rust image that
+does link `std` or Tokio is outside the supported profile; the analyzer will not
+synthesize thread/task contexts for those APIs.
+
+## Keep formatting and panic scaffolding out of the application
+
+Build settings cannot remove code that the application actually calls. Avoid
+`println!`, `format!`, `expect`, and `unwrap` in the default analyzed example:
+
+- `println!`/`format!` pull in `core::fmt` dispatch and formatting trait
+  implementations, even in `no_std`; on a host profile they also pull in stdio
+  and allocation.
+- `expect`/`unwrap` pull in panic formatting and unwinding paths even when the
+  fallible case is not expected to occur at runtime.
+- The TDG then contains runtime support code that is not part of the
+  application's real-time control flow, and unresolved indirect calls in
+  `core::fmt` look like application uncertainty.
+
+The bundled Embassy example uses `#![no_std]`, matches fallible spawn results
+with `if let`, and observes task results with `core::hint::black_box`; it does
+not format or print them. Its analysis profile also sets `panic = "abort"`.
+These are example and profile policies, not requirements that `elf2tdg` imposes
+on every analyzed image.
 
 ## What elf2tdg recovers
 
@@ -70,11 +110,11 @@ list of the unique inline ranges inside them, ordered by address and depth:
 ```json
 "inline_frames": [
   {
-    "name": "<std::sync::poison::mutex::Mutex<u64>>::lock",
+    "name": "<embassy_executor::spawner::Spawner>::spawn::<rust_concurrency::sensor_task::{closure#0}>",
     "linkage_name": "_ZN...",
-    "call_site": { "file": "src/main.rs", "line": 42, "column": 9 },
-    "low": "0x148da",
-    "high": "0x14903",
+    "call_site": { "file": "main.rs", "line": 43, "column": 17 },
+    "low": "0x800061c",
+    "high": "0x80006c2",
     "depth": 4
   }
 ]
@@ -90,17 +130,16 @@ optimized Rust JSON manageable.
 
 It does not turn an inlined function into a fake machine-level `call`
 instruction. The CFG remains the real instruction graph; inline frames are
-metadata on the instruction ranges. Runtime rules such as `thread::spawn`,
-`Scope::spawn` and `JoinHandle::join` still create the logical spawn/join edges
-described in [tdg-schema.md](tdg-schema.md), even when those calls were inlined.
+metadata on the instruction ranges. The Embassy `Spawner::spawn` rule still
+creates async-task contexts and spawn edges described in
+[tdg-schema.md](tdg-schema.md), even when the call was inlined.
 
 The TDG also exposes typed `locks` events for acquire/try-acquire/release
-operations. For the Mutex example above it records `Mutex::lock` as an inlined
-`acquire` with the concrete `[site, extent)` range and source call site, plus
-`MutexGuard::drop` as a `release`. The same rules cover Rust RwLock read/write
-sides, parking_lot, pthread mutex/RW-lock/semaphores, FreeRTOS/Zephyr/ThreadX
-semaphores/mutexes, and C++ `std::mutex`/`shared_mutex`. Lock identity and
-ordering are deliberately not guessed.
+operations. The supported rules cover pthread mutex/RW-lock/semaphores,
+FreeRTOS/Zephyr/ThreadX semaphores/mutexes, and C++
+`std::mutex`/`shared_mutex`. Lock identity and ordering are deliberately not
+guessed. The default Rust `no_std` profile does not define std/`parking_lot`
+lock rules.
 
 ## Limits
 

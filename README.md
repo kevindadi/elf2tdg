@@ -32,8 +32,9 @@ Implemented:
 - JSON output validated against the versioned schema, plus DOT and Mermaid
   renderers.
 - Runtime rule engine for spawn/join/scope/await:
-  - Rust `std::thread` (spawn, Builder, scope, JoinHandle), Rayon, crossbeam,
-    Tokio, async-std, smol, Embassy and RTIC;
+  - Rust no-std: Embassy (`Spawner::spawn`, task poll) and RTIC;
+    `std::thread`, Rayon, crossbeam, Tokio, async-std and smol are outside the
+    supported Rust profile;
   - POSIX pthread, FreeRTOS, Zephyr and ThreadX C APIs;
   - C++ `std::thread`/`jthread` constructors, joins/detach, and `std::async`
     from Itanium-mangled symbols. A callable type marker is matched against
@@ -43,40 +44,41 @@ Implemented:
     `__kmpc_fork_call`/`__kmpc_fork_teams` OpenMP regions.
 - Dynamic-ELF PLT synthesis: imported functions get named `plt` nodes and
   direct call edges, so runtime rules can match `GOMP_parallel`,
-  `std::thread::join`, `pthread_create`, and similar imports instead of
-  folding several PLT stubs into one anonymous function. GLOB_DAT-only imports
+  `pthread_create`, `xTaskCreate`, and similar imports instead of folding
+  several PLT stubs into one anonymous function. GLOB_DAT-only imports
   without a local PLT stub (`malloc`, `free`, `syscall`, ...) become zero-size
   `external` function nodes, so GOT-indirect calls resolve instead of remaining
   unresolved.
-- Rust monomorphized closure/future types are recovered from symbols
-  (`spawn::<app::main::{closure#0}>`), so resolved Rust spawns produce real
-  thread/scoped-thread/async contexts and entries.
-- DWARF parsing recovers inlined subroutine call sites. Rust spawn/scope calls
-  that disappear from the machine call graph at `-O1`/`-O2` are reconstructed
-  from inline DIEs, including source-level call-site ranges and closure types.
-  CFG functions expose the unique `DW_TAG_inlined_subroutine` ranges as
-  `inline_frames`, with demangled/raw linkage names, source call sites, concrete
-  `low`/`high` addresses and depth, so inlined functions such as `Mutex::lock`
-  remain inspectable in optimized code.
+- Rust monomorphized future/task types are recovered from symbols, so resolved
+  Embassy spawns produce real async-task contexts and entries. A task generic
+  such as `app::sensor_task` is mapped to the generated
+  `TaskStorage<...>::poll` machine function.
+- DWARF parsing recovers inlined subroutine call sites. Embassy
+  `Spawner::spawn` calls that disappear from the machine call graph at
+  `-O1`/`-O2` are reconstructed from inline DIEs, including source-level
+  call-site ranges and task future types. CFG functions expose the unique
+  `DW_TAG_inlined_subroutine` ranges as `inline_frames`, with demangled/raw
+  linkage names, source call sites, concrete `low`/`high` addresses and depth.
 - Direct and DWARF-inlined lock operations produce typed TDG `locks` events:
   acquire/try-acquire/release, lock/semaphore kind, concrete inline ranges,
-  source call sites and containing context. Rules cover Rust `Mutex`/`RwLock`
-  (including guard drops), parking_lot, pthread, FreeRTOS, Zephyr, ThreadX and
-  C++ `std::mutex`/`shared_mutex`. Lock identity/order is not guessed.
+  source call sites and containing context. Supported rules cover pthread,
+  FreeRTOS, Zephyr, ThreadX and C++ `std::mutex`/`shared_mutex`; the default
+  no-std Rust profile does not define std/`parking_lot` lock rules. Lock
+  identity/order is not guessed.
 - When an inlined spawn entry cannot be mapped to a callable symbol, M2 emits a
   synthetic zero-size `task-entry` function and matching context marked with
   `ext["elf2tdg.logical_task"]`, so the task stays visible without inventing an
-  address. Inline `join` and scope-exit relations are linked to those contexts.
-- If a Rust spawn API has no call-site or DWARF evidence at all, M1's fallback
-  still recovers the task/closure type from the instantiated spawn symbol and
+  address.
+- If a Rust spawn API has no call-site or DWARF evidence at all, the fallback
+  still recovers the task/future type from the instantiated spawn symbol and
   emits an *orphan* task context with `ext["elf2tdg.orphan_spawn_api"]`.
 - After an unresolved indirect jump, a bounded heuristic scan of the undecoded
   gap recovers direct calls to known function entries. These edges are
-  `low`-confidence and reported with a `heuristic-direct-calls` diagnostic;
-  this is what makes optimized Tokio dispatch recoverable without treating the
-  scan as ground truth.
-- Join edges use a conservative unique-spawn heuristic; structured scopes
-  (`thread::scope`, Rayon/crossbeam scopes) become `Scope` nodes with members.
+  `low`-confidence and reported with a `heuristic-direct-calls` diagnostic,
+  without treating the scan as ground truth.
+- Join edges use a conservative unique-spawn heuristic for C/C++ and RTOS APIs.
+  OpenMP parallel regions become `Scope` nodes with members; structured Rust
+  thread scopes are schema vocabulary only in the no-std profile.
 - Bounded spawn-entry recovery for Thumb/A32, x86-64, AArch64 and RISC-V C
   APIs: literal-pool loads, RIP-relative `lea`/memory loads, `adr`/`adrp` +
   `add`, `auipc` + `addi`, register copies, immediate adds and simple
@@ -106,8 +108,7 @@ Implemented:
   medium confidence; ambiguous or dynamic targets remain unresolved with
   diagnostics.
 - OpenMP parallel-region `Scope` nodes with implicit join membership.
-- Async handle poll rules for Tokio, async-std, smol and Embassy in addition to
-  spawn/join detection.
+- Embassy task-handle poll await rule in addition to spawn detection.
 - DWARF line-program extraction: functions receive source file/line/column
   information when debug info is present.
 - Stripped-image fallback: when no local code symbols exist, entry/vector
@@ -137,7 +138,7 @@ Implemented:
   dashed lines and `?`.
 - Typed errors, recoverable diagnostics, resource limits, and fixture tests.
 - Worked, reproducible examples with checked-in ELF, JSON, DOT and SVG output:
-  Rust spawn/join/scope at `-O0` and `-O2`, plus a Cortex-M0 ISR/timing image.
+  a no-std Embassy task image, plus a Cortex-M0 ISR/timing image.
 
 Still deferred:
 
@@ -173,10 +174,11 @@ make -C tests/fixtures/cortex_m0
 make -C tests/fixtures/cortex_m_spawn
 ```
 
-The Rust thread fixture is compiled with the host `rustc` at `-O0` and `-O2` by
-its integration test. C++ and OpenMP fixtures are compiled on demand with
-`g++`/`gcc`. All integration tests build their fixture on demand and report a
-skip when the required toolchain is absent.
+The checked-in Rust example is a `thumbv7em-none-eabi` no-std Embassy ELF; its
+integration test loads that artifact directly. Rebuilding it requires
+`rustup target add thumbv7em-none-eabi`. C++ and OpenMP fixtures are compiled
+on demand with `g++`/`gcc`. Tests that build fixtures report a skip when the
+required toolchain is absent.
 
 ## Usage
 
@@ -292,14 +294,13 @@ sensor task, USART1 IRQ 37, and a Cortex-M vector table. The analyzer recovers:
   (vector 53, IRQ 37);
 - Cortex-M0 cycle ranges and nanosecond estimates at 48 MHz.
 
-`tests/fixtures/rust_threads/main.rs` exercises `thread::spawn`,
-`JoinHandle::join` and `thread::scope`. At `-O0` the output includes a real
-`thread` context pointing at `main::{closure#0}`, a `scoped-thread` context, a
-`join` edge from `ctx:main`, and a `rust-thread-scope` scope containing the
-scoped spawn. At `-O2` both spawn calls are inlined; M2 reconstructs the two
-spawn call sites from DWARF, creates logical task-entry functions/contexts, and
-still links the join and scope exit to them. The integration test runs both
-optimization levels.
+`examples/rust-concurrency/` is a `#![no_std]` Cortex-M Embassy image. It
+starts a thread-mode executor, runs an `app_main` async task, and spawns sensor
+and monitor tasks. The analyzer recovers six contexts (startup, main, app_main,
+sensor, monitor, HardFault), three `rust-embassy` spawn edges, and resolves each
+task to its `TaskStorage<...>::poll` entry. Inlined `Spawner::spawn` call sites
+are recovered from DWARF. Unused Cortex-M vectors that alias `DefaultHandler`
+are filtered instead of producing false ISR contexts.
 
 `tests/fixtures/cortex_m_spawn/main.c` calls `xTaskCreate(my_task, ...)`.
 M1 resolves the entry pointer from the Thumb literal pool and emits a FreeRTOS
@@ -311,10 +312,10 @@ The [`examples/`](examples/) directory contains complete, reproducible examples
 with source, ELF, JSON, DOT and rendered SVG:
 
 - [`examples/rust-concurrency/`](examples/rust-concurrency/README.md) builds the
-  Rust program with the recommended `analysis` profile (`-O1`, full DWARF,
-  ThinLTO). It shows thread/scope contexts, DWARF-recovered inline spawns and
-  inline `Mutex::lock` acquire/release events, plus per-main CFG
-  JSON/SVG/Mermaid artifacts.
+  no-std Cortex-M Embassy image with the recommended `analysis` profile (`-O1`,
+  full DWARF, ThinLTO, `panic=abort`). It shows async task contexts,
+  DWARF-recovered inline spawns and realistic `TaskStorage::poll` entries, plus
+  per-`start_tasks` CFG JSON/SVG/Mermaid artifacts.
 - [`examples/cortex-m0-isr/`](examples/cortex-m0-isr/README.md) is a small
   Cortex-M0 image with reset/main/ISR contexts, USART1 IRQ 37, direct calls,
   48 MHz cycle-to-nanosecond estimates, and a per-`main` CFG export.
@@ -337,7 +338,7 @@ docs/elf-view.md          loader-backed ELF layout, colors and disassembly limit
 docs/tdg-legend.md        diagram shapes, colors, edge styles and confidence
 schema/tdg.schema.json    generated JSON Schema (2020-12)
 examples/                 worked Rust and Cortex-M examples plus artifacts
-tests/fixtures/           C/Rust firmware fixtures
+tests/fixtures/           C firmware fixtures
 ```
 
 See [docs/tdg-schema.md](docs/tdg-schema.md) for the TDG model,

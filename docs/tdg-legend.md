@@ -81,8 +81,8 @@ above to the DOT or Mermaid output.
 ## Examples
 
 - [`examples/rust-concurrency/`](../examples/rust-concurrency/README.md) —
-  `thread::spawn`, `join`, `thread::scope`, and DWARF recovery with the
-  recommended `analysis` profile.
+  no-std Embassy task spawns, async-task contexts, and DWARF inline recovery
+  with the recommended `analysis` profile.
 - [`examples/cortex-m0-isr/`](../examples/cortex-m0-isr/README.md) — reset/main
   contexts, vector 53 / IRQ 37, call graph, and Cortex-M0 cycle estimates.
 

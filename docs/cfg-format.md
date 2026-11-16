@@ -278,7 +278,7 @@ Function selection is also applied to diagnostics: a diagnostic whose related
 `function` is outside the selected CFG set is omitted, while global diagnostics
 without a function remain. The omitted count is reported as
 `diagnostics_omitted` (absent when zero). This keeps a `--reachable-from`
-slice from being dominated by unrelated panic/backtrace/std diagnostics.
+slice from being dominated by unrelated runtime diagnostics.
 
 When full debug information is present, each function can also carry the unique
 inlined subroutine ranges found inside it:
@@ -286,11 +286,11 @@ inlined subroutine ranges found inside it:
 ```json
 "inline_frames": [
   {
-    "name": "<std::sync::poison::mutex::Mutex<u64>>::lock",
+    "name": "<embassy_executor::spawner::Spawner>::spawn::<rust_concurrency::sensor_task::{closure#0}>",
     "linkage_name": "_ZN...",
-    "call_site": { "file": "src/main.rs", "line": 42, "column": 9 },
-    "low": "0x148da",
-    "high": "0x14903",
+    "call_site": { "file": "main.rs", "line": 43, "column": 17 },
+    "low": "0x800061c",
+    "high": "0x80006c2",
     "depth": 4
   }
 ]

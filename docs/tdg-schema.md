@@ -43,7 +43,7 @@ IDs are strings with a fixed prefix:
 | Basic block | `bb:` | `bb:0x08000400` |
 | Context | `ctx:` | `ctx:thread:sensor` |
 | Edge | `e:` | `e:spawn:0x08000320` |
-| Lock event | `lock:` | `lock:0x08000240:acquire:Mutex::lock` |
+| Lock event | `lock:` | `lock:0x08000240:acquire:pthread_mutex_lock` |
 | Scope | `scope:` | `scope:0x08001300` |
 | Frequency domain | `clk:` | `clk:core` |
 
@@ -108,8 +108,8 @@ every call ends its basic block and returns to a new continuation block.
 | `startup` | reset/startup code | ELF entry, vector table |
 | `main` | main thread/task | runtime API, symbol |
 | `thread` | OS thread/task | `pthread_create`, `xTaskCreate`, `k_thread_create` |
-| `scoped-thread` | thread inside a structured scope | `thread::scope`, Rayon, Crossbeam |
-| `async-task` | task on an async executor | `tokio::spawn`, `Spawner::spawn`, RTIC |
+| `scoped-thread` | thread inside a structured scope | schema legacy; no default Rust rules |
+| `async-task` | task on an async executor | Embassy `Spawner::spawn`, RTIC |
 | `executor` | executor/driver context | runtime symbols |
 | `isr` | interrupt/exception handler | vector table |
 | `timer-callback` | timer callback context | `xTimerCreate`, `k_timer_init` |
@@ -151,8 +151,8 @@ Call edges distinguish:
 - `tail`: unconditional branch into another function;
 - `inlined`: logical edge recovered from DWARF call-site/inlining info.
 
-Spawn edges record the runtime (`freertos`, `zephyr`, `pthread`, `rust-std`,
-`rust-rayon`, `rust-tokio`, `rust-embassy`, `rust-rtic`, `openmp`, ...), the API
+Spawn edges record the runtime (`freertos`, `zephyr`, `pthread`, `rust-embassy`,
+`rust-rtic`, `openmp`, ...), the API
 symbol, the execution-unit kind, an optional constant priority, and an optional
 `name` for a recovered closure/future/task label. Their target is either a
 resolved `context` + `entry` pair or `opaque` with candidate entry functions.
@@ -174,16 +174,17 @@ instance is protected. Each event records:
 - the containing function and execution context (when reachable);
 - the direct-call site, or the concrete inline `[site, extent)` range;
 - the source-level inline call site from `DW_AT_call_file`/`DW_AT_call_line`;
-- runtime and API (`pthread_mutex_lock`, `Mutex::lock`, ...);
+- runtime and API (`pthread_mutex_lock`, `xSemaphoreTake`, ...);
 - `lock_kind` (`mutex`, `rwlock`, `rwlock-read`, `rwlock-write`, `spinlock`,
   `semaphore`, `other`) and `operation` (`acquire`, `try-acquire`, `release`);
 - `inlined`/`inline_depth` and confidence.
 
-Rules cover Rust `std::sync::Mutex`/`RwLock` including guard drops, parking_lot,
-pthread mutex/RW-lock/semaphores, FreeRTOS/Zephyr/ThreadX semaphores and mutexes,
-and C++ `std::mutex`/`shared_mutex`. Inlined events are found by matching the
-DWARF inline stack, not by requiring a machine call instruction. Lock ordering
-and deadlock claims are intentionally out of scope.
+Supported rules cover pthread mutex/RW-lock/semaphores,
+FreeRTOS/Zephyr/ThreadX semaphores and mutexes, and C++
+`std::mutex`/`shared_mutex`. The default Rust `no_std` profile does not define
+std or `parking_lot` lock rules. Inlined events are found by matching the DWARF
+inline stack, not by requiring a machine call instruction. Lock ordering and
+deadlock claims are intentionally out of scope.
 
 Await targets use the same `resolution` tag with three states: a known context,
 a known function/future, or `opaque` with candidate functions. Rust async await
@@ -192,17 +193,13 @@ marks that honestly instead of inventing an edge.
 
 ### Structured concurrency
 
-A `Scope` groups spawn edges created inside a structured region:
-
-- Rust `std::thread::scope`;
-- Rayon `scope` and `join`;
-- Crossbeam `scope`;
-- OpenMP parallel regions;
-- TBB task groups.
-
-Scopes record enter/exit sites, the entering context, membership (spawn edge
-IDs), whether the scope implies a join, and confidence. Nested scopes are
-separate `Scope` entries.
+A `Scope` groups spawn edges created inside a structured region. The schema
+retains variants for structured thread scopes, but the supported default rules
+currently emit only OpenMP parallel-region scopes; Rust `std::thread`, Rayon,
+Crossbeam and Tokio are outside the no-std support profile. TBB task groups are
+schema vocabulary only. Scopes record enter/exit sites, the entering context,
+membership (spawn edge IDs), whether the scope implies a join, and confidence.
+Nested scopes are separate `Scope` entries.
 
 ## 6. Timing and frequency
 
@@ -369,20 +366,20 @@ and dashed call-target edges.
 
 ## 10. Runtime coverage
 
-Rust concurrency is the first priority:
+Rust embedded no-std concurrency is the first priority:
 
 | Runtime | Spawn | Join/Await | Scope |
 |---|---|---|---|
-| `std::thread` | `thread::spawn`, `Builder::spawn` | `JoinHandle::join` | `thread::scope` |
-| Rayon | `spawn`, `join` | implicit at scope end | `scope`, `join` |
-| Crossbeam | `scope` spawn | scope exit | `scope` |
-| Tokio | `spawn`, `spawn_blocking` | join-handle await | — |
-| async-std/smol | `task::spawn` | handle await | — |
-| Embassy | `Spawner::spawn`, task pool | executor wake (best effort) | — |
+| Embassy | `Spawner::spawn`, task pool | task-handle poll (best effort) | — |
 | RTIC | generated task dispatchers | — | — |
 | C++ `std::thread`/`jthread` | constructors | `join`, `detach` | — |
 | C++ `std::async` | async template | future wait not modeled | — |
 | OpenMP | `GOMP_parallel`, `GOMP_parallel_start`, `__kmpc_fork_call`, `__kmpc_fork_teams` | region end not modeled | parallel region |
+
+Rust `std::thread`, Rayon, Crossbeam, Tokio, async-std and smol are not part of
+the supported Rust profile. Keeping them out avoids pulling large runtime and
+formatting trees into real-time images. No thread/task contexts are synthesized
+for those APIs.
 
 Detection order is high-level API first, low-level runtime API fallback. This
 avoids reporting a Rust/C++ runtime trampoline (`thread_start`, `_M_run`) as the
@@ -457,14 +454,12 @@ M0 and M1 implement the base graph and runtime semantics of this document:
 
 M1 adds the runtime rule engine:
 
-- Rust `std::thread`/`scope`, Rayon, crossbeam, Tokio, async-std, smol, Embassy
-  and RTIC rules;
+- Embassy and RTIC no_std Rust rules;
 - pthread, FreeRTOS, Zephyr and ThreadX C API rules;
 - closure/future type recovery from monomorphized Rust symbols, producing real
-  thread/task contexts and entries;
-- join edges (with a unique-spawn heuristic when the handle is opaque),
-  structured `Scope` nodes with spawn members, and `await` edges for the Tokio
-  join-handle poll rule;
+  async task contexts and entries;
+- join edges for C/C++ and RTOS handles, OpenMP parallel-region scopes with
+  spawn members, and the Embassy task-handle poll await rule;
 - bounded entry-argument recovery for Thumb/A32 and x86-64 C spawn APIs;
 - orphan task contexts for Rust spawn APIs whose call sites were fully inlined
   and left no usable DWARF record: the closure/future type is recovered from
@@ -476,13 +471,13 @@ M2 adds debug-info-assisted recovery and hardened optimized-code heuristics:
 - DWARF unit/DIE parsing for `subprogram` and `inlined_subroutine` records,
   resolving names through `DW_AT_abstract_origin`/`DW_AT_specification` and
   concrete address ranges through `DW_AT_low_pc`/`DW_AT_high_pc`;
-- inlined spawn/scope/join recovery: the shallowest user-facing inline DIE for a
-  given caller and closure type wins, and implementation-layer instantiations
-  inside `std`/runtime crates are filtered out;
+- inlined Embassy spawn recovery: the shallowest user-facing inline DIE for a
+  given caller and task future type wins, and implementation-layer
+  instantiations inside the executor are filtered out;
 - logical task-entry functions and contexts for spawns whose concrete entry is
   not a callable symbol, marked with `ext["elf2tdg.logical_task"]`;
-- join/scope linkage from DWARF inline ranges, including scope exit sites;
-- inline and direct lock/semaphore event recovery with source call sites;
+- inline and direct lock/semaphore event recovery with source call sites for
+  C/C++ and RTOS APIs;
 - a bounded linear call scan of undecoded gaps after unresolved indirect jumps,
   accepting only direct calls to known function entries and marking them
   `low` confidence with a `heuristic-direct-calls` diagnostic;
@@ -512,7 +507,7 @@ M3 analysis extensions currently implement:
 - function-pointer values loaded from globals or recoverable memory slots, and
   indirect calls through a register or direct memory pointer (`direct: false`,
   medium confidence);
-- async-std/smol/Embassy handle-poll await rules;
+- Embassy task-handle poll await rule;
 - DWARF line-program source file/line/column extraction for functions;
 - per-function DWARF inline-frame ranges with source call sites, and typed
   lock/semaphore events for direct and inlined operations;

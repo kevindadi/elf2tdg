@@ -479,7 +479,7 @@
       <div class="eyebrow">ELF → Task Dependency Graph</div>
       <h1>从可执行的 ELF，到可读的任务依赖图</h1>
       <p class="lede">
-        两个已构建、已分析、已渲染的小例子：一个 Rust 线程与作用域程序，一个
+        两个已构建、已分析、已渲染的小例子：一个 Rust no_std Embassy 任务程序，一个
         Cortex-M0 中断与计时固件。图中的每一个节点和边，都由仓库里的 ELF 现场生成。
       </p>
     </div>
@@ -511,18 +511,24 @@
   <section aria-labelledby="rust-title">
     <div class="section-head">
       <div>
-        <div class="kicker">示例 1 · Rust</div>
-        <h2 id="rust-title">线程、join 与作用域</h2>
+        <div class="kicker">示例 1 · Rust no_std</div>
+        <h2 id="rust-title">Embassy 异步任务与执行上下文</h2>
       </div>
       <p>
-        源码使用推荐的分析构建配置（<code>-O1</code>、完整 DWARF、ThinLTO、不 strip）。内联后的 spawn 调用点由 DWARF 恢复。
+        一个 <code>#![no_std]</code> 的 Cortex-M4 镜像：<code>cortex-m-rt</code> 提供启动代码和向量表，
+        <code>embassy-executor</code> 运行 <code>app_main</code> 异步任务并派生两个用户任务。分析构建使用
+        <code>-O1</code>、完整 DWARF、ThinLTO、<code>panic=abort</code>，不 strip。
       </p>
     </div>
 
     <div class="split">
       <article class="card">
-        <div class="card-head"><b>main.rs</b><span>std only · no third-party crates</span></div>
-        <pre class="code"><code><span class="k">use</span> std::thread;
+        <div class="card-head"><b>main.rs</b><span>no_std · embassy-executor · Cortex-M</span></div>
+        <pre class="code"><code><span class="c">#![no_std]</span>
+<span class="c">#![no_main]</span>
+
+<span class="k">use</span> embassy_executor::{Executor, Spawner};
+<span class="k">use</span> static_cell::StaticCell;
 
 <span class="c">#[inline(never)]</span>
 <span class="k">fn</span> <span class="n">sensor_sample</span>(seed: u32) -&gt; u32 {
@@ -539,52 +545,75 @@
     sample.rotate_left(7) ^ 0x5a5a_5a5a
 }
 
-<span class="k">fn</span> <span class="n">main</span>() {
-    <span class="k">let</span> worker = thread::spawn(|| {
-        process(sensor_sample(0x1234_5678))
-    });
-    <span class="k">let</span> joined = worker.join().expect(<span class="c">"worker panicked"</span>);
+<span class="c">#[embassy_executor::task]</span>
+<span class="k">async fn</span> <span class="n">sensor_task</span>(seed: u32) {
+    <span class="k">let</span> value = process(sensor_sample(seed));
+    core::hint::black_box(value);
+}
 
-    <span class="k">let</span> scoped = thread::scope(|scope| {
-        <span class="k">let</span> handle = scope.spawn(|| {
-            process(sensor_sample(0xfeed_face))
-        });
-        handle.join().expect(<span class="c">"scoped worker panicked"</span>)
-    });
+<span class="c">#[embassy_executor::task]</span>
+<span class="k">async fn</span> <span class="n">monitor_task</span>(seed: u32) {
+    <span class="k">let</span> value = process(seed.rotate_left(3));
+    core::hint::black_box(value);
+}
 
-    println!(<span class="c">"joined={joined:#010x} scoped={scoped:#010x}"</span>);
+<span class="c">#[inline(never)]</span>
+<span class="k">fn</span> <span class="n">start_tasks</span>(spawner: Spawner) {
+    <span class="k">if let</span> Ok(task) = sensor_task(0x1234_5678) {
+        spawner.spawn(task);
+    }
+    <span class="k">if let</span> Ok(task) = monitor_task(0xfeed_face) {
+        spawner.spawn(task);
+    }
+}
+
+<span class="c">#[embassy_executor::task]</span>
+<span class="k">async fn</span> <span class="n">app_main</span>(spawner: Spawner) {
+    start_tasks(spawner);
+}
+
+<span class="c">#[cortex_m_rt::entry]</span>
+<span class="k">fn</span> <span class="n">main</span>() -&gt; ! {
+    <span class="k">static</span> EXECUTOR: StaticCell&lt;Executor&gt; = StaticCell::new();
+    <span class="k">let</span> executor = EXECUTOR.init(Executor::new());
+    executor.run(|spawner| {
+        <span class="k">if let</span> Ok(task) = app_main(spawner) {
+            spawner.spawn(task);
+        }
+    });
 }</code></pre>
       </article>
 
       <aside class="card findings">
         <h3>分析器恢复出了什么</h3>
         <ul>
-          <li><strong>4 个执行上下文</strong>：startup、main、thread、scoped-thread。</li>
-          <li><strong>2 条 spawn</strong>：<code>thread::spawn</code> 与 <code>Scope::spawn</code>，均为 high confidence。</li>
-          <li><strong>2 条 join</strong>：普通线程与作用域线程。作用域本身带 1 个 member。</li>
-          <li><strong>内联调用点可恢复</strong>：两条 spawn 从 DWARF <code>DW_TAG_inlined_subroutine</code> 记录恢复，入口标为逻辑 task entry。</li>
-          <li><strong>不猜谜</strong>：第二个 join 同时看到两个候选，输出 opaque target 与候选列表。</li>
-          <li><strong>锁语义</strong>：<code>Mutex::lock</code> 与 <code>MutexGuard::drop</code> 从 DWARF 内联栈恢复为 acquire/release 事件，并保留源码调用行。</li>
+          <li><strong>6 个执行上下文</strong>：startup、main、app_main、sensor、monitor、HardFault ISR。</li>
+          <li><strong>3 条 spawn</strong>：executor 启动 app_main，app_main 再派生 sensor 与 monitor，全部标记为 <code>rust-embassy</code>。</li>
+          <li><strong>任务入口可落地</strong>：每个 async task 的入口解析到对应的 <code>TaskStorage&lt;...&gt;::poll</code> 机器函数，而不是只给一个名字。</li>
+          <li><strong>父链不丢</strong>：<code>main → app_main → sensor/monitor</code>，任务上下文不会全部挂在 startup 下。</li>
+          <li><strong>内联调用点可恢复</strong>：<code>Spawner::spawn</code> 在 <code>start_tasks</code> 中被内联，但 DWARF <code>DW_TAG_inlined_subroutine</code> 仍保留源码行和地址范围。</li>
+          <li><strong>向量表去噪</strong>：未使用的 Cortex-M 向量共享 <code>DefaultHandler</code> 别名，不会生成 200 多个假 ISR context；只有真实的 <code>HardFault</code> 被保留。</li>
+          <li><strong>范围明确</strong>：默认 Rust 支持仅限 no_std 生态（Embassy/RTIC/core/alloc）；<code>std::thread</code> 与 Tokio 不再进入支持矩阵。</li>
         </ul>
         <div class="stat-row" aria-label="analysis 结果统计">
-          <div class="stat"><b>4</b><span>contexts</span></div>
-          <div class="stat"><b>2</b><span>spawn</span></div>
-          <div class="stat"><b>2</b><span>join</span></div>
-          <div class="stat"><b>1</b><span>scope</span></div>
-          <div class="stat"><b>5</b><span>lock events</span></div>
+          <div class="stat"><b>6</b><span>contexts</span></div>
+          <div class="stat"><b>3</b><span>spawn</span></div>
+          <div class="stat"><b>3</b><span>async tasks</span></div>
+          <div class="stat"><b>1</b><span>ISR</span></div>
+          <div class="stat"><b>1</b><span>diagnostics</span></div>
         </div>
       </aside>
     </div>
 
     <figure class="card diagram-card">
-      <div class="card-head"><b>analysis profile · concurrency projection</b><span>DWARF 内联恢复 · 逻辑 task entry</span></div>
+      <div class="card-head"><b>analysis profile · concurrency projection</b><span>Embassy task context · DWARF 内联恢复</span></div>
       <div class="diagram-scroll">
         <a href="rust-concurrency/artifacts/tdg-analysis-concurrency.svg" target="_blank" rel="noopener">
-          <img src="rust-concurrency/artifacts/tdg-analysis-concurrency-compact.svg" alt="Rust analysis profile 并发 TDG：startup、main、thread、scoped-thread 四个上下文，两条 spawn 与两条 join，以及一个 thread scope。">
+          <img src="rust-concurrency/artifacts/tdg-analysis-concurrency-compact.svg" alt="Rust no_std Embassy 并发 TDG：startup、main、app_main、sensor、monitor 与 HardFault 六个上下文，executor 和 app_main 共有三条 spawn。">
         </a>
       </div>
       <figcaption class="diagram-note">
-        <span>紫色虚线边框表示合成的 logical task；<span class="tag warn">Join? · 2 candidates</span> 表示目标未唯一确定。<a href="rust-concurrency/artifacts/tdg-analysis-concurrency.svg" target="_blank" rel="noopener">完整 SVG ↗</a></span>
+        <span>任务入口直接指向真实的 <code>TaskStorage::poll</code> 函数；图中只剩 executors 内部函数指针产生的 1 条 unresolved 诊断。<a href="rust-concurrency/artifacts/tdg-analysis-concurrency.svg" target="_blank" rel="noopener">完整 SVG ↗</a></span>
         <span><code>--projection concurrency</code></span>
       </figcaption>
     </figure>
@@ -593,14 +622,14 @@
       <div class="kicker" style="margin-bottom: 8px;">JSON 是规范输出</div>
       <pre class="code" style="border-radius: 7px;"><code>{
   "kind": "spawn",
-  "api": "thread::spawn",
-  "site": "0x1de3c",
-  "runtime": "rust-std",
-  "confidence": "high",
+  "api": "embassy::Spawner::spawn",
+  "site": "0x800061c",
+  "runtime": "rust-embassy",
+  "confidence": "medium",
   "target": {
     "resolution": "context",
-    "context": "ctx:thread:0x1de3c",
-    "entry": "fn:0x1dc00"
+    "context": "ctx:async:0x800061c",
+    "entry": "fn:0x800085c"
   }
 }</code></pre>
     </div>
