@@ -4,6 +4,7 @@ pub mod analysis;
 pub mod arch;
 pub mod cfg;
 pub mod dwarf;
+pub mod elf_view;
 pub mod error;
 pub mod loader;
 pub mod origin;
