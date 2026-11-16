@@ -705,6 +705,7 @@ mod tests {
             memory_write: None,
             indirect: None,
             compare: None,
+            branch_registers: None,
         };
         let cost = model.instruction_cost(&insn);
         assert!(cost.is_valid());
@@ -728,6 +729,7 @@ mod tests {
             memory_write: None,
             indirect: None,
             compare: None,
+            branch_registers: None,
         });
         let timed = model.block_timing(cycles, Some(168_000_000));
         assert!(timed.time_ns.is_some());

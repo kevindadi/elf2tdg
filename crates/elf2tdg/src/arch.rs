@@ -186,6 +186,9 @@ pub struct DecodedInsn {
     pub indirect: Option<IndirectTarget>,
     /// Register/immediate comparison, used to bound jump tables.
     pub compare: Option<(RegId, u64)>,
+    /// Two-register branch operands. RISC-V tables guard the index with
+    /// `bltu bound, index` rather than an immediate compare.
+    pub branch_registers: Option<(RegId, RegId)>,
 }
 
 impl DecodedInsn {
@@ -309,9 +312,17 @@ impl Decoder {
             message: error.to_string(),
         })?;
         let groups = detail.groups();
-        let is_call = groups
+        // Capstone groups RISC-V `jr` (jalr with rd=x0) as a call even though
+        // it does not write a link register. Treat it as the indirect jump it
+        // is so jump-table dispatch is analyzed on this path too.
+        let riscv_jump_pseudo =
+            matches!(self.arch, ArchKind::Riscv32 | ArchKind::Riscv64) && mnemonic == "jr";
+        let mut is_call = groups
             .iter()
             .any(|group| u32::from(group.0) == InsnGroupType::CS_GRP_CALL);
+        if riscv_jump_pseudo {
+            is_call = false;
+        }
         let is_jump_group = groups
             .iter()
             .any(|group| u32::from(group.0) == InsnGroupType::CS_GRP_JUMP);
@@ -320,7 +331,7 @@ impl Decoder {
                 || u32::from(group.0) == InsnGroupType::CS_GRP_IRET
         });
         let is_return = group_return || is_return_mnemonic(self.arch, &mnemonic, &operands);
-        let mut is_jump = is_jump_group && !is_call && !is_return;
+        let mut is_jump = (is_jump_group || riscv_jump_pseudo) && !is_call && !is_return;
         let mut is_conditional = is_jump && is_conditional_mnemonic(self.arch, &mnemonic);
         let mut direct_target = if is_call || is_jump {
             direct_target(self.arch, &detail, &mnemonic, &operands, address)
@@ -348,6 +359,10 @@ impl Decoder {
             ArchKind::Thumb | ArchKind::Arm => arm_compare(&detail, &mnemonic),
             ArchKind::Riscv32 | ArchKind::Riscv64 => None,
         };
+        let branch_registers = match self.arch {
+            ArchKind::Riscv32 | ArchKind::Riscv64 => riscv_branch_registers(&detail, &mnemonic),
+            _ => None,
+        };
 
         Ok(Some(DecodedInsn {
             address,
@@ -363,6 +378,7 @@ impl Decoder {
             memory_write,
             indirect,
             compare,
+            branch_registers,
         }))
     }
 }
@@ -661,6 +677,23 @@ fn arm_compare(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<(Reg
         return None;
     };
     u64::try_from(*value).ok().map(|value| (*register, value))
+}
+
+fn riscv_branch_registers(
+    detail: &capstone::InsnDetail<'_>,
+    mnemonic: &str,
+) -> Option<(RegId, RegId)> {
+    if !is_conditional_mnemonic(ArchKind::Riscv64, mnemonic) {
+        return None;
+    }
+    let ArchDetail::RiscVDetail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let mut registers = detail.operands().filter_map(|operand| match operand {
+        riscv::RiscVOperand::Reg(register) => Some(register),
+        _ => None,
+    });
+    Some((registers.next()?, registers.next()?))
 }
 
 fn x86_compare(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<(RegId, u64)> {
@@ -1677,6 +1710,22 @@ mod tests {
             .expect("jal must decode");
         assert!(insn.is_call || insn.is_jump);
         assert_eq!(insn.direct_target, Some(0x1008));
+    }
+
+    #[test]
+    fn riscv_jr_is_an_indirect_jump_not_a_call() {
+        let decoder = Decoder::new(ArchKind::Riscv64).unwrap();
+        // jr a0
+        let insn = decoder
+            .decode_one(&[0x67, 0x00, 0x05, 0x00], 0x1000)
+            .unwrap()
+            .expect("jr must decode");
+        assert!(!insn.is_call);
+        assert!(insn.is_jump);
+        assert!(matches!(
+            insn.indirect,
+            Some(super::IndirectTarget::Register(_))
+        ));
     }
 
     #[test]

@@ -292,9 +292,12 @@ pub fn resolve_indexed_pointer_table(
     (!targets.is_empty()).then_some(targets)
 }
 
-/// Resolves the common RISC-V switch sequence:
+/// Resolves the common RISC-V switch sequences:
 ///
-/// `slli index, index, 2; ...; add index, index, table; lw target, 0(index); jr target`.
+/// - absolute pointers:
+///   `slli index, index, 2; ...; add index, index, table; lw target, 0(index); jr target`;
+/// - table-relative offsets:
+///   `...; add index, index, table; lw target, 0(index); add target, target, table; jr target`.
 #[must_use]
 pub fn resolve_riscv_jump_table(
     image: &Image,
@@ -303,7 +306,30 @@ pub fn resolve_riscv_jump_table(
     jump_register: capstone::RegId,
 ) -> Option<Vec<u64>> {
     let before = decoded.partition_point(|instruction| instruction.address < site);
-    let (load_index, load_effect) = latest_definition(decoded, before, jump_register)?;
+    let (definition_index, definition) = latest_definition(decoded, before, jump_register)?;
+    let (load_index, load_effect, relative_base) = match definition.source {
+        ValueSource::LoadFromRegister { .. } => (definition_index, definition, None),
+        ValueSource::AddRegister {
+            base,
+            addend,
+            shift: 0,
+        } => {
+            let (loaded_register, base_register) =
+                if is_load_definition(decoded, definition_index, base) {
+                    (base, addend)
+                } else if is_load_definition(decoded, definition_index, addend) {
+                    (addend, base)
+                } else {
+                    return None;
+                };
+            let relative_base =
+                resolve_register(image, decoded, definition_index, base_register, 0)?;
+            let (load_index, load_effect) =
+                latest_definition(decoded, definition_index, loaded_register)?;
+            (load_index, load_effect, Some(relative_base))
+        }
+        _ => return None,
+    };
     let ValueSource::LoadFromRegister {
         base: address_register,
         disp,
@@ -334,10 +360,16 @@ pub fn resolve_riscv_jump_table(
     if !matches!(entry_size, 1 | 2 | 4 | 8) {
         return None;
     }
+    let entry_width = u8::try_from(entry_size).ok()?;
     let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
     let mut targets = Vec::new();
     for raw in read_table_entries(image, table_base, entry_size, limit) {
-        let target = image.canonical_address(raw);
+        let target = if let Some(base) = relative_base {
+            let offset = sign_extend(raw, entry_width);
+            image.canonical_address(base.wrapping_add_signed(offset))
+        } else {
+            image.canonical_address(raw)
+        };
         if !image.is_executable(target) {
             break;
         }
@@ -346,6 +378,11 @@ pub fn resolve_riscv_jump_table(
         }
     }
     (!targets.is_empty()).then_some(targets)
+}
+
+fn is_load_definition(decoded: &[DecodedInsn], before: usize, register: capstone::RegId) -> bool {
+    latest_definition(decoded, before, register)
+        .is_some_and(|(_, effect)| matches!(effect.source, ValueSource::LoadFromRegister { .. }))
 }
 
 fn shifted_index(
@@ -597,14 +634,70 @@ fn jump_table_bound(
                 .map(|value| value.saturating_add(1))
         })?
     });
-    exact.or_else(|| {
-        candidates.take(16).find_map(|instruction| {
+    if exact.is_some() {
+        return exact;
+    }
+    candidates
+        .take(16)
+        .find_map(|instruction| {
             let (_, value) = instruction.compare?;
             usize::try_from(value)
                 .ok()
                 .map(|value| value.saturating_add(1))
         })
-    })
+        .or_else(|| riscv_jump_table_bound(decoded, before, register))
+}
+
+/// Recovers the table bound from the RISC-V register guard emitted before a
+/// switch, for example `li t0, 15; bltu t0, index, default`.
+fn riscv_jump_table_bound(
+    decoded: &[DecodedInsn],
+    before: usize,
+    register: capstone::RegId,
+) -> Option<usize> {
+    let start = before.saturating_sub(32);
+    for index in (start..before).rev() {
+        let instruction = &decoded[index];
+        let Some((lhs, rhs)) = instruction.branch_registers else {
+            continue;
+        };
+        let mnemonic = instruction
+            .mnemonic
+            .strip_prefix("c.")
+            .unwrap_or(&instruction.mnemonic);
+        let bound_register = if lhs == register {
+            rhs
+        } else if rhs == register {
+            lhs
+        } else {
+            continue;
+        };
+        let Some(value) = immediate_definition(decoded, index, bound_register) else {
+            continue;
+        };
+        let value = usize::try_from(value).ok()?;
+        let entries = match (mnemonic, lhs == register) {
+            // `bound < index` branches away; the table covers 0..=bound.
+            ("bltu", false) | ("bgtu", true) => value.checked_add(1)?,
+            // `index < bound` or `index >= bound` branches away.
+            ("bgeu", true) | ("bleu", false) => value,
+            _ => continue,
+        };
+        return Some(entries.min(MAX_JUMP_TABLE_ENTRIES));
+    }
+    None
+}
+
+fn immediate_definition(
+    decoded: &[DecodedInsn],
+    before: usize,
+    register: capstone::RegId,
+) -> Option<u64> {
+    let (_, effect) = latest_definition(decoded, before, register)?;
+    match effect.source {
+        ValueSource::Immediate(value) => Some(value),
+        _ => None,
+    }
 }
 
 fn latest_definition(
@@ -828,7 +921,7 @@ fn pc_value(arch: crate::loader::ArchKind, address: u64, size: u8) -> Option<u64
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_argument_spec, forwarded_argument_index, indirect_argument_spec,
+        evaluate_argument_spec, forwarded_argument_index, indirect_argument_spec, jump_table_bound,
         resolve_argument_pointer, resolve_indirect_target,
     };
     use crate::arch::Decoder;
@@ -1074,6 +1167,25 @@ mod tests {
         assert_eq!(
             resolve_indirect_target(&image, &[load, call], 0x1007, indirect),
             Some(0x1010)
+        );
+    }
+
+    #[test]
+    fn recovers_riscv_register_guard_bound() {
+        let engine = Decoder::new(ArchKind::Riscv64).unwrap();
+        // c.li a1, 15; bltu a1, a0, default
+        let li = engine
+            .decode_one(&[0xbd, 0x45], 0x0040_011e)
+            .unwrap()
+            .expect("c.li");
+        let branch = engine
+            .decode_one(&[0x63, 0xe8, 0xa5, 0x0a], 0x0040_0120)
+            .unwrap()
+            .expect("bltu");
+        let (_, index) = branch.branch_registers.expect("two register operands");
+        assert_eq!(
+            jump_table_bound(&[li, branch], 0x0040_0124, index),
+            Some(16)
         );
     }
 
