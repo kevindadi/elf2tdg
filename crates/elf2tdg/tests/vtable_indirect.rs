@@ -3,10 +3,11 @@
 //! These compile tiny C/C++ programs on demand and skip when the host
 //! compiler is unavailable.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
+use elf2tdg::cfg::CfgEdgeKind;
 use elf2tdg::loader;
 
 fn tool_available(tool: &str) -> bool {
@@ -26,6 +27,29 @@ fn compile_with_optimization(
     source: &str,
     optimization: &str,
 ) -> Option<PathBuf> {
+    compile_with_args(
+        compiler,
+        source_name,
+        source,
+        &[optimization, "-g", "-fno-inline", "-fno-pie", "-no-pie"],
+    )
+}
+
+fn compile_pie(compiler: &str, source_name: &str, source: &str) -> Option<PathBuf> {
+    compile_with_args(
+        compiler,
+        source_name,
+        source,
+        &["-O2", "-g", "-fno-inline", "-fPIE", "-pie"],
+    )
+}
+
+fn compile_with_args(
+    compiler: &str,
+    source_name: &str,
+    source: &str,
+    args: &[&str],
+) -> Option<PathBuf> {
     if !tool_available(compiler) {
         eprintln!("skipping {source_name}: {compiler} is not available");
         return None;
@@ -38,7 +62,7 @@ fn compile_with_optimization(
     std::fs::write(&source_path, source).ok()?;
     let binary = directory.join("fixture");
     let status = Command::new(compiler)
-        .args([optimization, "-g", "-fno-inline", "-fno-pie", "-no-pie"])
+        .args(args)
         .arg("-o")
         .arg(&binary)
         .arg(&source_path)
@@ -264,5 +288,86 @@ int main(void) { return dispatch(35) == 42 ? 0 : 1; }
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-indirect-jump")
+    );
+}
+
+#[test]
+fn resolves_indexed_switch_jump_table_edges() {
+    let source = r"
+volatile int sink;
+__attribute__((noinline)) int dispatch(int x) {
+    switch (x) {
+        case 0: sink = 1; return 11;
+        case 1: sink = 2; return 23;
+        case 2: sink = 3; return 37;
+        case 3: sink = 4; return 41;
+        case 4: sink = 5; return 59;
+        case 5: sink = 6; return 67;
+        default: sink = 0; return -1;
+    }
+}
+int main(int argc, char **argv) { return dispatch(argc); }
+";
+    let Some(binary) = compile_with_optimization("gcc", "switch_table.c", source, "-O2") else {
+        return;
+    };
+    assert_jump_table_resolved(&binary);
+}
+
+#[test]
+fn resolves_pie_relative_switch_jump_table_edges() {
+    let source = r"
+volatile int sink;
+__attribute__((noinline)) int dispatch(int x) {
+    switch (x) {
+        case 0: sink = 1; return 11;
+        case 1: sink = 2; return 23;
+        case 2: sink = 3; return 37;
+        case 3: sink = 4; return 41;
+        case 4: sink = 5; return 59;
+        case 5: sink = 6; return 67;
+        default: sink = 0; return -1;
+    }
+}
+int main(int argc, char **argv) { return dispatch(argc); }
+";
+    let Some(binary) = compile_pie("gcc", "switch_pie.c", source) else {
+        return;
+    };
+    assert_jump_table_resolved(&binary);
+}
+
+fn assert_jump_table_resolved(binary: &Path) {
+    let image = loader::load(binary).expect("switch fixture must load");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let dispatch = analysis
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name == "dispatch")
+        .expect("dispatch function");
+    let jump_edges = dispatch
+        .cfg
+        .graph
+        .edge_indices()
+        .filter(|edge| {
+            dispatch
+                .cfg
+                .graph
+                .edge_weight(*edge)
+                .is_some_and(|edge| edge.kind == CfgEdgeKind::Jump)
+        })
+        .count();
+    assert!(
+        jump_edges >= 6,
+        "expected at least six switch-case jump edges, got {jump_edges}"
+    );
+    assert!(
+        analysis
+            .tdg
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "resolved-jump-table")
     );
 }
