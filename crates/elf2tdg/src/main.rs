@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use elf2tdg::analysis::{AnalysisOptions, AnalysisOutput, analyze_with_cfg};
 use elf2tdg::cfg::{self, CfgFunction, ProgramCfg};
+use elf2tdg::elf_view;
 use elf2tdg::loader;
 use elf2tdg::output::{self, GraphOptions};
 use elf2tdg::timing::parse_frequency;
@@ -17,7 +18,7 @@ use elf2tdg_schema::Tdg;
 #[command(
     name = "elf2tdg",
     version,
-    about = "Extract per-function CFGs and Task Dependency Graphs from ELF images"
+    about = "Extract ELF layouts, per-function CFGs and Task Dependency Graphs from ELF images"
 )]
 struct Cli {
     /// Input ELF image (keep symbols in the analysis build).
@@ -33,11 +34,12 @@ struct Cli {
     #[arg(long)]
     freq: Option<String>,
 
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-    format: OutputFormat,
+    /// Output format. Defaults to json; --view elf defaults to mermaid.
+    #[arg(long, value_enum)]
+    format: Option<OutputFormat>,
 
-    /// Graph view: the final TDG or the intermediate per-function CFG.
+    /// Graph view: the final TDG, the intermediate per-function CFG, or the
+    /// loaded ELF layout.
     #[arg(long, value_enum, default_value_t = View::Tdg)]
     view: View,
 
@@ -83,6 +85,15 @@ struct Cli {
     #[arg(long, default_value_t = 500)]
     max_diagnostics: usize,
 
+    /// Maximum instructions rendered per executable section by --view elf
+    /// (0 = unlimited).
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = elf_view::DEFAULT_MAX_INSTRUCTIONS_PER_SECTION
+    )]
+    elf_max_insns: usize,
+
     /// Print a summary and diagnostics count to stderr.
     #[arg(long)]
     verbose: bool,
@@ -105,6 +116,8 @@ enum ProjectionArg {
 enum View {
     Tdg,
     Cfg,
+    #[value(alias = "loader")]
+    Elf,
 }
 
 impl From<ProjectionArg> for output::Projection {
@@ -134,6 +147,7 @@ fn render_view(
     cli: &Cli,
     analysis: &AnalysisOutput,
     cfg_functions: &[&CfgFunction],
+    format: OutputFormat,
 ) -> Result<String> {
     let tdg = &analysis.tdg;
     let graph_options = GraphOptions {
@@ -142,12 +156,12 @@ fn render_view(
     };
     let include_cfg_instructions = !cli.no_cfg_instructions;
     let rendered = match cli.view {
-        View::Tdg => match cli.format {
+        View::Tdg => match format {
             OutputFormat::Json => output::render_json(tdg)?,
             OutputFormat::Dot => output::render_dot_with(tdg, graph_options),
             OutputFormat::Mermaid => output::render_mermaid_with(tdg, graph_options),
         },
-        View::Cfg => match cli.format {
+        View::Cfg => match format {
             OutputFormat::Json => cfg::render_json_selected(
                 &analysis.cfg,
                 tdg,
@@ -162,6 +176,7 @@ fn render_view(
                 cfg::render_mermaid_selected(&analysis.cfg, cfg_functions, include_cfg_instructions)
             }
         },
+        View::Elf => unreachable!("ELF view is rendered before analysis"),
     };
     Ok(rendered)
 }
@@ -196,9 +211,13 @@ fn main() -> Result<()> {
         .transpose()
         .map_err(anyhow::Error::msg)?;
 
+    let format = cli.format.unwrap_or(match cli.view {
+        View::Elf => OutputFormat::Mermaid,
+        View::Tdg | View::Cfg => OutputFormat::Json,
+    });
     let image = loader::load(&cli.input)
         .with_context(|| format!("failed to load {}", cli.input.display()))?;
-    if cli.view == View::Tdg
+    if cli.view != View::Cfg
         && (cli.function.is_some()
             || cli.all_functions
             || cli.reachable_from.is_some()
@@ -207,6 +226,31 @@ fn main() -> Result<()> {
         anyhow::bail!(
             "--function, --all-functions, --reachable-from and --no-cfg-instructions are only supported with --view cfg"
         );
+    }
+    if cli.view == View::Elf {
+        if format != OutputFormat::Mermaid {
+            anyhow::bail!("--view elf currently supports only --format mermaid");
+        }
+        let rendered =
+            elf_view::render_mermaid(&image, cli.elf_max_insns).map_err(anyhow::Error::msg)?;
+        write_rendered(&cli, &rendered)?;
+        if cli.verbose {
+            let destination = cli
+                .output
+                .as_ref()
+                .map_or_else(|| "stdout".to_owned(), |path| path.display().to_string());
+            eprintln!(
+                "{} segments, {} sections, {} symbols -> {destination}",
+                image.segments.len(),
+                image
+                    .sections
+                    .iter()
+                    .filter(|section| section.alloc)
+                    .count(),
+                image.symbols.len()
+            );
+        }
+        return Ok(());
     }
     let options = AnalysisOptions {
         cpu: cli.cpu.clone(),
@@ -223,7 +267,7 @@ fn main() -> Result<()> {
         Vec::new()
     };
 
-    let rendered = render_view(&cli, &analysis, &cfg_functions)?;
+    let rendered = render_view(&cli, &analysis, &cfg_functions, format)?;
     write_rendered(&cli, &rendered)?;
 
     if cli.verbose {
