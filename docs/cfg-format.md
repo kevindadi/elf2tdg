@@ -101,10 +101,12 @@ the label text while retaining addresses, sizes, cycle costs, terminators and
 call sites. The TDG-only flags `--instructions`, `--projection` and `--legend`
 do not change CFG output.
 
-## Unresolved call sites
+## Unresolved call and jump sites
 
-`unresolved: true` means the instruction was an indirect call and no static
-target could be recovered. Common causes in Rust images are:
+`unresolved: true` in a block's `calls` entry means an indirect call or an
+indirect tail jump had no static target. A `tail: true` entry records a jump
+that leaves the function; unresolved tail jumps are retained as candidates so
+the information is not lost. Common causes in Rust images are:
 
 - calls through a register (`call rax`) where the value came from a closure,
   vtable or other runtime computation;
@@ -118,13 +120,19 @@ pointer-sized slots, which resolves many `R_*_RELATIVE` GOT entries. Import
 GOT slots (`GLOB_DAT`/`JUMP_SLOT`) resolve to synthesized PLT stubs when the
 binary has one; imports without a local stub remain unresolved.
 
-Indirect calls are also resolved through:
+Indirect calls and jumps are also resolved through:
 
 - static pointer chains ending in a vtable or function-pointer slot;
 - direct memory slots and vtable entries whose bases are statically known;
 - ABI arguments of the containing function, evaluated at direct caller sites
   (for example a function-pointer dispatch helper or a C++ virtual call on a
   static object).
+
+A resolved jump whose target lies inside the same function becomes a `branch`
+or `jump` CFG edge. A resolved jump to another function is emitted as a call
+site with `tail: true`. Unresolved indirect jumps produce
+`unresolved-indirect-jump` diagnostics and, when they leave the function, an
+unresolved tail-call candidate in `calls`.
 
 Caller-argument propagation accepts only a unique executable target across the
 known callers and marks the resulting call as indirect/medium confidence. If
@@ -245,22 +253,23 @@ Unresolved indirect calls and jumps remain explicit rather than being guessed.
 | `fallthrough` | sequential control flow, including the not-taken side of a conditional |
 | `call-return` | continuation after a call; every call ends its own block |
 | `branch` | taken conditional branch within the function |
-| `jump` | direct unconditional jump, including a self-loop |
+| `jump` | direct or statically resolved indirect unconditional jump, including a self-loop |
 
 Calls are not control-flow edges. They are retained on blocks and are rendered
 as dashed call-target edges in DOT/Mermaid.
 
-`recovered_calls` carries call sites found by the bounded gap scan after an
-unresolved indirect jump. They have no proven containing basic block, so they
-are kept at function level with `heuristic: true`; they are not silently
-dropped from the TDG.
+`calls` may contain tail calls recovered from indirect jumps (`tail: true`,
+usually `direct: false`). `recovered_calls` carries call sites found by the
+bounded gap scan after an unresolved indirect jump. They have no proven
+containing basic block, so they are kept at function level with
+`heuristic: true`; they are not silently dropped from the TDG.
 
 ## Current limits
 
 - Calls end their basic block and return to a new block; call targets remain
   metadata, not intra-function CFG edges.
-- Indexed switch jump tables and computed C++ vtable dispatch are not yet
-  expanded into CFG edges; they remain unresolved indirect jumps.
+- Indexed switch jump tables and vtable dispatch on heap/stack objects are not
+  expanded into CFG edges; those targets remain unresolved indirect jumps.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
