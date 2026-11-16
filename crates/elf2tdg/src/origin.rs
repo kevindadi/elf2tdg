@@ -149,7 +149,9 @@ pub fn resolve_indirect_target(
             resolve_register(image, decoded, before, register, 0)?.wrapping_add_signed(offset)
         }
         IndirectTarget::Memory(address) => image.read_uint(address, pointer_size(image.arch))?,
-        IndirectTarget::IndexedMemory { .. } | IndirectTarget::TableBranch { .. } => return None,
+        IndirectTarget::IndexedMemory { .. }
+        | IndirectTarget::TableBranch { .. }
+        | IndirectTarget::TableLoad { .. } => return None,
         IndirectTarget::RegisterMemory { base, disp } => {
             if let Some(base_value) = resolve_register(image, decoded, before, base, 0) {
                 let address = base_value.wrapping_add_signed(disp);
@@ -313,6 +315,41 @@ fn shifted_index(
         return None;
     };
     Some((base, shift))
+}
+
+/// Resolves ARM A32 `ldr pc, [table + index*4]` absolute-address tables.
+#[must_use]
+pub fn resolve_table_load(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    target: IndirectTarget,
+) -> Option<Vec<u64>> {
+    let IndirectTarget::TableLoad { base, index, disp } = target else {
+        return None;
+    };
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    let table_base = if let Some(base) = base {
+        resolve_register(image, decoded, before, base, 0)?.wrapping_add_signed(disp)
+    } else {
+        match image.arch {
+            crate::loader::ArchKind::Thumb => site.checked_add(4)?,
+            crate::loader::ArchKind::Arm => site.checked_add(8)?,
+            _ => return None,
+        }
+    };
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let mut targets = Vec::new();
+    for raw in read_table_entries(image, table_base, 4, limit) {
+        let target = image.canonical_address(raw);
+        if !image.is_executable(target) {
+            break;
+        }
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    (!targets.is_empty()).then_some(targets)
 }
 
 /// Resolves a switch table whose entry is added to a base address.
@@ -558,7 +595,8 @@ pub fn indirect_argument_spec(
         }
         IndirectTarget::Memory(_)
         | IndirectTarget::IndexedMemory { .. }
-        | IndirectTarget::TableBranch { .. } => None,
+        | IndirectTarget::TableBranch { .. }
+        | IndirectTarget::TableLoad { .. } => None,
     }
 }
 

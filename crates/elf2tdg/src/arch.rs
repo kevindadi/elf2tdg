@@ -123,6 +123,15 @@ pub enum IndirectTarget {
         /// Whether entries are halfwords (`tbh`) instead of bytes (`tbb`).
         halfword: bool,
     },
+    /// ARM A32 `ldr pc, [table + index*4]` absolute-address table.
+    TableLoad {
+        /// Optional table base register; `None` means the PC-relative table.
+        base: Option<RegId>,
+        /// Index register.
+        index: RegId,
+        /// Signed displacement from the base or PC.
+        disp: i64,
+    },
 }
 
 /// A register stored through a base register plus displacement.
@@ -304,21 +313,26 @@ impl Decoder {
                 || u32::from(group.0) == InsnGroupType::CS_GRP_IRET
         });
         let is_return = group_return || is_return_mnemonic(self.arch, &mnemonic, &operands);
-        let is_jump = is_jump_group && !is_call && !is_return;
-        let is_conditional = is_jump && is_conditional_mnemonic(self.arch, &mnemonic);
-
-        let direct_target = if is_call || is_jump {
+        let mut is_jump = is_jump_group && !is_call && !is_return;
+        let mut is_conditional = is_jump && is_conditional_mnemonic(self.arch, &mnemonic);
+        let mut direct_target = if is_call || is_jump {
             direct_target(self.arch, &detail, &mnemonic, &operands, address)
         } else {
             None
         };
         let value = value_effect(self.arch, &detail, address, size, &mnemonic);
         let memory_write = memory_write_effect(self.arch, &detail, &mnemonic);
-        let indirect = if (is_call || is_jump) && direct_target.is_none() {
+        let mut indirect = if (is_call || is_jump) && direct_target.is_none() {
             indirect_target(self.arch, &detail, &mnemonic, address, size)
         } else {
             None
         };
+        if let Some((table, conditional)) = arm_table_load(&detail, &mnemonic) {
+            is_jump = true;
+            is_conditional = conditional;
+            direct_target = None;
+            indirect = Some(table);
+        }
         let compare = match self.arch {
             ArchKind::X86_64 => x86_compare(&detail, &mnemonic),
             ArchKind::Aarch64 => aarch64_compare(&detail, &mnemonic),
@@ -342,6 +356,45 @@ impl Decoder {
             compare,
         }))
     }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn arm_table_load(
+    detail: &capstone::InsnDetail<'_>,
+    mnemonic: &str,
+) -> Option<(IndirectTarget, bool)> {
+    if !mnemonic.starts_with("ldr") {
+        return None;
+    }
+    let ArchDetail::ArmDetail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let pc = RegId(arm::ArmReg::ARM_REG_PC as u16);
+    let operands: Vec<_> = detail.operands().collect();
+    let arm::ArmOperandType::Reg(dest) = operands.first()?.op_type else {
+        return None;
+    };
+    if dest != pc {
+        return None;
+    }
+    let arm::ArmOperandType::Mem(memory) = operands.get(1)?.op_type else {
+        return None;
+    };
+    if memory.index().0 == 0 {
+        return None;
+    }
+    let conditional = !matches!(
+        detail.cc(),
+        arm::ArmCC::ARM_CC_AL | arm::ArmCC::ARM_CC_INVALID
+    );
+    Some((
+        IndirectTarget::TableLoad {
+            base: (memory.base() != pc).then_some(memory.base()),
+            index: memory.index(),
+            disp: i64::from(memory.disp()),
+        },
+        conditional,
+    ))
 }
 
 #[allow(clippy::cast_possible_truncation)]

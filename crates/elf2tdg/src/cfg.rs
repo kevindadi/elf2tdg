@@ -108,6 +108,15 @@ pub enum CfgIndirectTarget {
         /// Whether the table contains halfword offsets.
         halfword: bool,
     },
+    /// ARM A32 `ldr pc, [table + index*4]` absolute-address table.
+    TableLoad {
+        /// Optional table base register.
+        base: Option<String>,
+        /// Index register.
+        index: String,
+        /// Signed displacement.
+        disp: i64,
+    },
 }
 
 /// One decoded instruction, including raw bytes and control-flow metadata.
@@ -1074,6 +1083,7 @@ fn call_view(program: &ProgramCfg, call: &CfgCallSite) -> CfgCallView {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
     CfgInstructionView {
         address: Addr::new(instruction.address),
@@ -1163,6 +1173,17 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 index: Some(index.clone()),
                 scale: Some(if *halfword { 2 } else { 1 }),
                 halfword: Some(*halfword),
+            },
+            CfgIndirectTarget::TableLoad { base, index, disp } => CfgIndirectView {
+                kind: "table-load",
+                register: None,
+                base: base.clone(),
+                disp: Some(*disp),
+                address: None,
+                offset: None,
+                index: Some(index.clone()),
+                scale: Some(4),
+                halfword: None,
             },
         }),
     }

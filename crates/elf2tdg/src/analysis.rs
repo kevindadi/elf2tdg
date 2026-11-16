@@ -1010,16 +1010,13 @@ impl<'a> Analyzer<'a> {
                 let kind = if last.is_call {
                     cfg::CfgEdgeKind::CallReturn
                 } else if last.is_conditional {
-                    if last
+                    let direct_target = last
                         .direct_target
-                        .map(|target| self.image.canonical_address(target))
-                        .or_else(|| {
-                            resolved_indirect_jumps
-                                .get(&last.address)
-                                .and_then(|targets| targets.first().copied())
-                        })
-                        == Some(*successor)
-                    {
+                        .map(|target| self.image.canonical_address(target));
+                    let resolved_target = resolved_indirect_jumps
+                        .get(&last.address)
+                        .is_some_and(|targets| targets.contains(successor));
+                    if direct_target == Some(*successor) || resolved_target {
                         cfg::CfgEdgeKind::Branch
                     } else {
                         cfg::CfgEdgeKind::Fallthrough
@@ -1098,6 +1095,8 @@ impl<'a> Analyzer<'a> {
             origin::resolve_jump_table(self.image, decoded, site, target).unwrap_or_default()
         } else if matches!(target, IndirectTarget::TableBranch { .. }) {
             origin::resolve_table_branch(self.image, decoded, site, target).unwrap_or_default()
+        } else if matches!(target, IndirectTarget::TableLoad { .. }) {
+            origin::resolve_table_load(self.image, decoded, site, target).unwrap_or_default()
         } else if let IndirectTarget::Register(register) = target {
             origin::resolve_indirect_target(self.image, decoded, site, target)
                 .map(|target| vec![target])
@@ -1252,6 +1251,11 @@ impl<'a> Analyzer<'a> {
                 base: base.map(name),
                 index: name(index),
                 halfword,
+            },
+            IndirectTarget::TableLoad { base, index, disp } => cfg::CfgIndirectTarget::TableLoad {
+                base: base.map(name),
+                index: name(index),
+                disp,
             },
         }
     }
