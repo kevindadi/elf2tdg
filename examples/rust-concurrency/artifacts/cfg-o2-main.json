@@ -14476,17 +14476,17 @@
       "site": "0x17b00"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x17b9a (jmp qword ptr [rip + 0x436f0]) has no statically known target",
-      "function": "fn:0x17b60",
-      "site": "0x17b9a"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x17b60; edges are low confidence",
       "function": "fn:0x17b60"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x17b9a to 0x19478 as a tail call",
+      "function": "fn:0x17b60",
+      "site": "0x17b9a"
     },
     {
       "code": "unresolved-indirect-call",
@@ -14496,17 +14496,17 @@
       "site": "0x17b83"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x17c03 (jmp qword ptr [rip + 0x43687]) has no statically known target",
-      "function": "fn:0x17bd0",
-      "site": "0x17c03"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x17bd0; edges are low confidence",
       "function": "fn:0x17bd0"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x17c03 to 0x19478 as a tail call",
+      "function": "fn:0x17bd0",
+      "site": "0x17c03"
     },
     {
       "code": "unresolved-indirect-call",
@@ -14523,17 +14523,17 @@
       "site": "0x17c60"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x17d08 (jmp qword ptr [rip + 0x43582]) has no statically known target",
-      "function": "fn:0x17c70",
-      "site": "0x17d08"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x17c70; edges are low confidence",
       "function": "fn:0x17c70"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x17d08 to 0x19478 as a tail call",
+      "function": "fn:0x17c70",
+      "site": "0x17d08"
     },
     {
       "code": "resolved-indirect-call",
@@ -14550,17 +14550,17 @@
       "site": "0x17ccd"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x17db1 (jmp qword ptr [rip + 0x434d9]) has no statically known target",
-      "function": "fn:0x17d80",
-      "site": "0x17db1"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x17d80; edges are low confidence",
       "function": "fn:0x17d80"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x17db1 to 0x19478 as a tail call",
+      "function": "fn:0x17d80",
+      "site": "0x17db1"
     },
     {
       "code": "unresolved-indirect-call",
@@ -14570,17 +14570,17 @@
       "site": "0x17d9a"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x17e11 (jmp qword ptr [rip + 0x43479]) has no statically known target",
-      "function": "fn:0x17de0",
-      "site": "0x17e11"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x17de0; edges are low confidence",
       "function": "fn:0x17de0"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x17e11 to 0x19478 as a tail call",
+      "function": "fn:0x17de0",
+      "site": "0x17e11"
     },
     {
       "code": "unresolved-indirect-call",
@@ -14618,17 +14618,17 @@
       "site": "0x1801b"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x18081 (jmp qword ptr [rip + 0x43209]) has no statically known target",
-      "function": "fn:0x18030",
-      "site": "0x18081"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x18030; edges are low confidence",
       "function": "fn:0x18030"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x18081 to 0x19478 as a tail call",
+      "function": "fn:0x18030",
+      "site": "0x18081"
     },
     {
       "code": "resolved-indirect-call",
@@ -15114,30 +15114,30 @@
       "site": "0x191fa"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x19231 (jmp qword ptr [rip + 0x42059]) has no statically known target",
-      "function": "fn:0x19200",
-      "site": "0x19231"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x19200; edges are low confidence",
       "function": "fn:0x19200"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x192ac (jmp qword ptr [rip + 0x41fde]) has no statically known target",
-      "function": "fn:0x19270",
-      "site": "0x192ac"
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x19231 to 0x19478 as a tail call",
+      "function": "fn:0x19200",
+      "site": "0x19231"
     },
     {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x19270; edges are low confidence",
       "function": "fn:0x19270"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x192ac to 0x19478 as a tail call",
+      "function": "fn:0x19270",
+      "site": "0x192ac"
     },
     {
       "code": "resolved-indirect-call",
@@ -15147,9 +15147,9 @@
       "site": "0x19285"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x192fd (jmp qword ptr [rip + 0x4208d]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x192fd to 0x559a0 as a tail call",
       "function": "fn:0x192f0",
       "site": "0x192fd"
     },
@@ -15189,9 +15189,9 @@
       "site": "0x19466"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x19521 (jmp qword ptr [rip + 0x41f59]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x19521 to 0x52700 as a tail call",
       "function": "fn:0x19490",
       "site": "0x19521"
     },
@@ -15364,6 +15364,12 @@
       "site": "0x19d92"
     },
     {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 6 direct call site(s) after unresolved indirect jumps in 0x19e40; edges are low confidence",
+      "function": "fn:0x19e40"
+    },
+    {
       "code": "unresolved-indirect-jump",
       "severity": "warning",
       "message": "indirect jump at 0x1a553 (jmp rdx) has no statically known target",
@@ -15376,12 +15382,6 @@
       "message": "indirect jump at 0x1a5af (jmp rdx) has no statically known target",
       "function": "fn:0x19e40",
       "site": "0x1a5af"
-    },
-    {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 6 direct call site(s) after unresolved indirect jumps in 0x19e40; edges are low confidence",
-      "function": "fn:0x19e40"
     },
     {
       "code": "resolved-indirect-call",
@@ -15517,6 +15517,12 @@
       "site": "0x1adcd"
     },
     {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 13 direct call site(s) after unresolved indirect jumps in 0x1ae70; edges are low confidence",
+      "function": "fn:0x1ae70"
+    },
+    {
       "code": "unresolved-indirect-jump",
       "severity": "warning",
       "message": "indirect jump at 0x1b548 (jmp rcx) has no statically known target",
@@ -15536,12 +15542,6 @@
       "message": "indirect jump at 0x1b5f3 (jmp rsi) has no statically known target",
       "function": "fn:0x1ae70",
       "site": "0x1b5f3"
-    },
-    {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 13 direct call site(s) after unresolved indirect jumps in 0x1ae70; edges are low confidence",
-      "function": "fn:0x1ae70"
     },
     {
       "code": "resolved-indirect-call",
@@ -15859,17 +15859,17 @@
       "site": "0x1cfdd"
     },
     {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 7 direct call site(s) after unresolved indirect jumps in 0x1cfe9; edges are low confidence",
+      "function": "fn:0x1cfe9"
+    },
+    {
       "code": "unresolved-indirect-jump",
       "severity": "warning",
       "message": "indirect jump at 0x1f085 (jmp rdx) has no statically known target",
       "function": "fn:0x1cfe9",
       "site": "0x1f085"
-    },
-    {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 7 direct call site(s) after unresolved indirect jumps in 0x1cfe9; edges are low confidence",
-      "function": "fn:0x1cfe9"
     },
     {
       "code": "resolved-indirect-call",
@@ -16593,17 +16593,17 @@
       "site": "0x21b8b"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x21c76 (jmp qword ptr [rip + 0x39614]) has no statically known target",
-      "function": "fn:0x21ba0",
-      "site": "0x21c76"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 3 direct call site(s) after unresolved indirect jumps in 0x21ba0; edges are low confidence",
       "function": "fn:0x21ba0"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x21c76 to 0x19478 as a tail call",
+      "function": "fn:0x21ba0",
+      "site": "0x21c76"
     },
     {
       "code": "resolved-indirect-call",
@@ -16634,17 +16634,17 @@
       "site": "0x21c54"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x21d11 (jmp qword ptr [rip + 0x395c1]) has no statically known target",
-      "function": "fn:0x21ce0",
-      "site": "0x21d11"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x21ce0; edges are low confidence",
       "function": "fn:0x21ce0"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x21d11 to 0x3da60 as a tail call",
+      "function": "fn:0x21ce0",
+      "site": "0x21d11"
     },
     {
       "code": "resolved-indirect-call",
@@ -16654,9 +16654,9 @@
       "site": "0x21cf6"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x21dea (jmp qword ptr [rip + 0x394a0]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x21dea to 0x19478 as a tail call",
       "function": "fn:0x21d50",
       "site": "0x21dea"
     },
@@ -16682,17 +16682,17 @@
       "site": "0x21dc2"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x21e6e (jmp qword ptr [rip + 0x3941c]) has no statically known target",
-      "function": "fn:0x21e00",
-      "site": "0x21e6e"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x21e00; edges are low confidence",
       "function": "fn:0x21e00"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x21e6e to 0x19478 as a tail call",
+      "function": "fn:0x21e00",
+      "site": "0x21e6e"
     },
     {
       "code": "resolved-indirect-call",
@@ -16709,9 +16709,9 @@
       "site": "0x21e4e"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x21f70 (jmp qword ptr [rip + 0x3931a]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x21f70 to 0x19478 as a tail call",
       "function": "fn:0x21ea0",
       "site": "0x21f70"
     },
@@ -16751,9 +16751,9 @@
       "site": "0x21fe7"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x220f3 (jmp qword ptr [rip + 0x39197]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x220f3 to 0x19478 as a tail call",
       "function": "fn:0x22000",
       "site": "0x220f3"
     },
@@ -16779,9 +16779,9 @@
       "site": "0x220c2"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22119 (jmp qword ptr [rip + 0x39171]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22119 to 0x19478 as a tail call",
       "function": "fn:0x22100",
       "site": "0x22119"
     },
@@ -16800,9 +16800,9 @@
       "site": "0x2218d"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22206 (jmp qword ptr [rip + 0x39084]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22206 to 0x19478 as a tail call",
       "function": "fn:0x221b0",
       "site": "0x22206"
     },
@@ -16828,24 +16828,17 @@
       "site": "0x222b1"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x222fb (jmp qword ptr [rip + 0x38f8f]) has no statically known target",
-      "function": "fn:0x222c0",
-      "site": "0x222fb"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x222c0; edges are low confidence",
       "function": "fn:0x222c0"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2237e (jmp qword ptr [rip + 0x38f0c]) has no statically known target",
-      "function": "fn:0x22340",
-      "site": "0x2237e"
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x222fb to 0x19478 as a tail call",
+      "function": "fn:0x222c0",
+      "site": "0x222fb"
     },
     {
       "code": "heuristic-direct-calls",
@@ -16854,9 +16847,16 @@
       "function": "fn:0x22340"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22467 (jmp qword ptr [rip + 0x38e23]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2237e to 0x19478 as a tail call",
+      "function": "fn:0x22340",
+      "site": "0x2237e"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22467 to 0x19478 as a tail call",
       "function": "fn:0x223c0",
       "site": "0x22467"
     },
@@ -16875,9 +16875,9 @@
       "site": "0x2243c"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x224f7 (jmp qword ptr [rip + 0x38d93]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x224f7 to 0x19478 as a tail call",
       "function": "fn:0x22480",
       "site": "0x224f7"
     },
@@ -16889,9 +16889,9 @@
       "site": "0x224cc"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2258b (jmp qword ptr [rip + 0x38cff]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2258b to 0x19478 as a tail call",
       "function": "fn:0x22510",
       "site": "0x2258b"
     },
@@ -16903,24 +16903,24 @@
       "site": "0x22564"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x225b1 (jmp qword ptr [rip + 0x38cd9]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x225b1 to 0x19478 as a tail call",
       "function": "fn:0x225a0",
       "site": "0x225b1"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x225f7 (jmp qword ptr [rip + 0x38c93]) has no statically known target",
-      "function": "fn:0x225c0",
-      "site": "0x225f7"
     },
     {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x225c0; edges are low confidence",
       "function": "fn:0x225c0"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x225f7 to 0x19478 as a tail call",
+      "function": "fn:0x225c0",
+      "site": "0x225f7"
     },
     {
       "code": "unresolved-indirect-call",
@@ -16930,17 +16930,17 @@
       "site": "0x225db"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22693 (jmp qword ptr [rip + 0x38bf7]) has no statically known target",
-      "function": "fn:0x22630",
-      "site": "0x22693"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x22630; edges are low confidence",
       "function": "fn:0x22630"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22693 to 0x19478 as a tail call",
+      "function": "fn:0x22630",
+      "site": "0x22693"
     },
     {
       "code": "resolved-indirect-call",
@@ -16964,9 +16964,9 @@
       "site": "0x22664"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2278a (jmp qword ptr [rip + 0x38b00]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2278a to 0x19478 as a tail call",
       "function": "fn:0x226f0",
       "site": "0x2278a"
     },
@@ -16985,9 +16985,9 @@
       "site": "0x22767"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2280d (jmp qword ptr [rip + 0x38a7d]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2280d to 0x19478 as a tail call",
       "function": "fn:0x227a0",
       "site": "0x2280d"
     },
@@ -17006,17 +17006,17 @@
       "site": "0x2284d"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22909 (jmp qword ptr [rip + 0x38981]) has no statically known target",
-      "function": "fn:0x228b0",
-      "site": "0x22909"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x228b0; edges are low confidence",
       "function": "fn:0x228b0"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22909 to 0x19478 as a tail call",
+      "function": "fn:0x228b0",
+      "site": "0x22909"
     },
     {
       "code": "resolved-indirect-call",
@@ -17026,9 +17026,9 @@
       "site": "0x228d2"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x229b6 (jmp qword ptr [rip + 0x388d4]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x229b6 to 0x19478 as a tail call",
       "function": "fn:0x22940",
       "site": "0x229b6"
     },
@@ -17040,9 +17040,9 @@
       "site": "0x22994"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22a26 (jmp qword ptr [rip + 0x38864]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22a26 to 0x19478 as a tail call",
       "function": "fn:0x229d0",
       "site": "0x22a26"
     },
@@ -17068,9 +17068,9 @@
       "site": "0x22a48"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22b11 (jmp qword ptr [rip + 0x38779]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22b11 to 0x19478 as a tail call",
       "function": "fn:0x22a80",
       "site": "0x22b11"
     },
@@ -17110,16 +17110,16 @@
       "site": "0x22b83"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22bc9 (jmp qword ptr [rip + 0x38959]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22bc9 to 0x3d8b0 as a tail call",
       "function": "fn:0x22bc0",
       "site": "0x22bc9"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22bd9 (jmp qword ptr [rip + 0x386f9]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22bd9 to 0x3da60 as a tail call",
       "function": "fn:0x22bd0",
       "site": "0x22bd9"
     },
@@ -17145,17 +17145,17 @@
       "site": "0x22cb2"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22d17 (jmp qword ptr [rip + 0x38573]) has no statically known target",
-      "function": "fn:0x22ce0",
-      "site": "0x22d17"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x22ce0; edges are low confidence",
       "function": "fn:0x22ce0"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22d17 to 0x19478 as a tail call",
+      "function": "fn:0x22ce0",
+      "site": "0x22d17"
     },
     {
       "code": "unresolved-indirect-jump",
@@ -17165,9 +17165,9 @@
       "site": "0x22d7f"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22fc0 (jmp qword ptr [rip + 0x382ca]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22fc0 to 0x19478 as a tail call",
       "function": "fn:0x22d90",
       "site": "0x22fc0"
     },
@@ -17214,9 +17214,9 @@
       "site": "0x230d1"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23107 (jmp qword ptr [rip + 0x38403]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23107 to 0x2e330 as a tail call",
       "function": "fn:0x230f0",
       "site": "0x23107"
     },
@@ -17228,16 +17228,16 @@
       "site": "0x23142"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23161 (jmp qword ptr [rip + 0x38129]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23161 to 0x19478 as a tail call",
       "function": "fn:0x23150",
       "site": "0x23161"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23181 (jmp qword ptr [rip + 0x38109]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23181 to 0x19478 as a tail call",
       "function": "fn:0x23170",
       "site": "0x23181"
     },
@@ -17263,9 +17263,9 @@
       "site": "0x23241"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2347d (jmp qword ptr [rip + 0x37e0d]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2347d to 0x19478 as a tail call",
       "function": "fn:0x23270",
       "site": "0x2347d"
     },
@@ -17284,31 +17284,31 @@
       "site": "0x23395"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x234c1 (jmp qword ptr [rip + 0x37dc9]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x234c1 to 0x19478 as a tail call",
       "function": "fn:0x234b0",
       "site": "0x234c1"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x234e1 (jmp qword ptr [rip + 0x37da9]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x234e1 to 0x19478 as a tail call",
       "function": "fn:0x234d0",
       "site": "0x234e1"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23515 (jmp qword ptr [rip + 0x37dbd]) has no statically known target",
-      "function": "fn:0x234f0",
-      "site": "0x23515"
     },
     {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x234f0; edges are low confidence",
       "function": "fn:0x234f0"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23515 to 0x3da60 as a tail call",
+      "function": "fn:0x234f0",
+      "site": "0x23515"
     },
     {
       "code": "resolved-indirect-call",
@@ -17318,17 +17318,17 @@
       "site": "0x234fa"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x235a9 (jmp qword ptr [rip + 0x37d29]) has no statically known target",
-      "function": "fn:0x23550",
-      "site": "0x235a9"
-    },
-    {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x23550; edges are low confidence",
       "function": "fn:0x23550"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x235a9 to 0x3da60 as a tail call",
+      "function": "fn:0x23550",
+      "site": "0x235a9"
     },
     {
       "code": "resolved-indirect-call",
@@ -17352,9 +17352,9 @@
       "site": "0x2361e"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2366c (jmp qword ptr [rip + 0x37c1e]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2366c to 0x19478 as a tail call",
       "function": "fn:0x23630",
       "site": "0x2366c"
     },
@@ -17366,16 +17366,16 @@
       "site": "0x2364a"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23698 (jmp qword ptr [rip + 0x37bf2]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23698 to 0x19478 as a tail call",
       "function": "fn:0x23680",
       "site": "0x23698"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23768 (jmp qword ptr [rip + 0x37b22]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23768 to 0x19478 as a tail call",
       "function": "fn:0x236a0",
       "site": "0x23768"
     },
@@ -17401,24 +17401,24 @@
       "site": "0x23739"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23780 (jmp qword ptr [rip + 0x37daa]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23780 to 0x44800 as a tail call",
       "function": "fn:0x23780",
       "site": "0x23780"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x237cb (jmp qword ptr [rip + 0x37abf]) has no statically known target",
-      "function": "fn:0x23790",
-      "site": "0x237cb"
     },
     {
       "code": "heuristic-direct-calls",
       "severity": "info",
       "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x23790; edges are low confidence",
       "function": "fn:0x23790"
+    },
+    {
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x237cb to 0x19478 as a tail call",
+      "function": "fn:0x23790",
+      "site": "0x237cb"
     },
     {
       "code": "unresolved-indirect-call",
@@ -17428,9 +17428,9 @@
       "site": "0x237af"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23811 (jmp qword ptr [rip + 0x37a79]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23811 to 0x19478 as a tail call",
       "function": "fn:0x23800",
       "site": "0x23811"
     },
@@ -17631,6 +17631,12 @@
       "site": "0x247b7"
     },
     {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x247c0; edges are low confidence",
+      "function": "fn:0x247c0"
+    },
+    {
       "code": "unresolved-indirect-jump",
       "severity": "warning",
       "message": "indirect jump at 0x247e9 (jmp r8) has no statically known target",
@@ -17638,17 +17644,17 @@
       "site": "0x247e9"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x247c0; edges are low confidence",
-      "function": "fn:0x247c0"
-    },
-    {
       "code": "resolved-indirect-call",
       "severity": "info",
       "message": "resolved indirect call at 0x2515b to 0x545b0 from a register/memory pointer",
       "function": "fn:0x25070",
       "site": "0x2515b"
+    },
+    {
+      "code": "heuristic-direct-calls",
+      "severity": "info",
+      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x25170; edges are low confidence",
+      "function": "fn:0x25170"
     },
     {
       "code": "unresolved-indirect-jump",
@@ -17663,12 +17669,6 @@
       "message": "indirect jump at 0x25231 (jmp r10) has no statically known target",
       "function": "fn:0x25170",
       "site": "0x25231"
-    },
-    {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x25170; edges are low confidence",
-      "function": "fn:0x25170"
     },
     {
       "code": "resolved-indirect-call",
@@ -17846,37 +17846,37 @@
       "site": "0x28556"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x29107 (jmp qword ptr [rip + 0x3249b]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x29107 to 0x28720 as a tail call",
       "function": "fn:0x28d00",
       "site": "0x29107"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x295f5 (jmp qword ptr [rip + 0x31fb5]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x295f5 to 0x28830 as a tail call",
       "function": "fn:0x29110",
       "site": "0x295f5"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x299fb (jmp qword ptr [rip + 0x31bb7]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x299fb to 0x289b0 as a tail call",
       "function": "fn:0x29600",
       "site": "0x299fb"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x29efa (jmp qword ptr [rip + 0x316c0]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x29efa to 0x28ab0 as a tail call",
       "function": "fn:0x29a10",
       "site": "0x29efa"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2a320 (jmp qword ptr [rip + 0x312a2]) has no statically known target",
+      "code": "resolved-indirect-jump",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2a320 to 0x28c20 as a tail call",
       "function": "fn:0x29f10",
       "site": "0x2a320"
     },
