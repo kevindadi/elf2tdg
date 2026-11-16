@@ -1097,6 +1097,8 @@ impl<'a> Analyzer<'a> {
             origin::resolve_table_branch(self.image, decoded, site, target).unwrap_or_default()
         } else if matches!(target, IndirectTarget::TableLoad { .. }) {
             origin::resolve_table_load(self.image, decoded, site, target).unwrap_or_default()
+        } else if matches!(target, IndirectTarget::BranchTable { .. }) {
+            origin::resolve_branch_table(self.image, decoded, site, target).unwrap_or_default()
         } else if let IndirectTarget::Register(register) = target {
             origin::resolve_indirect_target(self.image, decoded, site, target)
                 .map(|target| vec![target])
@@ -1256,6 +1258,10 @@ impl<'a> Analyzer<'a> {
                 base: base.map(name),
                 index: name(index),
                 disp,
+            },
+            IndirectTarget::BranchTable { base, index } => cfg::CfgIndirectTarget::BranchTable {
+                base: base.map(name),
+                index: name(index),
             },
         }
     }

@@ -117,6 +117,13 @@ pub enum CfgIndirectTarget {
         /// Signed displacement.
         disp: i64,
     },
+    /// ARM A32 `add pc, base, index, lsl #2` branch-instruction table.
+    BranchTable {
+        /// Optional table base register.
+        base: Option<String>,
+        /// Index register.
+        index: String,
+    },
 }
 
 /// One decoded instruction, including raw bytes and control-flow metadata.
@@ -1179,6 +1186,17 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 register: None,
                 base: base.clone(),
                 disp: Some(*disp),
+                address: None,
+                offset: None,
+                index: Some(index.clone()),
+                scale: Some(4),
+                halfword: None,
+            },
+            CfgIndirectTarget::BranchTable { base, index } => CfgIndirectView {
+                kind: "branch-table",
+                register: None,
+                base: base.clone(),
+                disp: None,
                 address: None,
                 offset: None,
                 index: Some(index.clone()),

@@ -132,6 +132,13 @@ pub enum IndirectTarget {
         /// Signed displacement from the base or PC.
         disp: i64,
     },
+    /// ARM A32 `add pc, base, index, lsl #2` branch-instruction table.
+    BranchTable {
+        /// Optional table base register; `None` means the PC-relative table.
+        base: Option<RegId>,
+        /// Index register.
+        index: RegId,
+    },
 }
 
 /// A register stored through a base register plus displacement.
@@ -327,7 +334,9 @@ impl Decoder {
         } else {
             None
         };
-        if let Some((table, conditional)) = arm_table_load(&detail, &mnemonic) {
+        if let Some((table, conditional)) =
+            arm_table_load(&detail, &mnemonic).or_else(|| arm_add_pc_table(&detail, &mnemonic))
+        {
             is_jump = true;
             is_conditional = conditional;
             direct_target = None;
@@ -392,6 +401,44 @@ fn arm_table_load(
             base: (memory.base() != pc).then_some(memory.base()),
             index: memory.index(),
             disp: i64::from(memory.disp()),
+        },
+        conditional,
+    ))
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn arm_add_pc_table(
+    detail: &capstone::InsnDetail<'_>,
+    mnemonic: &str,
+) -> Option<(IndirectTarget, bool)> {
+    if !mnemonic.starts_with("add") {
+        return None;
+    }
+    let ArchDetail::ArmDetail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let pc = RegId(arm::ArmReg::ARM_REG_PC as u16);
+    let operands: Vec<_> = detail.operands().collect();
+    let arm::ArmOperandType::Reg(dest) = operands.first()?.op_type else {
+        return None;
+    };
+    let arm::ArmOperandType::Reg(base) = operands.get(1)?.op_type else {
+        return None;
+    };
+    let arm::ArmOperandType::Reg(index) = operands.get(2)?.op_type else {
+        return None;
+    };
+    if dest != pc || !matches!(operands.get(2)?.shift, arm::ArmShift::Lsl(2)) {
+        return None;
+    }
+    let conditional = !matches!(
+        detail.cc(),
+        arm::ArmCC::ARM_CC_AL | arm::ArmCC::ARM_CC_INVALID
+    );
+    Some((
+        IndirectTarget::BranchTable {
+            base: (base != pc).then_some(base),
+            index,
         },
         conditional,
     ))

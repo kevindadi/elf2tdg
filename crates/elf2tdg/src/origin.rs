@@ -151,7 +151,8 @@ pub fn resolve_indirect_target(
         IndirectTarget::Memory(address) => image.read_uint(address, pointer_size(image.arch))?,
         IndirectTarget::IndexedMemory { .. }
         | IndirectTarget::TableBranch { .. }
-        | IndirectTarget::TableLoad { .. } => return None,
+        | IndirectTarget::TableLoad { .. }
+        | IndirectTarget::BranchTable { .. } => return None,
         IndirectTarget::RegisterMemory { base, disp } => {
             if let Some(base_value) = resolve_register(image, decoded, before, base, 0) {
                 let address = base_value.wrapping_add_signed(disp);
@@ -348,6 +349,49 @@ pub fn resolve_table_load(
         if !targets.contains(&target) {
             targets.push(target);
         }
+    }
+    (!targets.is_empty()).then_some(targets)
+}
+
+/// Resolves ARM A32 `add pc, base, index, lsl #2` branch tables.
+#[must_use]
+pub fn resolve_branch_table(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    target: IndirectTarget,
+) -> Option<Vec<u64>> {
+    let IndirectTarget::BranchTable { base, index } = target else {
+        return None;
+    };
+    if image.arch != crate::loader::ArchKind::Arm {
+        return None;
+    }
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    let table_base = if let Some(base) = base {
+        resolve_register(image, decoded, before, base, 0)?
+    } else {
+        site.checked_add(8)?
+    };
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let mut targets = Vec::new();
+    for index in 0..limit.min(MAX_JUMP_TABLE_ENTRIES) {
+        let Some(offset) = u64::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(4))
+        else {
+            break;
+        };
+        let Some(address) = table_base.checked_add(offset) else {
+            break;
+        };
+        let Some(word) = image.read_uint(address, 4) else {
+            break;
+        };
+        if word & 0x0e00_0000 != 0x0a00_0000 || !image.is_executable(address) {
+            break;
+        }
+        targets.push(address);
     }
     (!targets.is_empty()).then_some(targets)
 }
@@ -596,7 +640,8 @@ pub fn indirect_argument_spec(
         IndirectTarget::Memory(_)
         | IndirectTarget::IndexedMemory { .. }
         | IndirectTarget::TableBranch { .. }
-        | IndirectTarget::TableLoad { .. } => None,
+        | IndirectTarget::TableLoad { .. }
+        | IndirectTarget::BranchTable { .. } => None,
     }
 }
 
