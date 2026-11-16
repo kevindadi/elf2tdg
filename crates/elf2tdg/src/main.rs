@@ -5,16 +5,19 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::analysis::{AnalysisOptions, AnalysisOutput, analyze_with_cfg};
+use elf2tdg::cfg::{self, CfgFunction, ProgramCfg};
 use elf2tdg::loader;
 use elf2tdg::output::{self, GraphOptions};
 use elf2tdg::timing::parse_frequency;
+use elf2tdg_schema::Tdg;
 
 #[derive(Debug, Parser)]
+#[allow(clippy::struct_excessive_bools)]
 #[command(
     name = "elf2tdg",
     version,
-    about = "Extract a Task Dependency Graph from an embedded ELF image"
+    about = "Extract per-function CFGs and Task Dependency Graphs from ELF images"
 )]
 struct Cli {
     /// Input ELF image (keep symbols in the analysis build).
@@ -33,6 +36,32 @@ struct Cli {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
     format: OutputFormat,
+
+    /// Graph view: the final TDG or the intermediate per-function CFG.
+    #[arg(long, value_enum, default_value_t = View::Tdg)]
+    view: View,
+
+    /// Select one function for CFG output by name, symbol, or 0x address.
+    #[arg(long, conflicts_with = "all_functions")]
+    function: Option<String>,
+
+    /// Export CFGs for every analyzed function, including functions not
+    /// reachable from main.
+    #[arg(long, conflicts_with = "function")]
+    all_functions: bool,
+
+    /// Export only functions reachable from ROOT through calls and task
+    /// creation. This is the default CFG scope, with ROOT set to main.
+    #[arg(
+        long,
+        value_name = "NAME|0xADDR",
+        conflicts_with_all = ["function", "all_functions"]
+    )]
+    reachable_from: Option<String>,
+
+    /// Omit concrete instructions from CFG JSON and DOT/Mermaid labels.
+    #[arg(long)]
+    no_cfg_instructions: bool,
 
     /// Graph projection for DOT/Mermaid output.
     #[arg(long, value_enum, default_value_t = ProjectionArg::Full)]
@@ -72,6 +101,12 @@ enum ProjectionArg {
     Concurrency,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum View {
+    Tdg,
+    Cfg,
+}
+
 impl From<ProjectionArg> for output::Projection {
     fn from(value: ProjectionArg) -> Self {
         match value {
@@ -81,37 +116,57 @@ impl From<ProjectionArg> for output::Projection {
     }
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn select_cfg_functions<'a>(
+    cli: &Cli,
+    program: &'a ProgramCfg,
+    tdg: &Tdg,
+) -> std::result::Result<Vec<&'a CfgFunction>, String> {
+    if let Some(selector) = cli.function.as_deref() {
+        program.select(Some(selector))
+    } else if cli.all_functions {
+        Ok(program.functions.iter().collect())
+    } else {
+        program.reachable_from(tdg, cli.reachable_from.as_deref().unwrap_or("main"))
+    }
+}
 
-    let frequency_hz = cli
-        .freq
-        .as_deref()
-        .map(parse_frequency)
-        .transpose()
-        .map_err(anyhow::Error::msg)?;
-
-    let image = loader::load(&cli.input)
-        .with_context(|| format!("failed to load {}", cli.input.display()))?;
-    let options = AnalysisOptions {
-        cpu: cli.cpu,
-        frequency_hz,
-        include_instructions: cli.instructions,
-        max_diagnostics: cli.max_diagnostics,
-        ..AnalysisOptions::default()
-    };
-    let tdg = analyze(&image, &options).context("analysis failed")?;
-
+fn render_view(
+    cli: &Cli,
+    analysis: &AnalysisOutput,
+    cfg_functions: &[&CfgFunction],
+) -> Result<String> {
+    let tdg = &analysis.tdg;
     let graph_options = GraphOptions {
         projection: cli.projection.into(),
         legend: cli.legend,
     };
-    let rendered = match cli.format {
-        OutputFormat::Json => output::render_json(&tdg)?,
-        OutputFormat::Dot => output::render_dot_with(&tdg, graph_options),
-        OutputFormat::Mermaid => output::render_mermaid_with(&tdg, graph_options),
+    let include_cfg_instructions = !cli.no_cfg_instructions;
+    let rendered = match cli.view {
+        View::Tdg => match cli.format {
+            OutputFormat::Json => output::render_json(tdg)?,
+            OutputFormat::Dot => output::render_dot_with(tdg, graph_options),
+            OutputFormat::Mermaid => output::render_mermaid_with(tdg, graph_options),
+        },
+        View::Cfg => match cli.format {
+            OutputFormat::Json => cfg::render_json_selected(
+                &analysis.cfg,
+                tdg,
+                cfg_functions,
+                include_cfg_instructions,
+            )
+            .map_err(anyhow::Error::msg)?,
+            OutputFormat::Dot => {
+                cfg::render_dot_selected(&analysis.cfg, cfg_functions, include_cfg_instructions)
+            }
+            OutputFormat::Mermaid => {
+                cfg::render_mermaid_selected(&analysis.cfg, cfg_functions, include_cfg_instructions)
+            }
+        },
     };
+    Ok(rendered)
+}
 
+fn write_rendered(cli: &Cli, rendered: &str) -> Result<()> {
     let to_stdout = cli
         .output
         .as_deref()
@@ -128,18 +183,74 @@ fn main() -> Result<()> {
         std::fs::write(path, rendered.as_bytes())
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    let frequency_hz = cli
+        .freq
+        .as_deref()
+        .map(parse_frequency)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+
+    let image = loader::load(&cli.input)
+        .with_context(|| format!("failed to load {}", cli.input.display()))?;
+    if cli.view == View::Tdg
+        && (cli.function.is_some()
+            || cli.all_functions
+            || cli.reachable_from.is_some()
+            || cli.no_cfg_instructions)
+    {
+        anyhow::bail!(
+            "--function, --all-functions, --reachable-from and --no-cfg-instructions are only supported with --view cfg"
+        );
+    }
+    let options = AnalysisOptions {
+        cpu: cli.cpu.clone(),
+        frequency_hz,
+        include_instructions: cli.instructions,
+        max_diagnostics: cli.max_diagnostics,
+        ..AnalysisOptions::default()
+    };
+    let analysis = analyze_with_cfg(&image, &options).context("analysis failed")?;
+    let tdg = &analysis.tdg;
+    let cfg_functions = if cli.view == View::Cfg {
+        select_cfg_functions(&cli, &analysis.cfg, tdg).map_err(anyhow::Error::msg)?
+    } else {
+        Vec::new()
+    };
+
+    let rendered = render_view(&cli, &analysis, &cfg_functions)?;
+    write_rendered(&cli, &rendered)?;
 
     if cli.verbose {
-        eprintln!(
-            "{} functions, {} contexts, {} edges, {} diagnostics -> {}",
-            tdg.functions.len(),
-            tdg.contexts.len(),
-            tdg.edges.len(),
-            tdg.diagnostics.len(),
-            cli.output
-                .as_ref()
-                .map_or_else(|| "stdout".to_owned(), |path| path.display().to_string())
-        );
+        let destination = cli
+            .output
+            .as_ref()
+            .map_or_else(|| "stdout".to_owned(), |path| path.display().to_string());
+        if cli.view == View::Cfg {
+            let blocks: usize = cfg_functions
+                .iter()
+                .map(|function| function.cfg.blocks_by_address.len())
+                .sum();
+            eprintln!(
+                "{} functions, {} CFG blocks, {} diagnostics -> {destination}",
+                cfg_functions.len(),
+                blocks,
+                tdg.diagnostics.len()
+            );
+        } else {
+            eprintln!(
+                "{} functions, {} contexts, {} edges, {} diagnostics -> {destination}",
+                tdg.functions.len(),
+                tdg.contexts.len(),
+                tdg.edges.len(),
+                tdg.diagnostics.len()
+            );
+        }
     }
     Ok(())
 }
