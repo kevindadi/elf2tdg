@@ -1767,7 +1767,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x20901 to 0x59ae0 as a tail call",
+      "message": "resolved indirect jump at 0x20901 to 1 target(s)",
       "function": "fn:0x20870",
       "site": "0x20901"
     },
@@ -1940,24 +1940,25 @@
       "site": "0x21172"
     },
     {
-      "code": "heuristic-direct-calls",
+      "code": "resolved-jump-table",
       "severity": "info",
-      "message": "recovered 6 direct call site(s) after unresolved indirect jumps in 0x21220; edges are low confidence",
-      "function": "fn:0x21220"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x21933 (jmp rdx) has no statically known target",
+      "message": "resolved indirect jump at 0x21933 to 147 target(s)",
       "function": "fn:0x21220",
       "site": "0x21933"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2198f (jmp rdx) has no statically known target",
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2198f to 150 target(s)",
       "function": "fn:0x21220",
       "site": "0x2198f"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x219d3",
+      "function": "fn:0x21220",
+      "site": "0x219d3"
     },
     {
       "code": "resolved-indirect-call",
@@ -2093,31 +2094,95 @@
       "site": "0x221ad"
     },
     {
-      "code": "heuristic-direct-calls",
+      "code": "resolved-jump-table",
       "severity": "info",
-      "message": "recovered 13 direct call site(s) after unresolved indirect jumps in 0x22250; edges are low confidence",
-      "function": "fn:0x22250"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x22928 (jmp rcx) has no statically known target",
+      "message": "resolved indirect jump at 0x22928 to 12 target(s)",
       "function": "fn:0x22250",
       "site": "0x22928"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x23017 (jmp rax) has no statically known target",
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x23017 to 140 target(s)",
       "function": "fn:0x22250",
       "site": "0x23017"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x229d3 (jmp rsi) has no statically known target",
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x229d3 to 4 target(s)",
       "function": "fn:0x22250",
       "site": "0x229d3"
+    },
+    {
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x22aa5 to 140 target(s)",
+      "function": "fn:0x22250",
+      "site": "0x22aa5"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x23367",
+      "function": "fn:0x22250",
+      "site": "0x23367"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x23131",
+      "function": "fn:0x22250",
+      "site": "0x23131"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x2320e",
+      "function": "fn:0x22250",
+      "site": "0x2320e"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x23375",
+      "function": "fn:0x22250",
+      "site": "0x23375"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x231e1",
+      "function": "fn:0x22250",
+      "site": "0x231e1"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x23162",
+      "function": "fn:0x22250",
+      "site": "0x23162"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x2333f",
+      "function": "fn:0x22250",
+      "site": "0x2333f"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x23244",
+      "function": "fn:0x22250",
+      "site": "0x23244"
+    },
+    {
+      "code": "decode-failed",
+      "severity": "warning",
+      "message": "could not decode an instruction at 0x2315b",
+      "function": "fn:0x22250",
+      "site": "0x2315b"
     },
     {
       "code": "resolved-indirect-call",
@@ -2195,6 +2260,27 @@
       "message": "resolved indirect call at 0x23087 to 0x3aa00 from a register/memory pointer",
       "function": "fn:0x22250",
       "site": "0x23087"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x23782 to 0x20860 from a register/memory pointer",
+      "function": "fn:0x22250",
+      "site": "0x23782"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x23804 to 0x3a760 from a register/memory pointer",
+      "function": "fn:0x22250",
+      "site": "0x23804"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x238ab to 0x3ab50 from a register/memory pointer",
+      "function": "fn:0x22250",
+      "site": "0x238ab"
     },
     {
       "code": "resolved-indirect-call",
@@ -2388,6 +2474,20 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x240d1 to 0x5c7a0 from a register/memory pointer",
+      "function": "fn:0x22250",
+      "site": "0x240d1"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x240e0 to 0x5c780 from a register/memory pointer",
+      "function": "fn:0x22250",
+      "site": "0x240e0"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x240ef to 0x2ce70 from a register/memory pointer",
       "function": "fn:0x22250",
       "site": "0x240ef"
@@ -2402,6 +2502,13 @@
     {
       "code": "resolved-indirect-call",
       "severity": "info",
+      "message": "resolved indirect call at 0x24117 to 0x594e1 from a register/memory pointer",
+      "function": "fn:0x22250",
+      "site": "0x24117"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
       "message": "resolved indirect call at 0x2412e to 0x20858 from a register/memory pointer",
       "function": "fn:0x22250",
       "site": "0x2412e"
@@ -2412,6 +2519,13 @@
       "message": "resolved indirect call at 0x242b7 to 0x20858 from a register/memory pointer",
       "function": "fn:0x22250",
       "site": "0x242b7"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x23881 (call rcx) has no statically known target",
+      "function": "fn:0x22250",
+      "site": "0x23881"
     },
     {
       "code": "resolved-indirect-call",
@@ -2435,15 +2549,9 @@
       "site": "0x243bd"
     },
     {
-      "code": "heuristic-direct-calls",
+      "code": "resolved-jump-table",
       "severity": "info",
-      "message": "recovered 7 direct call site(s) after unresolved indirect jumps in 0x243c9; edges are low confidence",
-      "function": "fn:0x243c9"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x26465 (jmp rdx) has no statically known target",
+      "message": "resolved indirect jump at 0x26465 to 131 target(s)",
       "function": "fn:0x243c9",
       "site": "0x26465"
     },
@@ -3169,15 +3277,9 @@
       "site": "0x28f6b"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 3 direct call site(s) after unresolved indirect jumps in 0x28f80; edges are low confidence",
-      "function": "fn:0x28f80"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29056 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29056 to 1 target(s)",
       "function": "fn:0x28f80",
       "site": "0x29056"
     },
@@ -3210,15 +3312,9 @@
       "site": "0x29034"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x290c0; edges are low confidence",
-      "function": "fn:0x290c0"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x290f1 to 0x44e40 as a tail call",
+      "message": "resolved indirect jump at 0x290f1 to 1 target(s)",
       "function": "fn:0x290c0",
       "site": "0x290f1"
     },
@@ -3232,7 +3328,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x291ca to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x291ca to 1 target(s)",
       "function": "fn:0x29130",
       "site": "0x291ca"
     },
@@ -3258,15 +3354,9 @@
       "site": "0x291a2"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x291e0; edges are low confidence",
-      "function": "fn:0x291e0"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2924e to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2924e to 1 target(s)",
       "function": "fn:0x291e0",
       "site": "0x2924e"
     },
@@ -3287,7 +3377,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29350 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29350 to 1 target(s)",
       "function": "fn:0x29280",
       "site": "0x29350"
     },
@@ -3329,7 +3419,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x294d3 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x294d3 to 1 target(s)",
       "function": "fn:0x293e0",
       "site": "0x294d3"
     },
@@ -3357,7 +3447,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x294f9 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x294f9 to 1 target(s)",
       "function": "fn:0x294e0",
       "site": "0x294f9"
     },
@@ -3378,7 +3468,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x295e6 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x295e6 to 1 target(s)",
       "function": "fn:0x29590",
       "site": "0x295e6"
     },
@@ -3404,35 +3494,23 @@
       "site": "0x29691"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x296a0; edges are low confidence",
-      "function": "fn:0x296a0"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x296db to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x296db to 1 target(s)",
       "function": "fn:0x296a0",
       "site": "0x296db"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x29720; edges are low confidence",
-      "function": "fn:0x29720"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2975e to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2975e to 1 target(s)",
       "function": "fn:0x29720",
       "site": "0x2975e"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29847 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29847 to 1 target(s)",
       "function": "fn:0x297a0",
       "site": "0x29847"
     },
@@ -3453,7 +3531,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x298d7 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x298d7 to 1 target(s)",
       "function": "fn:0x29860",
       "site": "0x298d7"
     },
@@ -3467,7 +3545,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2996b to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2996b to 1 target(s)",
       "function": "fn:0x298f0",
       "site": "0x2996b"
     },
@@ -3481,20 +3559,14 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29991 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29991 to 1 target(s)",
       "function": "fn:0x29980",
       "site": "0x29991"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x299a0; edges are low confidence",
-      "function": "fn:0x299a0"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x299d7 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x299d7 to 1 target(s)",
       "function": "fn:0x299a0",
       "site": "0x299d7"
     },
@@ -3506,15 +3578,9 @@
       "site": "0x299bb"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x29a10; edges are low confidence",
-      "function": "fn:0x29a10"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29a73 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29a73 to 1 target(s)",
       "function": "fn:0x29a10",
       "site": "0x29a73"
     },
@@ -3542,7 +3608,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29b6a to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29b6a to 1 target(s)",
       "function": "fn:0x29ad0",
       "site": "0x29b6a"
     },
@@ -3563,7 +3629,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29bed to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29bed to 1 target(s)",
       "function": "fn:0x29b80",
       "site": "0x29bed"
     },
@@ -3582,15 +3648,9 @@
       "site": "0x29c2d"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x29c90; edges are low confidence",
-      "function": "fn:0x29c90"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29ce9 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29ce9 to 1 target(s)",
       "function": "fn:0x29c90",
       "site": "0x29ce9"
     },
@@ -3604,7 +3664,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29d96 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29d96 to 1 target(s)",
       "function": "fn:0x29d20",
       "site": "0x29d96"
     },
@@ -3618,7 +3678,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29e06 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29e06 to 1 target(s)",
       "function": "fn:0x29db0",
       "site": "0x29e06"
     },
@@ -3646,7 +3706,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29ef1 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x29ef1 to 1 target(s)",
       "function": "fn:0x29e60",
       "site": "0x29ef1"
     },
@@ -3688,14 +3748,14 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29fa9 to 0x44c90 as a tail call",
+      "message": "resolved indirect jump at 0x29fa9 to 1 target(s)",
       "function": "fn:0x29fa0",
       "site": "0x29fa9"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x29fb9 to 0x44e40 as a tail call",
+      "message": "resolved indirect jump at 0x29fb9 to 1 target(s)",
       "function": "fn:0x29fb0",
       "site": "0x29fb9"
     },
@@ -3721,15 +3781,9 @@
       "site": "0x2a092"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x2a0c0; edges are low confidence",
-      "function": "fn:0x2a0c0"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a0f7 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2a0f7 to 1 target(s)",
       "function": "fn:0x2a0c0",
       "site": "0x2a0f7"
     },
@@ -3743,7 +3797,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a3a0 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2a3a0 to 1 target(s)",
       "function": "fn:0x2a170",
       "site": "0x2a3a0"
     },
@@ -3792,7 +3846,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a4e7 to 0x35710 as a tail call",
+      "message": "resolved indirect jump at 0x2a4e7 to 1 target(s)",
       "function": "fn:0x2a4d0",
       "site": "0x2a4e7"
     },
@@ -3806,14 +3860,14 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a541 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2a541 to 1 target(s)",
       "function": "fn:0x2a530",
       "site": "0x2a541"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a561 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2a561 to 1 target(s)",
       "function": "fn:0x2a550",
       "site": "0x2a561"
     },
@@ -3841,7 +3895,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a85d to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2a85d to 1 target(s)",
       "function": "fn:0x2a650",
       "site": "0x2a85d"
     },
@@ -3862,27 +3916,21 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a8a1 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2a8a1 to 1 target(s)",
       "function": "fn:0x2a890",
       "site": "0x2a8a1"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a8c1 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2a8c1 to 1 target(s)",
       "function": "fn:0x2a8b0",
       "site": "0x2a8c1"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x2a8d0; edges are low confidence",
-      "function": "fn:0x2a8d0"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a8f5 to 0x44e40 as a tail call",
+      "message": "resolved indirect jump at 0x2a8f5 to 1 target(s)",
       "function": "fn:0x2a8d0",
       "site": "0x2a8f5"
     },
@@ -3894,15 +3942,9 @@
       "site": "0x2a8da"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x2a930; edges are low confidence",
-      "function": "fn:0x2a930"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2a989 to 0x44e40 as a tail call",
+      "message": "resolved indirect jump at 0x2a989 to 1 target(s)",
       "function": "fn:0x2a930",
       "site": "0x2a989"
     },
@@ -3930,7 +3972,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2aa4c to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2aa4c to 1 target(s)",
       "function": "fn:0x2aa10",
       "site": "0x2aa4c"
     },
@@ -3944,14 +3986,14 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2aa78 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2aa78 to 1 target(s)",
       "function": "fn:0x2aa60",
       "site": "0x2aa78"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2ab48 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2ab48 to 1 target(s)",
       "function": "fn:0x2aa80",
       "site": "0x2ab48"
     },
@@ -3979,20 +4021,14 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2ab60 to 0x4bbe0 as a tail call",
+      "message": "resolved indirect jump at 0x2ab60 to 1 target(s)",
       "function": "fn:0x2ab60",
       "site": "0x2ab60"
     },
     {
-      "code": "heuristic-direct-calls",
-      "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x2ab70; edges are low confidence",
-      "function": "fn:0x2ab70"
-    },
-    {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2abab to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2abab to 1 target(s)",
       "function": "fn:0x2ab70",
       "site": "0x2abab"
     },
@@ -4006,7 +4042,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x2abf1 to 0x20858 as a tail call",
+      "message": "resolved indirect jump at 0x2abf1 to 1 target(s)",
       "function": "fn:0x2abe0",
       "site": "0x2abf1"
     },
@@ -4193,11 +4229,32 @@
       "site": "0x2b885"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2b988 (jmp rdi) has no statically known target",
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2b988 to 5 target(s)",
       "function": "fn:0x2b890",
       "site": "0x2b988"
+    },
+    {
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2b9a2 to 6 target(s)",
+      "function": "fn:0x2b890",
+      "site": "0x2b9a2"
+    },
+    {
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2ba27 to 6 target(s)",
+      "function": "fn:0x2b890",
+      "site": "0x2ba27"
+    },
+    {
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2ba51 to 6 target(s)",
+      "function": "fn:0x2b890",
+      "site": "0x2ba51"
     },
     {
       "code": "resolved-indirect-call",
@@ -4207,15 +4264,9 @@
       "site": "0x2bb97"
     },
     {
-      "code": "heuristic-direct-calls",
+      "code": "resolved-jump-table",
       "severity": "info",
-      "message": "recovered 2 direct call site(s) after unresolved indirect jumps in 0x2bba0; edges are low confidence",
-      "function": "fn:0x2bba0"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2bbc9 (jmp r8) has no statically known target",
+      "message": "resolved indirect jump at 0x2bbc9 to 23 target(s)",
       "function": "fn:0x2bba0",
       "site": "0x2bbc9"
     },
@@ -4227,24 +4278,25 @@
       "site": "0x2c53b"
     },
     {
-      "code": "heuristic-direct-calls",
+      "code": "resolved-jump-table",
       "severity": "info",
-      "message": "recovered 1 direct call site(s) after unresolved indirect jumps in 0x2c550; edges are low confidence",
-      "function": "fn:0x2c550"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2c5c1 (jmp r12) has no statically known target",
+      "message": "resolved indirect jump at 0x2c5c1 to 11 target(s)",
       "function": "fn:0x2c550",
       "site": "0x2c5c1"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x2c611 (jmp r10) has no statically known target",
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2c611 to 8 target(s)",
       "function": "fn:0x2c550",
       "site": "0x2c611"
+    },
+    {
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x2c78e to 18 target(s)",
+      "function": "fn:0x2c550",
+      "site": "0x2c78e"
     },
     {
       "code": "resolved-indirect-call",
@@ -4424,35 +4476,35 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x304e7 to 0x2fb00 as a tail call",
+      "message": "resolved indirect jump at 0x304e7 to 1 target(s)",
       "function": "fn:0x300e0",
       "site": "0x304e7"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x309d5 to 0x2fc10 as a tail call",
+      "message": "resolved indirect jump at 0x309d5 to 1 target(s)",
       "function": "fn:0x304f0",
       "site": "0x309d5"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x30ddb to 0x2fd90 as a tail call",
+      "message": "resolved indirect jump at 0x30ddb to 1 target(s)",
       "function": "fn:0x309e0",
       "site": "0x30ddb"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x312da to 0x2fe90 as a tail call",
+      "message": "resolved indirect jump at 0x312da to 1 target(s)",
       "function": "fn:0x30df0",
       "site": "0x312da"
     },
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x31700 to 0x30000 as a tail call",
+      "message": "resolved indirect jump at 0x31700 to 1 target(s)",
       "function": "fn:0x312f0",
       "site": "0x31700"
     },
@@ -4473,7 +4525,7 @@
     {
       "code": "resolved-indirect-jump",
       "severity": "info",
-      "message": "resolved indirect jump at 0x31ba2 to 0x44c90 as a tail call",
+      "message": "resolved indirect jump at 0x31ba2 to 1 target(s)",
       "function": "fn:0x31b90",
       "site": "0x31ba2"
     },
@@ -4588,41 +4640,6 @@
       "message": "resolved indirect call at 0x31ed1 to 0x5f380 from a register/memory pointer",
       "function": "fn:0x31e90",
       "site": "0x31ed1"
-    },
-    {
-      "code": "resolved-indirect-call",
-      "severity": "info",
-      "message": "resolved indirect call at 0x31f07 to 0x594e1 from a register/memory pointer",
-      "function": "fn:0x31e90",
-      "site": "0x31f07"
-    },
-    {
-      "code": "resolved-indirect-call",
-      "severity": "info",
-      "message": "resolved indirect call at 0x31f28 to 0x2086d from a register/memory pointer",
-      "function": "fn:0x31f10",
-      "site": "0x31f28"
-    },
-    {
-      "code": "resolved-indirect-call",
-      "severity": "info",
-      "message": "resolved indirect call at 0x31f38 to 0x20850 from a register/memory pointer",
-      "function": "fn:0x31f10",
-      "site": "0x31f38"
-    },
-    {
-      "code": "resolved-indirect-call",
-      "severity": "info",
-      "message": "resolved indirect call at 0x31f77 to 0x5b9d0 from a register/memory pointer",
-      "function": "fn:0x31f10",
-      "site": "0x31f77"
-    },
-    {
-      "code": "resolved-indirect-call",
-      "severity": "info",
-      "message": "resolved indirect call at 0x31f87 to 0x594e1 from a register/memory pointer",
-      "function": "fn:0x31f10",
-      "site": "0x31f87"
     },
     {
       "code": "resolved-forwarded-indirect-call",
