@@ -75,9 +75,13 @@ Implemented:
   inspected and a unique entry is resolved. Stack spill/reload pairs
   (`mov [rbp-16], rsi` / `mov rdx, [rbp-16]`) are followed, so `-O0` C wrappers
   and function pointers stored in memory are covered.
-- Indirect-call recovery for register-held function pointers and direct memory
-  slots containing a function pointer. These edges carry `direct: false` and
-  medium confidence; unresolved calls still produce diagnostics.
+- Indirect-call recovery for register-held function pointers, static pointer
+  chains, vtable slots, relocated GOT entries and caller-argument expressions.
+  Import GOT slots resolve to synthesized PLT stubs when one exists.
+  Caller-argument propagation resolves dispatch helpers and static C++ virtual
+  calls when every known caller agrees on one target. These edges carry
+  `direct: false` and medium confidence; ambiguous or dynamic targets remain
+  unresolved with diagnostics.
 - OpenMP parallel-region `Scope` nodes with implicit join membership.
 - Async handle poll rules for Tokio, async-std, smol and Embassy in addition to
   spawn/join detection.

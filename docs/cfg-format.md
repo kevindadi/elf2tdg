@@ -114,11 +114,26 @@ target could be recovered. Common causes in Rust images are:
 - calls through opaque async state machines or trait objects.
 
 Relative relocations for the supported architectures are applied when reading
-pointer-sized slots, which resolves many `R_*_RELATIVE` GOT entries. Remaining
-`call register` sites would require points-to/data-flow analysis and stay
-`unresolved` with an `unresolved-indirect-call` diagnostic rather than being
-guessed. The CFG JSON still records the raw instruction, call site and indirect
-target expression for each of them.
+pointer-sized slots, which resolves many `R_*_RELATIVE` GOT entries. Import
+GOT slots (`GLOB_DAT`/`JUMP_SLOT`) resolve to synthesized PLT stubs when the
+binary has one; imports without a local stub remain unresolved.
+
+Indirect calls are also resolved through:
+
+- static pointer chains ending in a vtable or function-pointer slot;
+- direct memory slots and vtable entries whose bases are statically known;
+- ABI arguments of the containing function, evaluated at direct caller sites
+  (for example a function-pointer dispatch helper or a C++ virtual call on a
+  static object).
+
+Caller-argument propagation accepts only a unique executable target across the
+known callers and marks the resulting call as indirect/medium confidence. If
+any known caller cannot be evaluated, the call stays unresolved.
+A target that depends on a heap/stack object, a dynamic trait object or
+disagreeing callers stays `unresolved` with an
+`unresolved-indirect-call` diagnostic rather than being guessed. The CFG JSON
+still records the raw instruction, call site and indirect target expression for
+each of them.
 
 ## JSON document
 
