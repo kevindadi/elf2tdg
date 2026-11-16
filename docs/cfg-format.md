@@ -186,14 +186,15 @@ each of them.
 
 ## JSON document
 
-`cfg_schema_version` is `1.1` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.2` and is independent of the TDG schema version.
 Every document contains image metadata, diagnostics, and the selected
 functions. Version 1.1 adds an optional per-function `inline_frames` list
-recovered from DWARF.
+recovered from DWARF. Version 1.2 scopes diagnostics to the selected functions
+and adds `diagnostics_omitted` when other image diagnostics were filtered out.
 
 ```json
 {
-  "cfg_schema_version": "1.1",
+  "cfg_schema_version": "1.2",
   "image": { "arch": "thumb", "...": "..." },
   "functions": [
     {
@@ -268,9 +269,16 @@ recovered from DWARF.
       "recovered_calls": []
     }
   ],
-  "diagnostics": []
+  "diagnostics": [],
+  "diagnostics_omitted": 0
 }
 ```
+
+Function selection is also applied to diagnostics: a diagnostic whose related
+`function` is outside the selected CFG set is omitted, while global diagnostics
+without a function remain. The omitted count is reported as
+`diagnostics_omitted` (absent when zero). This keeps a `--reachable-from`
+slice from being dominated by unrelated panic/backtrace/std diagnostics.
 
 When full debug information is present, each function can also carry the unique
 inlined subroutine ranges found inside it:
@@ -313,7 +321,10 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 `register-offset`, `indexed-memory`, `table-branch`, `table-load`, or
 `branch-table`, with register names, displacement, address, index, scale and
 halfword mode. Unresolved indirect
-calls and jumps remain explicit rather than being guessed.
+calls and jumps remain explicit rather than being guessed. GOT-only dynamic
+imports are represented as zero-size `external` functions; a call `target` may
+therefore be the GOT slot pseudo-address of that external node rather than an
+executable code address.
 
 ### Edge semantics
 

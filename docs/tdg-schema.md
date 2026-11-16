@@ -70,6 +70,12 @@ A `Function` carries:
 - optional aggregate block timing, explicitly named
   `static_block_sum_cycles` to prevent it being mistaken for a path time.
 
+Dynamic imports without a local PLT stub are represented as zero-size
+`external` functions. Their address is the GOT slot pseudo-address, not code.
+The TDG edge from a caller resolves the GOT-indirect call/jump to that external
+node, so imports such as `malloc`, `free` and `syscall` are not reported as
+unresolved indirect branches.
+
 A spawn site recovered only from DWARF inlining may have no separately compiled
 entry function. Such a **logical task entry** is a zero-size `task-entry`
 function whose address is the inline call site, carrying
@@ -349,9 +355,10 @@ confidence encoding. It is supported for DOT and Mermaid only; JSON is
 unaffected.
 
 `--view cfg` switches the output from the TDG to the intermediate function
-CFG. CFG JSON uses its own `cfg_schema_version` (`1.1`), includes full
+CFG. CFG JSON uses its own `cfg_schema_version` (`1.2`), includes full
 instruction/raw-byte information by default, carries optional per-function
-inline-frame ranges from DWARF, and can omit instruction arrays with
+inline-frame ranges from DWARF, scopes diagnostics to the selected functions
+with a `diagnostics_omitted` count, and can omit instruction arrays with
 `--no-cfg-instructions`. Without a selector, the CFG is limited to
 functions reachable from a multi-root system scope (main/startup, vector-table
 ISRs, tasks and callbacks). `--reachable-from ROOT` selects one root and

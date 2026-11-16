@@ -14,6 +14,7 @@ color styling and Mermaid is limited to shapes and line styles.
 | rounded box | pale yellow | interrupt handler function (`FunctionKind::Isr`) |
 | rounded box | lavender | kernel function (`FunctionKind::Kernel`) |
 | rounded box, dashed border | lavender | synthesized logical task entry, zero size, `ext["elf2tdg.logical_task"] = true` |
+| rounded box, dashed gray border | light gray | external dynamic import (`malloc`, `free`, ...); address is a GOT slot pseudo-address |
 | box | blue | `startup` context |
 | box | light blue | `main` context |
 | box | purple | `thread` or `scoped-thread` context |

@@ -44,7 +44,10 @@ Implemented:
 - Dynamic-ELF PLT synthesis: imported functions get named `plt` nodes and
   direct call edges, so runtime rules can match `GOMP_parallel`,
   `std::thread::join`, `pthread_create`, and similar imports instead of
-  folding several PLT stubs into one anonymous function.
+  folding several PLT stubs into one anonymous function. GLOB_DAT-only imports
+  without a local PLT stub (`malloc`, `free`, `syscall`, ...) become zero-size
+  `external` function nodes, so GOT-indirect calls resolve instead of remaining
+  unresolved.
 - Rust monomorphized closure/future types are recovered from symbols
   (`spawn::<app::main::{closure#0}>`), so resolved Rust spawns produce real
   thread/scoped-thread/async contexts and entries.
@@ -227,6 +230,8 @@ cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
 ```
 
 The CFG JSON format is documented in [docs/cfg-format.md](docs/cfg-format.md).
+CFG diagnostics are scoped to the selected/reachable functions, with the number
+of omitted image-wide diagnostics reported as `diagnostics_omitted`.
 For the recommended `opt-level=1` + full-debug-info firmware profile, see
 [docs/analysis-profile.md](docs/analysis-profile.md).
 
