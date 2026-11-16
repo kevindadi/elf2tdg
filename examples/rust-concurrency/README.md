@@ -62,6 +62,11 @@ same DWARF matching emits typed TDG `locks` events: this example yields a
 `Mutex::lock` acquire and `MutexGuard::drop` release, including their concrete
 inline ranges and source call sites.
 
+GOT-only dynamic imports (`malloc`, `free`, `memcpy`, ...) appear as zero-size
+`external` function nodes and resolve their indirect call sites. CFG JSON
+diagnostics are scoped to the requested function/reachability set; the omitted
+image-wide count is reported separately.
+
 The analyzer recovers four contexts from this build:
 
 - `startup` and `main`;

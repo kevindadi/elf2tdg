@@ -601,98 +601,89 @@ flowchart LR
   b0_128481 -.->|call?| call2
   call3["core::str::converts::from_utf8<br/>0x178b0"]
   b0_128512 -.->|call| call3
-  call4["unresolved call"]
-  b0_128866 -.->|call?| call4
-  call5["unresolved call"]
-  b0_128921 -.->|call?| call5
+  call4["free<br/>0x57c40"]
+  b0_128866 -.->|call| call4
+  call5["malloc<br/>0x57c30"]
+  b0_128921 -.->|call| call5
   call6["std::thread::spawnhook::run_spawn_hooks<br/>0x4d370"]
   b0_128941 -.->|call| call6
-  call7["unresolved call"]
-  b0_129006 -.->|call?| call7
-  call8["unresolved call"]
-  b0_129165 -.->|call?| call8
-  call9["unresolved call"]
-  b0_129260 -.->|call?| call9
-  call10["<std::sys::thread::unix::Thread>::new<br/>0x3be60"]
-  b0_129311 -.->|call| call10
-  call11["<alloc::rcs::arc::Arc<std::thread::lifecycle:...<br/>0x20740"]
-  b0_129363 -.->|call| call11
-  call12["<alloc::rcs::arc::Arc<std::thread::thread::In...<br/>0x4b150"]
-  b0_129382 -.->|call| call12
-  call13["<std::thread::lifecycle::JoinInner<u32>>::join<br/>0x20630"]
-  b0_129411 -.->|call| call13
-  call14["<std::thread::thread::Thread>::new_current<br/>0x42c40"]
-  b0_129581 -.->|call| call14
-  call15["unresolved call"]
-  b0_129589 -.->|call?| call15
+  b0_129006 -.->|call| call5
+  b0_129165 -.->|call| call5
+  b0_129260 -.->|call| call5
+  call7["<std::sys::thread::unix::Thread>::new<br/>0x3be60"]
+  b0_129311 -.->|call| call7
+  call8["<alloc::rcs::arc::Arc<std::thread::lifecycle:...<br/>0x20740"]
+  b0_129363 -.->|call| call8
+  call9["<alloc::rcs::arc::Arc<std::thread::thread::In...<br/>0x4b150"]
+  b0_129382 -.->|call| call9
+  call10["<std::thread::lifecycle::JoinInner<u32>>::join<br/>0x20630"]
+  b0_129411 -.->|call| call10
+  call11["<std::thread::thread::Thread>::new_current<br/>0x42c40"]
+  b0_129581 -.->|call| call11
+  b0_129589 -.->|call| call5
   b0_129751 -.->|call| call0
   b0_129852 -.->|call| call1
-  call16["unresolved call"]
-  b0_129908 -.->|call?| call16
+  call12["unresolved call"]
+  b0_129908 -.->|call?| call12
   b0_129936 -.->|call| call3
-  call17["<std::thread::id::ThreadId>::new::exhausted<br/>0x50100"]
-  b0_130239 -.->|call| call17
-  call18["unresolved call"]
-  b0_130319 -.->|call?| call18
-  call19["unresolved call"]
-  b0_130377 -.->|call?| call19
+  call13["<std::thread::id::ThreadId>::new::exhausted<br/>0x50100"]
+  b0_130239 -.->|call| call13
+  b0_130319 -.->|call| call4
+  b0_130377 -.->|call| call5
   b0_130397 -.->|call| call6
-  call20["unresolved call"]
-  b0_130468 -.->|call?| call20
-  call21["unresolved call"]
-  b0_130633 -.->|call?| call21
-  call22["unresolved call"]
-  b0_130728 -.->|call?| call22
-  b0_130779 -.->|call| call10
-  b0_130831 -.->|call| call11
-  b0_130847 -.->|call| call12
-  b0_130887 -.->|call| call13
-  call23["unresolved call"]
-  b0_131128 -.->|call?| call23
-  call24["unresolved call"]
-  b0_131183 -.->|call?| call24
-  call25["<alloc::rcs::arc::Arc<std::thread::scoped::Sc...<br/>0x207a0"]
-  b0_131224 -.->|call| call25
-  call26["std::io::stdio::_print<br/>0x4cdc0"]
-  b0_131406 -.->|call| call26
-  b0_131500 -.->|call| call17
-  b0_131513 -.->|call| call17
-  call27["alloc::alloc::handle_alloc_error<br/>0x155fd"]
-  b0_131518 -.->|call| call27
-  b0_131547 -.->|call| call27
-  b0_131568 -.->|call| call27
-  call28["core::result::unwrap_failed::<core::io::error...<br/>0x1f110"]
-  b0_131589 -.->|call| call28
-  call29["core::result::unwrap_failed::<alloc::boxed::B...<br/>0x1eff0"]
-  b0_131604 -.->|call| call29
-  b0_131633 -.->|call| call27
-  call30["core::panicking::panic_fmt<br/>0x174d0"]
-  b0_131662 -.->|call| call30
-  call31["<std::sys::sync::mutex::futex::Mutex>::lock_c...<br/>0x3b900"]
-  b0_131692 -.->|call| call31
-  call32["std::panicking::panic_count::is_zero_slow_path<br/>0x4d620"]
-  b0_131708 -.->|call| call32
-  call33["core::result::unwrap_failed::<std::sync::pois...<br/>0x1f060"]
-  b0_131721 -.->|call| call33
-  call34["unresolved call"]
-  b0_131734 -.->|call?| call34
-  b0_131767 -.->|call| call27
-  b0_131796 -.->|call| call27
-  b0_131817 -.->|call| call27
-  b0_131838 -.->|call| call28
-  b0_131858 -.->|call| call29
-  call35["<std::thread::scoped::ScopeData>::overflow<br/>0x3a6e0"]
-  b0_131889 -.->|call| call35
-  b0_131903 -.->|call| call35
-  call36["std::thread::current::init_current<br/>0x4d250"]
-  b0_131917 -.->|call| call36
-  b0_131930 -.->|call| call32
-  call37["std::panic::resume_unwind<br/>0x4c310"]
-  b0_131954 -.->|call| call37
-  b0_131973 -.->|call| call27
-  b0_131991 -.->|call| call27
-  b0_132499 -.->|call| call25
-  call38["__rustc::__rust_panic_cleanup<br/>0x1e7b0"]
-  b0_132517 -.->|call| call38
-  call39["core::ptr::drop_glue::<core::option::Option<a...<br/>0x1e8d0"]
-  b0_132581 -.->|call| call39
+  b0_130468 -.->|call| call5
+  b0_130633 -.->|call| call5
+  b0_130728 -.->|call| call5
+  b0_130779 -.->|call| call7
+  b0_130831 -.->|call| call8
+  b0_130847 -.->|call| call9
+  b0_130887 -.->|call| call10
+  call14["unresolved call"]
+  b0_131128 -.->|call?| call14
+  call15["unresolved call"]
+  b0_131183 -.->|call?| call15
+  call16["<alloc::rcs::arc::Arc<std::thread::scoped::Sc...<br/>0x207a0"]
+  b0_131224 -.->|call| call16
+  call17["std::io::stdio::_print<br/>0x4cdc0"]
+  b0_131406 -.->|call| call17
+  b0_131500 -.->|call| call13
+  b0_131513 -.->|call| call13
+  call18["alloc::alloc::handle_alloc_error<br/>0x155fd"]
+  b0_131518 -.->|call| call18
+  b0_131547 -.->|call| call18
+  b0_131568 -.->|call| call18
+  call19["core::result::unwrap_failed::<core::io::error...<br/>0x1f110"]
+  b0_131589 -.->|call| call19
+  call20["core::result::unwrap_failed::<alloc::boxed::B...<br/>0x1eff0"]
+  b0_131604 -.->|call| call20
+  b0_131633 -.->|call| call18
+  call21["core::panicking::panic_fmt<br/>0x174d0"]
+  b0_131662 -.->|call| call21
+  call22["<std::sys::sync::mutex::futex::Mutex>::lock_c...<br/>0x3b900"]
+  b0_131692 -.->|call| call22
+  call23["std::panicking::panic_count::is_zero_slow_path<br/>0x4d620"]
+  b0_131708 -.->|call| call23
+  call24["core::result::unwrap_failed::<std::sync::pois...<br/>0x1f060"]
+  b0_131721 -.->|call| call24
+  call25["syscall<br/>0x58000"]
+  b0_131734 -.->|call| call25
+  b0_131767 -.->|call| call18
+  b0_131796 -.->|call| call18
+  b0_131817 -.->|call| call18
+  b0_131838 -.->|call| call19
+  b0_131858 -.->|call| call20
+  call26["<std::thread::scoped::ScopeData>::overflow<br/>0x3a6e0"]
+  b0_131889 -.->|call| call26
+  b0_131903 -.->|call| call26
+  call27["std::thread::current::init_current<br/>0x4d250"]
+  b0_131917 -.->|call| call27
+  b0_131930 -.->|call| call23
+  call28["std::panic::resume_unwind<br/>0x4c310"]
+  b0_131954 -.->|call| call28
+  b0_131973 -.->|call| call18
+  b0_131991 -.->|call| call18
+  b0_132499 -.->|call| call16
+  call29["__rustc::__rust_panic_cleanup<br/>0x1e7b0"]
+  b0_132517 -.->|call| call29
+  call30["core::ptr::drop_glue::<core::option::Option<a...<br/>0x1e8d0"]
+  b0_132581 -.->|call| call30
