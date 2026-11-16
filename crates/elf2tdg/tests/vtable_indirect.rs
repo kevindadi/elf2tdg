@@ -482,6 +482,25 @@ int main(int argc, char **argv) { return dispatch(argc); }
     assert_jump_table_resolved(&binary, 6);
 }
 
+fn switch_source(cases: usize) -> String {
+    let mut source = String::from("volatile int sink;\n");
+    for index in 0..cases {
+        let _ = writeln!(
+            source,
+            "__attribute__((noinline)) int f{index}(void) {{ sink = {}; return {}; }}",
+            index + 1,
+            index * 7 + 11
+        );
+    }
+    source.push_str("__attribute__((noinline)) int dispatch(int x) { switch (x) {\n");
+    for index in 0..cases {
+        let _ = writeln!(source, "case {index}: return f{index}();");
+    }
+    source.push_str("default: sink = 0; return -1; } }\n");
+    source.push_str("int main(int argc, char **argv) { return dispatch(argc); }\n");
+    source
+}
+
 fn assert_jump_table_resolved(binary: &Path, minimum_edges: usize) -> usize {
     let image = loader::load(binary).expect("switch fixture must load");
     let analysis =
@@ -664,6 +683,34 @@ table:
 }
 
 #[test]
+fn resolves_large_indexed_switch_jump_table_edges() {
+    let source = switch_source(300);
+    let Some(binary) = compile_with_optimization("gcc", "switch_large_x86.c", &source, "-O2")
+    else {
+        return;
+    };
+    assert_eq!(assert_jump_table_resolved(&binary, 300), 300);
+}
+
+#[test]
+fn resolves_large_thumb_tbh_jump_table_edges() {
+    let source = switch_source(300);
+    let Some(binary) = compile_thumb("switch_large_thumb.c", &source) else {
+        return;
+    };
+    assert_eq!(assert_jump_table_resolved(&binary, 300), 300);
+}
+
+#[test]
+fn resolves_large_riscv64_relative_jump_table_edges() {
+    let source = switch_source(300);
+    let Some(binary) = compile_riscv64_pic("switch_large_riscv64_pic.c", &source) else {
+        return;
+    };
+    assert_eq!(assert_jump_table_resolved(&binary, 300), 300);
+}
+
+#[test]
 fn resolves_arm_a32_ldr_pc_jump_table_edges() {
     let mut source = String::from("volatile int sink;\n");
     for index in 0..16 {
@@ -751,4 +798,40 @@ table:
         return;
     };
     assert_jump_table_resolved(&binary, 4);
+}
+
+#[test]
+fn resolves_aarch64_ldrsw_relative_jump_table_edges() {
+    let source = r"
+.text
+.global dispatch
+.type dispatch,%function
+dispatch:
+    cmp w0, #3
+    b.hi def
+    adr x9, table
+    adr x10, base
+    ldrsw x11, [x9, w0, sxtw #2]
+    add x10, x10, x11
+    br x10
+base:
+c0: mov w0, #10
+    ret
+c1: mov w0, #11
+    ret
+c2: mov w0, #12
+    ret
+c3: mov w0, #13
+    ret
+def: mov w0, #-1
+    ret
+.section .rodata
+.align 2
+table:
+    .word c0-base, c1-base, c2-base, c3-base
+";
+    let Some(binary) = compile_aarch64("switch_ldrsw.s", source) else {
+        return;
+    };
+    assert_eq!(assert_jump_table_resolved(&binary, 4), 4);
 }
