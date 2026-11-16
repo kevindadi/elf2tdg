@@ -1305,32 +1305,88 @@
       "site": "0x1acb0"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x1acef (jmp rax) has no statically known target",
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x1acef to 37 target(s)",
       "function": "fn:0x1acc0",
       "site": "0x1acef"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x1adaf (jmp rax) has no statically known target",
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1ad27 to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1acc0",
+      "site": "0x1ad27"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1ad61 to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1acc0",
+      "site": "0x1ad61"
+    },
+    {
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x1adaf to 32 target(s)",
       "function": "fn:0x1ad80",
       "site": "0x1adaf"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x1ae89 (jmp rax) has no statically known target",
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1ade9 to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1ad80",
+      "site": "0x1ade9"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1ae25 to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1ad80",
+      "site": "0x1ae25"
+    },
+    {
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x1ae89 to 27 target(s)",
       "function": "fn:0x1ae50",
       "site": "0x1ae89"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x1af7d (jmp rax) has no statically known target",
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1aed3 to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1ae50",
+      "site": "0x1aed3"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1af01 to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1ae50",
+      "site": "0x1af01"
+    },
+    {
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x1af7d to 22 target(s)",
       "function": "fn:0x1af20",
       "site": "0x1af7d"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1b3ae to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1af20",
+      "site": "0x1b3ae"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1b3e2 to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1af20",
+      "site": "0x1b3e2"
     },
     {
       "code": "resolved-indirect-call",
@@ -1431,15 +1487,9 @@
       "site": "0x1c957"
     },
     {
-      "code": "heuristic-direct-calls",
+      "code": "resolved-jump-table",
       "severity": "info",
-      "message": "recovered 3 direct call site(s) after unresolved indirect jumps in 0x1cb10; edges are low confidence",
-      "function": "fn:0x1cb10"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x1cb89 (jmp rax) has no statically known target",
+      "message": "resolved indirect jump at 0x1cb89 to 17 target(s)",
       "function": "fn:0x1cb10",
       "site": "0x1cb89"
     },
@@ -1451,15 +1501,9 @@
       "site": "0x1cb9e"
     },
     {
-      "code": "heuristic-direct-calls",
+      "code": "resolved-jump-table",
       "severity": "info",
-      "message": "recovered 3 direct call site(s) after unresolved indirect jumps in 0x1cca0; edges are low confidence",
-      "function": "fn:0x1cca0"
-    },
-    {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x1cd19 (jmp rax) has no statically known target",
+      "message": "resolved indirect jump at 0x1cd19 to 13 target(s)",
       "function": "fn:0x1cca0",
       "site": "0x1cd19"
     },
@@ -1576,11 +1620,25 @@
       "site": "0x1e26e"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x1e3e9 (jmp rax) has no statically known target",
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x1e3e9 to 9 target(s)",
       "function": "fn:0x1e3a0",
       "site": "0x1e3e9"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1e3f9 to 0x5c7c0 from a register/memory pointer",
+      "function": "fn:0x1e3a0",
+      "site": "0x1e3f9"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x1e408 (call qword ptr [rax + 0x10]) has no statically known target",
+      "function": "fn:0x1e3a0",
+      "site": "0x1e408"
     },
     {
       "code": "resolved-indirect-call",
@@ -1618,11 +1676,18 @@
       "site": "0x1f161"
     },
     {
-      "code": "unresolved-indirect-jump",
-      "severity": "warning",
-      "message": "indirect jump at 0x1f406 (jmp rax) has no statically known target",
+      "code": "resolved-jump-table",
+      "severity": "info",
+      "message": "resolved indirect jump at 0x1f406 to 5 target(s)",
       "function": "fn:0x1f3e0",
       "site": "0x1f406"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x1f432 to 0x5bbe0 from a register/memory pointer",
+      "function": "fn:0x1f3e0",
+      "site": "0x1f432"
     },
     {
       "code": "resolved-indirect-call",
@@ -2103,7 +2168,7 @@
     {
       "code": "resolved-jump-table",
       "severity": "info",
-      "message": "resolved indirect jump at 0x23017 to 140 target(s)",
+      "message": "resolved indirect jump at 0x23017 to 44 target(s)",
       "function": "fn:0x22250",
       "site": "0x23017"
     },
@@ -2117,72 +2182,9 @@
     {
       "code": "resolved-jump-table",
       "severity": "info",
-      "message": "resolved indirect jump at 0x22aa5 to 140 target(s)",
+      "message": "resolved indirect jump at 0x22aa5 to 4 target(s)",
       "function": "fn:0x22250",
       "site": "0x22aa5"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x23367",
-      "function": "fn:0x22250",
-      "site": "0x23367"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x23131",
-      "function": "fn:0x22250",
-      "site": "0x23131"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x2320e",
-      "function": "fn:0x22250",
-      "site": "0x2320e"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x23375",
-      "function": "fn:0x22250",
-      "site": "0x23375"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x231e1",
-      "function": "fn:0x22250",
-      "site": "0x231e1"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x23162",
-      "function": "fn:0x22250",
-      "site": "0x23162"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x2333f",
-      "function": "fn:0x22250",
-      "site": "0x2333f"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x23244",
-      "function": "fn:0x22250",
-      "site": "0x23244"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x2315b",
-      "function": "fn:0x22250",
-      "site": "0x2315b"
     },
     {
       "code": "resolved-indirect-call",
@@ -2551,7 +2553,7 @@
     {
       "code": "resolved-jump-table",
       "severity": "info",
-      "message": "resolved indirect jump at 0x26465 to 131 target(s)",
+      "message": "resolved indirect jump at 0x26465 to 5 target(s)",
       "function": "fn:0x243c9",
       "site": "0x26465"
     },

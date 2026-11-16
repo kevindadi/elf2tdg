@@ -15486,7 +15486,7 @@
     {
       "code": "resolved-jump-table",
       "severity": "info",
-      "message": "resolved indirect jump at 0x1bc37 to 137 target(s)",
+      "message": "resolved indirect jump at 0x1bc37 to 44 target(s)",
       "function": "fn:0x1ae70",
       "site": "0x1bc37"
     },
@@ -15500,72 +15500,9 @@
     {
       "code": "resolved-jump-table",
       "severity": "info",
-      "message": "resolved indirect jump at 0x1b6c5 to 140 target(s)",
+      "message": "resolved indirect jump at 0x1b6c5 to 4 target(s)",
       "function": "fn:0x1ae70",
       "site": "0x1b6c5"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1bf87",
-      "function": "fn:0x1ae70",
-      "site": "0x1bf87"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1bd51",
-      "function": "fn:0x1ae70",
-      "site": "0x1bd51"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1be2e",
-      "function": "fn:0x1ae70",
-      "site": "0x1be2e"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1bf95",
-      "function": "fn:0x1ae70",
-      "site": "0x1bf95"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1be01",
-      "function": "fn:0x1ae70",
-      "site": "0x1be01"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1bd82",
-      "function": "fn:0x1ae70",
-      "site": "0x1bd82"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1bf5f",
-      "function": "fn:0x1ae70",
-      "site": "0x1bf5f"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1be64",
-      "function": "fn:0x1ae70",
-      "site": "0x1be64"
-    },
-    {
-      "code": "decode-failed",
-      "severity": "warning",
-      "message": "could not decode an instruction at 0x1bd7b",
-      "function": "fn:0x1ae70",
-      "site": "0x1bd7b"
     },
     {
       "code": "resolved-indirect-call",
@@ -15934,7 +15871,7 @@
     {
       "code": "resolved-jump-table",
       "severity": "info",
-      "message": "resolved indirect jump at 0x1f085 to 119 target(s)",
+      "message": "resolved indirect jump at 0x1f085 to 5 target(s)",
       "function": "fn:0x1cfe9",
       "site": "0x1f085"
     },
@@ -17918,6 +17855,69 @@
       "message": "resolved indirect call at 0x2a7dd to 0x42f30 from a register/memory pointer",
       "function": "fn:0x2a7d0",
       "site": "0x2a7dd"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2a7f4 to 0x3da60 from a register/memory pointer",
+      "function": "fn:0x2a7d0",
+      "site": "0x2a7f4"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2a89e to 0x52101 from a register/memory pointer",
+      "function": "fn:0x2a830",
+      "site": "0x2a89e"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2a8ac to 0x52101 from a register/memory pointer",
+      "function": "fn:0x2a830",
+      "site": "0x2a8ac"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2a8d0 to 0x475c0 from a register/memory pointer",
+      "function": "fn:0x2a8c0",
+      "site": "0x2a8d0"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2aa01 to 0x553a0 from a register/memory pointer",
+      "function": "fn:0x2a920",
+      "site": "0x2aa01"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2aa09 to 0x57e84 from a register/memory pointer",
+      "function": "fn:0x2a920",
+      "site": "0x2aa09"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2aa2e to 0x558f0 from a register/memory pointer",
+      "function": "fn:0x2a920",
+      "site": "0x2aa2e"
+    },
+    {
+      "code": "resolved-indirect-call",
+      "severity": "info",
+      "message": "resolved indirect call at 0x2aa62 to 0x55080 from a register/memory pointer",
+      "function": "fn:0x2a920",
+      "site": "0x2aa62"
+    },
+    {
+      "code": "unresolved-indirect-call",
+      "severity": "warning",
+      "message": "indirect call at 0x2a94d (call qword ptr [rip + 0x30bfd]) has no statically known target",
+      "function": "fn:0x2a920",
+      "site": "0x2a94d"
     },
     {
       "code": "resolved-forwarded-indirect-call",
