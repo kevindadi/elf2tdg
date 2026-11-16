@@ -40,6 +40,8 @@ analyze: $(ELF_O0) $(ELF_O2)
 	dot -Tsvg $(ARTIFACTS)/cfg-o0-main.dot -o $(ARTIFACTS)/cfg-o0-main.svg
 	$(TOOL) $(ELF_O0) --view cfg --format mermaid --function main::main \
 		--output $(ARTIFACTS)/cfg-o0-main.mmd
+	$(TOOL) $(ELF_O0) --view elf --elf-max-insns 128 \
+		--output $(ARTIFACTS)/elf-layout-o0.mmd
 	$(TOOL) $(ELF_O2) --format json --output $(ARTIFACTS)/tdg-o2.json --verbose
 	$(TOOL) $(ELF_O2) --format dot --projection concurrency --legend \
 		--output $(ARTIFACTS)/tdg-o2-concurrency.dot
@@ -58,6 +60,8 @@ analyze: $(ELF_O0) $(ELF_O2)
 	dot -Tsvg $(ARTIFACTS)/cfg-o2-main.dot -o $(ARTIFACTS)/cfg-o2-main.svg
 	$(TOOL) $(ELF_O2) --view cfg --format mermaid --function main::main \
 		--output $(ARTIFACTS)/cfg-o2-main.mmd
+	$(TOOL) $(ELF_O2) --view elf --elf-max-insns 128 \
+		--output $(ARTIFACTS)/elf-layout-o2.mmd
 
 clean:
 	rm -rf $(ARTIFACTS)

@@ -1,0 +1,205 @@
+flowchart TB
+  classDef segmentRx fill:#e8f8f5,stroke:#117a65,stroke-width:2px,color:#0b5345;
+  classDef segmentRw fill:#fef5e7,stroke:#b9770e,stroke-width:2px,color:#7e5109;
+  classDef segmentR fill:#eaf2f8,stroke:#2471a3,stroke-width:2px,color:#1b4f72;
+  classDef segmentRwx fill:#fadbd8,stroke:#c0392b,stroke-width:2px,color:#78281f;
+  classDef insnCall fill:#fadbd8,stroke:#c0392b,color:#78281f;
+  classDef insnBranch fill:#fdebd0,stroke:#b9770e,color:#7e5109;
+  classDef insnReturn fill:#e8daef,stroke:#7d3c98,color:#512e5f;
+  classDef insnStack fill:#d6eaf8,stroke:#2471a3,color:#1b4f72;
+  classDef insnMemory fill:#eafaf1,stroke:#1e8449,color:#145a32;
+  classDef insnAlu fill:#f4f6f7,stroke:#566573,color:#283747;
+  classDef insnSystem fill:#e8f6f3,stroke:#138d75,color:#0b5345;
+  classDef insnOther fill:#fdfefe,stroke:#999999,color:#424949;
+  classDef insnNote fill:#f4f6f7,stroke:#999999,color:#566573,stroke-dasharray:3 3;
+  classDef elfNote fill:#fdf2e9,stroke:#b9770e,color:#7e5109;
+  subgraph ELF["ELF: cortex-m0-isr.elf<br/>thumb / executable / entry 0x8000161 / little-endian / 2 LOAD segments / 3 allocated sections / 7 symbols<br/>PT_LOAD = bytes mapped into memory; R/W/X are permissions"]
+    direction TB
+    subgraph SEG0["LOAD (PT_LOAD) 0x8000000..0x8000178<br/>R-X | file 0x1000 + 0x178 bytes | mem 0x178 bytes | align 0x1000 bytes"]
+      direction TB
+      subgraph SEC0[".isr_vector<br/>R-- | 0x8000000..0x80000d8 | mem 0xd8 bytes | file 0xd8 bytes"]
+        direction TB
+        SEC0_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC0 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC1[".text<br/>R-X | 0x80000d8..0x8000178 | mem 0xa0 bytes | file 0xa0 bytes"]
+        direction TB
+        insn0["0x80000d8  push (r7, lr)"]:::insnStack
+        insn1["0x80000da  add r7, sp, #0"]:::insnAlu
+        insn0 -.-> insn1
+        insn2["0x80000dc  ldr r3, (pc, #8)"]:::insnMemory
+        insn1 -.-> insn2
+        insn3["0x80000de  movs r2, #0"]:::insnAlu
+        insn2 -.-> insn3
+        insn4["0x80000e0  str r2, (r3)"]:::insnMemory
+        insn3 -.-> insn4
+        insn5["0x80000e2  mov r8, r8"]:::insnAlu
+        insn4 -.-> insn5
+        insn6["0x80000e4  mov sp, r7"]:::insnAlu
+        insn5 -.-> insn6
+        insn7["0x80000e6  pop (r7, pc)"]:::insnReturn
+        insn6 -.-> insn7
+        insn8["0x80000e8  movs r0, r0"]:::insnAlu
+        insn7 -.-> insn8
+        insn9["0x80000ea  movs r0, #0"]:::insnAlu
+        insn8 -.-> insn9
+        insn10["0x80000ec  push (r7, lr)"]:::insnStack
+        insn9 -.-> insn10
+        insn11["0x80000ee  sub sp, #8"]:::insnAlu
+        insn10 -.-> insn11
+        insn12["0x80000f0  add r7, sp, #0"]:::insnAlu
+        insn11 -.-> insn12
+        insn13["0x80000f2  str r0, (r7, #4)"]:::insnMemory
+        insn12 -.-> insn13
+        insn14["0x80000f4  b #0x8000100"]:::insnBranch
+        insn13 -.-> insn14
+        insn15["0x80000f6  ldr r3, (pc, #0x1c)"]:::insnMemory
+        insn14 -.-> insn15
+        insn16["0x80000f8  ldr r3, (r3)"]:::insnMemory
+        insn15 -.-> insn16
+        insn17["0x80000fa  adds r2, r3, #1"]:::insnAlu
+        insn16 -.-> insn17
+        insn18["0x80000fc  ldr r3, (pc, #0x14)"]:::insnMemory
+        insn17 -.-> insn18
+        insn19["0x80000fe  str r2, (r3)"]:::insnMemory
+        insn18 -.-> insn19
+        insn20["0x8000100  ldr r3, (r7, #4)"]:::insnMemory
+        insn19 -.-> insn20
+        insn21["0x8000102  subs r2, r3, #1"]:::insnAlu
+        insn20 -.-> insn21
+        insn22["0x8000104  str r2, (r7, #4)"]:::insnMemory
+        insn21 -.-> insn22
+        insn23["0x8000106  cmp r3, #0"]:::insnAlu
+        insn22 -.-> insn23
+        insn24["0x8000108  bne #0x80000f6"]:::insnBranch
+        insn23 -.-> insn24
+        insn25["0x800010a  mov r8, r8"]:::insnAlu
+        insn24 -.-> insn25
+        insn26["0x800010c  mov r8, r8"]:::insnAlu
+        insn25 -.-> insn26
+        insn27["0x800010e  mov sp, r7"]:::insnAlu
+        insn26 -.-> insn27
+        insn28["0x8000110  add sp, #8"]:::insnAlu
+        insn27 -.-> insn28
+        insn29["0x8000112  pop (r7, pc)"]:::insnReturn
+        insn28 -.-> insn29
+        insn30["0x8000114  movs r0, r0"]:::insnAlu
+        insn29 -.-> insn30
+        insn31["0x8000116  movs r0, #0"]:::insnAlu
+        insn30 -.-> insn31
+        insn32["0x8000118  push (r7, lr)"]:::insnStack
+        insn31 -.-> insn32
+        insn33["0x800011a  add r7, sp, #0"]:::insnAlu
+        insn32 -.-> insn33
+        insn34["0x800011c  movs r0, #3"]:::insnAlu
+        insn33 -.-> insn34
+        insn35["0x800011e  bl #0x80000ec"]:::insnCall
+        insn34 -.-> insn35
+        insn36["0x8000122  ldr r3, (pc, #0x10)"]:::insnMemory
+        insn35 -.-> insn36
+        insn37["0x8000124  ldr r3, (r3)"]:::insnMemory
+        insn36 -.-> insn37
+        insn38["0x8000126  movs r2, #1"]:::insnAlu
+        insn37 -.-> insn38
+        insn39["0x8000128  eors r2, r3"]:::insnAlu
+        insn38 -.-> insn39
+        insn40["0x800012a  ldr r3, (pc, #8)"]:::insnMemory
+        insn39 -.-> insn40
+        insn41["0x800012c  str r2, (r3)"]:::insnMemory
+        insn40 -.-> insn41
+        insn42["0x800012e  mov r8, r8"]:::insnAlu
+        insn41 -.-> insn42
+        insn43["0x8000130  mov sp, r7"]:::insnAlu
+        insn42 -.-> insn43
+        insn44["0x8000132  pop (r7, pc)"]:::insnReturn
+        insn43 -.-> insn44
+        insn45["0x8000134  movs r0, r0"]:::insnAlu
+        insn44 -.-> insn45
+        insn46["0x8000136  movs r0, #0"]:::insnAlu
+        insn45 -.-> insn46
+        insn47["0x8000138  push (r7, lr)"]:::insnStack
+        insn46 -.-> insn47
+        insn48["0x800013a  add r7, sp, #0"]:::insnAlu
+        insn47 -.-> insn48
+        insn49["0x800013c  ldr r3, (pc, #0xc)"]:::insnMemory
+        insn48 -.-> insn49
+        insn50["0x800013e  ldr r3, (r3)"]:::insnMemory
+        insn49 -.-> insn50
+        insn51["0x8000140  adds r2, r3, #1"]:::insnAlu
+        insn50 -.-> insn51
+        insn52["0x8000142  ldr r3, (pc, #8)"]:::insnMemory
+        insn51 -.-> insn52
+        insn53["0x8000144  str r2, (r3)"]:::insnMemory
+        insn52 -.-> insn53
+        insn54["0x8000146  mov r8, r8"]:::insnAlu
+        insn53 -.-> insn54
+        insn55["0x8000148  mov sp, r7"]:::insnAlu
+        insn54 -.-> insn55
+        insn56["0x800014a  pop (r7, pc)"]:::insnReturn
+        insn55 -.-> insn56
+        insn57["0x800014c  movs r0, r0"]:::insnAlu
+        insn56 -.-> insn57
+        insn58["0x800014e  movs r0, #0"]:::insnAlu
+        insn57 -.-> insn58
+        insn59["0x8000150  push (r7, lr)"]:::insnStack
+        insn58 -.-> insn59
+        insn60["0x8000152  add r7, sp, #0"]:::insnAlu
+        insn59 -.-> insn60
+        insn61["0x8000154  bl #0x8000118"]:::insnCall
+        insn60 -.-> insn61
+        insn62["0x8000158  movs r0, #0x64"]:::insnAlu
+        insn61 -.-> insn62
+        insn63["0x800015a  bl #0x80000ec"]:::insnCall
+        insn62 -.-> insn63
+        insn64["0x800015e  b #0x8000158"]:::insnBranch
+        insn63 -.-> insn64
+        insn65["0x8000160  push (r7, lr)"]:::insnStack
+        insn64 -.-> insn65
+        insn66["0x8000162  add r7, sp, #0"]:::insnAlu
+        insn65 -.-> insn66
+        insn67["0x8000164  bl #0x80000d8"]:::insnCall
+        insn66 -.-> insn67
+        insn68["0x8000168  bl #0x8000150"]:::insnCall
+        insn67 -.-> insn68
+        insn69["0x800016c  mov r8, r8"]:::insnAlu
+        insn68 -.-> insn69
+        insn70["0x800016e  b #0x800016c"]:::insnBranch
+        insn69 -.-> insn70
+        insn71["0x8000170  push (r7, lr)"]:::insnStack
+        insn70 -.-> insn71
+        insn72["0x8000172  add r7, sp, #0"]:::insnAlu
+        insn71 -.-> insn72
+        insn73["0x8000174  mov r8, r8"]:::insnAlu
+        insn72 -.-> insn73
+        insn74["0x8000176  b #0x8000174"]:::insnBranch
+        insn73 -.-> insn74
+      end
+      style SEC1 fill:#ffffff,stroke:#117a65,stroke-width:1.5px,color:#0b5345;
+    end
+    style SEG0 fill:#e8f8f5,stroke:#117a65,stroke-width:2px,color:#0b5345;
+    subgraph SEG1["LOAD (PT_LOAD) 0x20000000..0x20000004<br/>RW- | file 0x2000 + 0x0 bytes | mem 0x4 bytes | align 0x1000 bytes"]
+      direction TB
+      subgraph SEC2[".bss<br/>RW- | 0x20000000..0x20000004 | mem 0x4 bytes | file 0x0 bytes | NOBITS (zero-filled)"]
+        direction TB
+        SEC2_empty["no file-backed bytes (zero-filled at run time)"]:::elfNote
+      end
+      style SEC2 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+    end
+    style SEG1 fill:#fef5e7,stroke:#b9770e,stroke-width:2px,color:#7e5109;
+    ELF_META["11 non-allocated section(s) not shown (symbols/debug/metadata)"]:::elfNote
+  end
+  subgraph LEGEND["Legend"]
+    direction LR
+    legend_rx["LOAD R-X<br/>read + execute: code"]:::segmentRx
+    legend_rw["LOAD RW-<br/>read + write: data / BSS"]:::segmentRw
+    legend_r["LOAD R--<br/>read-only: constants / vector table"]:::segmentR
+    legend_rwx["LOAD RWX<br/>writable + executable (unusual)"]:::segmentRwx
+    legend_call["call / bl / jal"]:::insnCall
+    legend_branch["conditional / unconditional branch"]:::insnBranch
+    legend_return["return / interrupt return"]:::insnReturn
+    legend_stack["push / pop / stack frame"]:::insnStack
+    legend_memory["load / store"]:::insnMemory
+    legend_alu["arithmetic / logic / move"]:::insnAlu
+    legend_system["barrier / system / CSR"]:::insnSystem
+    legend_note["dashed sequence = linear disassembly order<br/>use --view cfg for control flow"]:::elfNote
+  end

@@ -1,8 +1,8 @@
 # elf2tdg examples
 
 Each example is self-contained and generates a linked ELF, TDG JSON, Graphviz
-DOT/SVG, Mermaid output, and lossless per-function CFG artifacts under
-its `artifacts/` directory.
+DOT/SVG, Mermaid output, lossless per-function CFG artifacts, and a colored
+loader-backed ELF layout under its `artifacts/` directory.
 
 [`tdg-example.html`](tdg-example.html) is a visual walkthrough of both examples,
 including the rendered diagrams and the complete node/edge legend. Open it

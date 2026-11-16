@@ -37,6 +37,7 @@ analyze: $(ELF)
 	dot -Tsvg $(ARTIFACTS)/cfg-main.dot -o $(ARTIFACTS)/cfg-main.svg
 	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format mermaid \
 		--function main --output $(ARTIFACTS)/cfg-main.mmd
+	$(TOOL) $(ELF) --view elf --output $(ARTIFACTS)/elf-layout.mmd
 
 clean:
 	rm -rf $(ARTIFACTS)

@@ -1,0 +1,499 @@
+flowchart TB
+  classDef segmentRx fill:#e8f8f5,stroke:#117a65,stroke-width:2px,color:#0b5345;
+  classDef segmentRw fill:#fef5e7,stroke:#b9770e,stroke-width:2px,color:#7e5109;
+  classDef segmentR fill:#eaf2f8,stroke:#2471a3,stroke-width:2px,color:#1b4f72;
+  classDef segmentRwx fill:#fadbd8,stroke:#c0392b,stroke-width:2px,color:#78281f;
+  classDef insnCall fill:#fadbd8,stroke:#c0392b,color:#78281f;
+  classDef insnBranch fill:#fdebd0,stroke:#b9770e,color:#7e5109;
+  classDef insnReturn fill:#e8daef,stroke:#7d3c98,color:#512e5f;
+  classDef insnStack fill:#d6eaf8,stroke:#2471a3,color:#1b4f72;
+  classDef insnMemory fill:#eafaf1,stroke:#1e8449,color:#145a32;
+  classDef insnAlu fill:#f4f6f7,stroke:#566573,color:#283747;
+  classDef insnSystem fill:#e8f6f3,stroke:#138d75,color:#0b5345;
+  classDef insnOther fill:#fdfefe,stroke:#999999,color:#424949;
+  classDef insnNote fill:#f4f6f7,stroke:#999999,color:#566573,stroke-dasharray:3 3;
+  classDef elfNote fill:#fdf2e9,stroke:#b9770e,color:#7e5109;
+  subgraph ELF["ELF: rust-concurrency-o0.elf<br/>x86_64 / shared object / PIE / entry 0x19c60 / little-endian / 4 LOAD segments / 29 allocated sections / 800 symbols<br/>PT_LOAD = bytes mapped into memory; R/W/X are permissions"]
+    direction TB
+    subgraph SEG0["LOAD (PT_LOAD) 0x0..0x18c54<br/>R-- | file 0x0 + 0x18c54 bytes | mem 0x18c54 bytes | align 0x1000 bytes"]
+      direction TB
+      subgraph SEC0[".interp<br/>R-- | 0x2e0..0x2fc | mem 0x1c bytes | file 0x1c bytes"]
+        direction TB
+        SEC0_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC0 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC1[".note.ABI-tag<br/>R-- | 0x2fc..0x31c | mem 0x20 bytes | file 0x20 bytes"]
+        direction TB
+        SEC1_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC1 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC2[".note.gnu.build-id<br/>R-- | 0x31c..0x340 | mem 0x24 bytes | file 0x24 bytes"]
+        direction TB
+        SEC2_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC2 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC3[".dynsym<br/>R-- | 0x340..0xa48 | mem 0x708 bytes | file 0x708 bytes"]
+        direction TB
+        SEC3_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC3 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC4[".gnu.version<br/>R-- | 0xa48..0xade | mem 0x96 bytes | file 0x96 bytes"]
+        direction TB
+        SEC4_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC4 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC5[".gnu.version_r<br/>R-- | 0xae0..0xc00 | mem 0x120 bytes | file 0x120 bytes"]
+        direction TB
+        SEC5_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC5 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC6[".gnu.hash<br/>R-- | 0xc00..0xc1c | mem 0x1c bytes | file 0x1c bytes"]
+        direction TB
+        SEC6_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC6 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC7[".dynstr<br/>R-- | 0xc1c..0x10a7 | mem 0x48b bytes | file 0x48b bytes"]
+        direction TB
+        SEC7_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC7 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC8[".rela.dyn<br/>R-- | 0x10a8..0x5e78 | mem 0x4dd0 bytes | file 0x4dd0 bytes"]
+        direction TB
+        SEC8_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC8 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC9[".rela.plt<br/>R-- | 0x5e78..0x5ed8 | mem 0x60 bytes | file 0x60 bytes"]
+        direction TB
+        SEC9_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC9 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC10[".gcc_except_table<br/>R-- | 0x5ed8..0x97c8 | mem 0x38f0 bytes | file 0x38f0 bytes"]
+        direction TB
+        SEC10_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC10 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC11[".rodata<br/>R-- | 0x97d0..0x107a4 | mem 0x6fd4 bytes | file 0x6fd4 bytes"]
+        direction TB
+        SEC11_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC11 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC12[".eh_frame_hdr<br/>R-- | 0x107c8..0x11fc4 | mem 0x17fc bytes | file 0x17fc bytes"]
+        direction TB
+        SEC12_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC12 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+      subgraph SEC13[".eh_frame<br/>R-- | 0x11fc8..0x18c54 | mem 0x6c8c bytes | file 0x6c8c bytes"]
+        direction TB
+        SEC13_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC13 fill:#ffffff,stroke:#2471a3,stroke-width:1.5px,color:#1b4f72;
+    end
+    style SEG0 fill:#eaf2f8,stroke:#2471a3,stroke-width:2px,color:#1b4f72;
+    subgraph SEG1["LOAD (PT_LOAD) 0x19c60..0x5f3a0<br/>R-X | file 0x18c60 + 0x45740 bytes | mem 0x45740 bytes | align 0x1000 bytes"]
+      direction TB
+      subgraph SEC14[".text<br/>R-X | 0x19c60..0x5f323 | mem 0x456c3 bytes | file 0x456c3 bytes"]
+        direction TB
+        insn0["0x19c60  endbr64"]:::insnOther
+        insn1["0x19c64  xor ebp, ebp"]:::insnAlu
+        insn0 -.-> insn1
+        insn2["0x19c66  mov r9, rdx"]:::insnAlu
+        insn1 -.-> insn2
+        insn3["0x19c69  pop rsi"]:::insnStack
+        insn2 -.-> insn3
+        insn4["0x19c6a  mov rdx, rsp"]:::insnAlu
+        insn3 -.-> insn4
+        insn5["0x19c6d  and rsp, 0xfffffffffffffff0"]:::insnAlu
+        insn4 -.-> insn5
+        insn6["0x19c71  push rax"]:::insnStack
+        insn5 -.-> insn6
+        insn7["0x19c72  push rsp"]:::insnStack
+        insn6 -.-> insn7
+        insn8["0x19c73  xor r8d, r8d"]:::insnAlu
+        insn7 -.-> insn8
+        insn9["0x19c76  xor ecx, ecx"]:::insnAlu
+        insn8 -.-> insn9
+        insn10["0x19c78  lea rdi, (rip + 0x6bb1)"]:::insnAlu
+        insn9 -.-> insn10
+        insn11["0x19c7f  call qword ptr (rip + 0x48cb3)"]:::insnCall
+        insn10 -.-> insn11
+        insn12["0x19c85  hlt"]:::insnSystem
+        insn11 -.-> insn12
+        insn13["0x19c86  int3"]:::insnSystem
+        insn12 -.-> insn13
+        insn14["0x19c87  int3"]:::insnSystem
+        insn13 -.-> insn14
+        insn15["0x19c88  int3"]:::insnSystem
+        insn14 -.-> insn15
+        insn16["0x19c89  int3"]:::insnSystem
+        insn15 -.-> insn16
+        insn17["0x19c8a  int3"]:::insnSystem
+        insn16 -.-> insn17
+        insn18["0x19c8b  int3"]:::insnSystem
+        insn17 -.-> insn18
+        insn19["0x19c8c  int3"]:::insnSystem
+        insn18 -.-> insn19
+        insn20["0x19c8d  int3"]:::insnSystem
+        insn19 -.-> insn20
+        insn21["0x19c8e  int3"]:::insnSystem
+        insn20 -.-> insn21
+        insn22["0x19c8f  int3"]:::insnSystem
+        insn21 -.-> insn22
+        insn23["0x19c90  lea rdi, (rip + 0x4a729)"]:::insnAlu
+        insn22 -.-> insn23
+        insn24["0x19c97  lea rax, (rip + 0x4a722)"]:::insnAlu
+        insn23 -.-> insn24
+        insn25["0x19c9e  cmp rax, rdi"]:::insnAlu
+        insn24 -.-> insn25
+        insn26["0x19ca1  je 0x19cb8"]:::insnBranch
+        insn25 -.-> insn26
+        insn27["0x19ca3  mov rax, qword ptr (rip + 0x48c9e)"]:::insnMemory
+        insn26 -.-> insn27
+        insn28["0x19caa  test rax, rax"]:::insnAlu
+        insn27 -.-> insn28
+        insn29["0x19cad  je 0x19cb8"]:::insnBranch
+        insn28 -.-> insn29
+        insn30["0x19caf  jmp rax"]:::insnBranch
+        insn29 -.-> insn30
+        insn31["0x19cb1  nop dword ptr (rax)"]:::insnSystem
+        insn30 -.-> insn31
+        insn32["0x19cb8  ret"]:::insnReturn
+        insn31 -.-> insn32
+        insn33["0x19cb9  nop dword ptr (rax)"]:::insnSystem
+        insn32 -.-> insn33
+        insn34["0x19cc0  lea rdi, (rip + 0x4a6f9)"]:::insnAlu
+        insn33 -.-> insn34
+        insn35["0x19cc7  lea rsi, (rip + 0x4a6f2)"]:::insnAlu
+        insn34 -.-> insn35
+        insn36["0x19cce  sub rsi, rdi"]:::insnAlu
+        insn35 -.-> insn36
+        insn37["0x19cd1  mov rax, rsi"]:::insnAlu
+        insn36 -.-> insn37
+        insn38["0x19cd4  shr rsi, 0x3f"]:::insnMemory
+        insn37 -.-> insn38
+        insn39["0x19cd8  sar rax, 3"]:::insnAlu
+        insn38 -.-> insn39
+        insn40["0x19cdc  add rsi, rax"]:::insnAlu
+        insn39 -.-> insn40
+        insn41["0x19cdf  sar rsi, 1"]:::insnAlu
+        insn40 -.-> insn41
+        insn42["0x19ce2  je 0x19cf8"]:::insnBranch
+        insn41 -.-> insn42
+        insn43["0x19ce4  mov rax, qword ptr (rip + 0x48c65)"]:::insnMemory
+        insn42 -.-> insn43
+        insn44["0x19ceb  test rax, rax"]:::insnAlu
+        insn43 -.-> insn44
+        insn45["0x19cee  je 0x19cf8"]:::insnBranch
+        insn44 -.-> insn45
+        insn46["0x19cf0  jmp rax"]:::insnBranch
+        insn45 -.-> insn46
+        insn47["0x19cf2  nop word ptr (rax + rax)"]:::insnSystem
+        insn46 -.-> insn47
+        insn48["0x19cf8  ret"]:::insnReturn
+        insn47 -.-> insn48
+        insn49["0x19cf9  nop dword ptr (rax)"]:::insnSystem
+        insn48 -.-> insn49
+        insn50["0x19d00  endbr64"]:::insnOther
+        insn49 -.-> insn50
+        insn51["0x19d04  cmp byte ptr (rip + 0x4b0f5), 0"]:::insnAlu
+        insn50 -.-> insn51
+        insn52["0x19d0b  jne 0x19d38"]:::insnBranch
+        insn51 -.-> insn52
+        insn53["0x19d0d  push rbp"]:::insnStack
+        insn52 -.-> insn53
+        insn54["0x19d0e  cmp qword ptr (rip + 0x48c4a), 0"]:::insnAlu
+        insn53 -.-> insn54
+        insn55["0x19d16  mov rbp, rsp"]:::insnAlu
+        insn54 -.-> insn55
+        insn56["0x19d19  je 0x19d27"]:::insnBranch
+        insn55 -.-> insn56
+        insn57["0x19d1b  lea rdi, (rip + 0x466be)"]:::insnAlu
+        insn56 -.-> insn57
+        insn58["0x19d22  call 0x5f360"]:::insnCall
+        insn57 -.-> insn58
+        insn59["0x19d27  call 0x19c90"]:::insnCall
+        insn58 -.-> insn59
+        insn60["0x19d2c  mov byte ptr (rip + 0x4b0cd), 1"]:::insnMemory
+        insn59 -.-> insn60
+        insn61["0x19d33  pop rbp"]:::insnStack
+        insn60 -.-> insn61
+        insn62["0x19d34  ret"]:::insnReturn
+        insn61 -.-> insn62
+        insn63["0x19d35  nop dword ptr (rax)"]:::insnSystem
+        insn62 -.-> insn63
+        insn64["0x19d38  ret"]:::insnReturn
+        insn63 -.-> insn64
+        insn65["0x19d39  nop dword ptr (rax)"]:::insnSystem
+        insn64 -.-> insn65
+        insn66["0x19d40  endbr64"]:::insnOther
+        insn65 -.-> insn66
+        insn67["0x19d44  jmp 0x19cc0"]:::insnBranch
+        insn66 -.-> insn67
+        insn68["0x19d49  int3"]:::insnSystem
+        insn67 -.-> insn68
+        insn69["0x19d4a  int3"]:::insnSystem
+        insn68 -.-> insn69
+        insn70["0x19d4b  int3"]:::insnSystem
+        insn69 -.-> insn70
+        insn71["0x19d4c  int3"]:::insnSystem
+        insn70 -.-> insn71
+        insn72["0x19d4d  int3"]:::insnSystem
+        insn71 -.-> insn72
+        insn73["0x19d4e  int3"]:::insnSystem
+        insn72 -.-> insn73
+        insn74["0x19d4f  int3"]:::insnSystem
+        insn73 -.-> insn74
+        insn75["0x19d50  mov rax, rdi"]:::insnAlu
+        insn74 -.-> insn75
+        insn76["0x19d53  mov qword ptr (rsp - 8), rsi"]:::insnMemory
+        insn75 -.-> insn76
+        insn77["0x19d58  mov qword ptr (rsp - 0x18), rsi"]:::insnMemory
+        insn76 -.-> insn77
+        insn78["0x19d5d  mov rcx, qword ptr (rip + 0x48c3c)"]:::insnMemory
+        insn77 -.-> insn78
+        insn79["0x19d64  mov qword ptr (rsp - 0x10), rcx"]:::insnMemory
+        insn78 -.-> insn79
+        insn80["0x19d69  mov rcx, qword ptr (rsp - 0x18)"]:::insnMemory
+        insn79 -.-> insn80
+        insn81["0x19d6e  mov qword ptr (rdi), rcx"]:::insnMemory
+        insn80 -.-> insn81
+        insn82["0x19d71  mov rcx, qword ptr (rsp - 0x10)"]:::insnMemory
+        insn81 -.-> insn82
+        insn83["0x19d76  mov qword ptr (rdi + 8), rcx"]:::insnMemory
+        insn82 -.-> insn83
+        insn84["0x19d7a  ret"]:::insnReturn
+        insn83 -.-> insn84
+        insn85["0x19d7b  int3"]:::insnSystem
+        insn84 -.-> insn85
+        insn86["0x19d7c  int3"]:::insnSystem
+        insn85 -.-> insn86
+        insn87["0x19d7d  int3"]:::insnSystem
+        insn86 -.-> insn87
+        insn88["0x19d7e  int3"]:::insnSystem
+        insn87 -.-> insn88
+        insn89["0x19d7f  int3"]:::insnSystem
+        insn88 -.-> insn89
+        insn90["0x19d80  sub rsp, 0xd8"]:::insnAlu
+        insn89 -.-> insn90
+        insn91["0x19d87  mov qword ptr (rsp), rdi"]:::insnMemory
+        insn90 -.-> insn91
+        insn92["0x19d8b  mov qword ptr (rsp + 8), rdi"]:::insnMemory
+        insn91 -.-> insn92
+        insn93["0x19d90  mov rax, qword ptr (rsi + 0x10)"]:::insnMemory
+        insn92 -.-> insn93
+        insn94["0x19d94  mov qword ptr (rsp + 0x10), rax"]:::insnMemory
+        insn93 -.-> insn94
+        insn95["0x19d99  mov rax, qword ptr (rsi + 0x18)"]:::insnMemory
+        insn94 -.-> insn95
+        insn96["0x19d9d  mov qword ptr (rsp + 0x18), rax"]:::insnMemory
+        insn95 -.-> insn96
+        insn97["0x19da2  mov rax, qword ptr (rsi + 0x20)"]:::insnMemory
+        insn96 -.-> insn97
+        insn98["0x19da6  mov qword ptr (rsp + 0x20), rax"]:::insnMemory
+        insn97 -.-> insn98
+        insn99["0x19dab  mov rdx, qword ptr (rsi)"]:::insnMemory
+        insn98 -.-> insn99
+        insn100["0x19dae  mov rcx, qword ptr (rsi + 8)"]:::insnMemory
+        insn99 -.-> insn100
+        insn101["0x19db2  mov qword ptr (rsp + 0xa8), rdx"]:::insnMemory
+        insn100 -.-> insn101
+        insn102["0x19dba  mov qword ptr (rsp + 0xb0), rcx"]:::insnMemory
+        insn101 -.-> insn102
+        insn103["0x19dc2  mov al, byte ptr (rsi + 0x28)"]:::insnMemory
+        insn102 -.-> insn103
+        insn104["0x19dc5  mov sil, al"]:::insnAlu
+        insn103 -.-> insn104
+        insn105["0x19dc8  and sil, 1"]:::insnAlu
+        insn104 -.-> insn105
+        insn106["0x19dcc  mov byte ptr (rsp + 0xbf), sil"]:::insnMemory
+        insn105 -.-> insn106
+        insn107["0x19dd4  movzx r8d, al"]:::insnAlu
+        insn106 -.-> insn107
+        insn108["0x19dd8  and r8d, 1"]:::insnAlu
+        insn107 -.-> insn108
+        insn109["0x19ddc  xor eax, eax"]:::insnAlu
+        insn108 -.-> insn109
+        insn110["0x19dde  mov r9d, eax"]:::insnAlu
+        insn109 -.-> insn110
+        insn111["0x19de1  lea rdi, (rsp + 0x58)"]:::insnAlu
+        insn110 -.-> insn111
+        insn112["0x19de6  lea rsi, (rsp + 0x10)"]:::insnAlu
+        insn111 -.-> insn112
+        insn113["0x19deb  call 0x1c1f0"]:::insnCall
+        insn112 -.-> insn113
+        insn114["0x19df0  mov rdx, qword ptr (rsp + 0x58)"]:::insnMemory
+        insn113 -.-> insn114
+        insn115["0x19df5  xor eax, eax"]:::insnAlu
+        insn114 -.-> insn115
+        insn116["0x19df7  mov ecx, 1"]:::insnAlu
+        insn115 -.-> insn116
+        insn117["0x19dfc  cmp rdx, 0"]:::insnAlu
+        insn116 -.-> insn117
+        insn118["0x19e00  cmove rax, rcx"]:::insnOther
+        insn117 -.-> insn118
+        insn119["0x19e04  test rax, 1"]:::insnAlu
+        insn118 -.-> insn119
+        insn120["0x19e0a  je 0x19e50"]:::insnBranch
+        insn119 -.-> insn120
+        insn121["0x19e0c  mov rax, qword ptr (rsp)"]:::insnMemory
+        insn120 -.-> insn121
+        insn122["0x19e10  mov rcx, qword ptr (rsp + 0x60)"]:::insnMemory
+        insn121 -.-> insn122
+        insn123["0x19e15  mov qword ptr (rsp + 0xc0), rcx"]:::insnMemory
+        insn122 -.-> insn123
+        insn124["0x19e1d  mov qword ptr (rsp + 0x48), rcx"]:::insnMemory
+        insn123 -.-> insn124
+        insn125["0x19e22  mov qword ptr (rsp + 0x40), 0"]:::insnMemory
+        insn124 -.-> insn125
+        insn126["0x19e2b  mov rcx, qword ptr (rsp + 0x48)"]:::insnMemory
+        insn125 -.-> insn126
+        insn127["0x19e30  mov qword ptr (rsp + 0xc8), rcx"]:::insnMemory
+        insn126 -.-> insn127
+        insn128["truncated after 128 instruction(s); 283883 byte(s) remain (raise --elf-max-insns)"]:::insnNote
+        insn127 -.-> insn128
+      end
+      style SEC14 fill:#ffffff,stroke:#117a65,stroke-width:1.5px,color:#0b5345;
+      subgraph SEC15[".init<br/>R-X | 0x5f324..0x5f33f | mem 0x1b bytes | file 0x1b bytes"]
+        direction TB
+        insn129["0x5f324  endbr64"]:::insnOther
+        insn130["0x5f328  sub rsp, 8"]:::insnAlu
+        insn129 -.-> insn130
+        insn131["0x5f32c  mov rax, qword ptr (rip + 0x360d)"]:::insnMemory
+        insn130 -.-> insn131
+        insn132["0x5f333  test rax, rax"]:::insnAlu
+        insn131 -.-> insn132
+        insn133["0x5f336  je 0x5f33a"]:::insnBranch
+        insn132 -.-> insn133
+        insn134["0x5f338  call rax"]:::insnCall
+        insn133 -.-> insn134
+        insn135["0x5f33a  add rsp, 8"]:::insnAlu
+        insn134 -.-> insn135
+        insn136["0x5f33e  ret"]:::insnReturn
+        insn135 -.-> insn136
+      end
+      style SEC15 fill:#ffffff,stroke:#117a65,stroke-width:1.5px,color:#0b5345;
+      subgraph SEC16[".fini<br/>R-X | 0x5f340..0x5f34d | mem 0xd bytes | file 0xd bytes"]
+        direction TB
+        insn137["0x5f340  endbr64"]:::insnOther
+        insn138["0x5f344  sub rsp, 8"]:::insnAlu
+        insn137 -.-> insn138
+        insn139["0x5f348  add rsp, 8"]:::insnAlu
+        insn138 -.-> insn139
+        insn140["0x5f34c  ret"]:::insnReturn
+        insn139 -.-> insn140
+      end
+      style SEC16 fill:#ffffff,stroke:#117a65,stroke-width:1.5px,color:#0b5345;
+      subgraph SEC17[".plt<br/>R-X | 0x5f350..0x5f3a0 | mem 0x50 bytes | file 0x50 bytes"]
+        direction TB
+        insn141["0x5f350  push qword ptr (rip + 0x403a)"]:::insnStack
+        insn142["0x5f356  jmp qword ptr (rip + 0x403c)"]:::insnBranch
+        insn141 -.-> insn142
+        insn143["0x5f35c  nop dword ptr (rax)"]:::insnSystem
+        insn142 -.-> insn143
+        insn144["0x5f360  jmp qword ptr (rip + 0x403a)"]:::insnBranch
+        insn143 -.-> insn144
+        insn145["0x5f366  push 0"]:::insnStack
+        insn144 -.-> insn145
+        insn146["0x5f36b  jmp 0x5f350"]:::insnBranch
+        insn145 -.-> insn146
+        insn147["0x5f370  jmp qword ptr (rip + 0x4032)"]:::insnBranch
+        insn146 -.-> insn147
+        insn148["0x5f376  push 1"]:::insnStack
+        insn147 -.-> insn148
+        insn149["0x5f37b  jmp 0x5f350"]:::insnBranch
+        insn148 -.-> insn149
+        insn150["0x5f380  jmp qword ptr (rip + 0x402a)"]:::insnBranch
+        insn149 -.-> insn150
+        insn151["0x5f386  push 2"]:::insnStack
+        insn150 -.-> insn151
+        insn152["0x5f38b  jmp 0x5f350"]:::insnBranch
+        insn151 -.-> insn152
+        insn153["0x5f390  jmp qword ptr (rip + 0x4022)"]:::insnBranch
+        insn152 -.-> insn153
+        insn154["0x5f396  push 3"]:::insnStack
+        insn153 -.-> insn154
+        insn155["0x5f39b  jmp 0x5f350"]:::insnBranch
+        insn154 -.-> insn155
+      end
+      style SEC17 fill:#ffffff,stroke:#117a65,stroke-width:1.5px,color:#0b5345;
+    end
+    style SEG1 fill:#e8f8f5,stroke:#117a65,stroke-width:2px,color:#0b5345;
+    subgraph SEG2["LOAD (PT_LOAD) 0x603a0..0x64000<br/>RW- | file 0x5e3a0 + 0x3020 bytes | mem 0x3c60 bytes | align 0x1000 bytes"]
+      direction TB
+      subgraph SEC18[".tdata<br/>RW- | 0x603a0..0x603e0 | mem 0x40 bytes | file 0x40 bytes"]
+        direction TB
+        SEC18_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC18 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC19[".tbss<br/>RW- | 0x603e0..0x60400 | mem 0x20 bytes | file 0x0 bytes | NOBITS (zero-filled)"]
+        direction TB
+        SEC19_empty["no file-backed bytes (zero-filled at run time)"]:::elfNote
+      end
+      style SEC19 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC20[".data.rel.ro<br/>RW- | 0x603e0..0x62750 | mem 0x2370 bytes | file 0x2370 bytes"]
+        direction TB
+        SEC20_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC20 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC21[".fini_array<br/>RW- | 0x62750..0x62758 | mem 0x8 bytes | file 0x8 bytes"]
+        direction TB
+        SEC21_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC21 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC22[".init_array<br/>RW- | 0x62758..0x62768 | mem 0x10 bytes | file 0x10 bytes"]
+        direction TB
+        SEC22_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC22 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC23[".dynamic<br/>RW- | 0x62768..0x62938 | mem 0x1d0 bytes | file 0x1d0 bytes"]
+        direction TB
+        SEC23_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC23 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC24[".got<br/>RW- | 0x62938..0x63388 | mem 0xa50 bytes | file 0xa50 bytes"]
+        direction TB
+        SEC24_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC24 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC25[".got.plt<br/>RW- | 0x63388..0x633c0 | mem 0x38 bytes | file 0x38 bytes"]
+        direction TB
+        SEC25_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC25 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC26[".relro_padding<br/>RW- | 0x633c0..0x64000 | mem 0xc40 bytes | file 0x0 bytes | NOBITS (zero-filled)"]
+        direction TB
+        SEC26_empty["no file-backed bytes (zero-filled at run time)"]:::elfNote
+      end
+      style SEC26 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+    end
+    style SEG2 fill:#fef5e7,stroke:#b9770e,stroke-width:2px,color:#7e5109;
+    subgraph SEG3["LOAD (PT_LOAD) 0x643c0..0x64eca<br/>RW- | file 0x613c0 + 0xa40 bytes | mem 0xb0a bytes | align 0x1000 bytes"]
+      direction TB
+      subgraph SEC27[".data<br/>RW- | 0x643c0..0x64e00 | mem 0xa40 bytes | file 0xa40 bytes"]
+        direction TB
+        SEC27_data["data / metadata bytes (not executable, not disassembled)"]:::elfNote
+      end
+      style SEC27 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+      subgraph SEC28[".bss<br/>RW- | 0x64e00..0x64eca | mem 0xca bytes | file 0x0 bytes | NOBITS (zero-filled)"]
+        direction TB
+        SEC28_empty["no file-backed bytes (zero-filled at run time)"]:::elfNote
+      end
+      style SEC28 fill:#ffffff,stroke:#b9770e,stroke-width:1.5px,color:#7e5109;
+    end
+    style SEG3 fill:#fef5e7,stroke:#b9770e,stroke-width:2px,color:#7e5109;
+    ELF_META["6 non-allocated section(s) not shown (symbols/debug/metadata)"]:::elfNote
+  end
+  subgraph LEGEND["Legend"]
+    direction LR
+    legend_rx["LOAD R-X<br/>read + execute: code"]:::segmentRx
+    legend_rw["LOAD RW-<br/>read + write: data / BSS"]:::segmentRw
+    legend_r["LOAD R--<br/>read-only: constants / vector table"]:::segmentR
+    legend_rwx["LOAD RWX<br/>writable + executable (unusual)"]:::segmentRwx
+    legend_call["call / bl / jal"]:::insnCall
+    legend_branch["conditional / unconditional branch"]:::insnBranch
+    legend_return["return / interrupt return"]:::insnReturn
+    legend_stack["push / pop / stack frame"]:::insnStack
+    legend_memory["load / store"]:::insnMemory
+    legend_alu["arithmetic / logic / move"]:::insnAlu
+    legend_system["barrier / system / CSR"]:::insnSystem
+    legend_note["dashed sequence = linear disassembly order<br/>use --view cfg for control flow"]:::elfNote
+  end

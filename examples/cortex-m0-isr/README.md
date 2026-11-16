@@ -34,10 +34,12 @@ Requirements: `arm-none-eabi-gcc`, `cargo`, and Graphviz `dot`.
 | [`artifacts/cfg-main.dot`](artifacts/cfg-main.dot) | Graphviz source for the `main` CFG |
 | [`artifacts/cfg-main.svg`](artifacts/cfg-main.svg) | rendered `main` CFG |
 | [`artifacts/cfg-main.mmd`](artifacts/cfg-main.mmd) | Mermaid source for the `main` CFG |
+| [`artifacts/elf-layout.mmd`](artifacts/elf-layout.mmd) | loader-backed ELF layout with colored segments and disassembly |
 
 A browser walkthrough with both examples and the complete legend is
 [`../tdg-example.html`](../tdg-example.html). CFG output is documented in
-[`../../docs/cfg-format.md`](../../docs/cfg-format.md).
+[`../../docs/cfg-format.md`](../../docs/cfg-format.md); the loader view is
+documented in [`../../docs/elf-view.md`](../../docs/elf-view.md).
 
 ## Diagram
 
