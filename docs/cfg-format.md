@@ -144,7 +144,9 @@ Switch tables are recognized in these layouts:
 - ARM Thumb `tbb [pc, rN]` and `tbh [pc, rN, lsl #1]`, including
   register-based table bases;
 - AArch64 relative byte tables such as
-  `adr base; ldrb wN, [table, xM]; add base, base, wN, lsl #2; br base`.
+  `adr base; ldrb wN, [table, xM]; add base, base, wN, lsl #2; br base`;
+- RISC-V absolute-pointer tables such as
+  `slli index, index, 2; ...; add index, index, table; lw target, 0(index); jr target`.
 
 Entries are read until the first non-executable target or the bound implied by
 a preceding `cmp index, N` guard (falling back to a 256-entry safety limit).
@@ -288,9 +290,9 @@ containing basic block, so they are kept at function level with
 
 - Calls end their basic block and return to a new block; call targets remain
   metadata, not intra-function CFG edges.
-- Recognized jump-table forms on x86-64, ARM Thumb and common AArch64 layouts
-  are expanded; RISC-V tables, computed indirect tables and vtable dispatch on
-  heap/stack objects remain unresolved indirect jumps.
+- Recognized jump-table forms on x86-64, ARM Thumb, common AArch64 and RISC-V
+  absolute-pointer layouts are expanded; computed/indirect tables and vtable
+  dispatch on heap/stack objects remain unresolved indirect jumps.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
