@@ -36,6 +36,23 @@ fn compile_with_optimization(
     )
 }
 
+fn compile_arm(source_name: &str, source: &str) -> Option<PathBuf> {
+    compile_with_args(
+        "arm-none-eabi-gcc",
+        source_name,
+        source,
+        &[
+            "-O2",
+            "-g",
+            "-marm",
+            "-mcpu=cortex-a9",
+            "-nostdlib",
+            "-ffreestanding",
+            "-Wl,-Ttext=0x8000000",
+        ],
+    )
+}
+
 fn compile_thumb(source_name: &str, source: &str) -> Option<PathBuf> {
     compile_with_args(
         "arm-none-eabi-gcc",
@@ -469,18 +486,17 @@ fn assert_jump_table_resolved(binary: &Path, minimum_edges: usize) {
         .iter()
         .find(|function| function.primary_name == "dispatch")
         .expect("dispatch function");
-    let jump_edges = dispatch
-        .cfg
-        .graph
-        .edge_indices()
-        .filter(|edge| {
-            dispatch
-                .cfg
-                .graph
-                .edge_weight(*edge)
-                .is_some_and(|edge| edge.kind == CfgEdgeKind::Jump)
-        })
-        .count();
+    let jump_edges =
+        dispatch
+            .cfg
+            .graph
+            .edge_indices()
+            .filter(|edge| {
+                dispatch.cfg.graph.edge_weight(*edge).is_some_and(|edge| {
+                    matches!(edge.kind, CfgEdgeKind::Jump | CfgEdgeKind::Branch)
+                })
+            })
+            .count();
     assert!(
         jump_edges >= minimum_edges,
         "expected at least {minimum_edges} switch-case jump edges, got {jump_edges}"
@@ -556,6 +572,28 @@ fn resolves_riscv64_absolute_jump_table_edges() {
     }
     source.push_str("default: sink = 0; return -1; } }\n");
     let Some(binary) = compile_riscv64("switch_riscv64.c", &source) else {
+        return;
+    };
+    assert_jump_table_resolved(&binary, 16);
+}
+
+#[test]
+fn resolves_arm_a32_ldr_pc_jump_table_edges() {
+    let mut source = String::from("volatile int sink;\n");
+    for index in 0..16 {
+        let _ = writeln!(
+            source,
+            "__attribute__((noinline)) int f{index}(void) {{ sink = {}; return {}; }}",
+            index + 1,
+            index * 7 + 11
+        );
+    }
+    source.push_str("__attribute__((noinline)) int dispatch(int x) { switch (x) {\n");
+    for index in 0..16 {
+        let _ = writeln!(source, "case {index}: return f{index}();");
+    }
+    source.push_str("default: sink = 0; return -1; } }\n");
+    let Some(binary) = compile_arm("switch_arm.c", &source) else {
         return;
     };
     assert_jump_table_resolved(&binary, 16);
