@@ -1,0 +1,667 @@
+{
+  "schema_version": "1.1",
+  "tool": {
+    "name": "elf2tdg",
+    "version": "0.1.0",
+    "rules_version": "m0",
+    "timing_tables_version": "0.1.0-m0"
+  },
+  "image": {
+    "path": "artifacts/cortex-m0-isr.elf",
+    "arch": "thumb",
+    "endianness": "little",
+    "entry": "0x8000161",
+    "elf_type": "exec",
+    "has_symbols": true,
+    "has_debug_info": true,
+    "has_relocations": true
+  },
+  "timing": {
+    "models": [
+      {
+        "id": "cortex-m0",
+        "arch": "thumb",
+        "core": "Cortex-M0",
+        "determinism": "bounded",
+        "table_version": "0.2.0-m3",
+        "params": {},
+        "caveats": [
+          "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+          "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+        ]
+      }
+    ],
+    "frequency_domains": [
+      {
+        "id": "clk:core",
+        "name": "core",
+        "hz": 48000000,
+        "source": "cli",
+        "confidence": "high"
+      }
+    ],
+    "default_frequency_domain": "clk:core",
+    "caveats": [
+      "Static timing estimates are not WCET bounds; loop bounds and execution counts are not inferred."
+    ]
+  },
+  "functions": [
+    {
+      "id": "fn:0x80000d8",
+      "primary_name": "SystemInit",
+      "symbols": [
+        "SystemInit"
+      ],
+      "language": "c",
+      "address": "0x80000d8",
+      "size": 20,
+      "section": ".text",
+      "kind": "normal",
+      "blocks": [
+        {
+          "id": "bb:0x80000d8",
+          "address": "0x80000d8",
+          "size": 16,
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 12.0,
+              "max": 16.0
+            },
+            "time_ns": {
+              "min": 250.0,
+              "max": 333.3333333333333
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        }
+      ],
+      "timing": {
+        "static_block_sum_cycles": {
+          "min": 12.0,
+          "max": 16.0
+        },
+        "modeled_blocks": 1,
+        "unmodeled_blocks": 0,
+        "caveats": [
+          "Sum of static block costs; this is not a path time or a WCET bound."
+        ]
+      },
+      "source": {
+        "file": "main.c",
+        "line": 19,
+        "column": 49
+      }
+    },
+    {
+      "id": "fn:0x80000ec",
+      "primary_name": "delay",
+      "symbols": [
+        "delay"
+      ],
+      "language": "c",
+      "address": "0x80000ec",
+      "size": 44,
+      "section": ".text",
+      "kind": "normal",
+      "blocks": [
+        {
+          "id": "bb:0x80000ec",
+          "address": "0x80000ec",
+          "size": 10,
+          "successors": [
+            "bb:0x8000100"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 7.0,
+              "max": 11.0
+            },
+            "time_ns": {
+              "min": 145.83333333333331,
+              "max": 229.16666666666666
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x80000f6",
+          "address": "0x80000f6",
+          "size": 10,
+          "successors": [
+            "bb:0x8000100"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 9.0,
+              "max": 9.0
+            },
+            "time_ns": {
+              "min": 187.5,
+              "max": 187.5
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x8000100",
+          "address": "0x8000100",
+          "size": 10,
+          "successors": [
+            "bb:0x80000f6",
+            "bb:0x800010a"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 7.0,
+              "max": 9.0
+            },
+            "time_ns": {
+              "min": 145.83333333333331,
+              "max": 187.5
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x800010a",
+          "address": "0x800010a",
+          "size": 10,
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 6.0,
+              "max": 8.0
+            },
+            "time_ns": {
+              "min": 125.0,
+              "max": 166.66666666666666
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        }
+      ],
+      "timing": {
+        "static_block_sum_cycles": {
+          "min": 29.0,
+          "max": 37.0
+        },
+        "modeled_blocks": 4,
+        "unmodeled_blocks": 0,
+        "caveats": [
+          "Sum of static block costs; this is not a path time or a WCET bound."
+        ]
+      },
+      "source": {
+        "file": "main.c",
+        "line": 23,
+        "column": 65
+      }
+    },
+    {
+      "id": "fn:0x8000118",
+      "primary_name": "sensor_task",
+      "symbols": [
+        "sensor_task"
+      ],
+      "language": "c",
+      "address": "0x8000118",
+      "size": 32,
+      "section": ".text",
+      "kind": "normal",
+      "blocks": [
+        {
+          "id": "bb:0x8000118",
+          "address": "0x8000118",
+          "size": 28,
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 20.0,
+              "max": 26.0
+            },
+            "time_ns": {
+              "min": 416.66666666666663,
+              "max": 541.6666666666666
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        }
+      ],
+      "timing": {
+        "static_block_sum_cycles": {
+          "min": 20.0,
+          "max": 26.0
+        },
+        "modeled_blocks": 1,
+        "unmodeled_blocks": 0,
+        "caveats": [
+          "Sum of static block costs; this is not a path time or a WCET bound."
+        ]
+      },
+      "source": {
+        "file": "main.c",
+        "line": 29,
+        "column": 50
+      }
+    },
+    {
+      "id": "fn:0x8000138",
+      "primary_name": "USART1_IRQHandler",
+      "symbols": [
+        "USART1_IRQHandler"
+      ],
+      "language": "c",
+      "address": "0x8000138",
+      "size": 24,
+      "section": ".text",
+      "kind": "isr",
+      "blocks": [
+        {
+          "id": "bb:0x8000138",
+          "address": "0x8000138",
+          "size": 20,
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 16.0,
+              "max": 20.0
+            },
+            "time_ns": {
+              "min": 333.3333333333333,
+              "max": 416.66666666666663
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        }
+      ],
+      "timing": {
+        "static_block_sum_cycles": {
+          "min": 16.0,
+          "max": 20.0
+        },
+        "modeled_blocks": 1,
+        "unmodeled_blocks": 0,
+        "caveats": [
+          "Sum of static block costs; this is not a path time or a WCET bound."
+        ]
+      },
+      "source": {
+        "file": "main.c",
+        "line": 34,
+        "column": 30
+      }
+    },
+    {
+      "id": "fn:0x8000150",
+      "primary_name": "main",
+      "symbols": [
+        "main"
+      ],
+      "language": "c",
+      "address": "0x8000150",
+      "size": 16,
+      "section": ".text",
+      "kind": "normal",
+      "blocks": [
+        {
+          "id": "bb:0x8000150",
+          "address": "0x8000150",
+          "size": 8,
+          "successors": [
+            "bb:0x8000158"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 5.0,
+              "max": 9.0
+            },
+            "time_ns": {
+              "min": 104.16666666666666,
+              "max": 187.5
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x8000158",
+          "address": "0x8000158",
+          "size": 8,
+          "successors": [
+            "bb:0x8000158"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 4.0,
+              "max": 8.0
+            },
+            "time_ns": {
+              "min": 83.33333333333333,
+              "max": 166.66666666666666
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        }
+      ],
+      "timing": {
+        "static_block_sum_cycles": {
+          "min": 9.0,
+          "max": 17.0
+        },
+        "modeled_blocks": 2,
+        "unmodeled_blocks": 0,
+        "caveats": [
+          "Sum of static block costs; this is not a path time or a WCET bound."
+        ]
+      },
+      "source": {
+        "file": "main.c",
+        "line": 38,
+        "column": 16
+      }
+    },
+    {
+      "id": "fn:0x8000160",
+      "primary_name": "Reset_Handler",
+      "symbols": [
+        "Reset_Handler"
+      ],
+      "language": "c",
+      "address": "0x8000160",
+      "size": 16,
+      "section": ".text",
+      "kind": "entry",
+      "blocks": [
+        {
+          "id": "bb:0x8000160",
+          "address": "0x8000160",
+          "size": 12,
+          "successors": [
+            "bb:0x800016c"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 7.0,
+              "max": 13.0
+            },
+            "time_ns": {
+              "min": 145.83333333333331,
+              "max": 270.8333333333333
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x800016c",
+          "address": "0x800016c",
+          "size": 4,
+          "successors": [
+            "bb:0x800016c"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 2.0,
+              "max": 4.0
+            },
+            "time_ns": {
+              "min": 41.666666666666664,
+              "max": 83.33333333333333
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        }
+      ],
+      "timing": {
+        "static_block_sum_cycles": {
+          "min": 9.0,
+          "max": 17.0
+        },
+        "modeled_blocks": 2,
+        "unmodeled_blocks": 0,
+        "caveats": [
+          "Sum of static block costs; this is not a path time or a WCET bound."
+        ]
+      },
+      "source": {
+        "file": "main.c",
+        "line": 45,
+        "column": 26
+      }
+    },
+    {
+      "id": "fn:0x8000170",
+      "primary_name": "Default_Handler",
+      "symbols": [
+        "Default_Handler"
+      ],
+      "language": "c",
+      "address": "0x8000170",
+      "size": 8,
+      "section": ".text",
+      "kind": "isr",
+      "blocks": [
+        {
+          "id": "bb:0x8000170",
+          "address": "0x8000170",
+          "size": 4,
+          "successors": [
+            "bb:0x8000174"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 3.0,
+              "max": 5.0
+            },
+            "time_ns": {
+              "min": 62.5,
+              "max": 104.16666666666666
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        },
+        {
+          "id": "bb:0x8000174",
+          "address": "0x8000174",
+          "size": 4,
+          "successors": [
+            "bb:0x8000174"
+          ],
+          "timing": {
+            "model": "cortex-m0",
+            "cycles": {
+              "min": 2.0,
+              "max": 4.0
+            },
+            "time_ns": {
+              "min": 41.666666666666664,
+              "max": 83.33333333333333
+            },
+            "frequency_domain": "clk:core",
+            "confidence": "medium",
+            "caveats": [
+              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
+            ]
+          }
+        }
+      ],
+      "timing": {
+        "static_block_sum_cycles": {
+          "min": 5.0,
+          "max": 9.0
+        },
+        "modeled_blocks": 2,
+        "unmodeled_blocks": 0,
+        "caveats": [
+          "Sum of static block costs; this is not a path time or a WCET bound."
+        ]
+      },
+      "source": {
+        "file": "main.c",
+        "line": 52,
+        "column": 28
+      }
+    }
+  ],
+  "contexts": [
+    {
+      "id": "ctx:isr:53",
+      "name": "USART1_IRQHandler",
+      "kind": "isr",
+      "entry": "fn:0x8000138",
+      "scheduling": "interrupt",
+      "frequency_domain": "clk:core"
+    },
+    {
+      "id": "ctx:main",
+      "name": "main",
+      "kind": "main",
+      "entry": "fn:0x8000150",
+      "parent": "ctx:startup",
+      "scheduling": "preemptive",
+      "frequency_domain": "clk:core"
+    },
+    {
+      "id": "ctx:startup",
+      "name": "startup",
+      "kind": "startup",
+      "entry": "fn:0x8000160",
+      "scheduling": "unknown",
+      "frequency_domain": "clk:core"
+    }
+  ],
+  "edges": [
+    {
+      "kind": "call",
+      "id": "e:call:0x800011e:0x80000ec",
+      "caller": "fn:0x8000118",
+      "callee": "fn:0x80000ec",
+      "site": "0x800011e",
+      "direct": true,
+      "tail": false,
+      "inlined": false,
+      "confidence": "high"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x8000154:0x8000118",
+      "caller": "fn:0x8000150",
+      "callee": "fn:0x8000118",
+      "site": "0x8000154",
+      "direct": true,
+      "tail": false,
+      "inlined": false,
+      "confidence": "high"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x800015a:0x80000ec",
+      "caller": "fn:0x8000150",
+      "callee": "fn:0x80000ec",
+      "site": "0x800015a",
+      "direct": true,
+      "tail": false,
+      "inlined": false,
+      "confidence": "high"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x8000164:0x80000d8",
+      "caller": "fn:0x8000160",
+      "callee": "fn:0x80000d8",
+      "site": "0x8000164",
+      "direct": true,
+      "tail": false,
+      "inlined": false,
+      "confidence": "high"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x8000168:0x8000150",
+      "caller": "fn:0x8000160",
+      "callee": "fn:0x8000150",
+      "site": "0x8000168",
+      "direct": true,
+      "tail": false,
+      "inlined": false,
+      "confidence": "high"
+    },
+    {
+      "kind": "isr-activate",
+      "id": "e:isr:53",
+      "to_context": "ctx:isr:53",
+      "vector": 53,
+      "irq": 37,
+      "name": "USART1_IRQHandler",
+      "confidence": "high"
+    }
+  ]
+}
