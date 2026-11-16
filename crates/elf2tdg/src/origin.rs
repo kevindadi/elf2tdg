@@ -120,6 +120,7 @@ fn resolve_register(
                 };
                 return Some(base_value | imm);
             }
+            ValueSource::AddRegister { .. } | ValueSource::IndexedLoad { .. } => return None,
         }
     }
     None
@@ -146,6 +147,7 @@ pub fn resolve_indirect_target(
             resolve_register(image, decoded, before, register, 0)?.wrapping_add_signed(offset)
         }
         IndirectTarget::Memory(address) => image.read_uint(address, pointer_size(image.arch))?,
+        IndirectTarget::IndexedMemory { .. } => return None,
         IndirectTarget::RegisterMemory { base, disp } => {
             if let Some(base_value) = resolve_register(image, decoded, before, base, 0) {
                 let address = base_value.wrapping_add_signed(disp);
@@ -158,6 +160,159 @@ pub fn resolve_indirect_target(
     };
     let canonical = image.canonical_address(value);
     image.is_executable(canonical).then_some(canonical)
+}
+
+/// Maximum number of entries scanned in an indexed jump table.
+pub const MAX_JUMP_TABLE_ENTRIES: usize = 256;
+
+/// Enumerates the targets of an indexed jump table.
+///
+/// Entry size follows the operand scale (4 or 8 bytes). Absolute pointers are
+/// preferred; 4-byte relative table entries are also accepted. Scanning stops
+/// at the first entry that does not resolve to executable code or after
+/// [`MAX_JUMP_TABLE_ENTRIES`].
+#[must_use]
+pub fn resolve_jump_table(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    target: IndirectTarget,
+) -> Option<Vec<u64>> {
+    let IndirectTarget::IndexedMemory {
+        base,
+        index,
+        scale,
+        disp,
+    } = target
+    else {
+        return None;
+    };
+    if !matches!(scale, 4 | 8) {
+        return None;
+    }
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    let table_base = if let Some(base) = base {
+        resolve_register(image, decoded, before, base, 0)?.wrapping_add_signed(disp)
+    } else {
+        u64::try_from(disp).ok()?
+    };
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let targets = enumerate_jump_table(image, table_base, usize::from(scale), false, limit);
+    (!targets.is_empty()).then_some(targets)
+}
+
+/// Resolves the common PIE switch sequence:
+///
+/// `lea table(%rip), %rdx; movslq (%rdx,%rdi,4), %rax; add %rdx,%rax; jmp *%rax`.
+#[must_use]
+pub fn resolve_pie_jump_table(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    jump_register: capstone::RegId,
+) -> Option<Vec<u64>> {
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    let (add_index, add_effect) = latest_definition(decoded, before, jump_register)?;
+    let ValueSource::AddRegister {
+        base: load_register,
+        addend: table_register,
+    } = add_effect.source
+    else {
+        return None;
+    };
+    let (_, load_effect) = latest_definition(decoded, add_index, load_register)?;
+    let ValueSource::IndexedLoad {
+        base: Some(load_base),
+        index,
+        scale,
+        disp,
+        signed,
+    } = load_effect.source
+    else {
+        return None;
+    };
+    if load_base != table_register || !signed || !matches!(scale, 4 | 8) {
+        return None;
+    }
+    let table_base =
+        resolve_register(image, decoded, add_index, table_register, 0)?.wrapping_add_signed(disp);
+    let limit = jump_table_bound(decoded, site, index).unwrap_or(MAX_JUMP_TABLE_ENTRIES);
+    let targets = enumerate_jump_table(image, table_base, usize::from(scale), true, limit);
+    (!targets.is_empty()).then_some(targets)
+}
+
+fn enumerate_jump_table(
+    image: &Image,
+    table_base: u64,
+    entry_size: usize,
+    relative_only: bool,
+    limit: usize,
+) -> Vec<u64> {
+    let mut targets = Vec::new();
+    for index in 0..limit.min(MAX_JUMP_TABLE_ENTRIES) {
+        let Some(offset) = u64::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(u64::try_from(entry_size).ok()?))
+        else {
+            break;
+        };
+        let Some(address) = table_base.checked_add(offset) else {
+            break;
+        };
+        let Some(raw) = image.read_uint(address, entry_size) else {
+            break;
+        };
+        let absolute = image.canonical_address(raw);
+        let relative = if entry_size == 4 {
+            let value = i32::from_ne_bytes(u32::try_from(raw).unwrap_or_default().to_ne_bytes());
+            table_base.wrapping_add_signed(i64::from(value))
+        } else {
+            table_base.wrapping_add_signed(i64::from_ne_bytes(raw.to_ne_bytes()))
+        };
+        let resolved = if !relative_only && image.is_executable(absolute) {
+            Some(absolute)
+        } else {
+            image.is_executable(relative).then_some(relative)
+        };
+        let Some(resolved) = resolved else {
+            break;
+        };
+        if !targets.contains(&resolved) {
+            targets.push(resolved);
+        }
+    }
+    targets
+}
+
+fn jump_table_bound(
+    decoded: &[DecodedInsn],
+    site: u64,
+    register: capstone::RegId,
+) -> Option<usize> {
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    decoded[..before]
+        .iter()
+        .rev()
+        .take(32)
+        .find_map(|instruction| {
+            let (compared, value) = instruction.compare?;
+            (compared == register).then(|| {
+                usize::try_from(value)
+                    .ok()
+                    .map(|value| value.saturating_add(1))
+            })?
+        })
+}
+
+fn latest_definition(
+    decoded: &[DecodedInsn],
+    before: usize,
+    register: capstone::RegId,
+) -> Option<(usize, crate::arch::ValueEffect)> {
+    (0..before).rev().find_map(|index| {
+        let effect = decoded[index].value?;
+        (effect.dest == register).then_some((index, effect))
+    })
 }
 
 fn memory_slot_source(
@@ -221,7 +376,7 @@ pub fn indirect_argument_spec(
             });
             Some(spec)
         }
-        IndirectTarget::Memory(_) => None,
+        IndirectTarget::Memory(_) | IndirectTarget::IndexedMemory { .. } => None,
     }
 }
 
@@ -297,7 +452,9 @@ fn trace_argument(
             ValueSource::Immediate(_)
             | ValueSource::Address(_)
             | ValueSource::LoadAddress(_)
-            | ValueSource::OrImmediate { .. } => return None,
+            | ValueSource::OrImmediate { .. }
+            | ValueSource::AddRegister { .. }
+            | ValueSource::IndexedLoad { .. } => return None,
         }
     }
     None
@@ -340,7 +497,9 @@ pub fn forwarded_argument_index(
             | ValueSource::Address(_)
             | ValueSource::LoadAddress(_)
             | ValueSource::AddImmediate { .. }
-            | ValueSource::OrImmediate { .. } => return None,
+            | ValueSource::OrImmediate { .. }
+            | ValueSource::AddRegister { .. }
+            | ValueSource::IndexedLoad { .. } => return None,
         }
     }
     None

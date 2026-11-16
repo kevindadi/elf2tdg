@@ -88,6 +88,17 @@ pub enum CfgIndirectTarget {
         /// Signed offset.
         offset: i64,
     },
+    /// Indexed memory access used by jump tables.
+    IndexedMemory {
+        /// Optional base register.
+        base: Option<String>,
+        /// Index register.
+        index: String,
+        /// Access size and index scale in bytes.
+        scale: u8,
+        /// Signed displacement.
+        disp: i64,
+    },
 }
 
 /// One decoded instruction, including raw bytes and control-flow metadata.
@@ -895,6 +906,10 @@ struct CfgIndirectView {
     address: Option<Addr>,
     #[serde(skip_serializing_if = "Option::is_none")]
     offset: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scale: Option<u8>,
 }
 
 #[derive(Serialize)]
@@ -1070,6 +1085,8 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 disp: None,
                 address: None,
                 offset: None,
+                index: None,
+                scale: None,
             },
             CfgIndirectTarget::RegisterMemory { base, disp } => CfgIndirectView {
                 kind: "register-memory",
@@ -1078,6 +1095,8 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 disp: Some(*disp),
                 address: None,
                 offset: None,
+                index: None,
+                scale: None,
             },
             CfgIndirectTarget::Memory(address) => CfgIndirectView {
                 kind: "memory",
@@ -1086,6 +1105,8 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 disp: None,
                 address: Some(Addr::new(*address)),
                 offset: None,
+                index: None,
+                scale: None,
             },
             CfgIndirectTarget::RegisterOffset { register, offset } => CfgIndirectView {
                 kind: "register-offset",
@@ -1094,6 +1115,23 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
                 disp: None,
                 address: None,
                 offset: Some(*offset),
+                index: None,
+                scale: None,
+            },
+            CfgIndirectTarget::IndexedMemory {
+                base,
+                index,
+                scale,
+                disp,
+            } => CfgIndirectView {
+                kind: "indexed-memory",
+                register: None,
+                base: base.clone(),
+                disp: Some(*disp),
+                address: None,
+                offset: None,
+                index: Some(index.clone()),
+                scale: Some(*scale),
             },
         }),
     }

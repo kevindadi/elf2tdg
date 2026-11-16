@@ -561,6 +561,7 @@ impl<'a> Analyzer<'a> {
         let mut calls: Vec<CallDraft> = Vec::new();
         let mut unresolved_indirect_calls: Vec<(u64, String)> = Vec::new();
         let mut unresolved_indirect_jumps: Vec<(u64, String)> = Vec::new();
+        let mut resolved_indirect_jumps: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
         let mut hit_instruction_limit = false;
         let mut saw_indirect_jump = false;
 
@@ -707,8 +708,52 @@ impl<'a> Analyzer<'a> {
                         );
                     }
                 } else {
-                    saw_indirect_jump = true;
-                    unresolved_indirect_jumps.push((current, insn_text(&insn)));
+                    let decoded_before: Vec<DecodedInsn> = decoded.values().cloned().collect();
+                    let targets =
+                        self.resolve_indirect_jump_targets(&decoded_before, current, insn.indirect);
+                    if targets.is_empty() {
+                        saw_indirect_jump = true;
+                        unresolved_indirect_jumps.push((current, insn_text(&insn)));
+                    } else {
+                        for target in &targets {
+                            if *target < start || *target >= end {
+                                calls.push(CallDraft {
+                                    caller: start,
+                                    site: current,
+                                    target: *target,
+                                    tail: true,
+                                    conditional: insn.is_conditional,
+                                    heuristic: false,
+                                    direct: false,
+                                });
+                            } else {
+                                starts.insert(*target);
+                                if !decoded.contains_key(target) {
+                                    work.push_back(*target);
+                                }
+                            }
+                        }
+                        self.diag(
+                            Severity::Info,
+                            if targets.len() > 1
+                                || matches!(
+                                    insn.indirect,
+                                    Some(IndirectTarget::IndexedMemory { .. })
+                                )
+                            {
+                                "resolved-jump-table"
+                            } else {
+                                "resolved-indirect-jump"
+                            },
+                            format!(
+                                "resolved indirect jump at 0x{current:x} to {} target(s)",
+                                targets.len()
+                            ),
+                            Some(start),
+                            Some(current),
+                        );
+                        resolved_indirect_jumps.insert(current, targets);
+                    }
                 }
                 if insn.is_conditional && next < end {
                     starts.insert(next);
@@ -781,59 +826,6 @@ impl<'a> Analyzer<'a> {
             }
         }
         let decoded_sorted: Vec<DecodedInsn> = decoded.values().cloned().collect();
-        let mut resolved_indirect_jumps: BTreeMap<u64, u64> = BTreeMap::new();
-        for instruction in decoded_sorted
-            .iter()
-            .filter(|instruction| instruction.is_jump && instruction.direct_target.is_none())
-        {
-            let Some(reference) = instruction.indirect else {
-                continue;
-            };
-            let Some(target) = origin::resolve_indirect_target(
-                self.image,
-                &decoded_sorted,
-                instruction.address,
-                reference,
-            ) else {
-                continue;
-            };
-            resolved_indirect_jumps.insert(instruction.address, target);
-            if target < start || target >= end {
-                calls.push(CallDraft {
-                    caller: start,
-                    site: instruction.address,
-                    target,
-                    tail: true,
-                    conditional: instruction.is_conditional,
-                    heuristic: false,
-                    direct: false,
-                });
-                self.diag(
-                    Severity::Info,
-                    "resolved-indirect-jump",
-                    format!(
-                        "resolved indirect jump at 0x{:x} to 0x{target:x} as a tail call",
-                        instruction.address
-                    ),
-                    Some(start),
-                    Some(instruction.address),
-                );
-            } else if decoded.contains_key(&target) {
-                starts.insert(target);
-                self.diag(
-                    Severity::Info,
-                    "resolved-indirect-jump",
-                    format!(
-                        "resolved indirect jump at 0x{:x} to 0x{target:x} inside the function",
-                        instruction.address
-                    ),
-                    Some(start),
-                    Some(instruction.address),
-                );
-            } else {
-                resolved_indirect_jumps.remove(&instruction.address);
-            }
-        }
         for (site, text) in &unresolved_indirect_jumps {
             if resolved_indirect_jumps.contains_key(site) {
                 continue;
@@ -991,14 +983,20 @@ impl<'a> Analyzer<'a> {
             if last.is_return {
                 // no successors
             } else if last.is_jump {
-                let jump_target = last
+                let direct_target = last
                     .direct_target
-                    .map(|target| self.image.canonical_address(target))
-                    .or_else(|| resolved_indirect_jumps.get(&last.address).copied());
-                if let Some(target) = jump_target
+                    .map(|target| self.image.canonical_address(target));
+                if let Some(target) = direct_target
                     && decoded.contains_key(&target)
                 {
                     successors.push(target);
+                }
+                if let Some(targets) = resolved_indirect_jumps.get(&last.address) {
+                    for target in targets {
+                        if decoded.contains_key(target) {
+                            successors.push(*target);
+                        }
+                    }
                 }
                 if last.is_conditional && decoded.contains_key(&block_end) {
                     successors.push(block_end);
@@ -1015,7 +1013,11 @@ impl<'a> Analyzer<'a> {
                     if last
                         .direct_target
                         .map(|target| self.image.canonical_address(target))
-                        .or_else(|| resolved_indirect_jumps.get(&last.address).copied())
+                        .or_else(|| {
+                            resolved_indirect_jumps
+                                .get(&last.address)
+                                .and_then(|targets| targets.first().copied())
+                        })
                         == Some(*successor)
                     {
                         cfg::CfgEdgeKind::Branch
@@ -1054,7 +1056,9 @@ impl<'a> Analyzer<'a> {
                     last,
                     start,
                     end,
-                    resolved_indirect_jumps.get(&last.address).copied(),
+                    resolved_indirect_jumps
+                        .get(&last.address)
+                        .map(Vec::as_slice),
                 ),
             });
         }
@@ -1081,6 +1085,29 @@ impl<'a> Analyzer<'a> {
         self.calls.extend(calls);
     }
 
+    fn resolve_indirect_jump_targets(
+        &self,
+        decoded: &[DecodedInsn],
+        site: u64,
+        target: Option<IndirectTarget>,
+    ) -> Vec<u64> {
+        let Some(target) = target else {
+            return Vec::new();
+        };
+        if matches!(target, IndirectTarget::IndexedMemory { .. }) {
+            origin::resolve_jump_table(self.image, decoded, site, target).unwrap_or_default()
+        } else if let IndirectTarget::Register(register) = target {
+            origin::resolve_indirect_target(self.image, decoded, site, target)
+                .map(|target| vec![target])
+                .or_else(|| origin::resolve_pie_jump_table(self.image, decoded, site, register))
+                .unwrap_or_default()
+        } else {
+            origin::resolve_indirect_target(self.image, decoded, site, target)
+                .into_iter()
+                .collect()
+        }
+    }
+
     fn collect_code_references(&self, instruction: &DecodedInsn, out: &mut BTreeSet<u64>) {
         let mut values = Vec::new();
         if let Some(effect) = instruction.value {
@@ -1094,7 +1121,9 @@ impl<'a> Analyzer<'a> {
                 ValueSource::LoadFromRegister { .. }
                 | ValueSource::Copy(_)
                 | ValueSource::AddImmediate { .. }
-                | ValueSource::OrImmediate { .. } => {}
+                | ValueSource::OrImmediate { .. }
+                | ValueSource::AddRegister { .. }
+                | ValueSource::IndexedLoad { .. } => {}
             }
         }
         if let Some(IndirectTarget::Memory(address)) = instruction.indirect
@@ -1115,7 +1144,7 @@ impl<'a> Analyzer<'a> {
         last: &DecodedInsn,
         start: u64,
         end: u64,
-        resolved_jump: Option<u64>,
+        resolved_jump: Option<&[u64]>,
     ) -> cfg::CfgTerminator {
         if last.is_return {
             return cfg::CfgTerminator::Return;
@@ -1126,18 +1155,21 @@ impl<'a> Analyzer<'a> {
         if last.is_jump {
             let target = last
                 .direct_target
-                .map(|target| self.image.canonical_address(target))
-                .or(resolved_jump);
-            return match target {
-                Some(target) if target >= start && target < end => {
-                    if last.is_conditional {
-                        cfg::CfgTerminator::Branch
-                    } else {
-                        cfg::CfgTerminator::Jump
-                    }
+                .map(|target| self.image.canonical_address(target));
+            if let Some(target) = target {
+                if target >= start && target < end && last.is_conditional {
+                    return cfg::CfgTerminator::Branch;
                 }
-                Some(_) => cfg::CfgTerminator::Jump,
-                None => cfg::CfgTerminator::Unresolved,
+                return cfg::CfgTerminator::Jump;
+            }
+            return if resolved_jump.is_some_and(|targets| !targets.is_empty()) {
+                if last.is_conditional {
+                    cfg::CfgTerminator::Branch
+                } else {
+                    cfg::CfgTerminator::Jump
+                }
+            } else {
+                cfg::CfgTerminator::Unresolved
             };
         }
         cfg::CfgTerminator::Fallthrough
@@ -1197,6 +1229,17 @@ impl<'a> Analyzer<'a> {
                     offset,
                 }
             }
+            IndirectTarget::IndexedMemory {
+                base,
+                index,
+                scale,
+                disp,
+            } => cfg::CfgIndirectTarget::IndexedMemory {
+                base: base.map(name),
+                index: name(index),
+                scale,
+                disp,
+            },
         }
     }
 

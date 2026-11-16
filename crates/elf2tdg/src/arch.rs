@@ -42,6 +42,26 @@ pub enum ValueSource {
         /// Unsigned immediate.
         imm: u64,
     },
+    /// Add another register to a register value.
+    AddRegister {
+        /// Base register (the old destination value).
+        base: RegId,
+        /// Register added to the base.
+        addend: RegId,
+    },
+    /// Signed or unsigned load from an indexed table entry.
+    IndexedLoad {
+        /// Optional base register; `None` means an absolute table address.
+        base: Option<RegId>,
+        /// Index register.
+        index: RegId,
+        /// Index scale and access width in bytes.
+        scale: u8,
+        /// Signed displacement from the base.
+        disp: i64,
+        /// Whether the loaded value is sign-extended.
+        signed: bool,
+    },
 }
 
 /// A single-destination register value effect.
@@ -73,6 +93,17 @@ pub enum IndirectTarget {
         register: RegId,
         /// Signed immediate offset.
         offset: i64,
+    },
+    /// Indexed memory operand used by jump tables.
+    IndexedMemory {
+        /// Optional base register; `None` means an absolute table address.
+        base: Option<RegId>,
+        /// Index register.
+        index: RegId,
+        /// Access size and index scale in bytes.
+        scale: u8,
+        /// Signed displacement from the base or absolute table address.
+        disp: i64,
     },
 }
 
@@ -119,6 +150,8 @@ pub struct DecodedInsn {
     pub memory_write: Option<MemoryWrite>,
     /// Indirect branch/call target expression, when modeled.
     pub indirect: Option<IndirectTarget>,
+    /// Register/immediate comparison, used to bound jump tables.
+    pub compare: Option<(RegId, u64)>,
 }
 
 impl DecodedInsn {
@@ -268,6 +301,7 @@ impl Decoder {
         } else {
             None
         };
+        let compare = x86_compare(&detail, &mnemonic);
 
         Ok(Some(DecodedInsn {
             address,
@@ -282,8 +316,78 @@ impl Decoder {
             value,
             memory_write,
             indirect,
+            compare,
         }))
     }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn x86_indirect_target(
+    detail: &capstone::InsnDetail<'_>,
+    address: u64,
+    size: u8,
+) -> Option<IndirectTarget> {
+    let ArchDetail::X86Detail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let operands: Vec<_> = detail.operands().collect();
+    match operands.first()?.op_type {
+        x86::X86OperandType::Reg(register) => {
+            Some(IndirectTarget::Register(x86_64_register(register)))
+        }
+        x86::X86OperandType::Mem(memory) if memory.index().0 == 0 => {
+            if memory.base() == RegId(x86::X86Reg::X86_REG_RIP as u16) {
+                Some(IndirectTarget::Memory(
+                    address
+                        .wrapping_add(u64::from(size))
+                        .wrapping_add_signed(memory.disp()),
+                ))
+            } else if memory.base().0 == 0 {
+                u64::try_from(memory.disp())
+                    .ok()
+                    .map(IndirectTarget::Memory)
+            } else {
+                Some(IndirectTarget::RegisterMemory {
+                    base: x86_64_register(memory.base()),
+                    disp: memory.disp(),
+                })
+            }
+        }
+        x86::X86OperandType::Mem(memory) => {
+            let scale = u8::try_from(memory.scale()).ok()?;
+            if !matches!(scale, 1 | 2 | 4 | 8) {
+                return None;
+            }
+            let base = (memory.base().0 != 0).then(|| x86_64_register(memory.base()));
+            Some(IndirectTarget::IndexedMemory {
+                base,
+                index: x86_64_register(memory.index()),
+                scale,
+                disp: memory.disp(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn x86_compare(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<(RegId, u64)> {
+    if !mnemonic.starts_with("cmp") {
+        return None;
+    }
+    let ArchDetail::X86Detail(detail) = detail.arch_detail() else {
+        return None;
+    };
+    let operands: Vec<_> = detail.operands().collect();
+    let (register, value) = match (&operands.first()?.op_type, &operands.get(1)?.op_type) {
+        (x86::X86OperandType::Reg(register), x86::X86OperandType::Imm(value))
+        | (x86::X86OperandType::Imm(value), x86::X86OperandType::Reg(register)) => {
+            (*register, *value)
+        }
+        _ => return None,
+    };
+    u64::try_from(value)
+        .ok()
+        .map(|value| (x86_64_register(register), value))
 }
 
 fn direct_target(
@@ -390,36 +494,7 @@ fn indirect_target(
     size: u8,
 ) -> Option<IndirectTarget> {
     match arch {
-        ArchKind::X86_64 => {
-            let ArchDetail::X86Detail(detail) = detail.arch_detail() else {
-                return None;
-            };
-            let operands: Vec<_> = detail.operands().collect();
-            match operands.first()?.op_type {
-                x86::X86OperandType::Reg(register) => {
-                    Some(IndirectTarget::Register(x86_64_register(register)))
-                }
-                x86::X86OperandType::Mem(memory) if memory.index().0 == 0 => {
-                    if memory.base() == RegId(x86::X86Reg::X86_REG_RIP as u16) {
-                        Some(IndirectTarget::Memory(
-                            address
-                                .wrapping_add(u64::from(size))
-                                .wrapping_add_signed(memory.disp()),
-                        ))
-                    } else if memory.base().0 == 0 {
-                        u64::try_from(memory.disp())
-                            .ok()
-                            .map(IndirectTarget::Memory)
-                    } else {
-                        Some(IndirectTarget::RegisterMemory {
-                            base: x86_64_register(memory.base()),
-                            disp: memory.disp(),
-                        })
-                    }
-                }
-                _ => None,
-            }
-        }
+        ArchKind::X86_64 => x86_indirect_target(detail, address, size),
         ArchKind::Aarch64 => {
             if !matches!(mnemonic, "blr" | "br" | "braa" | "brab") {
                 return None;
@@ -901,7 +976,19 @@ fn x86_value_effect(
 ) -> Option<ValueEffect> {
     if !matches!(
         mnemonic,
-        "mov" | "movabs" | "movq" | "lea" | "leaq" | "xor" | "xorl" | "xorq"
+        "mov"
+            | "movabs"
+            | "movq"
+            | "movslq"
+            | "movsxd"
+            | "lea"
+            | "leaq"
+            | "xor"
+            | "xorl"
+            | "xorq"
+            | "add"
+            | "addl"
+            | "addq"
     ) {
         return None;
     }
@@ -920,6 +1007,11 @@ fn x86_value_effect(
             let source = x86_64_register(register);
             if mnemonic.starts_with("xor") && source == dest {
                 ValueSource::Immediate(0)
+            } else if mnemonic.starts_with("add") {
+                ValueSource::AddRegister {
+                    base: dest,
+                    addend: source,
+                }
             } else {
                 ValueSource::Copy(source)
             }
@@ -929,7 +1021,24 @@ fn x86_value_effect(
         }
         x86::X86OperandType::Mem(memory) => {
             if memory.index().0 != 0 {
-                return None;
+                if !matches!(mnemonic, "movslq" | "movsxd") {
+                    return None;
+                }
+                let scale = u8::try_from(memory.scale()).ok()?;
+                if !matches!(scale, 1 | 2 | 4 | 8) {
+                    return None;
+                }
+                let base = (memory.base().0 != 0).then(|| x86_64_register(memory.base()));
+                return Some(ValueEffect {
+                    dest,
+                    source: ValueSource::IndexedLoad {
+                        base,
+                        index: x86_64_register(memory.index()),
+                        scale,
+                        disp: memory.disp(),
+                        signed: true,
+                    },
+                });
             }
             let rip = RegId(x86::X86Reg::X86_REG_RIP as u16);
             if memory.base() == rip {
