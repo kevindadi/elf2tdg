@@ -560,6 +560,7 @@ impl<'a> Analyzer<'a> {
         work.push_back(start);
         let mut calls: Vec<CallDraft> = Vec::new();
         let mut unresolved_indirect_calls: Vec<(u64, String)> = Vec::new();
+        let mut unresolved_indirect_jumps: Vec<(u64, String)> = Vec::new();
         let mut hit_instruction_limit = false;
         let mut saw_indirect_jump = false;
 
@@ -707,16 +708,7 @@ impl<'a> Analyzer<'a> {
                     }
                 } else {
                     saw_indirect_jump = true;
-                    self.diag(
-                        Severity::Warning,
-                        "unresolved-indirect-jump",
-                        format!(
-                            "indirect jump at 0x{current:x} ({}) has no statically known target",
-                            insn_text(&insn)
-                        ),
-                        Some(start),
-                        Some(current),
-                    );
+                    unresolved_indirect_jumps.push((current, insn_text(&insn)));
                 }
                 if insn.is_conditional && next < end {
                     starts.insert(next);
@@ -789,6 +781,71 @@ impl<'a> Analyzer<'a> {
             }
         }
         let decoded_sorted: Vec<DecodedInsn> = decoded.values().cloned().collect();
+        let mut resolved_indirect_jumps: BTreeMap<u64, u64> = BTreeMap::new();
+        for instruction in decoded_sorted
+            .iter()
+            .filter(|instruction| instruction.is_jump && instruction.direct_target.is_none())
+        {
+            let Some(reference) = instruction.indirect else {
+                continue;
+            };
+            let Some(target) = origin::resolve_indirect_target(
+                self.image,
+                &decoded_sorted,
+                instruction.address,
+                reference,
+            ) else {
+                continue;
+            };
+            resolved_indirect_jumps.insert(instruction.address, target);
+            if target < start || target >= end {
+                calls.push(CallDraft {
+                    caller: start,
+                    site: instruction.address,
+                    target,
+                    tail: true,
+                    conditional: instruction.is_conditional,
+                    heuristic: false,
+                    direct: false,
+                });
+                self.diag(
+                    Severity::Info,
+                    "resolved-indirect-jump",
+                    format!(
+                        "resolved indirect jump at 0x{:x} to 0x{target:x} as a tail call",
+                        instruction.address
+                    ),
+                    Some(start),
+                    Some(instruction.address),
+                );
+            } else if decoded.contains_key(&target) {
+                starts.insert(target);
+                self.diag(
+                    Severity::Info,
+                    "resolved-indirect-jump",
+                    format!(
+                        "resolved indirect jump at 0x{:x} to 0x{target:x} inside the function",
+                        instruction.address
+                    ),
+                    Some(start),
+                    Some(instruction.address),
+                );
+            } else {
+                resolved_indirect_jumps.remove(&instruction.address);
+            }
+        }
+        for (site, text) in &unresolved_indirect_jumps {
+            if resolved_indirect_jumps.contains_key(site) {
+                continue;
+            }
+            self.diag(
+                Severity::Warning,
+                "unresolved-indirect-jump",
+                format!("indirect jump at 0x{site:x} ({text}) has no statically known target"),
+                Some(start),
+                Some(*site),
+            );
+        }
         let mut resolved_indirect = BTreeSet::new();
         let mut resolved_indirect_sites = BTreeSet::new();
         for insn in &decoded_sorted {
@@ -887,6 +944,26 @@ impl<'a> Analyzer<'a> {
                 }
             });
         }
+        for insn in decoded_sorted
+            .iter()
+            .filter(|insn| insn.is_jump && insn.direct_target.is_none())
+        {
+            if resolved_indirect_jumps.contains_key(&insn.address) {
+                continue;
+            }
+            call_sites
+                .entry(insn.address)
+                .or_insert_with(|| cfg::CfgCallSite {
+                    site: insn.address,
+                    target: None,
+                    target_function: None,
+                    direct: false,
+                    tail: true,
+                    conditional: insn.is_conditional,
+                    heuristic: false,
+                    unresolved: true,
+                });
+        }
 
         let block_starts: BTreeSet<u64> = starts
             .into_iter()
@@ -914,9 +991,11 @@ impl<'a> Analyzer<'a> {
             if last.is_return {
                 // no successors
             } else if last.is_jump {
-                if let Some(target) = last
+                let jump_target = last
                     .direct_target
                     .map(|target| self.image.canonical_address(target))
+                    .or_else(|| resolved_indirect_jumps.get(&last.address).copied());
+                if let Some(target) = jump_target
                     && decoded.contains_key(&target)
                 {
                     successors.push(target);
@@ -936,6 +1015,7 @@ impl<'a> Analyzer<'a> {
                     if last
                         .direct_target
                         .map(|target| self.image.canonical_address(target))
+                        .or_else(|| resolved_indirect_jumps.get(&last.address).copied())
                         == Some(*successor)
                     {
                         cfg::CfgEdgeKind::Branch
@@ -970,7 +1050,12 @@ impl<'a> Analyzer<'a> {
                 instructions: cfg_instructions,
                 calls,
                 cycles,
-                terminator: self.cfg_terminator(last, start, end),
+                terminator: self.cfg_terminator(
+                    last,
+                    start,
+                    end,
+                    resolved_indirect_jumps.get(&last.address).copied(),
+                ),
             });
         }
         let attached_calls: BTreeSet<u64> = block_drafts
@@ -1025,7 +1110,13 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn cfg_terminator(&self, last: &DecodedInsn, start: u64, end: u64) -> cfg::CfgTerminator {
+    fn cfg_terminator(
+        &self,
+        last: &DecodedInsn,
+        start: u64,
+        end: u64,
+        resolved_jump: Option<u64>,
+    ) -> cfg::CfgTerminator {
         if last.is_return {
             return cfg::CfgTerminator::Return;
         }
@@ -1033,10 +1124,11 @@ impl<'a> Analyzer<'a> {
             return cfg::CfgTerminator::Call;
         }
         if last.is_jump {
-            return match last
+            let target = last
                 .direct_target
                 .map(|target| self.image.canonical_address(target))
-            {
+                .or(resolved_jump);
+            return match target {
                 Some(target) if target >= start && target < end => {
                     if last.is_conditional {
                         cfg::CfgTerminator::Branch
@@ -1226,7 +1318,7 @@ impl<'a> Analyzer<'a> {
     fn forwarded_indirect_candidates(
         &self,
         callers: &BTreeMap<u64, Vec<(u64, u64)>>,
-    ) -> Vec<(u64, u64, u64)> {
+    ) -> Vec<(u64, u64, u64, bool, bool)> {
         let mut resolved = Vec::new();
         for (&function_address, function) in &self.functions {
             let Some(decoded) = self.decoded_by_function.get(&function_address) else {
@@ -1249,12 +1341,12 @@ impl<'a> Analyzer<'a> {
                 }
             }
             for site in sites {
-                let Some(instruction) = decoded
-                    .iter()
-                    .find(|instruction| instruction.address == site && instruction.is_call)
-                else {
+                let Some(instruction) = decoded.iter().find(|instruction| {
+                    instruction.address == site && (instruction.is_call || instruction.is_jump)
+                }) else {
                     continue;
                 };
+                let tail = instruction.is_jump;
                 let Some(target) = instruction.indirect else {
                     continue;
                 };
@@ -1289,24 +1381,39 @@ impl<'a> Analyzer<'a> {
                     && candidates.len() == 1
                     && let Some(target) = candidates.first()
                 {
-                    resolved.push((function_address, site, *target));
+                    if tail
+                        && *target >= function_address
+                        && *target < function_address.saturating_add(function.size)
+                    {
+                        continue;
+                    }
+                    resolved.push((
+                        function_address,
+                        site,
+                        *target,
+                        tail,
+                        instruction.is_conditional,
+                    ));
                 }
             }
         }
         resolved
     }
 
-    fn apply_forwarded_indirect_resolutions(&mut self, resolved: Vec<(u64, u64, u64)>) -> bool {
+    fn apply_forwarded_indirect_resolutions(
+        &mut self,
+        resolved: Vec<(u64, u64, u64, bool, bool)>,
+    ) -> bool {
         let mut changed = false;
-        for (function_address, site, target) in resolved {
+        for (function_address, site, target, tail, conditional) in resolved {
             let target_function = self.resolve_function_address(target).map(function_id);
             let resolved_call = cfg::CfgCallSite {
                 site,
                 target: Some(target),
                 target_function,
                 direct: false,
-                tail: false,
-                conditional: false,
+                tail,
+                conditional,
                 heuristic: false,
                 unresolved: false,
             };
@@ -1320,29 +1427,40 @@ impl<'a> Analyzer<'a> {
                 caller: function_address,
                 site,
                 target,
-                tail: false,
-                conditional: false,
+                tail,
+                conditional,
                 heuristic: false,
                 direct: false,
             });
             let function_id = function_id(function_address);
             self.diagnostics.retain(|diagnostic| {
-                !(diagnostic.code == "unresolved-indirect-call"
+                !((diagnostic.code == "unresolved-indirect-call"
+                    || diagnostic.code == "unresolved-indirect-jump")
                     && diagnostic.function.as_ref() == Some(&function_id)
                     && diagnostic.site == Some(Addr::new(site)))
             });
             self.diagnostic_keys
                 .retain(|(code, function, diagnostic_site)| {
-                    !(code == "unresolved-indirect-call"
+                    !((code == "unresolved-indirect-call" || code == "unresolved-indirect-jump")
                         && *function == Some(function_address)
                         && *diagnostic_site == Some(site))
                 });
             self.diag(
                 Severity::Info,
-                "resolved-forwarded-indirect-call",
-                format!(
-                    "resolved indirect call at 0x{site:x} to 0x{target:x} through caller argument"
-                ),
+                if tail {
+                    "resolved-forwarded-indirect-jump"
+                } else {
+                    "resolved-forwarded-indirect-call"
+                },
+                if tail {
+                    format!(
+                        "resolved indirect jump at 0x{site:x} to 0x{target:x} as a tail call through caller argument"
+                    )
+                } else {
+                    format!(
+                        "resolved indirect call at 0x{site:x} to 0x{target:x} through caller argument"
+                    )
+                },
                 Some(function_address),
                 Some(site),
             );
