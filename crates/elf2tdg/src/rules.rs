@@ -2,17 +2,17 @@
 //!
 //! Rules match resolved callee functions by raw C symbol or demangled Rust/C++
 //! path. Rust symbols are normalized by removing `[crate-hash]` segments so a
-//! rule can say `std::thread::...` regardless of the toolchain hash.
+//! rule can say `embassy_executor::...` regardless of the toolchain hash.
 //!
-//! Rust's monomorphized spawn/scope symbols carry the closure/future type as
-//! their first generic argument, e.g.
+//! Rust's monomorphized spawn symbols carry the future type as their first
+//! generic argument, e.g.
 //!
 //! ```text
-//! std::thread::functions::spawn::<app::main::{closure#0}, ()>
+//! <embassy_executor::spawner::Spawner>::spawn::<app::sensor_task::{closure#0}>
 //! ```
 //!
 //! [`extract_first_generic_arg`] recovers that type, which can then be matched
-//! to the closure function node emitted by the compiler.
+//! to the task poll function emitted by the compiler.
 
 use elf2tdg_schema::{
     AwaitKind, Confidence, Function, JoinKind, LockKind, LockOperation, ScopeKind, SpawnKind,
@@ -58,7 +58,7 @@ pub enum Matcher {
 /// One runtime API rule.
 #[derive(Debug, Clone, Copy)]
 pub struct Rule {
-    /// Runtime identifier, for example `rust-std`.
+    /// Runtime identifier, for example `rust-embassy`.
     pub runtime: &'static str,
     /// Human-readable API name.
     pub api: &'static str,
@@ -79,9 +79,9 @@ pub struct Rule {
     /// Whether the callee's first generic argument is a closure/future type
     /// that may name the spawned body.
     pub closure_generic: bool,
-    /// Ignore calls made from inside the Rust runtime itself. This prevents
-    /// double-reporting `thread::spawn` as both the user call and an internal
-    /// `Builder::spawn` call.
+    /// Ignore calls made from inside the runtime implementation itself. This
+    /// prevents double-reporting a public spawn API and its internal
+    /// implementation layer.
     pub filter_runtime_caller: bool,
     /// Argument index carrying the spawn entry function pointer, for C-style
     /// APIs whose entry can be recovered by bounded value tracking.
@@ -191,32 +191,6 @@ const fn await_rule(
     }
 }
 
-const fn scope(
-    runtime: &'static str,
-    api: &'static str,
-    scope_kind: ScopeKind,
-    matcher: Matcher,
-    confidence: Confidence,
-    closure_generic: bool,
-    filter_runtime_caller: bool,
-) -> Rule {
-    Rule {
-        runtime,
-        api,
-        op: RuleOp::Scope,
-        spawn_kind: SpawnKind::Unknown,
-        scope_kind,
-        join_kind: JoinKind::Unknown,
-        await_kind: AwaitKind::Unknown,
-        matcher,
-        confidence,
-        closure_generic,
-        filter_runtime_caller,
-        entry_arg: None,
-        lock: None,
-    }
-}
-
 const fn lock(
     runtime: &'static str,
     api: &'static str,
@@ -244,369 +218,7 @@ const fn lock(
 }
 
 static RULES: &[Rule] = &[
-    // ---- Rust std: structured concurrency and threads ---------------------
-    scope(
-        "rust-std",
-        "thread::scope",
-        ScopeKind::RustThreadScope,
-        Matcher::DemangledContains("std::thread::scoped::scope::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    scope(
-        "rust-std",
-        "thread::scope",
-        ScopeKind::RustThreadScope,
-        Matcher::DemangledContains("std::thread::scope::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-std",
-        "thread::Builder::spawn_scoped",
-        SpawnKind::ScopedThread,
-        Matcher::DemangledContains("std::thread::builder::Builder>::spawn_scoped::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-std",
-        "Scope::spawn",
-        SpawnKind::ScopedThread,
-        Matcher::DemangledContains("std::thread::scoped::Scope>::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-std",
-        "thread::Builder::spawn_unchecked",
-        SpawnKind::OsThread,
-        Matcher::DemangledContains("std::thread::builder::Builder>::spawn_unchecked::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-std",
-        "thread::lifecycle::spawn_unchecked",
-        SpawnKind::OsThread,
-        Matcher::DemangledContains("std::thread::lifecycle::spawn_unchecked::<"),
-        Confidence::Medium,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-std",
-        "thread::Builder::spawn",
-        SpawnKind::OsThread,
-        Matcher::DemangledContains("std::thread::builder::Builder>::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-std",
-        "thread::spawn",
-        SpawnKind::OsThread,
-        Matcher::DemangledContains("std::thread::functions::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-std",
-        "thread::spawn",
-        SpawnKind::OsThread,
-        Matcher::DemangledContains("std::thread::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    join(
-        "rust-std",
-        "JoinHandle::join",
-        JoinKind::Join,
-        Matcher::DemangledContainsAll(&["std::thread::join_handle::JoinHandle", ">::join"]),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "rust-std",
-        "JoinHandle::join",
-        JoinKind::Join,
-        Matcher::DemangledContainsAll(&["std::thread::JoinHandle", ">::join"]),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "rust-std",
-        "ScopedJoinHandle::join",
-        JoinKind::Join,
-        Matcher::DemangledContainsAll(&["std::thread::scoped::ScopedJoinHandle", ">::join"]),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "rust-std",
-        "JoinHandle::abort",
-        JoinKind::Abort,
-        Matcher::DemangledContainsAll(&["std::thread::JoinHandle", ">::abort"]),
-        Confidence::Medium,
-        true,
-    ),
-    // ---- Rayon -----------------------------------------------------------
-    scope(
-        "rust-rayon",
-        "rayon::scope",
-        ScopeKind::RayonScope,
-        Matcher::DemangledContains("rayon_core::scope::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    scope(
-        "rust-rayon",
-        "rayon::join",
-        ScopeKind::RayonJoin,
-        Matcher::DemangledContains("rayon_core::join::join::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    scope(
-        "rust-rayon",
-        "rayon::join",
-        ScopeKind::RayonJoin,
-        Matcher::DemangledContains("rayon_core::join::join_context::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    scope(
-        "rust-rayon",
-        "rayon::join",
-        ScopeKind::RayonJoin,
-        Matcher::DemangledContains("rayon_core::join::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    scope(
-        "rust-rayon",
-        "rayon::scope",
-        ScopeKind::RayonScope,
-        Matcher::DemangledContains("rayon_core::scope::scope::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-rayon",
-        "rayon::Scope::spawn",
-        SpawnKind::RayonTask,
-        Matcher::DemangledContains("rayon_core::scope::Scope>::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    scope(
-        "rust-rayon",
-        "rayon::ParallelIterator",
-        ScopeKind::RayonScope,
-        Matcher::DemangledContainsAll(&["rayon", "ParallelIterator>::"]),
-        Confidence::Low,
-        false,
-        true,
-    ),
-    spawn(
-        "rust-rayon",
-        "rayon::spawn",
-        SpawnKind::RayonTask,
-        Matcher::DemangledContains("rayon_core::spawn::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-rayon",
-        "rayon::spawn",
-        SpawnKind::RayonTask,
-        Matcher::DemangledContains("rayon_core::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-rayon",
-        "rayon::spawn",
-        SpawnKind::RayonTask,
-        Matcher::DemangledContains("rayon::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    scope(
-        "rust-rayon",
-        "rayon::scope",
-        ScopeKind::RayonScope,
-        Matcher::DemangledContains("rayon::scope::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    // ---- crossbeam -------------------------------------------------------
-    scope(
-        "rust-crossbeam",
-        "crossbeam::scope",
-        ScopeKind::CrossbeamScope,
-        Matcher::DemangledContains("crossbeam_utils::thread::scope::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-crossbeam",
-        "crossbeam::Scope::spawn",
-        SpawnKind::ScopedThread,
-        Matcher::DemangledContains("crossbeam_utils::thread::Scope>::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    scope(
-        "rust-crossbeam",
-        "crossbeam::scope",
-        ScopeKind::CrossbeamScope,
-        Matcher::DemangledContains("crossbeam::thread::scope::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    join(
-        "rust-crossbeam",
-        "crossbeam::ScopedJoinHandle::join",
-        JoinKind::Join,
-        Matcher::DemangledContainsAll(&["crossbeam_utils::thread::ScopedJoinHandle", ">::join"]),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "rust-crossbeam",
-        "crossbeam::ScopedJoinHandle::join",
-        JoinKind::Join,
-        Matcher::DemangledContainsAll(&["crossbeam::thread::ScopedJoinHandle", ">::join"]),
-        Confidence::High,
-        true,
-    ),
-    spawn(
-        "rust-crossbeam",
-        "crossbeam::Scope::spawn",
-        SpawnKind::ScopedThread,
-        Matcher::DemangledContains("crossbeam::thread::Scope>::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    // ---- Tokio / async-std / smol ---------------------------------------
-    spawn(
-        "rust-tokio",
-        "tokio::task::spawn",
-        SpawnKind::AsyncTask,
-        Matcher::DemangledContains("tokio::task::spawn::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-tokio",
-        "tokio::task::spawn",
-        SpawnKind::AsyncTask,
-        Matcher::DemangledContains("tokio::task::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-tokio",
-        "tokio::task::spawn_blocking",
-        SpawnKind::OsThread,
-        Matcher::DemangledContains("tokio::task::spawn_blocking::<"),
-        Confidence::Medium,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-tokio",
-        "tokio::spawn",
-        SpawnKind::AsyncTask,
-        Matcher::DemangledContains("tokio::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    await_rule(
-        "rust-tokio",
-        "tokio::JoinHandle::poll",
-        AwaitKind::JoinHandle,
-        Matcher::DemangledContainsAll(&["tokio::task::join_handle::JoinHandle", "::poll"]),
-        Confidence::Medium,
-        true,
-    ),
-    spawn(
-        "rust-async-std",
-        "async_std::task::spawn",
-        SpawnKind::AsyncTask,
-        Matcher::DemangledContains("async_std::task::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    spawn(
-        "rust-async-std",
-        "async_std::task::spawn_blocking",
-        SpawnKind::OsThread,
-        Matcher::DemangledContains("async_std::task::spawn_blocking::<"),
-        Confidence::Medium,
-        true,
-        true,
-    ),
-    await_rule(
-        "rust-async-std",
-        "async_std::JoinHandle::poll",
-        AwaitKind::JoinHandle,
-        Matcher::DemangledContainsAll(&["async_std::task::join_handle::JoinHandle", "::poll"]),
-        Confidence::Medium,
-        true,
-    ),
-    await_rule(
-        "rust-async-std",
-        "async_std::JoinHandle::poll",
-        AwaitKind::JoinHandle,
-        Matcher::DemangledContainsAll(&["async_std::task::JoinHandle", "::poll"]),
-        Confidence::Medium,
-        true,
-    ),
-    spawn(
-        "rust-smol",
-        "smol::spawn",
-        SpawnKind::AsyncTask,
-        Matcher::DemangledContains("smol::spawn::<"),
-        Confidence::High,
-        true,
-        true,
-    ),
-    await_rule(
-        "rust-smol",
-        "smol::Task::poll",
-        AwaitKind::JoinHandle,
-        Matcher::DemangledContainsAll(&["smol::task::Task", "::poll"]),
-        Confidence::Low,
-        true,
-    ),
+    // ---- Rust embedded runtimes (no_std) --------------------------------
     spawn(
         "rust-embassy",
         "embassy::Spawner::spawn",
@@ -614,7 +226,7 @@ static RULES: &[Rule] = &[
         Matcher::DemangledContains("embassy_executor::Spawner>::spawn::<"),
         Confidence::Medium,
         true,
-        true,
+        false,
     ),
     spawn(
         "rust-embassy",
@@ -623,7 +235,7 @@ static RULES: &[Rule] = &[
         Matcher::DemangledContainsAll(&["embassy_executor::", "Spawner>::spawn::<"]),
         Confidence::Medium,
         true,
-        true,
+        false,
     ),
     await_rule(
         "rust-embassy",
@@ -939,124 +551,6 @@ static RULES: &[Rule] = &[
         "tx_thread_terminate",
         JoinKind::Abort,
         Matcher::RawExact("tx_thread_terminate"),
-        Confidence::High,
-        true,
-    ),
-    // ---- Rust std locks --------------------------------------------------
-    lock(
-        "rust-std",
-        "Mutex::lock",
-        LockKind::Mutex,
-        LockOperation::Acquire,
-        Matcher::DemangledContainsAll(&["sync::poison::mutex::Mutex", ">::lock"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "Mutex::lock",
-        LockKind::Mutex,
-        LockOperation::Acquire,
-        Matcher::DemangledContainsAll(&["sync::nonpoison::mutex::Mutex", ">::lock"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "Mutex::try_lock",
-        LockKind::Mutex,
-        LockOperation::TryAcquire,
-        Matcher::DemangledContainsAll(&["mutex::Mutex", ">::try_lock"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "MutexGuard::drop",
-        LockKind::Mutex,
-        LockOperation::Release,
-        Matcher::DemangledContainsAll(&["drop_glue", "MutexGuard"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "RwLock::read",
-        LockKind::RwLockRead,
-        LockOperation::Acquire,
-        Matcher::DemangledContainsAll(&["rwlock::RwLock", ">::read"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "RwLock::write",
-        LockKind::RwLockWrite,
-        LockOperation::Acquire,
-        Matcher::DemangledContainsAll(&["rwlock::RwLock", ">::write"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "RwLock::try_read",
-        LockKind::RwLockRead,
-        LockOperation::TryAcquire,
-        Matcher::DemangledContainsAll(&["rwlock::RwLock", ">::try_read"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "RwLock::try_write",
-        LockKind::RwLockWrite,
-        LockOperation::TryAcquire,
-        Matcher::DemangledContainsAll(&["rwlock::RwLock", ">::try_write"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "RwLockReadGuard::drop",
-        LockKind::RwLockRead,
-        LockOperation::Release,
-        Matcher::DemangledContainsAll(&["drop_glue", "RwLockReadGuard"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "rust-std",
-        "RwLockWriteGuard::drop",
-        LockKind::RwLockWrite,
-        LockOperation::Release,
-        Matcher::DemangledContainsAll(&["drop_glue", "RwLockWriteGuard"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "parking-lot",
-        "parking_lot::Mutex::lock",
-        LockKind::Mutex,
-        LockOperation::Acquire,
-        Matcher::DemangledContainsAll(&["parking_lot::mutex::Mutex", ">::lock"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "parking-lot",
-        "parking_lot::Mutex::try_lock",
-        LockKind::Mutex,
-        LockOperation::TryAcquire,
-        Matcher::DemangledContainsAll(&["parking_lot::mutex::Mutex", ">::try_lock"]),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "parking-lot",
-        "parking_lot::Mutex::unlock",
-        LockKind::Mutex,
-        LockOperation::Release,
-        Matcher::DemangledContainsAll(&["parking_lot::mutex::Mutex", ">::unlock"]),
         Confidence::High,
         true,
     ),
@@ -1473,8 +967,8 @@ pub fn cpp_callable_marker(name: &str) -> Option<&str> {
 
 /// Extracts the first generic argument from a demangled Rust function symbol.
 ///
-/// For `std::thread::functions::spawn::<app::main::{closure#0}, ()>` this
-/// returns `app::main::{closure#0}`.
+/// For `<embassy_executor::spawner::Spawner>::spawn::<app::sensor_task>`
+/// this returns `app::sensor_task`.
 #[must_use]
 pub fn extract_first_generic_arg(name: &str) -> Option<String> {
     let normalized = normalize_crate_hashes(name);
@@ -1508,21 +1002,13 @@ pub fn extract_first_generic_arg(name: &str) -> Option<String> {
 
 /// Whether a function belongs to the Rust runtime implementation.
 ///
-/// Calls originating inside these crates are ignored so a single user
-/// `thread::spawn` is not also reported as an internal `Builder::spawn`.
+/// Calls originating inside these crates are ignored so a public runtime API
+/// is not also reported as its internal implementation layer.
 #[must_use]
 pub fn is_runtime_internal(name: &str) -> bool {
     const PREFIXES: &[&str] = &[
-        "std::",
         "core::",
         "alloc::",
-        "rayon_core::",
-        "rayon::",
-        "crossbeam_utils::",
-        "crossbeam::",
-        "tokio::",
-        "async_std::",
-        "smol::",
         "embassy_executor::",
         "rtic::",
         "futures_",
@@ -1599,9 +1085,9 @@ mod tests {
     fn normalizes_crate_hashes() {
         assert_eq!(
             normalize_crate_hashes(
-                "std[f9fb83b88fa27b65]::thread::functions::spawn::<app[0123456789abcdef]::main::{closure#0}, ()>"
+                "<embassy_executor[3333333333333333]::spawner::Spawner>::spawn::<app[0123456789abcdef]::sensor_task::{closure#0}>"
             ),
-            "std::thread::functions::spawn::<app::main::{closure#0}, ()>"
+            "<embassy_executor::spawner::Spawner>::spawn::<app::sensor_task::{closure#0}>"
         );
     }
 
@@ -1609,111 +1095,79 @@ mod tests {
     fn extracts_closure_type() {
         assert_eq!(
             extract_first_generic_arg(
-                "std::thread::functions::spawn::<app::main::{closure#0}, ()>"
+                "<embassy_executor::spawner::Spawner>::spawn::<app::sensor_task::{closure#0}>"
             )
             .as_deref(),
-            Some("app::main::{closure#0}")
+            Some("app::sensor_task::{closure#0}")
         );
         assert_eq!(
             extract_first_generic_arg(
-                "<std::thread::scoped::Scope>::spawn::<app::main::{closure#1}::{closure#0}, ()>"
+                "<embassy_executor::spawner::Spawner>::spawn::<app::monitor_task>"
             )
             .as_deref(),
-            Some("app::main::{closure#1}::{closure#0}")
+            Some("app::monitor_task")
         );
     }
 
     #[test]
-    fn matches_rust_spawn_and_scope() {
-        let spawn = function(
+    fn matches_embedded_rust_spawns_only() {
+        let embassy = function(
+            "<embassy_executor[3333333333333333]::spawner::Spawner>::spawn::<app::sensor_task::{closure#0}>",
+            &["_R..."],
+            Language::Rust,
+        );
+        let rule = match_function(&embassy).expect("Embassy spawner rule");
+        assert_eq!(rule.runtime, "rust-embassy");
+        assert_eq!(rule.op, RuleOp::Spawn);
+        assert_eq!(rule.spawn_kind, SpawnKind::AsyncTask);
+
+        let rtic = function(
+            "rtic[4444444444444444]::spawn::<app::sensor_task>",
+            &["_R..."],
+            Language::Rust,
+        );
+        let rule = match_function(&rtic).expect("RTIC spawn rule");
+        assert_eq!(rule.runtime, "rust-rtic");
+        assert_eq!(rule.op, RuleOp::Spawn);
+
+        let std_thread = function(
             "std[f9fb83b88fa27b65]::thread::functions::spawn::<app[0123456789abcdef]::main::{closure#0}, ()>",
             &["_RINvNtNtNtCslsElW4ClnEv_3std6thread...E"],
             Language::Rust,
         );
-        let rule = match_function(&spawn).expect("spawn rule");
-        assert_eq!(rule.op, RuleOp::Spawn);
-        assert_eq!(rule.spawn_kind, SpawnKind::OsThread);
-
-        let scope = function(
-            "std[f9fb83b88fa27b65]::thread::scoped::scope::<app[0123456789abcdef]::main::{closure#1}, ()>",
-            &["_RINvNtNtCslsElW4ClnEv_3std6thread...E"],
+        assert!(
+            match_function(&std_thread).is_none(),
+            "std::thread is outside the supported no_std Rust profile"
+        );
+        let tokio = function(
+            "tokio[2222222222222222]::task::spawn::<app::main::{closure#0}>",
+            &["_R..."],
             Language::Rust,
         );
-        let rule = match_function(&scope).expect("scope rule");
-        assert_eq!(rule.op, RuleOp::Scope);
+        assert!(
+            match_function(&tokio).is_none(),
+            "tokio is outside the supported no_std Rust profile"
+        );
     }
 
     #[test]
-    fn matches_parallel_and_async_runtimes() {
-        for (name, runtime, op) in [
-            (
-                "rayon_core[1111111111111111]::scope::<app::main::{closure#0}, ()>",
-                "rust-rayon",
-                RuleOp::Scope,
-            ),
-            (
-                "rayon_core[1111111111111111]::join::<app::a, app::b>",
-                "rust-rayon",
-                RuleOp::Scope,
-            ),
-            (
-                "tokio[2222222222222222]::task::spawn::spawn::<app::main::{closure#0}>",
-                "rust-tokio",
-                RuleOp::Spawn,
-            ),
-            (
-                "tokio[2222222222222222]::task::spawn::<app::main::{closure#0}>",
-                "rust-tokio",
-                RuleOp::Spawn,
-            ),
-            (
-                "<embassy_executor[3333333333333333]::spawner::Spawner>::spawn::<app::main::{closure#0}>",
-                "rust-embassy",
-                RuleOp::Spawn,
-            ),
-            (
-                "<crossbeam_utils[4444444444444444]::thread::Scope>::spawn::<app::main::{closure#0}, ()>",
-                "rust-crossbeam",
-                RuleOp::Spawn,
-            ),
-        ] {
-            let function = function(name, &["_R..."], Language::Rust);
-            let rule = match_function(&function).unwrap_or_else(|| panic!("no rule for {name}"));
-            assert_eq!(rule.runtime, runtime, "{name}");
-            assert_eq!(rule.op, op, "{name}");
-        }
-    }
-
-    #[test]
-    fn matches_demangled_inline_names() {
+    fn matches_embassy_inline_spawner_calls() {
         let rule = match_demangled_name(
-            "std::thread::lifecycle::spawn_unchecked::<app[1234567890abcdef]::main::{closure#0}, ()>",
+            "<embassy_executor[3333333333333333]::spawner::Spawner>::spawn::<app[1234567890abcdef]::sensor_task::{closure#0}>",
         )
-        .expect("lifecycle spawn rule");
-        assert_eq!(rule.runtime, "rust-std");
+        .expect("Embassy inline spawner rule");
+        assert_eq!(rule.runtime, "rust-embassy");
         assert_eq!(rule.op, RuleOp::Spawn);
     }
 
     #[test]
-    fn matches_async_handle_polls() {
-        for (name, runtime) in [
-            (
-                "async_std::task::join_handle::JoinHandle<app::main::{closure#0}> as core::future::future::Future>::poll",
-                "rust-async-std",
-            ),
-            (
-                "smol::task::Task<app::main::{closure#0}> as core::future::future::Future>::poll",
-                "rust-smol",
-            ),
-            (
-                "embassy_executor::task::Task<app::main::{closure#0}> as core::future::future::Future>::poll",
-                "rust-embassy",
-            ),
-        ] {
-            let rule = match_demangled_name(name).unwrap_or_else(|| panic!("no rule for {name}"));
-            assert_eq!(rule.runtime, runtime);
-            assert_eq!(rule.op, RuleOp::Await);
-        }
+    fn matches_embassy_task_poll() {
+        let rule = match_demangled_name(
+            "embassy_executor::task::Task<app::main::{closure#0}> as core::future::future::Future>::poll",
+        )
+        .expect("Embassy task poll rule");
+        assert_eq!(rule.runtime, "rust-embassy");
+        assert_eq!(rule.op, RuleOp::Await);
     }
 
     #[test]
@@ -1730,19 +1184,6 @@ mod tests {
 
     #[test]
     fn matches_lock_rules_by_demangled_and_raw_names() {
-        let mutex = function(
-            "<std[f9fb83b88fa27b65]::sync::poison::mutex::Mutex<u64>>::lock",
-            &["_R..."],
-            Language::Rust,
-        );
-        let rule = match_function(&mutex).expect("Rust Mutex rule");
-        assert_eq!(rule.op, RuleOp::Lock);
-        assert_eq!(rule.lock.map(|lock| lock.kind), Some(LockKind::Mutex));
-        assert_eq!(
-            rule.lock.map(|lock| lock.operation),
-            Some(LockOperation::Acquire)
-        );
-
         let pthread = function(
             "pthread_mutex_unlock",
             &["pthread_mutex_unlock"],
@@ -1760,18 +1201,29 @@ mod tests {
             .expect("C++ inline lock rule");
         assert_eq!(inline.op, RuleOp::Lock);
         assert_eq!(inline.lock.map(|lock| lock.kind), Some(LockKind::Mutex));
+
+        let std_mutex = function(
+            "<std[f9fb83b88fa27b65]::sync::poison::mutex::Mutex<u64>>::lock",
+            &["_R..."],
+            Language::Rust,
+        );
+        assert!(
+            match_function(&std_mutex).is_none(),
+            "std Mutex is outside the supported no_std Rust profile"
+        );
     }
 
     #[test]
     fn detects_runtime_internal_callers() {
         assert!(is_runtime_internal(
-            "std[f9fb83b88fa27b65]::thread::functions::spawn::<...>"
+            "<embassy_executor[3333333333333333]::raw::TaskStorage<...>>::poll"
         ));
+        assert!(is_runtime_internal(
+            "core[581b33c2f4131567]::future::poll_fn"
+        ));
+        assert!(is_runtime_internal("alloc[51c8835889e4393a]::vec::Vec<u8>"));
         assert!(!is_runtime_internal("app::main"));
         assert!(!is_runtime_internal("<app::Worker>::run"));
-        assert!(is_runtime_internal(
-            "<&mut crossbeam_utils[1111111111111111]::thread::scope<...>>::call_mut"
-        ));
         assert!(!is_runtime_internal("<&mut app::Worker>::call_mut"));
         assert!(is_runtime_internal("_ZNSt6thread15_M_start_threadE..."));
         assert!(is_runtime_internal("_ZNKSt6thread8joinableEv"));

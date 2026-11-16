@@ -81,6 +81,15 @@ pub fn apply(
         let mut entry_heuristic = false;
         let mut forwarded_sites: Vec<(FunctionId, Addr)> = Vec::new();
         if resolution.chosen.is_none()
+            && hit.rule.runtime == "rust-embassy"
+            && let Some(candidate) = hit.generic.as_deref()
+            && let Some(entry) = resolve_embassy_task(candidate, &normalized_index)
+        {
+            resolution.chosen = Some(entry);
+            resolution.candidates = vec![entry];
+            entry_heuristic = true;
+        }
+        if resolution.chosen.is_none()
             && hit.rule.runtime == "cpp-std"
             && let Some(callee) = hit
                 .callee
@@ -241,6 +250,11 @@ pub fn apply(
                 .chosen
                 .map(|entry| rules::normalize_crate_hashes(&entry.primary_name))
         });
+        let context_label = task_label
+            .as_deref()
+            .filter(|_| hit.rule.runtime == "rust-embassy")
+            .map(embassy_task_display_name)
+            .or_else(|| task_label.clone());
         match resolution.chosen {
             Some(entry) => {
                 let context_id = ContextId::new(format!(
@@ -253,7 +267,9 @@ pub fn apply(
                 {
                     continue;
                 }
-                let name = rules::normalize_crate_hashes(&entry.primary_name);
+                let name = context_label
+                    .clone()
+                    .unwrap_or_else(|| rules::normalize_crate_hashes(&entry.primary_name));
                 let context = Context {
                     id: context_id.clone(),
                     name,
@@ -289,7 +305,7 @@ pub fn apply(
                     site: hit.site,
                     runtime: elf2tdg_schema::RuntimeId::new(hit.rule.runtime),
                     api: hit.rule.api.to_owned(),
-                    name: task_label.clone(),
+                    name: context_label.clone(),
                     spawn_kind: hit.rule.spawn_kind,
                     priority: None,
                     confidence,
@@ -726,6 +742,9 @@ fn collect_hits(edges: &[Edge], functions: &BTreeMap<&FunctionId, &Function>) ->
         } else {
             None
         };
+        if rule.closure_generic && generic.as_deref().is_some_and(rules::is_runtime_internal) {
+            continue;
+        }
         hits.push(Hit {
             rule,
             caller: caller.clone(),
@@ -779,10 +798,11 @@ fn collect_inline_hits(image: &Image, functions: &[Function]) -> Vec<Hit> {
         } else {
             None
         };
-        // DWARF describes every inlined implementation layer too, including
-        // `Builder::spawn` inside `thread::spawn`. Keep only instantiations
-        // that are actually inlined into non-runtime code, such as a user
-        // `thread::spawn` call inlined into `main`.
+        // DWARF describes every inlined implementation layer too. For rules
+        // that request caller filtering, keep only instantiations in
+        // non-runtime code. Embassy opts out because user spawn sites are
+        // often inlined into a `TaskStorage::poll` runtime function; the
+        // generic task type is still checked below.
         if rule.filter_runtime_caller && rules::is_runtime_internal(&caller.primary_name) {
             continue;
         }
@@ -852,6 +872,16 @@ fn collect_inline_hits(image: &Image, functions: &[Function]) -> Vec<Hit> {
     hits
 }
 
+/// Strips the generated future-closure suffix from an Embassy task label.
+fn embassy_task_display_name(label: &str) -> String {
+    let normalized = rules::normalize_crate_hashes(label);
+    if let Some((prefix, _)) = normalized.split_once("::{closure") {
+        prefix.to_owned()
+    } else {
+        normalized
+    }
+}
+
 fn confidence_rank(confidence: Confidence) -> u8 {
     match confidence {
         Confidence::High => 3,
@@ -907,7 +937,13 @@ fn add_orphan_spawn_contexts(
         let Some(candidate) = rules::extract_first_generic_arg(&function.primary_name) else {
             continue;
         };
-        let Some(entry) = resolve_candidate(&candidate, normalized_index).chosen else {
+        let entry = if rule.runtime == "rust-embassy" {
+            resolve_embassy_task(&candidate, normalized_index)
+                .or_else(|| resolve_candidate(&candidate, normalized_index).chosen)
+        } else {
+            resolve_candidate(&candidate, normalized_index).chosen
+        };
+        let Some(entry) = entry else {
             continue;
         };
         if rules::is_runtime_internal(&entry.primary_name) {
@@ -1009,6 +1045,41 @@ fn build_normalized_index(functions: &[Function]) -> BTreeMap<String, Vec<&Funct
 struct Resolution<'a> {
     chosen: Option<&'a Function>,
     candidates: Vec<&'a Function>,
+}
+
+/// Resolves the user task named by an Embassy `Spawner::spawn::<T>` generic.
+///
+/// Embassy's task macro turns `app::worker` into a future whose poll body is
+/// stored in `<...TaskStorage<app::__worker_task...>>::poll`. The spawn
+/// generic names the future type, not that function, so an exact lookup
+/// normally fails inside optimized images.
+fn resolve_embassy_task<'a>(
+    candidate: &str,
+    index: &BTreeMap<String, Vec<&'a Function>>,
+) -> Option<&'a Function> {
+    let key = rules::normalize_crate_hashes(candidate);
+    let base = key.split("::{closure").next()?;
+    let task = base.rsplit("::").next()?;
+    if task.is_empty() {
+        return None;
+    }
+    let marker = format!("::__{task}_task");
+    let mut candidates: Vec<&Function> = index
+        .values()
+        .flatten()
+        .copied()
+        .filter(|function| {
+            let name = rules::normalize_crate_hashes(&function.primary_name);
+            name.contains(&marker) && name.contains("TaskStorage<") && name.ends_with("::poll")
+        })
+        .collect();
+    candidates.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+    candidates.dedup_by(|left, right| left.id == right.id);
+    if candidates.len() == 1 {
+        candidates.first().copied()
+    } else {
+        None
+    }
 }
 
 fn resolve_candidate<'a>(
@@ -1400,8 +1471,30 @@ impl DiagnosticSink<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_candidate;
+    use super::{
+        build_normalized_index, embassy_task_display_name, resolve_candidate, resolve_embassy_task,
+    };
+    use elf2tdg_schema::{Addr, Function, FunctionId, FunctionKind, Language};
     use std::collections::BTreeMap;
+
+    fn function(id: &str, name: &str, address: u64) -> Function {
+        Function {
+            id: FunctionId::new(id),
+            primary_name: name.to_owned(),
+            demangled_name: Some(name.to_owned()),
+            symbols: Vec::new(),
+            language: Language::Rust,
+            address: Addr::new(address),
+            size: 8,
+            section: Some(".text".to_owned()),
+            kind: FunctionKind::Normal,
+            blocks: Vec::new(),
+            timing: None,
+            source: None,
+            inline_sites: Vec::new(),
+            ext: BTreeMap::new(),
+        }
+    }
 
     #[test]
     fn unresolved_candidate_is_empty_not_a_panic() {
@@ -1409,5 +1502,36 @@ mod tests {
         let resolution = resolve_candidate("app::main::{{closure}}", &index);
         assert!(resolution.chosen.is_none());
         assert_eq!(resolution.candidates.len(), 0);
+    }
+
+    #[test]
+    fn embassy_task_labels_drop_the_future_closure_suffix() {
+        assert_eq!(
+            embassy_task_display_name("app[0123456789abcdef]::sensor_task::{closure#0}"),
+            "app::sensor_task"
+        );
+        assert_eq!(
+            embassy_task_display_name("app::monitor_task"),
+            "app::monitor_task"
+        );
+    }
+
+    #[test]
+    fn embassy_spawn_generic_resolves_to_the_task_poll_function() {
+        let poll = function(
+            "fn:0x2000",
+            "<embassy_executor::raw::TaskStorage<app::__sensor_task_task::__sensor_task_task_inner_function::{closure#0}>>::poll",
+            0x2000,
+        );
+        let unrelated = function(
+            "fn:0x3000",
+            "<embassy_executor::raw::TaskStorage<app::__monitor_task_task::__monitor_task_task_inner_function::{closure#0}>>::poll",
+            0x3000,
+        );
+        let functions = vec![poll.clone(), unrelated];
+        let index = build_normalized_index(&functions);
+        let entry = resolve_embassy_task("app::sensor_task::{closure#0}", &index)
+            .expect("task poll function");
+        assert_eq!(entry.id, poll.id);
     }
 }

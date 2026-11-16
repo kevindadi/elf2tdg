@@ -764,13 +764,11 @@ fn is_default_handler_name(name: &str) -> bool {
 }
 
 fn is_default_handler_address(image: &Image, address: u64) -> bool {
-    let mut names = image
+    image
         .symbols
         .iter()
         .filter(|symbol| symbol.canonical_address == address)
-        .map(|symbol| symbol.name.as_str())
-        .peekable();
-    names.peek().is_some() && names.all(is_default_handler_name)
+        .any(|symbol| is_default_handler_name(&symbol.name))
 }
 
 fn is_runtime_boundary(function: &CfgFunction) -> bool {

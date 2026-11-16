@@ -70,7 +70,7 @@ fn exports_function_cfg_for_main() {
 }
 
 #[test]
-fn reachable_from_main_filters_runtime_but_keeps_task_semantics() {
+fn reachable_from_main_filters_runtime_and_keeps_embassy_tasks() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
     if !path.exists() {
@@ -87,32 +87,29 @@ fn reachable_from_main_filters_runtime_but_keeps_task_semantics() {
         reachable.len() < analysis.cfg.functions.len(),
         "default scope should filter the image"
     );
-    assert!(
-        reachable
-            .iter()
-            .any(|function| function.primary_name.ends_with("::main")),
-        "language-level main must be the root, not the C runtime wrapper"
-    );
-    assert!(
-        !reachable
-            .iter()
-            .any(|function| function.primary_name == "main"),
-        "the C main wrapper should not replace the Rust main context"
-    );
-    // At the recommended -O1+debug profile the closure bodies are inlined into
-    // the physical main function, so they are logical TDG task entries rather
-    // than separate CFG nodes.
-    for suffix in ["{closure#0}", "{closure#1}::{closure#0}"] {
+
+    for task in [
+        "rust_concurrency::sensor_task",
+        "rust_concurrency::monitor_task",
+    ] {
         assert!(
             analysis.tdg.contexts.iter().any(|context| {
-                matches!(
-                    context.kind,
-                    ContextKind::Thread | ContextKind::ScopedThread
-                ) && context.name.contains(suffix)
+                context.kind == ContextKind::AsyncTask && context.name.contains(task)
             }),
-            "spawned task {suffix} must remain visible in the TDG"
+            "spawned Embassy task {task} must remain visible in the TDG"
         );
     }
+    let embassy_spawns = analysis.tdg.edges.iter().filter(|edge| {
+        matches!(
+            edge,
+            Edge::Spawn { runtime, .. } if runtime.as_str() == "rust-embassy"
+        )
+    });
+    assert_eq!(
+        embassy_spawns.count(),
+        3,
+        "main task plus sensor/monitor task spawns"
+    );
 
     let json = cfg::render_json_selected(&analysis.cfg, &analysis.tdg, &reachable, false)
         .expect("reachable JSON");
@@ -254,7 +251,7 @@ fn system_roots_include_vector_isrs_but_skip_default_handlers() {
 }
 
 #[test]
-fn system_reachability_uses_code_refs_and_optional_runtime_pruning() {
+fn system_reachability_covers_embassy_tasks() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
     if !path.exists() {
@@ -263,29 +260,6 @@ fn system_reachability_uses_code_refs_and_optional_runtime_pruning() {
     let image = loader::load(&path).expect("example ELF must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let referenced: usize = analysis
-        .cfg
-        .functions
-        .iter()
-        .map(|function| function.cfg.referenced_addresses.len())
-        .sum();
-    assert!(
-        referenced > 0,
-        "relocated function pointers and literals should produce code references"
-    );
-    let resolved_indirect = analysis.cfg.functions.iter().any(|function| {
-        function.cfg.blocks_by_address.values().any(|node| {
-            function.cfg.graph[*node]
-                .calls
-                .iter()
-                .any(|call| !call.direct && call.target_function.is_some())
-        })
-    });
-    assert!(
-        resolved_indirect,
-        "at least one indirect call should be resolved statically"
-    );
-
     let unpruned = analysis
         .cfg
         .reachable_from_system(&analysis.tdg, &image, false);
@@ -293,13 +267,19 @@ fn system_reachability_uses_code_refs_and_optional_runtime_pruning() {
         .cfg
         .reachable_from_system(&analysis.tdg, &image, true);
     assert!(
-        pruned.len() < unpruned.len(),
-        "runtime boundary pruning should reduce the reachable set"
+        unpruned
+            .iter()
+            .any(|function| function.primary_name.contains("start_tasks")),
+        "system roots should reach the Embassy spawn function"
+    );
+    assert!(
+        pruned.len() <= unpruned.len(),
+        "runtime boundary pruning must not add functions"
     );
     assert!(
         pruned
             .iter()
-            .any(|function| function.primary_name.contains("main"))
+            .any(|function| function.primary_name == "main")
     );
 }
 
@@ -315,8 +295,8 @@ fn cfg_json_limits_diagnostics_to_selected_functions() {
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
     let reachable = analysis
         .cfg
-        .reachable_from(&analysis.tdg, "main")
-        .expect("main reachability");
+        .reachable_from(&analysis.tdg, "rust_concurrency::start_tasks")
+        .expect("start_tasks reachability");
     let selected: std::collections::BTreeSet<_> =
         reachable.iter().map(|function| &function.id).collect();
     let json = cfg::render_json_selected(&analysis.cfg, &analysis.tdg, &reachable, false)

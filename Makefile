@@ -3,9 +3,8 @@ FIXTURE_DIR := tests/fixtures/cortex_m0
 FIXTURE_ELF := $(FIXTURE_DIR)/firmware.elf
 SPAWN_FIXTURE_DIR := tests/fixtures/cortex_m_spawn
 SPAWN_FIXTURE_ELF := $(SPAWN_FIXTURE_DIR)/firmware.elf
-RUST_FIXTURE_SRC := tests/fixtures/rust_threads/main.rs
 
-.PHONY: schema test lint fixture examples analyze-fixture analyze-spawn-fixture analyze-cfg-fixture analyze-elf-fixture analyze-rust-fixture analyze-rust-fixture-o2 clean
+.PHONY: schema test lint fixture examples analyze-fixture analyze-spawn-fixture analyze-cfg-fixture analyze-elf-fixture clean
 
 schema:
 	$(CARGO) run --quiet -p elf2tdg-schema --example dump_schema > schema/tdg.schema.json
@@ -42,16 +41,6 @@ analyze-cfg-fixture: $(FIXTURE_ELF)
 analyze-elf-fixture: $(FIXTURE_ELF)
 	$(CARGO) run -p elf2tdg -- $(FIXTURE_ELF) --view elf \
 		--output /tmp/elf2tdg-cortex-m0-layout.mmd --verbose
-
-analyze-rust-fixture:
-	rustc --edition=2021 -C opt-level=0 -g -o /tmp/elf2tdg-rust-threads $(RUST_FIXTURE_SRC)
-	$(CARGO) run -p elf2tdg -- /tmp/elf2tdg-rust-threads --format json \
-		--output /tmp/elf2tdg-rust-threads.json --verbose
-
-analyze-rust-fixture-o2:
-	rustc --edition=2021 -C opt-level=2 -g -o /tmp/elf2tdg-rust-threads-o2 $(RUST_FIXTURE_SRC)
-	$(CARGO) run -p elf2tdg -- /tmp/elf2tdg-rust-threads-o2 --format json \
-		--output /tmp/elf2tdg-rust-threads-o2.json --verbose
 
 $(FIXTURE_ELF):
 	$(MAKE) -C $(FIXTURE_DIR)

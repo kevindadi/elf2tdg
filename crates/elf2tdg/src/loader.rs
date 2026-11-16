@@ -980,32 +980,6 @@ mod tests {
     }
 
     #[test]
-    fn resolves_dynamic_function_pointer_relocations() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
-        if !path.exists() {
-            return;
-        }
-        let image = load(&path).expect("example ELF must load");
-        assert!(!image.relocated_pointers.is_empty());
-        let (address, value) = image
-            .relocated_pointers
-            .iter()
-            .find(|(_, value)| image.is_executable(image.canonical_address(**value)))
-            .expect("at least one relocated slot points into executable code");
-        assert_eq!(image.read_pointer(*address), Some(*value));
-        assert!(
-            image
-                .relocated_pointers
-                .values()
-                .any(|value| image.symbols.iter().any(|symbol| {
-                    symbol.section.as_deref() == Some(".plt") && symbol.address & !1 == *value
-                })),
-            "import GOT slots should resolve to synthesized PLT stubs when available"
-        );
-    }
-
-    #[test]
     fn loads_current_test_executable() {
         let exe = std::env::current_exe().expect("test executable path");
         let image = load(&exe).expect("host test executable is a valid ELF");

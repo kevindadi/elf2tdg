@@ -1785,7 +1785,10 @@ impl<'a> Analyzer<'a> {
                 continue;
             }
             let lower = function.display.to_ascii_lowercase();
-            if lower.contains("default_handler") || lower.contains("defaulthandler") {
+            if lower.contains("default_handler")
+                || lower.contains("defaulthandler")
+                || has_default_handler_alias(self.image, function_address)
+            {
                 continue;
             }
             let irq = vector.index.checked_sub(16);
@@ -2209,6 +2212,22 @@ struct NameChoice {
     language: Language,
 }
 
+/// Returns whether any symbol alias at `address` marks a runtime default
+/// handler. Cortex-M runtimes commonly alias unused vectors to a shared
+/// `DefaultHandler`, but may also expose a weaker name such as `PendSV` for
+/// the same address. Looking only at the chosen display name then creates one
+/// ISR context per unused vector.
+fn has_default_handler_alias(image: &Image, address: u64) -> bool {
+    image
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.canonical_address == address)
+        .any(|symbol| {
+            let name = symbol.name.to_ascii_lowercase();
+            name.contains("default_handler") || name.contains("defaulthandler")
+        })
+}
+
 fn choose_name(names: &[String]) -> NameChoice {
     #[derive(Clone)]
     struct Candidate {
@@ -2235,8 +2254,17 @@ fn choose_name(names: &[String]) -> NameChoice {
                 language: Language::Cpp,
             });
         } else {
+            let lower = name.to_ascii_lowercase();
+            let default_handler =
+                lower.contains("default_handler") || lower.contains("defaulthandler");
             candidates.push(Candidate {
-                score: if name.starts_with('_') { 3 } else { 2 },
+                score: if default_handler {
+                    0
+                } else if name.starts_with('_') {
+                    3
+                } else {
+                    2
+                },
                 display: name.clone(),
                 demangled: None,
                 language: Language::C,
@@ -2446,6 +2474,16 @@ mod tests {
                     .and_then(|timing| timing.time_ns)
                     .is_some()
         }));
+    }
+
+    #[test]
+    fn prefers_default_handler_alias_over_vector_weak_names() {
+        let choice = super::choose_name(&[
+            "PendSV".to_owned(),
+            "DefaultHandler".to_owned(),
+            "DefaultHandler_".to_owned(),
+        ]);
+        assert_eq!(choice.display, "DefaultHandler");
     }
 
     #[test]

@@ -8,17 +8,24 @@ publish = false
 name = "rust-concurrency"
 path = "main.rs"
 
-# Recommended profile for static analysis:
+[dependencies]
+cortex-m-rt = "0.7.7"
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread"] }
+static_cell = "2.1.1"
+
+# Recommended profile for static analysis of a no-std firmware image:
 # - O1 removes most wrapper/stack noise without aggressive inlining;
 # - full debug info retains DW_TAG_inlined_subroutine ranges;
 # - ThinLTO removes dead code while keeping debug info;
-# - keeping symbols/debug sections makes function discovery and DWARF reliable.
+# - keeping symbols/debug sections makes function discovery and DWARF reliable;
+# - aborting on panic removes unwinding machinery from the image.
 [profile.analysis]
 inherits = "release"
 opt-level = 1
 debug = true
 lto = "thin"
 strip = "none"
+panic = "abort"
 
 # Keep this example independent from the elf2tdg workspace.
 [workspace]

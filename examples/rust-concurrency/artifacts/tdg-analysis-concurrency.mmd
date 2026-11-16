@@ -1,35 +1,29 @@
 flowchart LR
   %% concurrency projection: call edges are omitted
-  n0["_start<br/>0x14820"]
-  n1["rust_concurrency::main<br/>0x1f510"]
-  n2["rust_concurrency::main::(closure#0)<br/>0x1f510"]
-  n3["rust_concurrency::main::(closure#1)::(closure#0)<br/>0x1faa8"]
-  n4(["main"])
-  n5(["rust_concurrency::main::(closure#1)::(closure#0)<br/>scoped-thread"])
-  n6(["startup"])
-  n7(["rust_concurrency::main::(closure#0)<br/>thread"])
-  n8{{"thread scope<br/>1 members"}}
-  n8 -.->|in| n4
-  n8 -.->|member| n5
-  n4 -.->|entry| n1
-  n5 -.->|entry| n3
-  n6 -.->|entry| n0
-  n7 -.->|entry| n2
-  n1 ==>|Join| n7
-  n9{{"join opaque (2)"}}
-  n1 ==>|Join| n9
-  n1 ==>|spawn| n7
-  n1 ==>|spawn| n5
-  n10["lock Acquire<br/>Mutex::lock<br/>0x200c8"]
-  n1 -.->|lock| n10
-  n11["lock Release<br/>MutexGuard::drop<br/>0x20125"]
-  n1 -.->|lock| n11
-  n12["lock Acquire<br/>Mutex::lock<br/>0x20271"]
-  n1 -.->|lock| n12
-  n13["lock Release<br/>MutexGuard::drop<br/>0x2029b"]
-  n1 -.->|lock| n13
-  n14["lock Release<br/>MutexGuard::drop<br/>0x2035a"]
-  n1 -.->|lock| n14
+  n0["Reset<br/>0x8000400<br/>23-50 cyc"]
+  n1["<embassy_executor::platform::thread::Executor>::run::<rust_concurrency:...<br/>0x80004aa<br/>137-210 cyc"]
+  n2["rust_concurrency::start_tasks<br/>0x80005ea<br/>168-263 cyc"]
+  n3["<embassy_executor::raw::TaskStorage<rust_concurrency::__app_main_task::...<br/>0x800082a<br/>21-32 cyc"]
+  n4["<embassy_executor::raw::TaskStorage<rust_concurrency::__sensor_task_tas...<br/>0x800085c<br/>26-39 cyc"]
+  n5["<embassy_executor::raw::TaskStorage<rust_concurrency::__monitor_task_ta...<br/>0x800089a<br/>26-37 cyc"]
+  n6["main<br/>0x80008de<br/>3-8 cyc"]
+  n7["HardFault<br/>0x80008e6<br/>3-8 cyc"]
+  n8(["rust_concurrency::app_main<br/>async-task"])
+  n9(["rust_concurrency::sensor_task<br/>async-task"])
+  n10(["rust_concurrency::monitor_task<br/>async-task"])
+  n11(["HardFault<br/>isr"])
+  n12(["main"])
+  n13(["startup"])
+  n8 -.->|entry| n3
+  n9 -.->|entry| n4
+  n10 -.->|entry| n5
+  n11 -.->|entry| n7
+  n12 -.->|entry| n6
+  n13 -.->|entry| n0
+  n14{{"vector 3"}} -.->|ISR| n11
+  n1 ==>|spawn| n8
+  n2 ==>|spawn| n9
+  n2 ==>|spawn| n10
   subgraph Legend
     direction LR
     legend_function["function"]

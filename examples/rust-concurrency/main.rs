@@ -1,10 +1,13 @@
-//! Small Rust concurrency example for `elf2tdg`.
+//! Small no-std Embassy concurrency example for `elf2tdg`.
 //!
-//! It contains one ordinary worker thread and one structured-concurrency
-//! scope. Build it with `make` and inspect the generated TDG artifacts.
+//! It starts two async tasks from the executor's main task. Build it with
+//! `make`; the analyzed ELF targets a Cortex-M4-compatible `thumbv7em` core.
 
-use std::sync::Mutex;
-use std::thread;
+#![no_std]
+#![no_main]
+
+use embassy_executor::{Executor, Spawner};
+use static_cell::StaticCell;
 
 #[inline(never)]
 fn sensor_sample(seed: u32) -> u32 {
@@ -20,21 +23,49 @@ fn process(sample: u32) -> u32 {
     sample.rotate_left(7) ^ 0x5a5a_5a5a
 }
 
-fn main() {
-    let worker = thread::spawn(|| process(sensor_sample(0x1234_5678)));
-    let joined = worker.join().expect("worker panicked");
+#[embassy_executor::task]
+async fn sensor_task(seed: u32) {
+    let value = process(sensor_sample(seed));
+    core::hint::black_box(value);
+}
 
-    let scoped = thread::scope(|scope| {
-        let handle = scope.spawn(|| process(sensor_sample(0xfeed_face)));
-        handle.join().expect("scoped worker panicked")
-    });
+#[embassy_executor::task]
+async fn monitor_task(seed: u32) {
+    let value = process(seed.rotate_left(3));
+    core::hint::black_box(value);
+}
 
-    let observed = Mutex::new(0u64);
-    {
-        let mut guard = observed.lock().expect("counter lock");
-        *guard += u64::from(joined) + u64::from(scoped);
-        std::hint::black_box(*guard);
+/// Spawn sites stay in one stable, non-inlined function so the CFG example
+/// always has a concrete user function to display.
+#[inline(never)]
+fn start_tasks(spawner: Spawner) {
+    if let Ok(task) = sensor_task(0x1234_5678) {
+        spawner.spawn(task);
     }
+    if let Ok(task) = monitor_task(0xfeed_face) {
+        spawner.spawn(task);
+    }
+}
 
-    println!("joined={joined:#010x} scoped={scoped:#010x}");
+#[embassy_executor::task]
+async fn app_main(spawner: Spawner) {
+    start_tasks(spawner);
+}
+
+#[cortex_m_rt::entry]
+fn main() -> ! {
+    static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+    let executor = EXECUTOR.init(Executor::new());
+    executor.run(|spawner| {
+        if let Ok(task) = app_main(spawner) {
+            spawner.spawn(task);
+        }
+    });
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
 }

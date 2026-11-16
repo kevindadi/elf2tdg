@@ -1,18 +1,34 @@
-# Rust concurrency example
+# Rust no-std Embassy example
 
-[`main.rs`](main.rs) is a small host Rust program with:
+[`main.rs`](main.rs) is a small `#![no_std]` Cortex-M firmware image built with
+`cortex-m-rt`, `embassy-executor`, and `static_cell`. It does **not** depend on `std`,
+`std::thread`, or Tokio.
 
-- one ordinary `std::thread::spawn` worker followed by `JoinHandle::join`;
-- one `std::thread::scope` region with `Scope::spawn` and `ScopedJoinHandle::join`.
+The application:
 
-Both wait for their workers, so the generated TDG has explicit `spawn`, `join`,
-and scope-member relations.
+- starts the Embassy thread-mode executor from `cortex_m_rt::entry`;
+- runs an `app_main` async task;
+- spawns a `sensor_task` and a `monitor_task` through
+  `embassy_executor::Spawner::spawn`;
+- keeps the spawn sites in one `#[inline(never)] start_tasks` function so the
+  example CFG has a stable user function to inspect;
+- uses only `core` plus Embassy (no heap or `alloc` allocator in this build).
+
+`#[embassy_executor::task]` turns each task into a `TaskStorage<...>::poll`
+machine function. The analyzer resolves each `Spawner::spawn` generic back to
+that poll function instead of emitting a placeholder entry.
 
 ## Build and analyze
 
-The default build uses the recommended analysis profile from
-[`Cargo.toml`](Cargo.toml): `opt-level=1`, full DWARF, ThinLTO and no symbol
-stripping.
+The target is `thumbv7em-none-eabi` (Cortex-M4 compatible). Install it once:
+
+```sh
+rustup target add thumbv7em-none-eabi
+```
+
+The example reads its target and `link.x` flags from
+[`.cargo/config.toml`](.cargo/config.toml), and uses
+[`memory.x`](memory.x) for the FLASH/RAM layout.
 
 ```sh
 make
@@ -24,98 +40,74 @@ Or with an offline cargo cache:
 make CARGO_FLAGS=--offline
 ```
 
-The build needs the host `rustc`, `cargo`, and Graphviz `dot`. See
-[`../../docs/analysis-profile.md`](../../docs/analysis-profile.md) for why
-`-O1` + `debug = true` is the recommended starting point for static analysis.
+The build needs the target above and Graphviz `dot`. The `analysis` Cargo
+profile uses `-O1`, full DWARF, ThinLTO, `panic=abort`, and no symbol stripping.
+The analyzer is given an explicit Cortex-M4 timing model at 168 MHz.
 
 ## Artifacts
 
 | File | Contents |
 |---|---|
-| [`artifacts/rust-concurrency-analysis.elf`](artifacts/rust-concurrency-analysis.elf) | ELF built with the recommended `analysis` profile (`-O1`, full DWARF, ThinLTO) |
-| [`artifacts/tdg-analysis.json`](artifacts/tdg-analysis.json) | full TDG JSON for the `analysis` profile, including lock events |
+| [`artifacts/rust-concurrency-analysis.elf`](artifacts/rust-concurrency-analysis.elf) | `thumbv7em-none-eabi` no-std ELF with DWARF and symbols |
+| [`artifacts/tdg-analysis.json`](artifacts/tdg-analysis.json) | full TDG JSON, including Embassy task contexts |
 | [`artifacts/tdg-analysis-concurrency.dot`](artifacts/tdg-analysis-concurrency.dot) | Graphviz source, concurrency projection |
 | [`artifacts/tdg-analysis-concurrency.svg`](artifacts/tdg-analysis-concurrency.svg) | rendered concurrency TDG with legend |
 | [`artifacts/tdg-analysis-concurrency-compact.svg`](artifacts/tdg-analysis-concurrency-compact.svg) | same diagram without the embedded legend |
 | [`artifacts/tdg-analysis-concurrency.mmd`](artifacts/tdg-analysis-concurrency.mmd) | Mermaid source, concurrency projection |
-| [`artifacts/cfg-analysis-main.json`](artifacts/cfg-analysis-main.json) | lossless CFG JSON for `rust_concurrency::main`, including `inline_frames` |
+| [`artifacts/cfg-analysis-main.json`](artifacts/cfg-analysis-main.json) | lossless CFG JSON for `rust_concurrency::start_tasks`, including `inline_frames` |
 | [`artifacts/cfg-analysis-main.svg`](artifacts/cfg-analysis-main.svg) | function CFG diagram for the analysis build |
 | [`artifacts/cfg-analysis-main.mmd`](artifacts/cfg-analysis-main.mmd) | Mermaid source for the analysis CFG |
 | [`artifacts/elf-layout-analysis.mmd`](artifacts/elf-layout-analysis.mmd) | loader-backed ELF layout for the analysis build |
 
-A browser walkthrough with the diagram and the complete legend is
+A browser walkthrough with the diagram and legend is
 [`../tdg-example.html`](../tdg-example.html). CFG output is documented in
 [`../../docs/cfg-format.md`](../../docs/cfg-format.md); the loader view is
 documented in [`../../docs/elf-view.md`](../../docs/elf-view.md).
 
-## Recommended `analysis` profile
+## What the analyzer recovers
 
 ![analysis-profile concurrency TDG](artifacts/tdg-analysis-concurrency.svg)
 
-The analysis build keeps `-O1` machine code and full DWARF. It still removes
-wrapper/stack noise, while `inline_frames` in
-[`cfg-analysis-main.json`](artifacts/cfg-analysis-main.json) retain the concrete
-ranges of inlined `thread::spawn`, `Scope::spawn`, `Mutex::lock` and their
-nested implementation layers. Spawn/join/scope semantics are reconstructed from
-those ranges rather than from a call instruction that no longer exists. The
-same DWARF matching emits typed TDG `locks` events: this example yields a
-`Mutex::lock` acquire and `MutexGuard::drop` release, including their concrete
-inline ranges and source call sites.
+The TDG contains six contexts:
 
-GOT-only dynamic imports (`malloc`, `free`, `memcpy`, ...) appear as zero-size
-`external` function nodes and resolve their indirect call sites. CFG JSON
-diagnostics are scoped to the requested function/reachability set; the omitted
-image-wide count is reported separately.
+- `startup` and `main` from the Cortex-M reset path;
+- an `async-task` context for `app_main`;
+- `async-task` contexts for `sensor_task` and `monitor_task`;
+- one `isr` context for the real `HardFault` vector.
 
-The analyzer recovers four contexts from this build:
+The context parent chain is:
 
-- `startup` and `main`;
-- a `thread` context whose entry is
-  `rust_concurrency::main::{closure#0}`;
-- a `scoped-thread` context whose entry is
-  `rust_concurrency::main::{closure#1}::{closure#0}`.
-
-Both spawn sites (`thread::spawn` and `Scope::spawn`) are recovered from DWARF
-inline records, even though they were inlined into `main`. Their entries are
-represented by logical `task-entry` functions/contexts marked
-`ext["elf2tdg.logical_task"]`. The first join resolves to the thread context.
-The second join follows both spawns in the same physical function and has two
-possible targets, so the TDG reports an **opaque join with two candidates**
-instead of guessing.
-
-See [`../../docs/analysis-profile.md`](../../docs/analysis-profile.md) for the
-profile, caveats and the `Mutex::lock` inline-frame example.
-
-## What to look for in the diagram
-
-| Visual | Meaning |
-|---|---|
-| box labelled `main`/`thread`/`scoped-thread`/`startup` | execution context |
-| rounded white box | function, with its address and static block-sum cycles when timed |
-| green dashed ellipse | structured scope |
-| red bold arrow | `spawn` |
-| blue bold arrow | `join` |
-| green dotted arrow | scope `in`/`member` relation |
-| dotted blue arrow | context `entry` function |
-| gray note with `?` | unresolved target with candidate list in JSON |
-| bold vs dashed red/blue | high/medium vs low/unknown confidence |
-| `?` suffix | low/unknown confidence or unresolved target |
-
-The full legend is rendered into every `--legend` diagram. See
-[`../../docs/tdg-legend.md`](../../docs/tdg-legend.md) for the complete schema
-legend.
-
-## Inspect the result directly
-
-```sh
-jq '.contexts, (.edges[] | select(.kind == "spawn" or .kind == "join"))' artifacts/tdg-analysis.json
-jq '.locks' artifacts/tdg-analysis.json
-jq '.scopes' artifacts/tdg-analysis.json
-jq '.functions[0].inline_frames[] | select(.name | test("Mutex|spawn"))' \
-    artifacts/cfg-analysis-main.json
-jq '.diagnostics | group_by(.code) | map({code: .[0].code, count: length})' \
-    artifacts/tdg-analysis.json
+```text
+startup -> main -> app_main -> sensor_task / monitor_task
 ```
 
-The JSON is the canonical output; the diagrams are projections of the same
-graph and deliberately omit ordinary call edges in concurrency mode.
+Three `rust-embassy` spawn edges are recovered. The executor's bootstrap spawn
+of `app_main` points at its `TaskStorage::poll` function. The two user spawns
+occur at inlined `Spawner::spawn` sites inside
+`rust_concurrency::start_tasks`, and resolve to the corresponding sensor/monitor
+poll functions. Their DWARF inline ranges and `main.rs` source lines remain in
+[`cfg-analysis-main.json`](artifacts/cfg-analysis-main.json).
+
+Cortex-M vector tables alias every unused exception to `DefaultHandler` (often
+with a second weak name such as `PendSV`). The analyzer checks all symbol
+aliases at a vector address and skips these shared default stubs, so the example
+has one real ISR context instead of hundreds of false ones.
+
+The remaining diagnostic is an indirect control transfer inside the executor's
+function-pointer dispatch (`blx r1`). It is a dynamic target in the executor,
+not an unrecognized application API call.
+
+## Scope
+
+The supported Rust runtime profile for this project is no-std embedded Rust:
+
+- Embassy (`Spawner::spawn`, task polling) and RTIC;
+- `core` and optional `alloc` symbols in the analyzed image;
+- no `std::thread`, Rayon, crossbeam, Tokio, async-std, or smol rules.
+
+C/C++/OpenMP and native RTOS APIs remain supported separately. The example
+itself does not use heap allocation; real-time firmware should normally prefer
+static task pools unless an allocator has a bounded, analyzed policy.
+
+See [`../../docs/analysis-profile.md`](../../docs/analysis-profile.md) for the
+profile, inline DWARF recovery and source-level rules.
