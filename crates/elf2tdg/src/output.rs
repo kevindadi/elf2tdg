@@ -146,6 +146,8 @@ pub fn render_dot_with(tdg: &Tdg, options: GraphOptions) -> String {
             FunctionKind::Isr => ("#fff1c9", "#555555", "rounded,filled"),
             FunctionKind::Kernel => ("#e8e0f5", "#555555", "rounded,filled"),
             FunctionKind::TaskEntry => ("#f4ecf7", "#7d3c98", "rounded,filled,dashed"),
+            FunctionKind::External => ("#f2f2f2", "#888888", "rounded,filled,dashed"),
+            FunctionKind::Plt => ("#f7f7f7", "#999999", "rounded,filled"),
             _ => ("#ffffff", "#555555", "rounded,filled"),
         };
         let _ = writeln!(
