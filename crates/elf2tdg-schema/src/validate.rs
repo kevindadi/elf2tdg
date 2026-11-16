@@ -452,9 +452,72 @@ impl Validator<'_> {
 
         self.check_context_references(&functions, &contexts, &edges, &domains);
         self.check_edge_references(&functions, &contexts, &scopes, &edges);
+        self.check_lock_events(&functions, &contexts);
         self.check_scope_members(&edges, &scopes);
         self.check_parent_cycles(&contexts);
         self.check_diagnostics(&functions, &contexts);
+    }
+
+    fn check_lock_events(
+        &mut self,
+        functions: &BTreeMap<FunctionId, &Function>,
+        contexts: &BTreeMap<ContextId, &Context>,
+    ) {
+        let tdg = self.tdg;
+        let mut ids = BTreeSet::new();
+        for (index, event) in tdg.locks.iter().enumerate() {
+            let path = format!("/locks/{index}");
+            if !event.id.is_well_formed() {
+                self.push_issue(
+                    ValidationCode::InvalidId,
+                    format!("{path}/id"),
+                    format!("invalid lock event ID {:?}", event.id),
+                );
+            }
+            if !ids.insert(event.id.clone()) {
+                self.push_issue(
+                    ValidationCode::DuplicateId,
+                    format!("{path}/id"),
+                    format!("duplicate lock event ID {}", event.id),
+                );
+            }
+            if event.api.trim().is_empty() {
+                self.push_issue(
+                    ValidationCode::EmptyField,
+                    format!("{path}/api"),
+                    "lock API name must not be empty",
+                );
+            }
+            self.check_function_ref(functions, &event.function, &format!("{path}/function"));
+            if let Some(context) = &event.context {
+                self.check_context_ref(contexts, context, &format!("{path}/context"));
+            }
+            self.check_site(
+                functions,
+                &event.function,
+                event.site,
+                &format!("{path}/site"),
+            );
+            if let Some(extent) = event.extent {
+                if extent.get() <= event.site.get() {
+                    self.push_issue(
+                        ValidationCode::InvalidRange,
+                        format!("{path}/extent"),
+                        "inline lock extent must be greater than its site",
+                    );
+                }
+                if let Some(function) = functions.get(&event.function)
+                    && let Some(end) = function.end()
+                    && extent > end
+                {
+                    self.push_issue(
+                        ValidationCode::InvalidRange,
+                        format!("{path}/extent"),
+                        format!("inline lock extent {extent} is outside function end {end}"),
+                    );
+                }
+            }
+        }
     }
 
     fn check_block_timing(

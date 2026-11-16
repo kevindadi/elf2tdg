@@ -1784,10 +1784,12 @@ impl<'a> Analyzer<'a> {
         }
 
         let mut scopes = Vec::new();
+        let mut locks = Vec::new();
         let logical_functions = crate::runtime::apply(
             &functions,
             &mut contexts,
             &mut edges,
+            &mut locks,
             &mut scopes,
             &mut self.diagnostics,
             self.options.max_diagnostics,
@@ -1803,6 +1805,7 @@ impl<'a> Analyzer<'a> {
         edges.sort_by(|left, right| left.id().as_str().cmp(right.id().as_str()));
         contexts.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         scopes.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+        locks.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
 
         let tool = ToolInfo {
             name: "elf2tdg".to_owned(),
@@ -1840,6 +1843,7 @@ impl<'a> Analyzer<'a> {
             functions,
             contexts,
             edges,
+            locks,
             scopes,
             diagnostics: self.diagnostics,
             ext: BTreeMap::new(),
@@ -1868,9 +1872,18 @@ impl<'a> Analyzer<'a> {
                         .into_iter()
                         .filter_map(|frame| {
                             let name = frame.display_name.as_deref().or(frame.name.as_deref())?;
+                            let call_site = match (frame.call_file.clone(), frame.call_line) {
+                                (Some(file), Some(line)) => Some(SourceLoc {
+                                    file,
+                                    line,
+                                    column: frame.call_column,
+                                }),
+                                _ => None,
+                            };
                             Some(cfg::CfgInlineFrame {
                                 name: crate::rules::normalize_crate_hashes(name),
                                 linkage_name: frame.linkage_name.clone(),
+                                call_site,
                                 low_pc: frame.low_pc,
                                 high_pc: frame.high_pc,
                                 depth: frame.depth,

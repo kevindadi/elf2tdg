@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::addr::Addr;
-use crate::id::{BlockId, ContextId, EdgeId, FunctionId, RuntimeId, ScopeId};
+use crate::id::{BlockId, ContextId, EdgeId, FunctionId, LockEventId, RuntimeId, ScopeId};
 use crate::timing::{BlockTiming, FunctionTiming, InstructionTiming, TimingInfo};
 
 /// A complete Task Dependency Graph document.
@@ -32,6 +32,9 @@ pub struct Tdg {
     pub contexts: Vec<Context>,
     /// Call-graph and concurrency-control edges.
     pub edges: Vec<Edge>,
+    /// Lock/semaphore acquire and release events, including inlined sites.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locks: Vec<LockEvent>,
     /// Structured-concurrency scopes (Rust `thread::scope`, Rayon scopes, ...).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<Scope>,
@@ -571,6 +574,82 @@ impl Edge {
             Self::IsrActivate { .. } | Self::Preempts { .. } => None,
         }
     }
+}
+
+/// A lock/semaphore acquire or release event.
+///
+/// Lock events are not call-graph edges: the analyzer usually cannot prove
+/// which object instance is locked without points-to analysis. The event keeps
+/// the API, lock kind, operation, concrete source/inline range and containing
+/// function/context so downstream tools can pair or visualise events using
+/// additional data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LockEvent {
+    /// Stable event ID (`lock:...`).
+    pub id: LockEventId,
+    /// Function containing the lock operation.
+    pub function: FunctionId,
+    /// Execution context containing the operation, when reachable from a
+    /// known context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextId>,
+    /// Instruction address of a direct call, or the low PC of an inline range.
+    pub site: Addr,
+    /// Exclusive high PC when the operation was inlined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<Addr>,
+    /// Source call site from `DW_AT_call_file`/`DW_AT_call_line` when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_site: Option<SourceLoc>,
+    /// Runtime that defined the API, for example `rust-std` or `pthread`.
+    pub runtime: RuntimeId,
+    /// API symbol/name, for example `Mutex::lock`.
+    pub api: String,
+    /// Kind of lock or synchronization primitive.
+    pub lock_kind: LockKind,
+    /// Acquire/try-acquire/release operation.
+    pub operation: LockOperation,
+    /// Whether this event came from a DWARF inline range rather than a direct
+    /// machine call.
+    #[serde(default)]
+    pub inlined: bool,
+    /// DWARF inline nesting depth when `inlined` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_depth: Option<u32>,
+    /// Resolution confidence.
+    pub confidence: Confidence,
+}
+
+/// Kind of lock or synchronization primitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum LockKind {
+    /// Mutex.
+    Mutex,
+    /// Reader-writer lock with an unspecified read/write side.
+    RwLock,
+    /// Read side of a reader-writer lock.
+    RwLockRead,
+    /// Write side of a reader-writer lock.
+    RwLockWrite,
+    /// Spin lock.
+    SpinLock,
+    /// Counting/binary semaphore.
+    Semaphore,
+    /// Other or unclassified lock primitive.
+    Other,
+}
+
+/// Operation performed on a lock or semaphore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum LockOperation {
+    /// Blocking acquire.
+    Acquire,
+    /// Non-blocking/try acquire.
+    TryAcquire,
+    /// Release.
+    Release,
 }
 
 /// Resolution of a spawn edge's target.

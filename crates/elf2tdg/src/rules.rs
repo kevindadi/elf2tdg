@@ -14,7 +14,9 @@
 //! [`extract_first_generic_arg`] recovers that type, which can then be matched
 //! to the closure function node emitted by the compiler.
 
-use elf2tdg_schema::{AwaitKind, Confidence, Function, JoinKind, ScopeKind, SpawnKind};
+use elf2tdg_schema::{
+    AwaitKind, Confidence, Function, JoinKind, LockKind, LockOperation, ScopeKind, SpawnKind,
+};
 
 /// Runtime operation kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,6 +29,17 @@ pub enum RuleOp {
     Await,
     /// Structured-concurrency scope.
     Scope,
+    /// Lock/semaphore operation.
+    Lock,
+}
+
+/// Lock metadata attached to a [`RuleOp::Lock`] rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockSpec {
+    /// Lock class.
+    pub kind: LockKind,
+    /// Acquire/try-acquire/release operation.
+    pub operation: LockOperation,
 }
 
 /// How a rule matches a callee function.
@@ -73,6 +86,8 @@ pub struct Rule {
     /// Argument index carrying the spawn entry function pointer, for C-style
     /// APIs whose entry can be recovered by bounded value tracking.
     pub entry_arg: Option<usize>,
+    /// Lock/semaphore classification for [`RuleOp::Lock`].
+    pub lock: Option<LockSpec>,
 }
 
 const fn spawn(
@@ -97,6 +112,7 @@ const fn spawn(
         closure_generic,
         filter_runtime_caller,
         entry_arg: None,
+        lock: None,
     }
 }
 
@@ -121,6 +137,7 @@ const fn spawn_c(
         closure_generic: false,
         filter_runtime_caller: true,
         entry_arg: Some(entry_arg),
+        lock: None,
     }
 }
 
@@ -145,6 +162,7 @@ const fn join(
         closure_generic: false,
         filter_runtime_caller,
         entry_arg: None,
+        lock: None,
     }
 }
 
@@ -169,6 +187,7 @@ const fn await_rule(
         closure_generic: false,
         filter_runtime_caller,
         entry_arg: None,
+        lock: None,
     }
 }
 
@@ -194,6 +213,33 @@ const fn scope(
         closure_generic,
         filter_runtime_caller,
         entry_arg: None,
+        lock: None,
+    }
+}
+
+const fn lock(
+    runtime: &'static str,
+    api: &'static str,
+    kind: LockKind,
+    operation: LockOperation,
+    matcher: Matcher,
+    confidence: Confidence,
+    filter_runtime_caller: bool,
+) -> Rule {
+    Rule {
+        runtime,
+        api,
+        op: RuleOp::Lock,
+        spawn_kind: SpawnKind::Unknown,
+        scope_kind: ScopeKind::Unknown,
+        join_kind: JoinKind::Unknown,
+        await_kind: AwaitKind::Unknown,
+        matcher,
+        confidence,
+        closure_generic: false,
+        filter_runtime_caller,
+        entry_arg: None,
+        lock: Some(LockSpec { kind, operation }),
     }
 }
 
@@ -896,6 +942,415 @@ static RULES: &[Rule] = &[
         Confidence::High,
         true,
     ),
+    // ---- Rust std locks --------------------------------------------------
+    lock(
+        "rust-std",
+        "Mutex::lock",
+        LockKind::Mutex,
+        LockOperation::Acquire,
+        Matcher::DemangledContainsAll(&["sync::poison::mutex::Mutex", ">::lock"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "Mutex::lock",
+        LockKind::Mutex,
+        LockOperation::Acquire,
+        Matcher::DemangledContainsAll(&["sync::nonpoison::mutex::Mutex", ">::lock"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "Mutex::try_lock",
+        LockKind::Mutex,
+        LockOperation::TryAcquire,
+        Matcher::DemangledContainsAll(&["mutex::Mutex", ">::try_lock"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "MutexGuard::drop",
+        LockKind::Mutex,
+        LockOperation::Release,
+        Matcher::DemangledContainsAll(&["drop_glue", "MutexGuard"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "RwLock::read",
+        LockKind::RwLockRead,
+        LockOperation::Acquire,
+        Matcher::DemangledContainsAll(&["rwlock::RwLock", ">::read"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "RwLock::write",
+        LockKind::RwLockWrite,
+        LockOperation::Acquire,
+        Matcher::DemangledContainsAll(&["rwlock::RwLock", ">::write"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "RwLock::try_read",
+        LockKind::RwLockRead,
+        LockOperation::TryAcquire,
+        Matcher::DemangledContainsAll(&["rwlock::RwLock", ">::try_read"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "RwLock::try_write",
+        LockKind::RwLockWrite,
+        LockOperation::TryAcquire,
+        Matcher::DemangledContainsAll(&["rwlock::RwLock", ">::try_write"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "RwLockReadGuard::drop",
+        LockKind::RwLockRead,
+        LockOperation::Release,
+        Matcher::DemangledContainsAll(&["drop_glue", "RwLockReadGuard"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "rust-std",
+        "RwLockWriteGuard::drop",
+        LockKind::RwLockWrite,
+        LockOperation::Release,
+        Matcher::DemangledContainsAll(&["drop_glue", "RwLockWriteGuard"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "parking-lot",
+        "parking_lot::Mutex::lock",
+        LockKind::Mutex,
+        LockOperation::Acquire,
+        Matcher::DemangledContainsAll(&["parking_lot::mutex::Mutex", ">::lock"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "parking-lot",
+        "parking_lot::Mutex::try_lock",
+        LockKind::Mutex,
+        LockOperation::TryAcquire,
+        Matcher::DemangledContainsAll(&["parking_lot::mutex::Mutex", ">::try_lock"]),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "parking-lot",
+        "parking_lot::Mutex::unlock",
+        LockKind::Mutex,
+        LockOperation::Release,
+        Matcher::DemangledContainsAll(&["parking_lot::mutex::Mutex", ">::unlock"]),
+        Confidence::High,
+        true,
+    ),
+    // ---- pthread / POSIX -------------------------------------------------
+    lock(
+        "pthread",
+        "pthread_mutex_lock",
+        LockKind::Mutex,
+        LockOperation::Acquire,
+        Matcher::RawExact("pthread_mutex_lock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "pthread_mutex_trylock",
+        LockKind::Mutex,
+        LockOperation::TryAcquire,
+        Matcher::RawExact("pthread_mutex_trylock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "pthread_mutex_unlock",
+        LockKind::Mutex,
+        LockOperation::Release,
+        Matcher::RawExact("pthread_mutex_unlock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "pthread_rwlock_rdlock",
+        LockKind::RwLockRead,
+        LockOperation::Acquire,
+        Matcher::RawExact("pthread_rwlock_rdlock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "pthread_rwlock_wrlock",
+        LockKind::RwLockWrite,
+        LockOperation::Acquire,
+        Matcher::RawExact("pthread_rwlock_wrlock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "pthread_rwlock_tryrdlock",
+        LockKind::RwLockRead,
+        LockOperation::TryAcquire,
+        Matcher::RawExact("pthread_rwlock_tryrdlock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "pthread_rwlock_trywrlock",
+        LockKind::RwLockWrite,
+        LockOperation::TryAcquire,
+        Matcher::RawExact("pthread_rwlock_trywrlock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "pthread_rwlock_unlock",
+        LockKind::RwLock,
+        LockOperation::Release,
+        Matcher::RawExact("pthread_rwlock_unlock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "sem_wait",
+        LockKind::Semaphore,
+        LockOperation::Acquire,
+        Matcher::RawExact("sem_wait"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "sem_trywait",
+        LockKind::Semaphore,
+        LockOperation::TryAcquire,
+        Matcher::RawExact("sem_trywait"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "pthread",
+        "sem_post",
+        LockKind::Semaphore,
+        LockOperation::Release,
+        Matcher::RawExact("sem_post"),
+        Confidence::High,
+        true,
+    ),
+    // ---- FreeRTOS / Zephyr / ThreadX ------------------------------------
+    lock(
+        "freertos",
+        "xSemaphoreTake",
+        LockKind::Semaphore,
+        LockOperation::Acquire,
+        Matcher::RawExact("xSemaphoreTake"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "freertos",
+        "xSemaphoreTakeRecursive",
+        LockKind::Semaphore,
+        LockOperation::Acquire,
+        Matcher::RawExact("xSemaphoreTakeRecursive"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "freertos",
+        "xSemaphoreGive",
+        LockKind::Semaphore,
+        LockOperation::Release,
+        Matcher::RawExact("xSemaphoreGive"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "freertos",
+        "xSemaphoreGiveRecursive",
+        LockKind::Semaphore,
+        LockOperation::Release,
+        Matcher::RawExact("xSemaphoreGiveRecursive"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "zephyr",
+        "k_mutex_lock",
+        LockKind::Mutex,
+        LockOperation::Acquire,
+        Matcher::RawExact("k_mutex_lock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "zephyr",
+        "k_mutex_unlock",
+        LockKind::Mutex,
+        LockOperation::Release,
+        Matcher::RawExact("k_mutex_unlock"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "zephyr",
+        "k_sem_take",
+        LockKind::Semaphore,
+        LockOperation::Acquire,
+        Matcher::RawExact("k_sem_take"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "zephyr",
+        "k_sem_give",
+        LockKind::Semaphore,
+        LockOperation::Release,
+        Matcher::RawExact("k_sem_give"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "threadx",
+        "tx_mutex_get",
+        LockKind::Mutex,
+        LockOperation::Acquire,
+        Matcher::RawExact("tx_mutex_get"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "threadx",
+        "tx_mutex_put",
+        LockKind::Mutex,
+        LockOperation::Release,
+        Matcher::RawExact("tx_mutex_put"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "threadx",
+        "tx_semaphore_get",
+        LockKind::Semaphore,
+        LockOperation::Acquire,
+        Matcher::RawExact("tx_semaphore_get"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "threadx",
+        "tx_semaphore_put",
+        LockKind::Semaphore,
+        LockOperation::Release,
+        Matcher::RawExact("tx_semaphore_put"),
+        Confidence::High,
+        true,
+    ),
+    // ---- C++ std::mutex / shared_mutex ----------------------------------
+    lock(
+        "cpp-std",
+        "std::mutex::lock",
+        LockKind::Mutex,
+        LockOperation::Acquire,
+        Matcher::RawExact("_ZNSt5mutex4lockEv"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "cpp-std",
+        "std::mutex::try_lock",
+        LockKind::Mutex,
+        LockOperation::TryAcquire,
+        Matcher::RawExact("_ZNSt5mutex8try_lockEv"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "cpp-std",
+        "std::mutex::unlock",
+        LockKind::Mutex,
+        LockOperation::Release,
+        Matcher::RawExact("_ZNSt5mutex6unlockEv"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "cpp-std",
+        "std::shared_mutex::lock_shared",
+        LockKind::RwLockRead,
+        LockOperation::Acquire,
+        Matcher::RawExact("_ZNSt12shared_mutex11lock_sharedEv"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "cpp-std",
+        "std::shared_mutex::unlock_shared",
+        LockKind::RwLockRead,
+        LockOperation::Release,
+        Matcher::RawExact("_ZNSt12shared_mutex13unlock_sharedEv"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "cpp-std",
+        "std::shared_mutex::try_lock_shared",
+        LockKind::RwLockRead,
+        LockOperation::TryAcquire,
+        Matcher::RawExact("_ZNSt12shared_mutex15try_lock_sharedEv"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "cpp-std",
+        "std::shared_mutex::lock",
+        LockKind::RwLockWrite,
+        LockOperation::Acquire,
+        Matcher::RawExact("_ZNSt12shared_mutex4lockEv"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "cpp-std",
+        "std::shared_mutex::unlock",
+        LockKind::RwLockWrite,
+        LockOperation::Release,
+        Matcher::RawExact("_ZNSt12shared_mutex6unlockEv"),
+        Confidence::High,
+        true,
+    ),
+    lock(
+        "cpp-std",
+        "std::shared_mutex::try_lock",
+        LockKind::RwLockWrite,
+        LockOperation::TryAcquire,
+        Matcher::RawExact("_ZNSt12shared_mutex8try_lockEv"),
+        Confidence::High,
+        true,
+    ),
 ];
 
 /// Matches a callee function against the rule database.
@@ -949,6 +1404,24 @@ pub fn match_demangled_name(name: &str) -> Option<&'static Rule> {
     RULES
         .iter()
         .find(|rule| rule.matches_demangled(&normalized))
+}
+
+/// Matches an inlined subroutine by its demangled name and raw linkage name.
+///
+/// Demangled rules are tried first. Raw matchers are needed for C++ inline
+/// frames whose Itanium symbol is not demangled by the lightweight display
+/// name path.
+#[must_use]
+pub fn match_inline_names(name: &str, raw_linkage: Option<&str>) -> Option<&'static Rule> {
+    let normalized = normalize_crate_hashes(name);
+    RULES.iter().find(|rule| {
+        rule.matches_demangled(&normalized)
+            || raw_linkage.is_some_and(|raw| match rule.matcher {
+                Matcher::RawExact(expected) => raw == expected,
+                Matcher::RawContains(needle) => raw.contains(needle),
+                Matcher::DemangledContains(_) | Matcher::DemangledContainsAll(_) => false,
+            })
+    })
 }
 
 /// Removes rustc-demangle crate-hash segments such as `[f9fb83b88fa27b65]`.
@@ -1096,9 +1569,11 @@ pub fn is_runtime_internal(name: &str) -> bool {
 mod tests {
     use super::{
         RuleOp, cpp_callable_marker, extract_first_generic_arg, is_runtime_internal,
-        match_demangled_name, match_function, normalize_crate_hashes,
+        match_demangled_name, match_function, match_inline_names, normalize_crate_hashes,
     };
-    use elf2tdg_schema::{Addr, Function, FunctionId, FunctionKind, Language, SpawnKind};
+    use elf2tdg_schema::{
+        Addr, Function, FunctionId, FunctionKind, Language, LockKind, LockOperation, SpawnKind,
+    };
     use std::collections::BTreeMap;
 
     fn function(primary: &str, symbols: &[&str], language: Language) -> Function {
@@ -1251,6 +1726,40 @@ mod tests {
         let task = function("xTaskCreate", &["xTaskCreate"], Language::C);
         let rule = match_function(&task).expect("freertos rule");
         assert_eq!(rule.runtime, "freertos");
+    }
+
+    #[test]
+    fn matches_lock_rules_by_demangled_and_raw_names() {
+        let mutex = function(
+            "<std[f9fb83b88fa27b65]::sync::poison::mutex::Mutex<u64>>::lock",
+            &["_R..."],
+            Language::Rust,
+        );
+        let rule = match_function(&mutex).expect("Rust Mutex rule");
+        assert_eq!(rule.op, RuleOp::Lock);
+        assert_eq!(rule.lock.map(|lock| lock.kind), Some(LockKind::Mutex));
+        assert_eq!(
+            rule.lock.map(|lock| lock.operation),
+            Some(LockOperation::Acquire)
+        );
+
+        let pthread = function(
+            "pthread_mutex_unlock",
+            &["pthread_mutex_unlock"],
+            Language::C,
+        );
+        let rule = match_function(&pthread).expect("pthread unlock rule");
+        assert_eq!(rule.op, RuleOp::Lock);
+        assert_eq!(rule.lock.map(|lock| lock.kind), Some(LockKind::Mutex));
+        assert_eq!(
+            rule.lock.map(|lock| lock.operation),
+            Some(LockOperation::Release)
+        );
+
+        let inline = match_inline_names("std::mutex::lock", Some("_ZNSt5mutex4lockEv"))
+            .expect("C++ inline lock rule");
+        assert_eq!(inline.op, RuleOp::Lock);
+        assert_eq!(inline.lock.map(|lock| lock.kind), Some(LockKind::Mutex));
     }
 
     #[test]

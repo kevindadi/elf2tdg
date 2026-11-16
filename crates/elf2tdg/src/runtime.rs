@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use elf2tdg_schema::{
     Addr, AwaitTarget, Confidence, Context, ContextId, ContextKind, Diagnostic, Edge, EdgeId,
-    FrequencyDomainId, Function, FunctionId, JoinTarget, Scheduling, Scope, ScopeId, Severity,
-    SpawnKind, SpawnTarget,
+    FrequencyDomainId, Function, FunctionId, JoinTarget, LockEvent, LockEventId, LockOperation,
+    RuntimeId, Scheduling, Scope, ScopeId, Severity, SourceLoc, SpawnKind, SpawnTarget,
 };
 
 use crate::arch::DecodedInsn;
@@ -31,6 +31,7 @@ pub fn apply(
     functions: &[Function],
     contexts: &mut Vec<Context>,
     edges: &mut Vec<Edge>,
+    locks: &mut Vec<LockEvent>,
     scopes: &mut Vec<Scope>,
     diagnostics: &mut Vec<Diagnostic>,
     max_diagnostics: usize,
@@ -628,7 +629,52 @@ pub fn apply(
     }
 
     link_scopes(contexts, edges, scopes, &pending_scopes, &adjacency);
+    collect_lock_events(&hits, &membership, locks);
     logical_functions
+}
+
+fn collect_lock_events(
+    hits: &[Hit],
+    membership: &BTreeMap<FunctionId, ContextId>,
+    locks: &mut Vec<LockEvent>,
+) {
+    let mut used_ids = BTreeSet::new();
+    for hit in hits.iter().filter(|hit| hit.rule.op == RuleOp::Lock) {
+        let Some(spec) = hit.rule.lock else {
+            continue;
+        };
+        let operation = match spec.operation {
+            LockOperation::Acquire => "acquire",
+            LockOperation::TryAcquire => "try-acquire",
+            LockOperation::Release => "release",
+        };
+        let base = format!("lock:0x{:x}:{operation}:{}", hit.site.get(), hit.rule.api);
+        let mut candidate = base.clone();
+        let mut suffix = 1_u32;
+        while !used_ids.insert(candidate.clone()) {
+            suffix = suffix.saturating_add(1);
+            candidate = format!("{base}:{suffix}");
+        }
+        locks.push(LockEvent {
+            id: LockEventId::new(candidate),
+            function: hit.caller.clone(),
+            context: membership.get(&hit.caller).cloned(),
+            site: hit.site,
+            extent: hit.inline_end.map(Addr::new),
+            call_site: hit.call_site.clone(),
+            runtime: RuntimeId::new(hit.rule.runtime),
+            api: hit.rule.api.to_owned(),
+            lock_kind: spec.kind,
+            operation: spec.operation,
+            inlined: hit.inlined,
+            inline_depth: hit.inlined.then_some(hit.inline_depth),
+            confidence: if hit.heuristic {
+                Confidence::Low
+            } else {
+                hit.rule.confidence
+            },
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -638,8 +684,10 @@ struct Hit {
     callee: Option<FunctionId>,
     site: Addr,
     generic: Option<String>,
+    call_site: Option<SourceLoc>,
     inline_depth: u32,
     inline_end: Option<u64>,
+    inlined: bool,
     heuristic: bool,
 }
 
@@ -684,8 +732,10 @@ fn collect_hits(edges: &[Edge], functions: &BTreeMap<&FunctionId, &Function>) ->
             callee: Some(callee.clone()),
             site: *site,
             generic,
+            call_site: None,
             inline_depth: 0,
             inline_end: None,
+            inlined: false,
             heuristic: *confidence == Confidence::Low,
         });
     }
@@ -718,7 +768,7 @@ fn collect_inline_hits(image: &Image, functions: &[Function]) -> Vec<Hit> {
         let Some(demangled) = call.display_name.as_deref() else {
             continue;
         };
-        let Some(rule) = rules::match_demangled_name(demangled) else {
+        let Some(rule) = rules::match_inline_names(demangled, call.linkage_name.as_deref()) else {
             continue;
         };
         let Some(caller) = function_containing_sorted(&sorted, call.low_pc) else {
@@ -739,17 +789,31 @@ fn collect_inline_hits(image: &Image, functions: &[Function]) -> Vec<Hit> {
         if rule.closure_generic && generic.as_deref().is_some_and(rules::is_runtime_internal) {
             continue;
         }
+        let call_site = match (call.call_file.clone(), call.call_line) {
+            (Some(file), Some(line)) => Some(SourceLoc {
+                file,
+                line,
+                column: call.call_column,
+            }),
+            _ => None,
+        };
         let hit = Hit {
             rule,
             caller: caller.id.clone(),
             callee: None,
             site: Addr::new(call.low_pc),
             generic,
+            call_site,
             inline_depth: call.depth,
             inline_end: (call.high_pc > call.low_pc).then_some(call.high_pc),
+            inlined: true,
             heuristic: false,
         };
-        if rule.closure_generic {
+        if rule.op == RuleOp::Lock {
+            // Every lock instance matters; unlike spawn/scope, do not collapse
+            // all inline sites for one API into a single representative.
+            hits.push(hit);
+        } else if rule.closure_generic {
             let key = (
                 hit.caller.clone(),
                 hit.generic

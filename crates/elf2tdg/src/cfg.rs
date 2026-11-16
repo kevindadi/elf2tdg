@@ -167,6 +167,8 @@ pub struct CfgInlineFrame {
     pub name: String,
     /// Raw linkage name, when available.
     pub linkage_name: Option<String>,
+    /// Source location of the inlined call, from `DW_AT_call_*`.
+    pub call_site: Option<SourceLoc>,
     /// Start of the concrete inline range.
     pub low_pc: u64,
     /// Exclusive end of the concrete inline range.
@@ -913,6 +915,8 @@ struct CfgInlineView {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     linkage_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    call_site: Option<SourceLoc>,
     low: Addr,
     high: Addr,
     depth: u32,
@@ -1087,6 +1091,7 @@ fn function_view(
         .map(|frame| CfgInlineView {
             name: frame.name.clone(),
             linkage_name: frame.linkage_name.clone(),
+            call_site: frame.call_site.clone(),
             low: Addr::new(frame.low_pc),
             high: Addr::new(frame.high_pc),
             depth: frame.depth,

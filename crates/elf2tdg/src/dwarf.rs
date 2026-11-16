@@ -161,6 +161,12 @@ pub struct DwarfInlinedCall {
     pub linkage_name: Option<String>,
     /// Demangled display name, preferring `linkage_name`.
     pub display_name: Option<String>,
+    /// `DW_AT_call_file` resolved through the unit line table.
+    pub call_file: Option<String>,
+    /// `DW_AT_call_line`.
+    pub call_line: Option<u32>,
+    /// `DW_AT_call_column`.
+    pub call_column: Option<u32>,
     /// Start of the concrete inline range.
     pub low_pc: u64,
     /// End of the concrete inline range.
@@ -221,12 +227,17 @@ pub fn parse(file: &object::File<'_>, byte_order: ByteOrder) -> Result<DwarfInfo
                         continue;
                     }
                     let display_name = display_name(&names);
+                    let (call_file, call_line, call_column) =
+                        inlined_call_site(&dwarf, &unit, entry);
                     let depth = u32::try_from(entry.depth().max(0)).unwrap_or(u32::MAX);
                     for (low_pc, high_pc) in die_ranges(&dwarf, &unit, entry)? {
                         info.inlined_calls.push(DwarfInlinedCall {
                             name: names.name.clone(),
                             linkage_name: names.linkage_name.clone(),
                             display_name: display_name.clone(),
+                            call_file: call_file.clone(),
+                            call_line,
+                            call_column,
                             low_pc,
                             high_pc,
                             depth,
@@ -266,6 +277,31 @@ fn display_name(names: &NameInfo) -> Option<String> {
         return Some(demangled.to_string());
     }
     Some(raw.to_owned())
+}
+
+fn inlined_call_site(
+    dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
+    unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
+    entry: &gimli::DebuggingInformationEntry<EndianSlice<'_, RunTimeEndian>>,
+) -> (Option<String>, Option<u32>, Option<u32>) {
+    let file = match entry.attr_value(constants::DW_AT_call_file) {
+        Some(AttributeValue::FileIndex(index)) => unit
+            .line_program
+            .as_ref()
+            .and_then(|program| program.header().file(index))
+            .and_then(|file| dwarf.attr_string(unit, file.path_name()).ok())
+            .map(|name| name.to_string_lossy().into_owned()),
+        _ => None,
+    };
+    let line = entry
+        .attr_value(constants::DW_AT_call_line)
+        .and_then(|value| value.udata_value())
+        .and_then(|value| u32::try_from(value).ok());
+    let column = entry
+        .attr_value(constants::DW_AT_call_column)
+        .and_then(|value| value.udata_value())
+        .and_then(|value| u32::try_from(value).ok());
+    (file, line, column)
 }
 
 fn collect_sources(

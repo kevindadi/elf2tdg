@@ -41,6 +41,13 @@
       "description": "Source image metadata.",
       "$ref": "#/$defs/ImageInfo"
     },
+    "locks": {
+      "description": "Lock/semaphore acquire and release events, including inlined sites.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LockEvent"
+      }
+    },
     "schema_version": {
       "description": "Schema version, for example `1.1`.",
       "type": "string"
@@ -1592,6 +1599,165 @@
         "file_size",
         "mem_size",
         "flags"
+      ]
+    },
+    "LockEvent": {
+      "description": "A lock/semaphore acquire or release event.\n\nLock events are not call-graph edges: the analyzer usually cannot prove\nwhich object instance is locked without points-to analysis. The event keeps\nthe API, lock kind, operation, concrete source/inline range and containing\nfunction/context so downstream tools can pair or visualise events using\nadditional data.",
+      "type": "object",
+      "properties": {
+        "api": {
+          "description": "API symbol/name, for example `Mutex::lock`.",
+          "type": "string"
+        },
+        "call_site": {
+          "description": "Source call site from `DW_AT_call_file`/`DW_AT_call_line` when known.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceLoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confidence": {
+          "description": "Resolution confidence.",
+          "$ref": "#/$defs/Confidence"
+        },
+        "context": {
+          "description": "Execution context containing the operation, when reachable from a\nknown context.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extent": {
+          "description": "Exclusive high PC when the operation was inlined.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "function": {
+          "description": "Function containing the lock operation.",
+          "$ref": "#/$defs/FunctionId"
+        },
+        "id": {
+          "description": "Stable event ID (`lock:...`).",
+          "$ref": "#/$defs/LockEventId"
+        },
+        "inline_depth": {
+          "description": "DWARF inline nesting depth when `inlined` is true.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "inlined": {
+          "description": "Whether this event came from a DWARF inline range rather than a direct\nmachine call.",
+          "type": "boolean",
+          "default": false
+        },
+        "lock_kind": {
+          "description": "Kind of lock or synchronization primitive.",
+          "$ref": "#/$defs/LockKind"
+        },
+        "operation": {
+          "description": "Acquire/try-acquire/release operation.",
+          "$ref": "#/$defs/LockOperation"
+        },
+        "runtime": {
+          "description": "Runtime that defined the API, for example `rust-std` or `pthread`.",
+          "$ref": "#/$defs/RuntimeId"
+        },
+        "site": {
+          "description": "Instruction address of a direct call, or the low PC of an inline range.",
+          "$ref": "#/$defs/Address"
+        }
+      },
+      "required": [
+        "id",
+        "function",
+        "site",
+        "runtime",
+        "api",
+        "lock_kind",
+        "operation",
+        "confidence"
+      ]
+    },
+    "LockEventId": {
+      "description": "Identifies a synchronization/lock event. Well-formed IDs start with\n`lock:`.",
+      "type": "string"
+    },
+    "LockKind": {
+      "description": "Kind of lock or synchronization primitive.",
+      "oneOf": [
+        {
+          "description": "Mutex.",
+          "type": "string",
+          "const": "mutex"
+        },
+        {
+          "description": "Reader-writer lock with an unspecified read/write side.",
+          "type": "string",
+          "const": "rw-lock"
+        },
+        {
+          "description": "Read side of a reader-writer lock.",
+          "type": "string",
+          "const": "rw-lock-read"
+        },
+        {
+          "description": "Write side of a reader-writer lock.",
+          "type": "string",
+          "const": "rw-lock-write"
+        },
+        {
+          "description": "Spin lock.",
+          "type": "string",
+          "const": "spin-lock"
+        },
+        {
+          "description": "Counting/binary semaphore.",
+          "type": "string",
+          "const": "semaphore"
+        },
+        {
+          "description": "Other or unclassified lock primitive.",
+          "type": "string",
+          "const": "other"
+        }
+      ]
+    },
+    "LockOperation": {
+      "description": "Operation performed on a lock or semaphore.",
+      "oneOf": [
+        {
+          "description": "Blocking acquire.",
+          "type": "string",
+          "const": "acquire"
+        },
+        {
+          "description": "Non-blocking/try acquire.",
+          "type": "string",
+          "const": "try-acquire"
+        },
+        {
+          "description": "Release.",
+          "type": "string",
+          "const": "release"
+        }
       ]
     },
     "Priority": {

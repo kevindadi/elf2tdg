@@ -105,6 +105,19 @@ fn cross_function_block_successor_is_reported() {
 }
 
 #[test]
+fn dangling_lock_function_is_reported() {
+    let mut tdg = sample();
+    tdg.locks[0].function = FunctionId::new("fn:0xdead");
+    let issues = tdg.validate();
+    assert!(
+        issues.iter().any(|issue| {
+            issue.code == ValidationCode::DanglingReference && issue.path == "/locks/0/function"
+        }),
+        "expected dangling lock function, got {issues:#?}"
+    );
+}
+
+#[test]
 fn parent_cycle_is_reported() {
     let mut tdg = sample();
     let main_id = tdg.contexts[1].id.clone();

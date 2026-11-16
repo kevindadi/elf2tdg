@@ -89,6 +89,12 @@ define_prefixed_id!(
     "e:"
 );
 define_prefixed_id!(
+    /// Identifies a synchronization/lock event. Well-formed IDs start with
+    /// `lock:`.
+    LockEventId,
+    "lock:"
+);
+define_prefixed_id!(
     /// Identifies a structured-concurrency scope. Well-formed IDs start with
     /// `scope:`.
     ScopeId,

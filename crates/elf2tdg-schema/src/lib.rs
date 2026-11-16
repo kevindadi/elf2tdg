@@ -19,7 +19,8 @@ pub mod validate;
 
 pub use addr::Addr;
 pub use id::{
-    BlockId, ContextId, EdgeId, FrequencyDomainId, FunctionId, RuntimeId, ScopeId, TimingModelId,
+    BlockId, ContextId, EdgeId, FrequencyDomainId, FunctionId, LockEventId, RuntimeId, ScopeId,
+    TimingModelId,
 };
 pub use model::*;
 pub use timing::*;
@@ -29,7 +30,7 @@ pub use validate::{ValidationCode, ValidationError, ValidationIssue};
 ///
 /// Consumers should accept all `1.x` versions and reject unknown major
 /// versions. New optional fields may appear in minor releases.
-pub const SCHEMA_VERSION: &str = "1.1";
+pub const SCHEMA_VERSION: &str = "1.2";
 
 impl model::Tdg {
     /// Generates the JSON Schema for the TDG document format.
