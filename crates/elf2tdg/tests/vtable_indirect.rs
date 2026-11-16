@@ -71,6 +71,18 @@ fn compile_thumb(source_name: &str, source: &str) -> Option<PathBuf> {
 }
 
 fn compile_riscv64(source_name: &str, source: &str) -> Option<PathBuf> {
+    compile_riscv64_with_flags(source_name, source, &["-fno-pie"])
+}
+
+fn compile_riscv64_pic(source_name: &str, source: &str) -> Option<PathBuf> {
+    compile_riscv64_with_flags(source_name, source, &["-fpic"])
+}
+
+fn compile_riscv64_with_flags(
+    source_name: &str,
+    source: &str,
+    position_flags: &[&str],
+) -> Option<PathBuf> {
     if !tool_available("clang") {
         eprintln!("skipping {source_name}: clang is not available");
         return None;
@@ -95,15 +107,9 @@ fn compile_riscv64(source_name: &str, source: &str) -> Option<PathBuf> {
     let object = directory.join("fixture.o");
     let binary = directory.join("fixture");
     let compile = Command::new("clang")
-        .args([
-            "-target",
-            "riscv64-unknown-elf",
-            "-O2",
-            "-g",
-            "-fno-inline",
-            "-fno-pie",
-            "-c",
-        ])
+        .args(["-target", "riscv64-unknown-elf", "-O2", "-g", "-fno-inline"])
+        .args(position_flags)
+        .arg("-c")
         .arg(&source_path)
         .arg("-o")
         .arg(&object)
@@ -476,7 +482,7 @@ int main(int argc, char **argv) { return dispatch(argc); }
     assert_jump_table_resolved(&binary, 6);
 }
 
-fn assert_jump_table_resolved(binary: &Path, minimum_edges: usize) {
+fn assert_jump_table_resolved(binary: &Path, minimum_edges: usize) -> usize {
     let image = loader::load(binary).expect("switch fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
@@ -501,13 +507,23 @@ fn assert_jump_table_resolved(binary: &Path, minimum_edges: usize) {
         jump_edges >= minimum_edges,
         "expected at least {minimum_edges} switch-case jump edges, got {jump_edges}"
     );
-    assert!(
-        analysis
-            .tdg
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "resolved-jump-table")
-    );
+    analysis
+        .tdg
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "resolved-jump-table")
+        .filter_map(|diagnostic| {
+            diagnostic
+                .message
+                .rsplit_once(" to ")?
+                .1
+                .split_whitespace()
+                .next()?
+                .parse::<usize>()
+                .ok()
+        })
+        .max()
+        .expect("jump table diagnostic")
 }
 
 #[test]
@@ -575,6 +591,76 @@ fn resolves_riscv64_absolute_jump_table_edges() {
         return;
     };
     assert_jump_table_resolved(&binary, 16);
+}
+
+#[test]
+fn resolves_riscv64_relative_jump_table_edges() {
+    let mut source = String::from("volatile int sink;\n");
+    for index in 0..16 {
+        let _ = writeln!(
+            source,
+            "__attribute__((noinline)) int f{index}(void) {{ sink = {}; return {}; }}",
+            index + 1,
+            index * 7 + 11
+        );
+    }
+    source.push_str("__attribute__((noinline)) int dispatch(int x) { switch (x) {\n");
+    for index in 0..16 {
+        let _ = writeln!(source, "case {index}: return f{index}();");
+    }
+    source.push_str("default: sink = 0; return -1; } }\n");
+    let Some(binary) = compile_riscv64_pic("switch_riscv64_pic.c", &source) else {
+        return;
+    };
+    let resolved = assert_jump_table_resolved(&binary, 16);
+    assert_eq!(
+        resolved, 16,
+        "the relative table must stop at the comparison guard"
+    );
+}
+
+#[test]
+fn resolves_riscv64_relative_jump_table_with_reordered_add() {
+    let source = r"
+.option norvc
+.text
+.globl dispatch
+.type dispatch,@function
+dispatch:
+    li a1, 3
+    bltu a1, a0, def
+    slli a0, a0, 2
+.Lhi:
+    auipc a1, %pcrel_hi(table)
+    addi a1, a1, %pcrel_lo(.Lhi)
+    add a0, a0, a1
+    lw a0, 0(a0)
+    add a0, a1, a0
+    jr a0
+c0: li a0, 10
+    ret
+c1: li a0, 11
+    ret
+c2: li a0, 12
+    ret
+c3: li a0, 13
+    ret
+def: li a0, -1
+    ret
+.size dispatch, .-dispatch
+.section .rodata
+.align 2
+table:
+    .word c0-table
+    .word c1-table
+    .word c2-table
+    .word c3-table
+";
+    let Some(binary) = compile_riscv64_with_flags("switch_relative_order.s", source, &[]) else {
+        return;
+    };
+    let resolved = assert_jump_table_resolved(&binary, 4);
+    assert_eq!(resolved, 4);
 }
 
 #[test]
