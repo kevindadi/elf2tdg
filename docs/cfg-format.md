@@ -152,10 +152,16 @@ Switch tables are recognized in these layouts:
 - ARM A32 branch tables such as `addls pc, pc, rN, lsl #2` followed by
   branch instructions, expanded through their table-entry blocks;
 - RISC-V absolute-pointer tables such as
-  `slli index, index, 2; ...; add index, index, table; lw target, 0(index); jr target`.
+  `slli index, index, 2; ...; add index, index, table; lw target, 0(index); jr target`;
+- RISC-V table-relative offset tables used by PIC/PIE code, such as
+  `slli index, index, 2; auipc/addi table; add index, index, table;
+  lw target, 0(index); add target, target, table; jr target`, where each
+  signed 32-bit entry is an offset from the table base.
 
 Entries are read until the first non-executable target or the bound implied by
-a preceding `cmp index, N` guard (falling back to a 256-entry safety limit).
+a preceding guard: `cmp index, N` on ARM/AArch64/x86, or
+`li bound, N; bltu bound, index, default` on RISC-V. Without a recoverable
+guard the scan falls back to a 256-entry safety limit.
 Each valid entry becomes a CFG successor; entries outside the function become
 tail-call candidates. x86 indexed instructions report `indirect` as
 `indexed-memory` with `base`, `index`, `scale` and `disp`; Thumb table branches
@@ -300,9 +306,9 @@ containing basic block, so they are kept at function level with
 - Calls end their basic block and return to a new block; call targets remain
   metadata, not intra-function CFG edges.
 - Recognized jump-table forms on x86-64, ARM Thumb/A32, common AArch64
-  relative-byte and absolute-pointer layouts, and RISC-V absolute-pointer
-  layouts are expanded. Computed/indirect tables and vtable dispatch on
-  heap/stack objects remain unresolved indirect jumps.
+  relative-byte and absolute-pointer layouts, and RISC-V absolute-pointer and
+  table-relative offset layouts are expanded. Computed/indirect tables and
+  vtable dispatch on heap/stack objects remain unresolved indirect jumps.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
