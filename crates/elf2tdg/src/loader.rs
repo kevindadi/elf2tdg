@@ -402,14 +402,27 @@ pub fn load(path: &Path) -> Result<Image> {
         path: path.to_path_buf(),
         source,
     })?;
-    let file =
-        object::File::parse(bytes.as_slice()).map_err(|error| Error::Elf(error.to_string()))?;
+    load_from_bytes(&bytes, path)
+}
+
+/// Loads an ELF image from an in-memory byte buffer.
+///
+/// `path` is retained as the image label and is not opened. This entry point
+/// is useful for fuzzing and archive/embedded workflows.
+///
+/// # Errors
+///
+/// Returns the same errors as [`load`] for invalid ELF data.
+#[allow(clippy::too_many_lines)]
+pub fn load_from_bytes(bytes: &[u8], path: impl AsRef<Path>) -> Result<Image> {
+    let path = path.as_ref();
+    let file = object::File::parse(bytes).map_err(|error| Error::Elf(error.to_string()))?;
 
     let byte_order = match file.endianness() {
         object::Endianness::Little => ByteOrder::Little,
         object::Endianness::Big => ByteOrder::Big,
     };
-    let elf_kind = elf_kind(&bytes, byte_order);
+    let elf_kind = elf_kind(bytes, byte_order);
     let entry = file.entry();
 
     let mut sections = Vec::new();
