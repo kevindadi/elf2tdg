@@ -152,6 +152,24 @@ pub struct DwarfFunction {
     pub ranges: Vec<(u64, u64)>,
 }
 
+impl DwarfFunction {
+    /// Returns the lowest concrete address range, which is the function entry
+    /// range for split or cold/hot DWARF layouts.
+    #[must_use]
+    pub fn primary_range(&self) -> Option<(u64, u64)> {
+        self.ranges.iter().copied().min_by_key(|(low, _)| *low)
+    }
+
+    /// Returns a demangled display name, preferring the linkage name.
+    #[must_use]
+    pub fn display_name(&self) -> Option<String> {
+        display_name(&NameInfo {
+            name: self.name.clone(),
+            linkage_name: self.linkage_name.clone(),
+        })
+    }
+}
+
 /// An inlined subroutine instance.
 #[derive(Debug, Clone, Default)]
 pub struct DwarfInlinedCall {
@@ -266,6 +284,7 @@ fn display_name(names: &NameInfo) -> Option<String> {
     let raw = names
         .linkage_name
         .as_deref()
+        .filter(|name| !name.trim().is_empty())
         .or(names.name.as_deref())?
         .trim();
     if raw.is_empty() {

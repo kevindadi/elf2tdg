@@ -96,6 +96,7 @@ struct Analyzer<'a> {
     startup_address: Option<u64>,
     isr_vectors: Vec<VectorEntry>,
     pointer_roots: BTreeSet<u64>,
+    dwarf_function_names: BTreeMap<u64, NameChoice>,
 }
 
 #[derive(Clone, Debug)]
@@ -165,12 +166,13 @@ impl<'a> Analyzer<'a> {
             startup_address: None,
             isr_vectors: Vec::new(),
             pointer_roots: BTreeSet::new(),
+            dwarf_function_names: BTreeMap::new(),
         };
         analyzer.discover_functions()?;
         analyzer.discover_external_imports()?;
         if analyzer.functions.is_empty() {
             return Err(Error::Elf(
-                "no function entry points could be recovered from symbols, the ELF entry or the vector table"
+                "no function entry points could be recovered from symbols, DWARF subprograms, the ELF entry or the vector table"
                     .to_owned(),
             ));
         }
@@ -204,7 +206,7 @@ impl<'a> Analyzer<'a> {
             self.diag(
                 Severity::Warning,
                 "no-symbol-table",
-                "image has no usable function symbols; relying on the ELF entry point, vector table and direct call targets",
+                "image has no usable function symbols; relying on DWARF subprograms, the ELF entry point, vector tables, direct call targets and pointer roots",
                 None,
                 None,
             );
@@ -379,6 +381,7 @@ impl<'a> Analyzer<'a> {
 
         self.discover_pointer_roots(&mut seeds);
         self.discover_architecture_roots(&mut seeds);
+        self.discover_dwarf_functions(&mut seeds);
 
         if seeds.is_empty() {
             return Ok(());
@@ -425,6 +428,11 @@ impl<'a> Analyzer<'a> {
                 seed.size.min(limit)
             };
             let mut choice = choose_name(&seed.names);
+            if choice.display.is_empty()
+                && let Some(dwarf_choice) = self.dwarf_function_names.get(&address)
+            {
+                choice = dwarf_choice.clone();
+            }
             if choice.display.is_empty() {
                 choice.display = format!("sub_0x{address:x}");
                 choice.language = Language::Unknown;
@@ -560,6 +568,41 @@ impl<'a> Analyzer<'a> {
                 size: 0,
                 section: self.image.section_name_for(target).map(str::to_owned),
             });
+        }
+    }
+
+    fn discover_dwarf_functions(&mut self, seeds: &mut BTreeMap<u64, Seed>) {
+        let Some(dwarf) = self.image.dwarf.as_ref() else {
+            return;
+        };
+        for function in &dwarf.functions {
+            let Some((low, high)) = function.primary_range() else {
+                continue;
+            };
+            let low = self.image.canonical_address(low);
+            if high <= low || !self.image.is_executable(low) {
+                continue;
+            }
+            let size = high - low;
+            let seed = seeds.entry(low).or_insert_with(|| Seed {
+                names: Vec::new(),
+                size: 0,
+                section: self.image.section_name_for(low).map(str::to_owned),
+            });
+            if seed.size == 0 {
+                seed.size = size;
+            }
+            if let Some(raw) = function
+                .linkage_name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .or(function.name.as_deref())
+            {
+                let choice = choose_name(&[raw.to_owned()]);
+                if !choice.display.is_empty() {
+                    self.dwarf_function_names.entry(low).or_insert(choice);
+                }
+            }
         }
     }
 
@@ -3156,6 +3199,7 @@ fn sum_costs(model: TimingModel, instructions: &[DecodedInsn]) -> elf2tdg_schema
     elf2tdg_schema::CostRange::new(min, max)
 }
 
+#[derive(Clone)]
 struct NameChoice {
     display: String,
     demangled: Option<String>,
