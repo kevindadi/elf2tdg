@@ -48,6 +48,9 @@ pub enum Error {
     /// The produced TDG failed schema validation.
     #[error("TDG validation failed: {0}")]
     Validation(String),
+    /// The intermediate CFG failed structural validation.
+    #[error("CFG validation failed: {0}")]
+    CfgValidation(String),
     /// Serialization failed.
     #[error("failed to serialize output: {0}")]
     Serialize(String),

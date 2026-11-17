@@ -58,7 +58,7 @@ impl Default for AnalysisOptions {
 pub struct AnalysisOutput {
     /// Validated Task Dependency Graph.
     pub tdg: Tdg,
-    /// Function-level control-flow graphs used to derive the TDG.
+    /// Validated function-level control-flow graphs used to derive the TDG.
     pub cfg: cfg::ProgramCfg,
 }
 
@@ -67,7 +67,7 @@ pub struct AnalysisOutput {
 /// # Errors
 ///
 /// Returns an error for unsupported architectures, invalid configuration,
-/// resource limits and schema-validation failures. Recoverable problems are
+/// resource limits, and TDG/CFG validation failures. Recoverable problems are
 /// represented as TDG diagnostics.
 pub fn analyze(image: &Image, options: &AnalysisOptions) -> Result<Tdg> {
     analyze_with_cfg(image, options).map(|output| output.tdg)
@@ -2656,6 +2656,12 @@ impl<'a> Analyzer<'a> {
         };
         tdg.ensure_valid().map_err(|error| {
             Error::Validation(format!(
+                "{error}; first issues: {:#?}",
+                error.issues.iter().take(8).collect::<Vec<_>>()
+            ))
+        })?;
+        program_cfg.ensure_valid().map_err(|error| {
+            Error::CfgValidation(format!(
                 "{error}; first issues: {:#?}",
                 error.issues.iter().take(8).collect::<Vec<_>>()
             ))

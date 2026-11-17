@@ -7,7 +7,7 @@
 //! from this representation rather than maintaining a second CFG.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 
 use elf2tdg_schema::{
     Addr, AwaitTarget, BlockId, ContextId, ContextKind, CostRange, Diagnostic, Edge, Function,
@@ -2166,12 +2166,906 @@ fn mermaid_escape(value: &str) -> String {
         .replace('|', "/")
 }
 
+/// Machine-readable CFG validation issue code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgValidationCode {
+    /// A function ID or name is empty or malformed.
+    InvalidFunction,
+    /// Two functions share an ID.
+    DuplicateFunctionId,
+    /// Function records are not sorted by address.
+    FunctionOrder,
+    /// A function's address range overflows or contradicts its blocks.
+    InvalidFunctionRange,
+    /// An inline frame range is empty or outside its function.
+    InvalidInlineRange,
+    /// A function has basic blocks but no entry node.
+    MissingEntry,
+    /// A function has an entry node but no basic blocks.
+    UnexpectedEntry,
+    /// The entry node does not belong to the graph or its function.
+    InvalidEntry,
+    /// The address map and the petgraph node set disagree.
+    InconsistentBlockMap,
+    /// Two graph nodes have the same block address or block ID.
+    DuplicateBlock,
+    /// A block ID does not match its address.
+    InvalidBlockId,
+    /// A block has no instructions or an inconsistent size.
+    EmptyBlock,
+    /// Instruction addresses, sizes or extents are inconsistent.
+    InvalidInstructionRange,
+    /// A basic block lies outside its containing function.
+    InvalidBlockRange,
+    /// A function's referenced-address list is not sorted or contains duplicates.
+    InvalidReferenceList,
+    /// A call record is attached to the wrong instruction or block.
+    InvalidCallSite,
+    /// Two call records share a site in one block.
+    DuplicateCallSite,
+    /// A call has inconsistent resolved/unresolved target fields.
+    InvalidCallTarget,
+    /// A call has contradictory boolean flags.
+    InvalidCallFlags,
+    /// A block terminator does not match its final instruction.
+    InvalidTerminator,
+    /// A CFG edge is inconsistent with its source block or terminator.
+    InvalidEdge,
+    /// Two CFG edges have the same source, target, kind and site.
+    DuplicateEdge,
+    /// A pointer root is repeated.
+    InvalidPointerRoot,
+    /// A call references a function ID missing from the program CFG.
+    DanglingFunctionReference,
+}
+
+/// One CFG validation problem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CfgValidationIssue {
+    /// Machine-readable issue code.
+    pub code: CfgValidationCode,
+    /// JSON-pointer-like location inside the CFG document.
+    pub path: String,
+    /// Human-readable explanation.
+    pub message: String,
+}
+
+/// Error returned by CFG `ensure_valid` methods.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfgValidationError {
+    /// All issues found.
+    pub issues: Vec<CfgValidationIssue>,
+}
+
+impl fmt::Display for CfgValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "CFG validation failed with {} issue(s)",
+            self.issues.len()
+        )
+    }
+}
+
+impl std::error::Error for CfgValidationError {}
+
+impl FunctionCfg {
+    /// Validates the graph structure and block/call invariants.
+    ///
+    /// An empty vector means the CFG is structurally consistent. Reachability
+    /// is not required: retained orphan blocks and intra-function call targets
+    /// are valid.
+    #[must_use]
+    pub fn validate(&self) -> Vec<CfgValidationIssue> {
+        self.validate_with_limit(usize::MAX)
+    }
+
+    /// Validates the CFG, collecting at most `limit` issues.
+    #[must_use]
+    pub fn validate_with_limit(&self, limit: usize) -> Vec<CfgValidationIssue> {
+        let mut validator = CfgValidator::new(None, limit);
+        validator.validate_function_cfg(self, None, "/cfg");
+        validator.issues
+    }
+
+    /// Validates the CFG and converts issues into an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CfgValidationError`] when any issue is found.
+    pub fn ensure_valid(&self) -> Result<(), CfgValidationError> {
+        ensure_valid_cfg(self.validate())
+    }
+}
+
+impl CfgFunction {
+    /// Validates function metadata and its attached CFG.
+    #[must_use]
+    pub fn validate(&self) -> Vec<CfgValidationIssue> {
+        self.validate_with_limit(usize::MAX)
+    }
+
+    /// Validates the function, collecting at most `limit` issues.
+    #[must_use]
+    pub fn validate_with_limit(&self, limit: usize) -> Vec<CfgValidationIssue> {
+        let mut validator = CfgValidator::new(None, limit);
+        validator.validate_function(self, "");
+        validator.issues
+    }
+
+    /// Validates the function and converts issues into an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CfgValidationError`] when any issue is found.
+    pub fn ensure_valid(&self) -> Result<(), CfgValidationError> {
+        ensure_valid_cfg(self.validate())
+    }
+}
+
+impl ProgramCfg {
+    /// Validates all function CFGs and their cross-references.
+    #[must_use]
+    pub fn validate(&self) -> Vec<CfgValidationIssue> {
+        self.validate_with_limit(usize::MAX)
+    }
+
+    /// Validates the program CFG, collecting at most `limit` issues.
+    #[must_use]
+    pub fn validate_with_limit(&self, limit: usize) -> Vec<CfgValidationIssue> {
+        let mut validator = CfgValidator::new(Some(self), limit);
+        validator.validate_program();
+        validator.issues
+    }
+
+    /// Validates the program CFG and converts issues into an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CfgValidationError`] when any issue is found.
+    pub fn ensure_valid(&self) -> Result<(), CfgValidationError> {
+        ensure_valid_cfg(self.validate())
+    }
+}
+
+fn ensure_valid_cfg(issues: Vec<CfgValidationIssue>) -> Result<(), CfgValidationError> {
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(CfgValidationError { issues })
+    }
+}
+
+struct CfgValidator<'a> {
+    program: Option<&'a ProgramCfg>,
+    function_ids: BTreeSet<FunctionId>,
+    issues: Vec<CfgValidationIssue>,
+    limit: usize,
+}
+
+impl<'a> CfgValidator<'a> {
+    fn new(program: Option<&'a ProgramCfg>, limit: usize) -> Self {
+        let function_ids = program.map_or_else(BTreeSet::new, |program| {
+            program
+                .functions
+                .iter()
+                .map(|function| function.id.clone())
+                .collect()
+        });
+        Self {
+            program,
+            function_ids,
+            issues: Vec::new(),
+            limit,
+        }
+    }
+
+    fn push(
+        &mut self,
+        code: CfgValidationCode,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        if self.issues.len() < self.limit {
+            self.issues.push(CfgValidationIssue {
+                code,
+                path: path.into(),
+                message: message.into(),
+            });
+        }
+    }
+
+    fn validate_program(&mut self) {
+        let Some(program) = self.program else {
+            return;
+        };
+        let mut seen_ids = BTreeSet::new();
+        let mut previous_address = None;
+        for (index, function) in program.functions.iter().enumerate() {
+            let path = format!("/functions/{index}");
+            if !seen_ids.insert(function.id.clone()) {
+                self.push(
+                    CfgValidationCode::DuplicateFunctionId,
+                    format!("{path}/id"),
+                    format!("duplicate function ID {}", function.id),
+                );
+            }
+            if let Some(previous) = previous_address
+                && function.address < previous
+            {
+                self.push(
+                    CfgValidationCode::FunctionOrder,
+                    format!("{path}/address"),
+                    "functions are not sorted by address",
+                );
+            }
+            previous_address = Some(function.address);
+            self.validate_function(function, &path);
+        }
+        let mut seen_roots = BTreeSet::new();
+        for (index, address) in program.pointer_roots.iter().enumerate() {
+            if !seen_roots.insert(*address) {
+                self.push(
+                    CfgValidationCode::InvalidPointerRoot,
+                    format!("/pointer_roots/{index}"),
+                    format!("duplicate pointer root 0x{address:x}"),
+                );
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_function(&mut self, function: &CfgFunction, path: &str) {
+        if !function.id.is_well_formed() {
+            self.push(
+                CfgValidationCode::InvalidFunction,
+                format!("{path}/id"),
+                format!("invalid function ID {:?}", function.id),
+            );
+        }
+        if function.primary_name.trim().is_empty() {
+            self.push(
+                CfgValidationCode::InvalidFunction,
+                format!("{path}/primary_name"),
+                "function primary_name must not be empty",
+            );
+        }
+        let function_end = function.address.checked_add(function.size);
+        if function_end.is_none() {
+            self.push(
+                CfgValidationCode::InvalidFunctionRange,
+                format!("{path}/size"),
+                "function address range overflows u64",
+            );
+        }
+        if function.size == 0 && !function.cfg.blocks_by_address.is_empty() {
+            self.push(
+                CfgValidationCode::InvalidFunctionRange,
+                format!("{path}/size"),
+                "a function with basic blocks must have a non-zero size",
+            );
+        }
+        for (index, frame) in function.inline_frames.iter().enumerate() {
+            let frame_path = format!("{path}/inline_frames/{index}");
+            if frame.low_pc >= frame.high_pc {
+                self.push(
+                    CfgValidationCode::InvalidInlineRange,
+                    format!("{frame_path}/high"),
+                    "inline frame high address must be greater than low",
+                );
+            }
+            if function.size > 0
+                && let Some(end) = function_end
+                && (frame.low_pc < function.address || frame.high_pc > end)
+            {
+                self.push(
+                    CfgValidationCode::InvalidInlineRange,
+                    frame_path,
+                    "inline frame lies outside the containing function",
+                );
+            }
+        }
+        if let Some(entry) = function.cfg.entry
+            && let Some(block) = function.cfg.graph.node_weight(entry)
+            && block.address != function.address
+        {
+            self.push(
+                CfgValidationCode::InvalidEntry,
+                format!("{path}/cfg/entry"),
+                "entry block address does not match the function start",
+            );
+        }
+        self.validate_function_cfg(&function.cfg, Some(function), &format!("{path}/cfg"));
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_function_cfg(
+        &mut self,
+        cfg: &FunctionCfg,
+        function: Option<&CfgFunction>,
+        path: &str,
+    ) {
+        let node_count = cfg.graph.node_count();
+        if cfg.blocks_by_address.len() != node_count {
+            self.push(
+                CfgValidationCode::InconsistentBlockMap,
+                format!("{path}/blocks_by_address"),
+                format!(
+                    "{} address-map entries for {node_count} graph nodes",
+                    cfg.blocks_by_address.len()
+                ),
+            );
+        }
+        match cfg.entry {
+            Some(entry) if cfg.graph.contains_node(entry) => {}
+            Some(_) => self.push(
+                CfgValidationCode::InvalidEntry,
+                format!("{path}/entry"),
+                "entry node is not present in the graph",
+            ),
+            None if node_count > 0 => self.push(
+                CfgValidationCode::MissingEntry,
+                format!("{path}/entry"),
+                "non-empty CFG has no entry node",
+            ),
+            None => {}
+        }
+        if cfg.entry.is_some() && node_count == 0 {
+            self.push(
+                CfgValidationCode::UnexpectedEntry,
+                format!("{path}/entry"),
+                "empty CFG has an entry node",
+            );
+        }
+
+        let mut mapped_nodes = BTreeSet::new();
+        let mut block_ids = BTreeSet::new();
+        for (address, node) in &cfg.blocks_by_address {
+            if !cfg.graph.contains_node(*node) {
+                self.push(
+                    CfgValidationCode::InconsistentBlockMap,
+                    format!("{path}/blocks_by_address/0x{address:x}"),
+                    "address map points at a missing graph node",
+                );
+                continue;
+            }
+            if !mapped_nodes.insert(*node) {
+                self.push(
+                    CfgValidationCode::InconsistentBlockMap,
+                    format!("{path}/blocks_by_address/0x{address:x}"),
+                    "multiple addresses map to the same graph node",
+                );
+            }
+            let block = &cfg.graph[*node];
+            if block.address != *address {
+                self.push(
+                    CfgValidationCode::InconsistentBlockMap,
+                    format!("{path}/blocks_by_address/0x{address:x}"),
+                    format!("graph node address is 0x{:x}", block.address),
+                );
+            }
+            if !block_ids.insert(block.id.clone()) {
+                self.push(
+                    CfgValidationCode::DuplicateBlock,
+                    format!("{path}/blocks/0x{address:x}/id"),
+                    format!("duplicate block ID {}", block.id),
+                );
+            }
+            let expected_id = format!("bb:0x{address:x}");
+            if block.id.as_str() != expected_id {
+                self.push(
+                    CfgValidationCode::InvalidBlockId,
+                    format!("{path}/blocks/0x{address:x}/id"),
+                    format!("block ID {} does not match address 0x{address:x}", block.id),
+                );
+            }
+            self.validate_block(cfg, *node, block, function, path);
+        }
+        for node in cfg.graph.node_indices() {
+            if !mapped_nodes.contains(&node) {
+                let address = cfg.graph[node].address;
+                self.push(
+                    CfgValidationCode::InconsistentBlockMap,
+                    format!("{path}/blocks/0x{address:x}"),
+                    "graph node is missing from blocks_by_address",
+                );
+            }
+        }
+        let mut previous_end: Option<u64> = None;
+        for (address, node) in &cfg.blocks_by_address {
+            if !cfg.graph.contains_node(*node) {
+                continue;
+            }
+            let block = &cfg.graph[*node];
+            if block.address.checked_add(block.size).is_some()
+                && previous_end.is_some_and(|previous| block.address < previous)
+            {
+                self.push(
+                    CfgValidationCode::InvalidBlockRange,
+                    format!("{path}/blocks/0x{address:x}"),
+                    "basic blocks overlap or are out of order",
+                );
+            }
+            previous_end = block.address.checked_add(block.size);
+        }
+
+        let mut attached_sites = BTreeSet::new();
+        for block in cfg.blocks_by_address.values() {
+            for call in &cfg.graph[*block].calls {
+                attached_sites.insert(call.site);
+            }
+        }
+        let mut recovered_sites = BTreeSet::new();
+        for (index, call) in cfg.recovered_calls.iter().enumerate() {
+            let call_path = format!("{path}/recovered_calls/{index}");
+            if !recovered_sites.insert(call.site) {
+                self.push(
+                    CfgValidationCode::DuplicateCallSite,
+                    format!("{call_path}/site"),
+                    format!("duplicate recovered call site 0x{:x}", call.site),
+                );
+            }
+            if attached_sites.contains(&call.site) {
+                self.push(
+                    CfgValidationCode::InvalidCallSite,
+                    format!("{call_path}/site"),
+                    "recovered call site is also attached to a basic block",
+                );
+            }
+            self.validate_call(call, &call_path);
+        }
+        let mut previous_reference = None;
+        for (index, address) in cfg.referenced_addresses.iter().enumerate() {
+            if let Some(previous) = previous_reference
+                && *address <= previous
+            {
+                self.push(
+                    CfgValidationCode::InvalidReferenceList,
+                    format!("{path}/referenced_addresses/{index}"),
+                    "referenced addresses must be sorted and unique",
+                );
+            }
+            previous_reference = Some(*address);
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_block(
+        &mut self,
+        cfg: &FunctionCfg,
+        node: NodeIndex,
+        block: &CfgBlock,
+        function: Option<&CfgFunction>,
+        path: &str,
+    ) {
+        let block_path = format!("{path}/blocks/0x{:x}", block.address);
+        let Some(block_end) = block.address.checked_add(block.size) else {
+            self.push(
+                CfgValidationCode::InvalidBlockRange,
+                format!("{block_path}/size"),
+                "block address range overflows u64",
+            );
+            return;
+        };
+        if block.size == 0 {
+            self.push(
+                CfgValidationCode::EmptyBlock,
+                format!("{block_path}/size"),
+                "basic block has zero size",
+            );
+        }
+        if block.instructions.is_empty() {
+            self.push(
+                CfgValidationCode::EmptyBlock,
+                block_path.clone(),
+                "basic block has no instructions",
+            );
+            return;
+        }
+        if let Some(function) = function
+            && function.size > 0
+            && let Some(function_end) = function.address.checked_add(function.size)
+            && (block.address < function.address || block_end > function_end)
+        {
+            self.push(
+                CfgValidationCode::InvalidBlockRange,
+                block_path.clone(),
+                "basic block lies outside its containing function",
+            );
+        }
+        let mut expected = block.address;
+        let mut block_ends = None;
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let instruction_path = format!("{block_path}/instructions/{index}");
+            if instruction.size == 0 {
+                self.push(
+                    CfgValidationCode::InvalidInstructionRange,
+                    format!("{instruction_path}/size"),
+                    "instruction has zero size",
+                );
+            }
+            if instruction.address != expected {
+                self.push(
+                    CfgValidationCode::InvalidInstructionRange,
+                    format!("{instruction_path}/address"),
+                    format!(
+                        "instruction starts at 0x{:x}, expected 0x{expected:x}",
+                        instruction.address
+                    ),
+                );
+            }
+            expected = instruction
+                .address
+                .saturating_add(u64::from(instruction.size));
+            block_ends = Some(expected);
+        }
+        if block_ends != Some(block_end) {
+            self.push(
+                CfgValidationCode::InvalidInstructionRange,
+                format!("{block_path}/size"),
+                "instruction stream does not end at the block end",
+            );
+        }
+        let last = block.instructions.last().expect("non-empty instructions");
+        if block.calls.iter().any(|call| call.site != last.address) {
+            self.push(
+                CfgValidationCode::InvalidCallSite,
+                format!("{block_path}/calls"),
+                "attached call record is not at the block terminator",
+            );
+        }
+        let mut recorded_sites = BTreeSet::new();
+        for (index, call) in block.calls.iter().enumerate() {
+            let call_path = format!("{block_path}/calls/{index}");
+            if !recorded_sites.insert(call.site) {
+                self.push(
+                    CfgValidationCode::DuplicateCallSite,
+                    format!("{call_path}/site"),
+                    format!("duplicate call site 0x{:x}", call.site),
+                );
+            }
+            let Some(instruction) = block
+                .instructions
+                .iter()
+                .find(|instruction| instruction.address == call.site)
+            else {
+                self.push(
+                    CfgValidationCode::InvalidCallSite,
+                    format!("{call_path}/site"),
+                    "call site does not name an instruction in this block",
+                );
+                self.validate_call(call, &call_path);
+                continue;
+            };
+            if !instruction.is_call && !instruction.is_jump {
+                self.push(
+                    CfgValidationCode::InvalidCallSite,
+                    format!("{call_path}/site"),
+                    "call record is attached to a non-call, non-jump instruction",
+                );
+            }
+            if instruction.is_call && call.tail {
+                self.push(
+                    CfgValidationCode::InvalidCallFlags,
+                    format!("{call_path}/tail"),
+                    "call instruction must not be marked as a tail call",
+                );
+            }
+            if instruction.is_jump && !call.tail {
+                self.push(
+                    CfgValidationCode::InvalidCallFlags,
+                    format!("{call_path}/tail"),
+                    "tail-call record on a jump must set tail=true",
+                );
+            }
+            if call.direct != instruction.direct_target.is_some() {
+                self.push(
+                    CfgValidationCode::InvalidCallFlags,
+                    format!("{call_path}/direct"),
+                    "direct flag does not match the instruction target",
+                );
+            }
+            if call.conditional != instruction.is_conditional {
+                self.push(
+                    CfgValidationCode::InvalidCallFlags,
+                    format!("{call_path}/conditional"),
+                    "conditional flag does not match the instruction",
+                );
+            }
+            self.validate_call(call, &call_path);
+        }
+        let call_instructions: BTreeSet<u64> = block
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.is_call)
+            .map(|instruction| instruction.address)
+            .collect();
+        for site in call_instructions {
+            if !recorded_sites.contains(&site) {
+                self.push(
+                    CfgValidationCode::InvalidCallSite,
+                    format!("{block_path}/calls"),
+                    format!("call instruction 0x{site:x} has no call record"),
+                );
+            }
+        }
+
+        let call_at_last = block.calls.iter().find(|call| call.site == last.address);
+        if last.is_return {
+            if block.terminator != CfgTerminator::Return {
+                self.push(
+                    CfgValidationCode::InvalidTerminator,
+                    format!("{block_path}/terminator"),
+                    "return instruction must use the return terminator",
+                );
+            }
+        } else if last.is_call {
+            let expected = if call_at_last.is_some_and(|call| call.noreturn && !call.conditional) {
+                CfgTerminator::NoreturnCall
+            } else {
+                CfgTerminator::Call
+            };
+            if block.terminator != expected {
+                self.push(
+                    CfgValidationCode::InvalidTerminator,
+                    format!("{block_path}/terminator"),
+                    format!(
+                        "call terminator is {:?}, expected {expected:?}",
+                        block.terminator
+                    ),
+                );
+            }
+        } else if last.is_jump {
+            if !matches!(
+                block.terminator,
+                CfgTerminator::Branch | CfgTerminator::Jump | CfgTerminator::Unresolved
+            ) {
+                self.push(
+                    CfgValidationCode::InvalidTerminator,
+                    format!("{block_path}/terminator"),
+                    "jump instruction must use a jump/branch/unresolved terminator",
+                );
+            }
+        } else if block.terminator != CfgTerminator::Fallthrough {
+            self.push(
+                CfgValidationCode::InvalidTerminator,
+                format!("{block_path}/terminator"),
+                "non-terminating instruction must use fallthrough",
+            );
+        }
+
+        self.validate_edges(cfg, node, block, last, block_end, &block_path);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_edges(
+        &mut self,
+        cfg: &FunctionCfg,
+        node: NodeIndex,
+        block: &CfgBlock,
+        last: &CfgInstruction,
+        block_end: u64,
+        block_path: &str,
+    ) {
+        let mut seen = BTreeSet::new();
+        for edge in cfg
+            .graph
+            .edges_directed(node, petgraph::Direction::Outgoing)
+        {
+            let target = edge.target();
+            let target_block = &cfg.graph[target];
+            let edge_path = format!("{block_path}/edges/0x{:x}", edge.weight().site);
+            if matches!(
+                block.terminator,
+                CfgTerminator::Return | CfgTerminator::NoreturnCall
+            ) {
+                self.push(
+                    CfgValidationCode::InvalidEdge,
+                    edge_path,
+                    "returning/noreturn block must not have successors",
+                );
+                continue;
+            }
+            if edge.weight().site != last.address {
+                self.push(
+                    CfgValidationCode::InvalidEdge,
+                    format!("{edge_path}/site"),
+                    "edge site is not the final instruction of the source block",
+                );
+            }
+            if edge.weight().conditional != last.is_conditional {
+                self.push(
+                    CfgValidationCode::InvalidEdge,
+                    format!("{edge_path}/conditional"),
+                    "edge conditional flag does not match the source instruction",
+                );
+            }
+            if cfg.blocks_by_address.get(&target_block.address) != Some(&target) {
+                self.push(
+                    CfgValidationCode::InvalidEdge,
+                    format!("{edge_path}/to"),
+                    "edge target is not represented in blocks_by_address",
+                );
+            }
+            match edge.weight().kind {
+                CfgEdgeKind::Fallthrough => {
+                    if target_block.address != block_end {
+                        self.push(
+                            CfgValidationCode::InvalidEdge,
+                            format!("{edge_path}/to"),
+                            "fallthrough edge does not target the next block",
+                        );
+                    }
+                    if matches!(
+                        block.terminator,
+                        CfgTerminator::Call | CfgTerminator::NoreturnCall | CfgTerminator::Return
+                    ) {
+                        self.push(
+                            CfgValidationCode::InvalidEdge,
+                            format!("{edge_path}/kind"),
+                            "returning call/return block cannot have a fallthrough edge",
+                        );
+                    }
+                }
+                CfgEdgeKind::CallReturn => {
+                    if block.terminator != CfgTerminator::Call || !last.is_call {
+                        self.push(
+                            CfgValidationCode::InvalidEdge,
+                            format!("{edge_path}/kind"),
+                            "call-return edge requires a returning call terminator",
+                        );
+                    }
+                    if target_block.address != block_end {
+                        self.push(
+                            CfgValidationCode::InvalidEdge,
+                            format!("{edge_path}/to"),
+                            "call-return edge does not target the next block",
+                        );
+                    }
+                }
+                CfgEdgeKind::Branch => {
+                    if block.terminator != CfgTerminator::Branch {
+                        self.push(
+                            CfgValidationCode::InvalidEdge,
+                            format!("{edge_path}/kind"),
+                            "branch edge requires a branch terminator",
+                        );
+                    }
+                }
+                CfgEdgeKind::Jump => {
+                    if block.terminator != CfgTerminator::Jump {
+                        self.push(
+                            CfgValidationCode::InvalidEdge,
+                            format!("{edge_path}/kind"),
+                            "jump edge requires a jump terminator",
+                        );
+                    }
+                }
+            }
+            let key = (
+                node.index(),
+                target.index(),
+                edge_kind_code(edge.weight().kind),
+                edge.weight().site,
+                edge.weight().conditional,
+            );
+            if !seen.insert(key) {
+                self.push(
+                    CfgValidationCode::DuplicateEdge,
+                    edge_path,
+                    "duplicate CFG edge",
+                );
+            }
+        }
+    }
+
+    fn validate_call(&mut self, call: &CfgCallSite, path: &str) {
+        if call.noreturn && call.conditional {
+            self.push(
+                CfgValidationCode::InvalidCallFlags,
+                format!("{path}/noreturn"),
+                "conditional call cannot be marked noreturn",
+            );
+        }
+        if call.noreturn && call.unresolved {
+            self.push(
+                CfgValidationCode::InvalidCallFlags,
+                format!("{path}/noreturn"),
+                "unresolved call cannot be marked noreturn",
+            );
+        }
+        if call.null_target
+            && (call.target.is_some() || !call.candidates.is_empty() || call.unresolved)
+        {
+            self.push(
+                CfgValidationCode::InvalidCallTarget,
+                path,
+                "null-target call must not carry another target",
+            );
+        }
+        if call.unresolved && !call.candidates.is_empty() {
+            self.push(
+                CfgValidationCode::InvalidCallFlags,
+                format!("{path}/unresolved"),
+                "unresolved call must not carry candidates",
+            );
+        }
+        if !call.candidates.is_empty() {
+            if call.target.is_some() {
+                self.push(
+                    CfgValidationCode::InvalidCallTarget,
+                    format!("{path}/target"),
+                    "candidate-set call must not also have a single target",
+                );
+            }
+            let mut candidate_targets = BTreeSet::new();
+            for (index, candidate) in call.candidates.iter().enumerate() {
+                if !candidate_targets.insert(candidate.target) {
+                    self.push(
+                        CfgValidationCode::InvalidCallTarget,
+                        format!("{path}/candidates/{index}"),
+                        format!("duplicate candidate target 0x{:x}", candidate.target),
+                    );
+                }
+                if let Some(id) = &candidate.target_function
+                    && self.program.is_some()
+                    && !self.function_ids.contains(id)
+                {
+                    self.push(
+                        CfgValidationCode::DanglingFunctionReference,
+                        format!("{path}/candidates/{index}/target_function"),
+                        format!("candidate references missing function {id}"),
+                    );
+                }
+            }
+        }
+        if call.target_function.is_some() && call.target.is_none() {
+            self.push(
+                CfgValidationCode::InvalidCallTarget,
+                format!("{path}/target_function"),
+                "target_function requires a single resolved target",
+            );
+        }
+        if !call.unresolved
+            && !call.null_target
+            && call.target.is_none()
+            && call.candidates.is_empty()
+        {
+            self.push(
+                CfgValidationCode::InvalidCallTarget,
+                path,
+                "resolved call has no target or candidates",
+            );
+        }
+        if let Some(id) = &call.target_function
+            && self.program.is_some()
+            && !self.function_ids.contains(id)
+        {
+            self.push(
+                CfgValidationCode::DanglingFunctionReference,
+                format!("{path}/target_function"),
+                format!("call references missing function {id}"),
+            );
+        }
+    }
+}
+
+fn edge_kind_code(kind: CfgEdgeKind) -> u8 {
+    match kind {
+        CfgEdgeKind::Fallthrough => 0,
+        CfgEdgeKind::CallReturn => 1,
+        CfgEdgeKind::Branch => 2,
+        CfgEdgeKind::Jump => 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
-        CfgTerminator, FunctionCfg, ProgramCfg, architecture_root_addresses, function_view,
-        render_dot_selected, render_mermaid_selected,
+        CfgTerminator, CfgValidationCode, FunctionCfg, ProgramCfg, architecture_root_addresses,
+        function_view, render_dot_selected, render_mermaid_selected,
     };
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
     use elf2tdg_schema::{FunctionId, FunctionKind, Language};
@@ -2439,5 +3333,156 @@ mod tests {
             dwarf_error: None,
         };
         assert_eq!(architecture_root_addresses(&image), vec![0x1000, 0x1004]);
+    }
+
+    fn typed_instruction(
+        address: u64,
+        mnemonic: &str,
+        is_call: bool,
+        is_jump: bool,
+        is_return: bool,
+    ) -> CfgInstruction {
+        let mut instruction = instruction(address, mnemonic, is_call);
+        instruction.is_jump = is_jump;
+        instruction.is_return = is_return;
+        instruction
+    }
+
+    fn valid_cfg_function(address: u64, size: u64, cfg: FunctionCfg) -> CfgFunction {
+        CfgFunction {
+            id: FunctionId::new(format!("fn:0x{address:x}")),
+            primary_name: format!("sub_0x{address:x}"),
+            demangled_name: None,
+            symbols: Vec::new(),
+            language: Language::C,
+            kind: FunctionKind::Normal,
+            address,
+            size,
+            section: ".text".to_owned(),
+            source: None,
+            inline_frames: Vec::new(),
+            noreturn: None,
+            cfg,
+        }
+    }
+
+    fn valid_program() -> ProgramCfg {
+        let mut call_instruction = typed_instruction(0x1000, "call", true, false, false);
+        call_instruction.direct_target = Some(0x2000);
+        let caller = FunctionCfg::build(
+            vec![
+                block(
+                    0x1000,
+                    "call",
+                    true,
+                    vec![call(0x1000)],
+                    CfgTerminator::Call,
+                ),
+                CfgBlockDraft {
+                    address: 0x1004,
+                    size: 4,
+                    instructions: vec![typed_instruction(0x1004, "ret", false, false, true)],
+                    calls: Vec::new(),
+                    cycles: None,
+                    terminator: CfgTerminator::Return,
+                },
+            ],
+            vec![CfgEdgeDraft {
+                from: 0x1000,
+                to: 0x1004,
+                kind: CfgEdgeKind::CallReturn,
+                site: 0x1000,
+                conditional: false,
+            }],
+            Some(0x1000),
+        );
+        let mut caller = valid_cfg_function(0x1000, 8, caller);
+        let entry = caller.cfg.node_at(0x1000).expect("caller entry");
+        caller.cfg.graph[entry].instructions[0].direct_target = Some(0x2000);
+
+        let target_instruction = typed_instruction(0x2000, "ret", false, false, true);
+        let target = FunctionCfg::build(
+            vec![CfgBlockDraft {
+                address: 0x2000,
+                size: 4,
+                instructions: vec![target_instruction],
+                calls: Vec::new(),
+                cycles: None,
+                terminator: CfgTerminator::Return,
+            }],
+            Vec::new(),
+            Some(0x2000),
+        );
+        let target = valid_cfg_function(0x2000, 4, target);
+        ProgramCfg::new(vec![caller, target])
+    }
+
+    #[test]
+    fn accepts_valid_program_cfg() {
+        let program = valid_program();
+        assert!(program.validate().is_empty(), "{:#?}", program.validate());
+    }
+
+    #[test]
+    fn reports_broken_cfg_invariants() {
+        let mut noreturn_edge = valid_program();
+        let node = noreturn_edge.functions[0]
+            .cfg
+            .node_at(0x1000)
+            .expect("caller block");
+        let block = &mut noreturn_edge.functions[0].cfg.graph[node];
+        block.calls[0].noreturn = true;
+        block.terminator = CfgTerminator::NoreturnCall;
+        assert!(
+            noreturn_edge
+                .validate()
+                .iter()
+                .any(|issue| { issue.code == CfgValidationCode::InvalidEdge })
+        );
+
+        let mut bad_flags = valid_program();
+        let node = bad_flags.functions[0]
+            .cfg
+            .node_at(0x1000)
+            .expect("caller block");
+        bad_flags.functions[0].cfg.graph[node].calls[0].conditional = true;
+        bad_flags.functions[0].cfg.graph[node].calls[0].noreturn = true;
+        assert!(
+            bad_flags
+                .validate()
+                .iter()
+                .any(|issue| { issue.code == CfgValidationCode::InvalidCallFlags })
+        );
+
+        let mut dangling = valid_program();
+        dangling.functions.pop();
+        assert!(
+            dangling
+                .validate()
+                .iter()
+                .any(|issue| { issue.code == CfgValidationCode::DanglingFunctionReference })
+        );
+
+        let mut duplicate_root = valid_program();
+        duplicate_root.pointer_roots = vec![0x1000, 0x1000];
+        assert!(
+            duplicate_root
+                .validate()
+                .iter()
+                .any(|issue| { issue.code == CfgValidationCode::InvalidPointerRoot })
+        );
+
+        let mut bad_entry = valid_program();
+        let return_node = bad_entry.functions[0]
+            .cfg
+            .node_at(0x1004)
+            .expect("return block");
+        bad_entry.functions[0].cfg.entry = Some(return_node);
+        assert!(
+            bad_entry
+                .validate()
+                .iter()
+                .any(|issue| { issue.code == CfgValidationCode::InvalidEntry })
+        );
     }
 }
