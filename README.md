@@ -131,6 +131,15 @@ Implemented:
   noreturn functions get a `noreturn-call` terminator and no `call-return`
   continuation; unreachable continuation blocks are removed, while shared
   return blocks stay reachable from their other predecessors.
+- Callback registration rules emit `callback-bind` TDG edges when the callback
+  argument resolves to a concrete function. Rules cover libc/POSIX
+  `atexit`/`signal`/`qsort`/`pthread_atfork`, FreeRTOS timers, Zephyr
+  timer/work initialization and ThreadX timers; callbacks become system roots.
+- Global pointer roots are recovered from init/fini arrays, writable data, GOT
+  slots and read-only pointer tables. They seed the default CFG system scope
+  and appear in CFG JSON as `pointer_roots`. Code that references a data table
+  also follows a bounded run of function pointers, so callback/dispatch tables
+  remain in a single-root CFG slice.
 - External imports and zero-size logical task entries remain selectable CFG
   functions. Their JSON view carries a `no_code` reason and empty block list;
   DOT/Mermaid render an explicit dashed no-code note instead of an empty graph.
@@ -144,9 +153,10 @@ Implemented:
   indirect-target expressions, raw instruction bytes and source locations. Concrete instructions can be omitted
   from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
   is a multi-root system slice: main/startup, every valid vector-table ISR,
-  task/async contexts, callbacks and function-pointer escapes. Default-handler
-  stubs shared by unused vectors are excluded. `--reachable-from ROOT` narrows
-  the export to one root, and `--all-functions` exports the complete image.
+  task/async contexts, callback registrations and global function-pointer
+  roots. Default-handler stubs shared by unused vectors are excluded.
+  `--reachable-from ROOT` narrows the export to one root, and `--all-functions`
+  exports the complete image.
 - Loader/ELF view: `--view elf` renders the loaded ELF directly as a Mermaid
   layout diagram, without running CFG or TDG analysis. It shows `PT_LOAD`
   segments, allocated sections, file/memory sizes, entry point, permissions and

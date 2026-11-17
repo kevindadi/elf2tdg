@@ -118,8 +118,8 @@ this format.
 | `async-task` | task on an async executor | Embassy `Spawner::spawn`, RTIC |
 | `executor` | executor/driver context | runtime symbols |
 | `isr` | interrupt/exception handler | vector table |
-| `timer-callback` | timer callback context | `xTimerCreate`, `k_timer_init` |
-| `system-workqueue` | deferred work context | RTOS workqueue |
+| `timer-callback` | timer callback context | runtime timer rules when a service context is recoverable |
+| `system-workqueue` | deferred work context | runtime workqueue rules when a service context is recoverable |
 | `kernel-thread` | RTOS kernel thread | runtime symbols |
 | `unknown` | context exists but kind is unresolved | partial evidence |
 
@@ -175,6 +175,24 @@ and may reference the scope that provides an implicit join. Like spawn, the
 target is resolved or opaque with candidate contexts. Thread handles are often
 unresolvable at `-O2` even when symbols are available, so this is a normal
 outcome, not an error.
+
+`callback-bind` edges are emitted for recognized registration APIs when the
+callback argument resolves to a concrete function. The current rules cover
+POSIX/libc `atexit`, `__cxa_atexit`, `on_exit`, `signal`, `bsd_signal`,
+`qsort`, `bsearch`, `pthread_once`, `pthread_key_create`, `pthread_atfork`,
+`ftw`, `nftw`, `scandir`, FreeRTOS timer registration, Zephyr timer/work
+initialization and ThreadX timer creation. `target_context` remains unset when
+the callback does not have a separately identified execution context. The
+callback function is also treated as a system root, so ambiguity in the
+registration site does not hide the callback body from the default CFG scope.
+A registration alone does not synthesize a new context: timer/workqueue
+context kinds are reserved for runtimes that can identify the concrete service
+context, while `target_context` stays unset for synchronous callbacks.
+
+Global function-pointer roots are not separate TDG edges. They are used when
+selecting the default CFG system scope and are listed in CFG JSON as
+`pointer_roots`; the TDG carries an informational `pointer-roots` diagnostic
+with the recovered count.
 
 ### Lock and semaphore events
 
@@ -363,14 +381,15 @@ confidence encoding. It is supported for DOT and Mermaid only; JSON is
 unaffected.
 
 `--view cfg` switches the output from the TDG to the intermediate function
-CFG. CFG JSON uses its own `cfg_schema_version` (`1.6`), includes full
+CFG. CFG JSON uses its own `cfg_schema_version` (`1.7`), includes full
 instruction/raw-byte information by default, carries optional per-function
 inline-frame ranges from DWARF, scopes diagnostics to the selected functions
 with a `diagnostics_omitted` count, records a `no_code` reason for external or
 logical functions without machine code, and can omit instruction arrays with
 `--no-cfg-instructions`. Without a selector, the CFG is limited to
 functions reachable from a multi-root system scope (main/startup, vector-table
-ISRs, tasks and callbacks). `--reachable-from ROOT` selects one root and
+ISRs, tasks, callback registrations and global function-pointer roots).
+`--reachable-from ROOT` selects one root and
 `--all-functions` exports the complete image. Default handler stubs for unused
 vectors are excluded; code-address escapes and pointer relocations extend the
 worklist. DOT and Mermaid CFG views render function clusters, typed block edges

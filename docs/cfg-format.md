@@ -38,7 +38,7 @@ Use `--view cfg` for the intermediate CFG:
 elf2tdg firmware.elf --view cfg --format json \
     --function main --output main.cfg.json
 
-# Default system export: main + startup + ISR vectors + tasks + callbacks
+# Default system export: main + startup + ISR vectors + tasks + callbacks + pointer roots
 elf2tdg firmware.elf --view cfg --format json --output system.cfg.json
 
 # Single-root slice for focused analysis
@@ -68,20 +68,34 @@ instead of an initialization helper whose symbol happens to contain the task
 name. `--reachable-from` accepts the same selectors. Without a selector, CFG
 output uses a multi-root system scope:
 functions reachable from main/startup, all valid vector-table ISRs, task/async
-contexts, callbacks and code addresses recovered from literal/function-pointer
-escapes. `--reachable-from ROOT` narrows this to one root, and
-`--all-functions` exports the complete image.
+contexts, callback registrations, function pointers recovered from global
+data, and code addresses recovered from literal/function-pointer escapes.
+`--reachable-from ROOT` narrows this to one root, and `--all-functions` exports
+the complete image.
 
 Vector-table roots are read from `.vector_table`/`.isr_vector`-style sections.
 The initial stack word is skipped, Thumb bits are cleared and unused vectors
 that all point at a default handler symbol are excluded. The reset vector and
 real ISRs remain roots.
 
+Pointer roots are recovered from pointer-aligned words in allocated data:
+`.init_array`/`.fini_array`/`.preinit_array`/`.ctors`/`.dtors`, writable data
+and GOT sections, and read-only `.rodata`/`.srodata`/`.data.rel.ro` tables. A
+value is accepted when it already names a discovered function or when the slot
+is strong evidence (a resolved relocation, an init/fini array, a Thumb function
+pointer, or a plausible function prologue). They are listed as
+`pointer_roots` in CFG JSON and seed the default system export, so a callback
+table or global function-pointer variable can keep a function visible without
+a call edge. The TDG receives an informational `pointer-roots` diagnostic.
+
 Reachability follows TDG call, spawn, callback, join and await edges, plus CFG
 code-reference edges. It also resolves pointer-sized dynamic relocations (for
 example `R_X86_64_RELATIVE` GOT slots), so function pointers stored in
 `.got`/`.data.rel.ro` can become call or escape edges instead of remaining
-unresolved.
+unresolved. When a function references a data address, the analyzer follows a
+bounded run of pointer-aligned executable values (stopping at null, data or a
+section end), so callback/dispatch tables reachable from a single root remain
+in that root's CFG slice.
 
 By default, recursion stops at known runtime noise boundaries
 (`core::panicking`, `std::panicking`, `core::fmt`, `alloc::fmt`,
@@ -228,9 +242,10 @@ each of them.
 
 ## JSON document
 
-`cfg_schema_version` is `1.6` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.7` and is independent of the TDG schema version.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 1.1 adds an optional per-function `inline_frames` list
+functions. `pointer_roots` (version 1.7) lists executable addresses recovered
+from global pointer-sized data and is omitted when empty. Version 1.1 adds an optional per-function `inline_frames` list
 recovered from DWARF. Version 1.2 scopes diagnostics to the selected functions
 and adds `diagnostics_omitted` when other image diagnostics were filtered out.
 Version 1.3 adds an optional `no_code` descriptor for functions that have no
@@ -238,12 +253,15 @@ machine code in the image. Version 1.4 adds `null_target` to CFG call records
 whose target expression is a statically null function pointer. Version 1.5
 represents a bounded indirect target set as one call site with a `candidates`
 array instead of duplicate call records. Version 1.6 adds function and call
-`noreturn` classification and the `noreturn-call` terminator.
+`noreturn` classification and the `noreturn-call` terminator. Version 1.7 adds
+a top-level `pointer_roots` array with executable addresses recovered from
+global data.
 
 ```json
 {
-  "cfg_schema_version": "1.6",
+  "cfg_schema_version": "1.7",
   "image": { "arch": "thumb", "...": "..." },
+  "pointer_roots": ["0x8000120", "0x800013c"],
   "functions": [
     {
       "id": "fn:0x8000138",
@@ -466,6 +484,9 @@ containing basic block, so they are kept at function level with
   conservative. Computed/indirect tables remain unresolved; heap/stack
   trait-object vtable calls are handled only through bounded candidate
   resolution, not full field-sensitive points-to.
+- Pointer roots require a direct pointer-shaped function address in an
+  allocated data section. Nested pointer tables, computed function pointers,
+  encoded jump tables and pointers built at run time are not chased.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
