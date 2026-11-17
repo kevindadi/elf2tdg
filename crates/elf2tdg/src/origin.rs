@@ -345,7 +345,33 @@ pub fn resolve_vtable_slot_candidates(
         return Vec::new();
     }
     let mut candidates = BTreeSet::new();
-    for base in collect_vtable_bases(image, decoded_functions) {
+    collect_vtable_methods(
+        image,
+        collect_vtable_bases(image, decoded_functions),
+        slot,
+        pointer,
+        &mut candidates,
+    );
+    if candidates.is_empty() {
+        collect_vtable_methods(
+            image,
+            collect_dwarf_vtable_bases(image),
+            slot,
+            pointer,
+            &mut candidates,
+        );
+    }
+    candidates.into_iter().collect()
+}
+
+fn collect_vtable_methods(
+    image: &Image,
+    bases: BTreeSet<u64>,
+    slot: usize,
+    pointer: usize,
+    candidates: &mut BTreeSet<u64>,
+) {
+    for base in bases {
         let Some(method) = vtable_slot_value(image, base, slot, pointer) else {
             continue;
         };
@@ -353,11 +379,11 @@ pub fn resolve_vtable_slot_candidates(
         if image.is_executable(method) {
             candidates.insert(method);
             if candidates.len() > MAX_VTABLE_CANDIDATES {
-                return Vec::new();
+                candidates.clear();
+                return;
             }
         }
     }
-    candidates.into_iter().collect()
 }
 
 /// Returns raw values stored at `slot` in candidate vtable-shaped tables.
@@ -379,16 +405,42 @@ pub fn resolve_vtable_slot_values(
         return Vec::new();
     }
     let mut values = BTreeSet::new();
-    for base in collect_vtable_bases(image, decoded_functions) {
+    collect_vtable_values(
+        image,
+        collect_vtable_bases(image, decoded_functions),
+        slot,
+        pointer,
+        &mut values,
+    );
+    if values.is_empty() {
+        collect_vtable_values(
+            image,
+            collect_dwarf_vtable_bases(image),
+            slot,
+            pointer,
+            &mut values,
+        );
+    }
+    values.into_iter().collect()
+}
+
+fn collect_vtable_values(
+    image: &Image,
+    bases: BTreeSet<u64>,
+    slot: usize,
+    pointer: usize,
+    values: &mut BTreeSet<u64>,
+) {
+    for base in bases {
         let Some(value) = vtable_slot_value(image, base, slot, pointer) else {
             continue;
         };
         values.insert(value);
         if values.len() > MAX_VTABLE_CANDIDATES {
-            return Vec::new();
+            values.clear();
+            return;
         }
     }
-    values.into_iter().collect()
 }
 
 fn collect_vtable_bases(image: &Image, decoded_functions: &[&[DecodedInsn]]) -> BTreeSet<u64> {
@@ -411,6 +463,138 @@ fn collect_vtable_bases(image: &Image, decoded_functions: &[&[DecodedInsn]]) -> 
         }
     }
     bases
+}
+
+fn collect_dwarf_vtable_bases(image: &Image) -> BTreeSet<u64> {
+    let Some(dwarf) = image.dwarf.as_ref() else {
+        return BTreeSet::new();
+    };
+    let mut bases = BTreeSet::new();
+    for vtable in &dwarf.vtables {
+        add_vtable_base(image, &mut bases, vtable.address);
+    }
+    let mut visited = BTreeSet::new();
+    for variable in &dwarf.variables {
+        let Some(address) = variable.address else {
+            continue;
+        };
+        if let Some(aggregate) = variable.aggregate_index {
+            collect_typed_trait_vtables(
+                image,
+                dwarf,
+                aggregate,
+                address,
+                0,
+                &mut bases,
+                &mut visited,
+            );
+        }
+        if let Some(element) = variable.element_aggregate_index
+            && let Some(count) = variable.array_count
+            && let Some(size) = dwarf
+                .aggregates
+                .get(element)
+                .and_then(|aggregate| aggregate.byte_size)
+        {
+            for index in 0..count.min(256) {
+                let Some(object) = index
+                    .checked_mul(size)
+                    .and_then(|offset| address.checked_add(offset))
+                else {
+                    break;
+                };
+                collect_typed_trait_vtables(
+                    image,
+                    dwarf,
+                    element,
+                    object,
+                    0,
+                    &mut bases,
+                    &mut visited,
+                );
+            }
+        }
+    }
+    if bases.len() > MAX_VTABLE_BASES {
+        BTreeSet::new()
+    } else {
+        bases
+    }
+}
+
+fn add_vtable_base(image: &Image, bases: &mut BTreeSet<u64>, address: u64) -> bool {
+    let address = image.canonical_address(address);
+    if is_read_only_data(image, address) {
+        bases.insert(address);
+        bases.len() <= MAX_VTABLE_BASES
+    } else {
+        true
+    }
+}
+
+fn collect_typed_trait_vtables(
+    image: &Image,
+    dwarf: &crate::dwarf::DwarfInfo,
+    aggregate_index: usize,
+    object: u64,
+    depth: usize,
+    bases: &mut BTreeSet<u64>,
+    visited: &mut BTreeSet<(usize, u64)>,
+) {
+    if depth > 8 || bases.len() > MAX_VTABLE_BASES || !visited.insert((aggregate_index, object)) {
+        return;
+    }
+    if let Some(layout) = dwarf.trait_object_layout(aggregate_index) {
+        if let Some(slot) = object.checked_add(layout.vtable_offset)
+            && let Some(value) = image.read_uint(slot, pointer_size(image.arch))
+        {
+            add_vtable_base(image, bases, value);
+        }
+        return;
+    }
+    let Some(aggregate) = dwarf.aggregates.get(aggregate_index) else {
+        return;
+    };
+    for member in &aggregate.members {
+        let Some(member_address) = object.checked_add(member.offset) else {
+            continue;
+        };
+        if let Some(child) = member.aggregate_index {
+            collect_typed_trait_vtables(
+                image,
+                dwarf,
+                child,
+                member_address,
+                depth + 1,
+                bases,
+                visited,
+            );
+        }
+        if let Some(element) = member.element_aggregate_index
+            && let Some(size) = dwarf
+                .aggregates
+                .get(element)
+                .and_then(|aggregate| aggregate.byte_size)
+        {
+            for index in 0..member.array_count.unwrap_or(0).min(256) {
+                let Some(object) = index
+                    .checked_mul(size)
+                    .and_then(|offset| member_address.checked_add(offset))
+                else {
+                    break;
+                };
+                collect_typed_trait_vtables(
+                    image,
+                    dwarf,
+                    element,
+                    object,
+                    depth + 1,
+                    bases,
+                    visited,
+                );
+            }
+        }
+    }
 }
 
 fn vtable_slot_value(image: &Image, base: u64, slot: usize, pointer: usize) -> Option<u64> {
