@@ -11,10 +11,13 @@ use elf2tdg_schema::{
 
 use petgraph::stable_graph::NodeIndex;
 
-use crate::arch::{DecodedInsn, Decoder, IndirectTarget, ValueSource, pointer_size};
+use crate::arch::{
+    DecodedInsn, Decoder, IndirectTarget, ValueSource, is_frame_register, pointer_size,
+    return_register,
+};
 use crate::cfg;
 use crate::error::{Error, Result};
-use crate::loader::{ByteOrder, ElfKind, Image, Section, VectorEntry};
+use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section, VectorEntry};
 use crate::origin;
 use crate::rules;
 use crate::timing::{CORE_DOMAIN, TimingModel};
@@ -22,6 +25,7 @@ use crate::timing::{CORE_DOMAIN, TimingModel};
 const DEFAULT_MAX_FUNCTIONS: usize = 20_000;
 const DEFAULT_MAX_INSTRUCTIONS_PER_FUNCTION: usize = 200_000;
 const DEFAULT_MAX_DIAGNOSTICS: usize = 500;
+const MAX_COMPUTED_CALL_CANDIDATES: usize = 32;
 
 /// Analysis configuration.
 #[derive(Clone, Debug)]
@@ -251,6 +255,7 @@ impl<'a> Analyzer<'a> {
         }
 
         self.resolve_remaining_functions()?;
+        self.resolve_computed_indirect_calls();
         self.resolve_embassy_executor_calls();
         self.resolve_trait_object_calls();
         self.resolve_calls();
@@ -2190,6 +2195,200 @@ impl<'a> Analyzer<'a> {
         changed
     }
 
+    /// Resolves unresolved indirect calls whose target comes from an indexed
+    /// function-pointer table or from the return value of a direct callee.
+    ///
+    /// Both patterns are common at `-O0`: `commands[i]()` and
+    /// `get_handler()()`. Only targets that already have function nodes are
+    /// accepted, and candidate sets are bounded.
+    fn resolve_computed_indirect_calls(&mut self) -> bool {
+        let sites = self.unresolved_call_sites();
+        if sites.is_empty() {
+            return false;
+        }
+        let mut return_cache: BTreeMap<u64, Option<Vec<u64>>> = BTreeMap::new();
+        let mut resolutions = Vec::new();
+        for (caller, site, tail, conditional) in sites {
+            let Some(decoded) = self.decoded_by_function.get(&caller) else {
+                continue;
+            };
+            let Some(instruction) = decoded
+                .iter()
+                .find(|instruction| instruction.address == site && instruction.is_call)
+            else {
+                continue;
+            };
+            let Some(reference) = instruction.indirect else {
+                continue;
+            };
+            let mut table_targets =
+                origin::resolve_indexed_call_targets(self.image, decoded, site, reference)
+                    .and_then(|targets| self.known_call_targets(targets));
+            if table_targets.is_none()
+                && matches!(self.image.arch, ArchKind::Riscv32 | ArchKind::Riscv64)
+                && let IndirectTarget::Register(register) = reference
+            {
+                table_targets =
+                    origin::resolve_riscv_jump_table(self.image, decoded, site, register)
+                        .and_then(|targets| self.known_call_targets(targets));
+            }
+            if let Some(table_targets) = table_targets
+                && (1..=MAX_COMPUTED_CALL_CANDIDATES).contains(&table_targets.len())
+            {
+                let count = table_targets.len();
+                resolutions.push(CandidateCallResolution {
+                    caller,
+                    site,
+                    targets: table_targets,
+                    tail,
+                    conditional,
+                    code: "resolved-call-table",
+                    message: format!(
+                        "indirect call at 0x{site:x} has {count} candidate target(s) from an indexed function-pointer table"
+                    ),
+                });
+                continue;
+            }
+            let IndirectTarget::Register(register) = reference else {
+                continue;
+            };
+            let Some((callee, callee_site)) = origin::returned_call_before(decoded, site, register)
+            else {
+                continue;
+            };
+            let Some(callee) = self.resolve_function_address(self.image.canonical_address(callee))
+            else {
+                continue;
+            };
+            let candidates = return_cache
+                .entry(callee)
+                .or_insert_with(|| self.return_pointer_candidates(callee));
+            let Some(candidates) = candidates else {
+                continue;
+            };
+            let Some(targets) = self.known_call_targets(candidates.iter().copied()) else {
+                continue;
+            };
+            if !(1..=MAX_COMPUTED_CALL_CANDIDATES).contains(&targets.len()) {
+                continue;
+            }
+            let count = targets.len();
+            resolutions.push(CandidateCallResolution {
+                caller,
+                site,
+                targets,
+                tail,
+                conditional,
+                code: "resolved-returned-indirect-call",
+                message: format!(
+                    "indirect call at 0x{site:x} uses the return value of 0x{callee:x} (call at 0x{callee_site:x}) with {count} candidate target(s)"
+                ),
+            });
+        }
+        self.apply_candidate_calls(resolutions)
+    }
+
+    fn unresolved_call_sites(&self) -> Vec<(u64, u64, bool, bool)> {
+        let mut sites = BTreeSet::new();
+        for (&caller, function) in &self.functions {
+            for node in function.cfg.blocks_by_address.values() {
+                for call in &function.cfg.graph[*node].calls {
+                    if call.unresolved {
+                        sites.insert((caller, call.site, call.tail, call.conditional));
+                    }
+                }
+            }
+            for call in &function.cfg.recovered_calls {
+                if call.unresolved {
+                    sites.insert((caller, call.site, call.tail, call.conditional));
+                }
+            }
+        }
+        sites.into_iter().collect()
+    }
+
+    fn known_call_targets(&self, targets: impl IntoIterator<Item = u64>) -> Option<Vec<u64>> {
+        let mut known = BTreeSet::new();
+        for target in targets {
+            let target = self.image.canonical_address(target);
+            if !self.functions.contains_key(&target) {
+                return None;
+            }
+            known.insert(target);
+        }
+        (!known.is_empty()).then(|| known.into_iter().collect())
+    }
+
+    /// Summarizes the function-pointer values a direct callee can return.
+    ///
+    /// The search walks backwards from each reachable return, across basic
+    /// blocks, until it finds the latest write to the ABI return register on
+    /// every path. A call before that definition makes the path unknowable
+    /// because the call clobbers the register. Any unresolved, null or
+    /// non-executable return makes the whole summary unusable.
+    fn return_pointer_candidates(&self, address: u64) -> Option<Vec<u64>> {
+        let function = self.functions.get(&address)?;
+        if matches!(function.kind, FunctionKind::Plt | FunctionKind::External) {
+            return None;
+        }
+        let decoded = self.decoded_by_function.get(&address)?;
+        let entry = function.cfg.entry?;
+        let register = return_register(self.image.arch);
+        let mut reachable = BTreeSet::new();
+        let mut pending = vec![entry];
+        while let Some(node) = pending.pop() {
+            if reachable.insert(node) {
+                pending.extend(
+                    function
+                        .cfg
+                        .graph
+                        .neighbors_directed(node, petgraph::Direction::Outgoing),
+                );
+            }
+        }
+        let mut values = BTreeSet::new();
+        let mut returns = 0usize;
+        for node in reachable {
+            let block = &function.cfg.graph[node];
+            for instruction in &block.instructions {
+                if !instruction.is_return {
+                    continue;
+                }
+                returns += 1;
+                let mut visited = BTreeSet::new();
+                if !collect_return_definitions(
+                    self.image,
+                    &function.cfg,
+                    decoded,
+                    node,
+                    Some(instruction.address),
+                    register,
+                    &mut visited,
+                    &mut values,
+                ) {
+                    return None;
+                }
+            }
+        }
+        if returns == 0 || values.is_empty() {
+            return None;
+        }
+        let mut candidates = Vec::new();
+        for value in values {
+            if value == 0 {
+                return None;
+            }
+            let canonical = self.image.canonical_address(value);
+            if !self.image.is_executable(canonical) {
+                return None;
+            }
+            candidates.push(canonical);
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        (candidates.len() <= MAX_COMPUTED_CALL_CANDIDATES).then_some(candidates)
+    }
+
     fn resolve_forwarded_indirect_calls(&mut self) -> bool {
         let callers = self.callers_by_target();
         if callers.is_empty() {
@@ -3044,6 +3243,119 @@ fn classify_noreturn_names<'a>(
         .into_iter()
         .any(rules::is_noreturn_name)
         .then_some(cfg::CfgNoreturnReason::Api)
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn collect_return_definitions(
+    image: &Image,
+    function_cfg: &cfg::FunctionCfg,
+    decoded: &[DecodedInsn],
+    node: NodeIndex,
+    before: Option<u64>,
+    register: capstone::RegId,
+    visited: &mut BTreeSet<(NodeIndex, capstone::RegId, u64)>,
+    values: &mut BTreeSet<u64>,
+) -> bool {
+    if visited.len() > 512 {
+        return false;
+    }
+    let key = (node, register, before.unwrap_or(u64::MAX));
+    if !visited.insert(key) {
+        // A loop back-edge was already explored on another path.
+        return true;
+    }
+    let block = &function_cfg.graph[node];
+    let mut definition = None;
+    for instruction in block.instructions.iter().rev() {
+        if before.is_some_and(|before| instruction.address >= before) {
+            continue;
+        }
+        let Ok(index) =
+            decoded.binary_search_by_key(&instruction.address, |decoded| decoded.address)
+        else {
+            continue;
+        };
+        if let Some(effect) = decoded[index].value
+            && effect.dest == register
+        {
+            definition = Some((index, effect.source));
+            break;
+        }
+        if decoded[index].is_call {
+            // The call clobbers the register; its own return summary would be
+            // needed to describe this path.
+            return false;
+        }
+    }
+    if let Some((index, source)) = definition {
+        return match source {
+            ValueSource::Copy(source) => collect_return_definitions(
+                image,
+                function_cfg,
+                decoded,
+                node,
+                Some(decoded[index].address),
+                source,
+                visited,
+                values,
+            ),
+            ValueSource::Select { left, right } => {
+                for source in [left, right] {
+                    if !collect_return_definitions(
+                        image,
+                        function_cfg,
+                        decoded,
+                        node,
+                        Some(decoded[index].address),
+                        source,
+                        visited,
+                        values,
+                    ) {
+                        return false;
+                    }
+                }
+                true
+            }
+            ValueSource::LoadFromRegister { base, disp } if is_frame_register(image.arch, base) => {
+                let Some(candidates) =
+                    origin::resolve_stack_slot_candidates(image, decoded, base, disp)
+                else {
+                    return false;
+                };
+                values.extend(candidates);
+                true
+            }
+            ValueSource::AddRegister { .. }
+            | ValueSource::IndexedLoad { .. }
+            | ValueSource::ShiftRegister { .. } => false,
+            _ => origin::resolve_definition_value(image, decoded, index).is_some_and(|value| {
+                values.insert(value);
+                true
+            }),
+        };
+    }
+    let mut predecessors = function_cfg
+        .graph
+        .neighbors_directed(node, petgraph::Direction::Incoming)
+        .peekable();
+    if predecessors.peek().is_none() {
+        return false;
+    }
+    for predecessor in predecessors {
+        if !collect_return_definitions(
+            image,
+            function_cfg,
+            decoded,
+            predecessor,
+            None,
+            register,
+            visited,
+            values,
+        ) {
+            return false;
+        }
+    }
+    true
 }
 
 fn cfg_may_return(function_cfg: &cfg::FunctionCfg) -> bool {
