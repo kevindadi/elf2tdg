@@ -460,6 +460,103 @@ int main(int argc, char **argv) { return dispatch(argc); }
 }
 
 #[test]
+fn resolves_absolute_pointer_table_without_base_register() {
+    let source = r"
+.text
+.globl dispatch
+.type dispatch,@function
+dispatch:
+    cmp $3, %edi
+    ja .Ldef
+    mov table(,%rdi,8), %rax
+    jmp *%rax
+.Lc0:
+    mov $11, %eax
+    ret
+.Lc1:
+    mov $23, %eax
+    ret
+.Lc2:
+    mov $37, %eax
+    ret
+.Lc3:
+    mov $41, %eax
+    ret
+.Ldef:
+    mov $-1, %eax
+    ret
+.size dispatch, .-dispatch
+
+.globl main
+main:
+    mov $2, %edi
+    jmp dispatch
+
+.section .rodata
+.align 8
+table:
+    .quad .Lc0
+    .quad .Lc1
+    .quad .Lc2
+    .quad .Lc3
+";
+    let Some(binary) = compile_with_optimization("gcc", "switch_absolute_ptr.s", source, "-O2")
+    else {
+        return;
+    };
+    assert_eq!(assert_jump_table_resolved(&binary, 4), 4);
+}
+
+#[test]
+fn resolves_absolute_offset_table_without_base_register() {
+    let source = r"
+.text
+.globl dispatch
+.type dispatch,@function
+dispatch:
+    cmp $3, %edi
+    ja .Ldef
+    lea table(%rip), %rdx
+    movslq table(,%rdi,4), %rax
+    add %rdx, %rax
+    jmp *%rax
+.Lc0:
+    mov $11, %eax
+    ret
+.Lc1:
+    mov $23, %eax
+    ret
+.Lc2:
+    mov $37, %eax
+    ret
+.Lc3:
+    mov $41, %eax
+    ret
+.Ldef:
+    mov $-1, %eax
+    ret
+.size dispatch, .-dispatch
+
+.globl main
+main:
+    mov $2, %edi
+    jmp dispatch
+
+.section .rodata
+.align 4
+table:
+    .long .Lc0-table
+    .long .Lc1-table
+    .long .Lc2-table
+    .long .Lc3-table
+";
+    let Some(binary) = compile_with_optimization("gcc", "switch_absolute.s", source, "-O2") else {
+        return;
+    };
+    assert_eq!(assert_jump_table_resolved(&binary, 4), 4);
+}
+
+#[test]
 fn resolves_pie_relative_switch_jump_table_edges() {
     let source = r"
 volatile int sink;
@@ -834,4 +931,85 @@ table:
         return;
     };
     assert_eq!(assert_jump_table_resolved(&binary, 4), 4);
+}
+
+#[test]
+fn recovers_aarch64_exception_vector_roots() {
+    let source = r#"
+.section .vectors, "ax", @progbits
+.globl vectors
+vectors:
+    b reset
+    .space 124, 0
+    b irq
+    .space 124, 0
+
+.text
+.globl reset
+reset:
+    ret
+.globl irq
+irq:
+    ret
+.globl dispatch
+dispatch:
+    ret
+"#;
+    let Some(binary) = compile_aarch64("vectors_aarch64.s", source) else {
+        return;
+    };
+    let image = loader::load(&binary).expect("AArch64 vector fixture must load");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let roots = analysis.cfg.system_roots(&analysis.tdg, &image);
+    let names: Vec<&str> = roots
+        .iter()
+        .filter_map(|id| analysis.cfg.function(id))
+        .map(|function| function.primary_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"reset"),
+        "missing reset vector root: {names:?}"
+    );
+    assert!(names.contains(&"irq"), "missing IRQ vector root: {names:?}");
+}
+
+#[test]
+fn recovers_riscv_trap_vector_roots() {
+    let source = r#"
+.option norvc
+.section .trap, "ax", @progbits
+.globl trap_entry
+trap_entry:
+    j trap_handler
+    nop
+
+.text
+.globl trap_handler
+trap_handler:
+    ret
+.globl dispatch
+dispatch:
+    ret
+"#;
+    let Some(binary) = compile_riscv64("trap_riscv64.s", source) else {
+        return;
+    };
+    let image = loader::load(&binary).expect("RISC-V trap fixture must load");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let roots = analysis.cfg.system_roots(&analysis.tdg, &image);
+    let names: Vec<&str> = roots
+        .iter()
+        .filter_map(|id| analysis.cfg.function(id))
+        .map(|function| function.primary_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"trap_entry"),
+        "missing trap vector base root: {names:?}"
+    );
+    assert!(
+        names.contains(&"trap_handler"),
+        "missing trap dispatch target root: {names:?}"
+    );
 }
