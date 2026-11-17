@@ -22,7 +22,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.6";
+pub const CFG_SCHEMA_VERSION: &str = "1.7";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -497,6 +497,10 @@ pub struct CfgFunction {
 pub struct ProgramCfg {
     /// Functions sorted by address.
     pub functions: Vec<CfgFunction>,
+    /// Executable addresses recovered from pointer-sized words in allocated
+    /// data sections. These are additional system roots for functions that
+    /// are only reachable through callback tables or global function pointers.
+    pub pointer_roots: Vec<u64>,
 }
 
 impl CfgFunction {
@@ -537,7 +541,10 @@ impl ProgramCfg {
     #[must_use]
     pub fn new(mut functions: Vec<CfgFunction>) -> Self {
         functions.sort_by_key(|function| function.address);
-        Self { functions }
+        Self {
+            functions,
+            pointer_roots: Vec::new(),
+        }
     }
 
     /// Looks up a function by ID.
@@ -760,6 +767,14 @@ impl ProgramCfg {
         for edge in &tdg.edges {
             if let Edge::CallbackBind { callback, .. } = edge {
                 roots.insert(callback.clone());
+            }
+        }
+        for address in &self.pointer_roots {
+            if let Some(function) = self.function_covering(*address)
+                && !is_default_handler(function)
+                && !matches!(function.kind, FunctionKind::Plt | FunctionKind::External)
+            {
+                roots.insert(function.id.clone());
             }
         }
         if let Some(function) = self.function_covering(image.canonical_address(image.entry)) {
@@ -1140,6 +1155,8 @@ fn tdg_reachability(tdg: &Tdg) -> BTreeMap<FunctionId, Vec<FunctionId>> {
 struct CfgDocument<'a> {
     cfg_schema_version: &'static str,
     image: &'a ImageInfo,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pointer_roots: Vec<Addr>,
     functions: Vec<CfgFunctionView>,
     diagnostics: Vec<&'a Diagnostic>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -1327,6 +1344,12 @@ pub fn render_json_selected(
     let document = CfgDocument {
         cfg_schema_version: CFG_SCHEMA_VERSION,
         image: &tdg.image,
+        pointer_roots: program
+            .pointer_roots
+            .iter()
+            .copied()
+            .map(Addr::new)
+            .collect(),
         functions,
         diagnostics,
         diagnostics_omitted,

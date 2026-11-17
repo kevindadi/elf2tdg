@@ -31,6 +31,8 @@ pub enum RuleOp {
     Scope,
     /// Lock/semaphore operation.
     Lock,
+    /// Registration of a callback/function pointer.
+    Callback,
 }
 
 /// Lock metadata attached to a [`RuleOp::Lock`] rule.
@@ -88,6 +90,8 @@ pub struct Rule {
     pub entry_arg: Option<usize>,
     /// Lock/semaphore classification for [`RuleOp::Lock`].
     pub lock: Option<LockSpec>,
+    /// Callback entry argument indices for [`RuleOp::Callback`].
+    pub callback_args: Option<&'static [usize]>,
 }
 
 const fn spawn(
@@ -113,6 +117,7 @@ const fn spawn(
         filter_runtime_caller,
         entry_arg: None,
         lock: None,
+        callback_args: None,
     }
 }
 
@@ -138,6 +143,7 @@ const fn spawn_c(
         filter_runtime_caller: true,
         entry_arg: Some(entry_arg),
         lock: None,
+        callback_args: None,
     }
 }
 
@@ -163,6 +169,7 @@ const fn join(
         filter_runtime_caller,
         entry_arg: None,
         lock: None,
+        callback_args: None,
     }
 }
 
@@ -188,6 +195,7 @@ const fn await_rule(
         filter_runtime_caller,
         entry_arg: None,
         lock: None,
+        callback_args: None,
     }
 }
 
@@ -214,6 +222,32 @@ const fn lock(
         filter_runtime_caller,
         entry_arg: None,
         lock: Some(LockSpec { kind, operation }),
+        callback_args: None,
+    }
+}
+
+const fn callback(
+    runtime: &'static str,
+    api: &'static str,
+    matcher: Matcher,
+    confidence: Confidence,
+    entry_args: &'static [usize],
+) -> Rule {
+    Rule {
+        runtime,
+        api,
+        op: RuleOp::Callback,
+        spawn_kind: SpawnKind::Unknown,
+        scope_kind: ScopeKind::Unknown,
+        join_kind: JoinKind::Unknown,
+        await_kind: AwaitKind::Unknown,
+        matcher,
+        confidence,
+        closure_generic: false,
+        filter_runtime_caller: false,
+        entry_arg: None,
+        lock: None,
+        callback_args: Some(entry_args),
     }
 }
 
@@ -553,6 +587,154 @@ static RULES: &[Rule] = &[
         Matcher::RawExact("tx_thread_terminate"),
         Confidence::High,
         true,
+    ),
+    // ---- Callback / function-pointer registration -----------------------
+    callback(
+        "libc",
+        "atexit",
+        Matcher::RawExact("atexit"),
+        Confidence::High,
+        &[0],
+    ),
+    callback(
+        "libc",
+        "__cxa_atexit",
+        Matcher::RawExact("__cxa_atexit"),
+        Confidence::High,
+        &[0],
+    ),
+    callback(
+        "libc",
+        "on_exit",
+        Matcher::RawExact("on_exit"),
+        Confidence::High,
+        &[0],
+    ),
+    callback(
+        "libc",
+        "signal",
+        Matcher::RawExact("signal"),
+        Confidence::High,
+        &[1],
+    ),
+    callback(
+        "libc",
+        "bsd_signal",
+        Matcher::RawExact("bsd_signal"),
+        Confidence::High,
+        &[1],
+    ),
+    callback(
+        "libc",
+        "qsort",
+        Matcher::RawExact("qsort"),
+        Confidence::High,
+        &[3],
+    ),
+    callback(
+        "libc",
+        "bsearch",
+        Matcher::RawExact("bsearch"),
+        Confidence::High,
+        &[4],
+    ),
+    callback(
+        "pthread",
+        "pthread_once",
+        Matcher::RawExact("pthread_once"),
+        Confidence::High,
+        &[1],
+    ),
+    callback(
+        "pthread",
+        "pthread_key_create",
+        Matcher::RawExact("pthread_key_create"),
+        Confidence::High,
+        &[1],
+    ),
+    callback(
+        "pthread",
+        "pthread_atfork",
+        Matcher::RawExact("pthread_atfork"),
+        Confidence::High,
+        &[0, 1, 2],
+    ),
+    callback(
+        "libc",
+        "ftw",
+        Matcher::RawExact("ftw"),
+        Confidence::Medium,
+        &[1],
+    ),
+    callback(
+        "libc",
+        "nftw",
+        Matcher::RawExact("nftw"),
+        Confidence::Medium,
+        &[1],
+    ),
+    callback(
+        "libc",
+        "scandir",
+        Matcher::RawExact("scandir"),
+        Confidence::Medium,
+        &[2, 3],
+    ),
+    callback(
+        "freertos",
+        "xTimerCreate",
+        Matcher::RawExact("xTimerCreate"),
+        Confidence::High,
+        &[4],
+    ),
+    callback(
+        "freertos",
+        "xTimerCreateStatic",
+        Matcher::RawExact("xTimerCreateStatic"),
+        Confidence::High,
+        &[4],
+    ),
+    callback(
+        "freertos",
+        "xTimerPendFunctionCall",
+        Matcher::RawExact("xTimerPendFunctionCall"),
+        Confidence::High,
+        &[0],
+    ),
+    callback(
+        "freertos",
+        "xTimerPendFunctionCallFromISR",
+        Matcher::RawExact("xTimerPendFunctionCallFromISR"),
+        Confidence::High,
+        &[0],
+    ),
+    callback(
+        "zephyr",
+        "k_timer_init",
+        Matcher::RawExact("k_timer_init"),
+        Confidence::High,
+        &[1, 2],
+    ),
+    callback(
+        "zephyr",
+        "z_impl_k_timer_init",
+        Matcher::RawExact("z_impl_k_timer_init"),
+        Confidence::High,
+        &[1, 2],
+    ),
+    callback(
+        "zephyr",
+        "k_work_init",
+        Matcher::RawExact("k_work_init"),
+        Confidence::High,
+        &[1],
+    ),
+    callback(
+        "threadx",
+        "tx_timer_create",
+        Matcher::RawExact("tx_timer_create"),
+        Confidence::High,
+        &[2],
     ),
     // ---- pthread / POSIX -------------------------------------------------
     lock(
@@ -1393,6 +1575,24 @@ mod tests {
             Some("Z4mainEUlvE_")
         );
         assert_eq!(cpp_callable_marker("_ZNSt6threadD1Ev"), None);
+    }
+
+    #[test]
+    fn matches_callback_registration_rules() {
+        let qsort = function("qsort", &["qsort"], Language::C);
+        let rule = match_function(&qsort).expect("qsort callback rule");
+        assert_eq!(rule.op, RuleOp::Callback);
+        assert_eq!(rule.callback_args, Some(&[3][..]));
+
+        let atfork = function("pthread_atfork", &["pthread_atfork"], Language::C);
+        let rule = match_function(&atfork).expect("pthread_atfork callback rule");
+        assert_eq!(rule.op, RuleOp::Callback);
+        assert_eq!(rule.callback_args, Some(&[0, 1, 2][..]));
+
+        let timer = function("xTimerCreate", &["xTimerCreate"], Language::C);
+        let rule = match_function(&timer).expect("FreeRTOS timer callback rule");
+        assert_eq!(rule.op, RuleOp::Callback);
+        assert_eq!(rule.callback_args, Some(&[4][..]));
     }
 
     #[test]

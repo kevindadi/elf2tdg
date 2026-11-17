@@ -14,7 +14,7 @@ use petgraph::stable_graph::NodeIndex;
 use crate::arch::{DecodedInsn, Decoder, IndirectTarget, ValueSource, pointer_size};
 use crate::cfg;
 use crate::error::{Error, Result};
-use crate::loader::{ByteOrder, ElfKind, Image, VectorEntry};
+use crate::loader::{ByteOrder, ElfKind, Image, Section, VectorEntry};
 use crate::origin;
 use crate::rules;
 use crate::timing::{CORE_DOMAIN, TimingModel};
@@ -95,6 +95,7 @@ struct Analyzer<'a> {
     diagnostic_keys: BTreeSet<(String, Option<u64>, Option<u64>)>,
     startup_address: Option<u64>,
     isr_vectors: Vec<VectorEntry>,
+    pointer_roots: BTreeSet<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -163,6 +164,7 @@ impl<'a> Analyzer<'a> {
             diagnostic_keys: BTreeSet::new(),
             startup_address: None,
             isr_vectors: Vec::new(),
+            pointer_roots: BTreeSet::new(),
         };
         analyzer.discover_functions()?;
         analyzer.discover_external_imports()?;
@@ -375,6 +377,8 @@ impl<'a> Analyzer<'a> {
             }
         }
 
+        self.discover_pointer_roots(&mut seeds);
+
         if seeds.is_empty() {
             return Ok(());
         }
@@ -483,6 +487,73 @@ impl<'a> Analyzer<'a> {
             function.kind = FunctionKind::Entry;
         }
         Ok(())
+    }
+
+    /// Adds function entries referenced by pointer-sized words in allocated
+    /// data sections and remembers them as pointer roots.
+    ///
+    /// A value is accepted when it already names a discovered function seed or
+    /// when the slot/table itself is strong evidence: a resolved relocation,
+    /// an init/fini array, a Thumb function pointer, or a plausible function
+    /// prologue. This avoids treating arbitrary integers that happen to look
+    /// like code addresses as roots.
+    fn discover_pointer_roots(&mut self, seeds: &mut BTreeMap<u64, Seed>) {
+        let pointer = u64::try_from(pointer_size(self.image.arch)).unwrap_or(0);
+        if pointer == 0 {
+            return;
+        }
+        let mut roots = BTreeSet::new();
+        for section in &self.image.sections {
+            if !is_pointer_root_section(section) {
+                continue;
+            }
+            let data_len = u64::try_from(section.data.len()).unwrap_or(u64::MAX);
+            let mut offset = (pointer - (section.address % pointer)) % pointer;
+            while offset.saturating_add(pointer) <= data_len {
+                let address = section.address.saturating_add(offset);
+                if let Some(value) = self.image.read_pointer(address) {
+                    let target = self.image.canonical_address(value);
+                    if value != 0 && self.image.is_executable(target) {
+                        let known = seeds.contains_key(&target);
+                        let strong = self.image.relocated_pointers.contains_key(&address)
+                            || is_static_init_array(&section.name)
+                            || (self.image.arch.is_arm_family() && (value & 1) == 1)
+                            || self.looks_like_function(target);
+                        if known || strong {
+                            if !known {
+                                seeds.entry(target).or_insert_with(|| Seed {
+                                    names: Vec::new(),
+                                    size: 0,
+                                    section: self.image.section_name_for(target).map(str::to_owned),
+                                });
+                            }
+                            roots.insert(target);
+                        }
+                    }
+                }
+                offset = offset.saturating_add(pointer);
+            }
+        }
+        if !roots.is_empty() {
+            self.diag(
+                Severity::Info,
+                "pointer-roots",
+                format!(
+                    "recovered {} function pointer root(s) from allocated data",
+                    roots.len()
+                ),
+                None,
+                None,
+            );
+        }
+        self.pointer_roots = roots;
+    }
+
+    fn looks_like_function(&self, address: u64) -> bool {
+        self.image
+            .bytes_at(address, 16)
+            .and_then(|bytes| self.decoder.decode_one(bytes, address).ok().flatten())
+            .is_some_and(|insn| self.is_prologue_seed(&insn, address))
     }
 
     fn has_code_symbols(&self) -> bool {
@@ -1432,14 +1503,13 @@ impl<'a> Analyzer<'a> {
     }
 
     fn collect_code_references(&self, instruction: &DecodedInsn, out: &mut BTreeSet<u64>) {
-        let mut values = Vec::new();
         if let Some(effect) = instruction.value {
             match effect.source {
-                ValueSource::Immediate(value) | ValueSource::Address(value) => values.push(value),
+                ValueSource::Immediate(value) | ValueSource::Address(value) => {
+                    self.collect_pointer_references(value, out);
+                }
                 ValueSource::LoadAddress(address) => {
-                    if let Some(value) = self.image.read_pointer(address) {
-                        values.push(value);
-                    }
+                    self.collect_loaded_pointer(address, out);
                 }
                 ValueSource::LoadFromRegister { .. }
                 | ValueSource::Copy(_)
@@ -1450,16 +1520,58 @@ impl<'a> Analyzer<'a> {
                 | ValueSource::ShiftRegister { .. } => {}
             }
         }
-        if let Some(IndirectTarget::Memory(address)) = instruction.indirect
-            && let Some(value) = self.image.read_pointer(address)
-        {
-            values.push(value);
+        if let Some(IndirectTarget::Memory(address)) = instruction.indirect {
+            self.collect_loaded_pointer(address, out);
         }
-        for value in values {
-            let address = self.image.canonical_address(value);
-            if self.image.is_executable(address) {
-                out.insert(address);
+    }
+
+    fn collect_loaded_pointer(&self, address: u64, out: &mut BTreeSet<u64>) {
+        let Some(value) = self.image.read_pointer(address) else {
+            return;
+        };
+        let target = self.image.canonical_address(value);
+        if self.image.is_executable(target) {
+            out.insert(target);
+        }
+    }
+
+    /// Adds an executable address, or a bounded run of function pointers
+    /// starting at a data address, to this function's referenced addresses.
+    ///
+    /// Scanning stops at a null word, a non-executable value, a section end or
+    /// a small safety limit. This recovers callback/dispatch tables that a
+    /// function loads from global data even when the indirect call itself
+    /// cannot be resolved.
+    fn collect_pointer_references(&self, value: u64, out: &mut BTreeSet<u64>) {
+        let address = self.image.canonical_address(value);
+        if self.image.is_executable(address) {
+            out.insert(address);
+            return;
+        }
+        let pointer = u64::try_from(pointer_size(self.image.arch)).unwrap_or(0);
+        if pointer == 0 || !address.is_multiple_of(pointer) {
+            return;
+        }
+        let Some(end) = self.image.allocation_end_for(address) else {
+            return;
+        };
+        let mut slot = address;
+        for _ in 0..64_u64 {
+            if slot.saturating_add(pointer) > end {
+                break;
             }
+            let Some(value) = self.image.read_pointer(slot) else {
+                break;
+            };
+            if value == 0 {
+                break;
+            }
+            let target = self.image.canonical_address(value);
+            if !self.image.is_executable(target) {
+                break;
+            }
+            out.insert(target);
+            slot = slot.saturating_add(pointer);
         }
     }
 
@@ -2603,7 +2715,9 @@ impl<'a> Analyzer<'a> {
                 }
             })
             .collect();
-        cfg::ProgramCfg::new(functions)
+        let mut program = cfg::ProgramCfg::new(functions);
+        program.pointer_roots = self.pointer_roots.iter().copied().collect();
+        program
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2822,6 +2936,41 @@ fn replace_unresolved_cfg_call(
         return true;
     }
     false
+}
+
+fn is_pointer_root_section(section: &Section) -> bool {
+    if !section.alloc || section.executable || section.data.is_empty() {
+        return false;
+    }
+    let name = section.name.as_str();
+    if has_section_prefix(name, ".tdata") || has_section_prefix(name, ".tbss") {
+        return false;
+    }
+    if section.writable || is_static_init_array(name) {
+        return true;
+    }
+    [".rodata", ".srodata", ".data.rel.ro", ".got", ".got.plt"]
+        .iter()
+        .any(|prefix| has_section_prefix(name, prefix))
+}
+
+fn is_static_init_array(name: &str) -> bool {
+    [
+        ".init_array",
+        ".fini_array",
+        ".preinit_array",
+        ".ctors",
+        ".dtors",
+    ]
+    .iter()
+    .any(|prefix| has_section_prefix(name, prefix))
+}
+
+fn has_section_prefix(name: &str, prefix: &str) -> bool {
+    name == prefix
+        || name
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
 fn classify_noreturn_names<'a>(

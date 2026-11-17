@@ -645,8 +645,104 @@ pub fn apply(
     }
 
     link_scopes(contexts, edges, scopes, &pending_scopes, &adjacency);
+    add_callback_bindings(
+        &hits,
+        functions,
+        &function_by_id,
+        decoded_by_function,
+        image,
+        edges,
+        &mut used_edge_ids,
+        &mut sink,
+    );
     collect_lock_events(&hits, &membership, locks);
     logical_functions
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_callback_bindings(
+    hits: &[Hit],
+    functions: &[Function],
+    function_by_id: &BTreeMap<&FunctionId, &Function>,
+    decoded_by_function: &BTreeMap<u64, Vec<DecodedInsn>>,
+    image: &Image,
+    edges: &mut Vec<Edge>,
+    used_edge_ids: &mut BTreeSet<String>,
+    sink: &mut DiagnosticSink<'_>,
+) {
+    for hit in hits.iter().filter(|hit| hit.rule.op == RuleOp::Callback) {
+        let Some(caller) = function_by_id.get(&hit.caller).copied() else {
+            continue;
+        };
+        let Some(decoded) = decoded_by_function.get(&caller.address.get()) else {
+            continue;
+        };
+        let Some(entry_args) = hit.rule.callback_args else {
+            continue;
+        };
+        for &argument in entry_args {
+            let Some(target) =
+                origin::resolve_argument_pointer(image, decoded, hit.site.get(), argument)
+            else {
+                sink.push(
+                    Severity::Info,
+                    "callback-entry-unresolved",
+                    format!(
+                        "{} callback argument {argument} at 0x{:x} is not statically known",
+                        hit.rule.api,
+                        hit.site.get()
+                    ),
+                    Some(&hit.caller),
+                    Some(hit.site),
+                );
+                continue;
+            };
+            let Some(callback) = function_at_address(functions, target) else {
+                sink.push(
+                    Severity::Info,
+                    "callback-target-unresolved",
+                    format!(
+                        "{} callback at 0x{:x} points to executable 0x{target:x}, but no function node covers it",
+                        hit.rule.api,
+                        hit.site.get()
+                    ),
+                    Some(&hit.caller),
+                    Some(hit.site),
+                );
+                continue;
+            };
+            let id = unique_edge_id(
+                format!("e:callback:0x{:x}:{argument}", hit.site.get()),
+                used_edge_ids,
+            );
+            edges.push(Edge::CallbackBind {
+                id,
+                from_function: hit.caller.clone(),
+                callback: callback.id.clone(),
+                target_context: None,
+                site: hit.site,
+                runtime: RuntimeId::new(hit.rule.runtime),
+                api: hit.rule.api.to_owned(),
+                confidence: if hit.heuristic {
+                    Confidence::Low
+                } else {
+                    hit.rule.confidence
+                },
+            });
+            sink.push(
+                Severity::Info,
+                "resolved-callback",
+                format!(
+                    "{} callback at 0x{:x} argument {argument} resolves to {}",
+                    hit.rule.api,
+                    hit.site.get(),
+                    callback.primary_name
+                ),
+                Some(&hit.caller),
+                Some(hit.site),
+            );
+        }
+    }
 }
 
 fn collect_lock_events(
@@ -829,9 +925,10 @@ fn collect_inline_hits(image: &Image, functions: &[Function]) -> Vec<Hit> {
             inlined: true,
             heuristic: false,
         };
-        if rule.op == RuleOp::Lock {
-            // Every lock instance matters; unlike spawn/scope, do not collapse
-            // all inline sites for one API into a single representative.
+        if matches!(rule.op, RuleOp::Lock | RuleOp::Callback) {
+            // Every lock/callback registration matters; unlike spawn/scope,
+            // do not collapse all inline sites for one API into a single
+            // representative.
             hits.push(hit);
         } else if rule.closure_generic {
             let key = (
