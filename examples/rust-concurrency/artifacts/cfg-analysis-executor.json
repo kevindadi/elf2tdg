@@ -1,5 +1,5 @@
 {
-  "cfg_schema_version": "1.4",
+  "cfg_schema_version": "1.5",
   "image": {
     "path": "artifacts/rust-concurrency-analysis.elf",
     "arch": "thumb",
@@ -3079,47 +3079,36 @@
           "calls": [
             {
               "site": "0x80005da",
-              "target": "0x800082a",
-              "target_function": "fn:0x800082a",
-              "target_name": "<embassy_executor::raw::TaskStorage<rust_concurrency::__app_main_task::__app_main_task_inner_function::{closure#0}>>::poll",
+              "target": null,
+              "target_function": null,
+              "target_name": null,
               "direct": false,
               "tail": false,
               "conditional": false,
               "heuristic": true,
-              "unresolved": false
-            },
-            {
-              "site": "0x80005da",
-              "target": "0x800085c",
-              "target_function": "fn:0x800085c",
-              "target_name": "<embassy_executor::raw::TaskStorage<rust_concurrency::__sensor_task_task::__sensor_task_task_inner_function::{closure#0}>>::poll",
-              "direct": false,
-              "tail": false,
-              "conditional": false,
-              "heuristic": true,
-              "unresolved": false
-            },
-            {
-              "site": "0x80005da",
-              "target": "0x800089a",
-              "target_function": "fn:0x800089a",
-              "target_name": "<embassy_executor::raw::TaskStorage<rust_concurrency::__monitor_task_task::__monitor_task_task_inner_function::{closure#0}>>::poll",
-              "direct": false,
-              "tail": false,
-              "conditional": false,
-              "heuristic": true,
-              "unresolved": false
-            },
-            {
-              "site": "0x80005da",
-              "target": "0x80008d8",
-              "target_function": "fn:0x80008d8",
-              "target_name": "embassy_executor::raw::poll_exited",
-              "direct": false,
-              "tail": false,
-              "conditional": false,
-              "heuristic": true,
-              "unresolved": false
+              "unresolved": false,
+              "candidates": [
+                {
+                  "target": "0x800082a",
+                  "target_function": "fn:0x800082a",
+                  "target_name": "<embassy_executor::raw::TaskStorage<rust_concurrency::__app_main_task::__app_main_task_inner_function::{closure#0}>>::poll"
+                },
+                {
+                  "target": "0x800085c",
+                  "target_function": "fn:0x800085c",
+                  "target_name": "<embassy_executor::raw::TaskStorage<rust_concurrency::__sensor_task_task::__sensor_task_task_inner_function::{closure#0}>>::poll"
+                },
+                {
+                  "target": "0x800089a",
+                  "target_function": "fn:0x800089a",
+                  "target_name": "<embassy_executor::raw::TaskStorage<rust_concurrency::__monitor_task_task::__monitor_task_task_inner_function::{closure#0}>>::poll"
+                },
+                {
+                  "target": "0x80008d8",
+                  "target_function": "fn:0x80008d8",
+                  "target_name": "embassy_executor::raw::poll_exited"
+                }
+              ]
             }
           ],
           "cycles": {

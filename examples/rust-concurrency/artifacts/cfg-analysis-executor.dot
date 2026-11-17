@@ -50,7 +50,7 @@ digraph cfg {
     "bb:0x80005c6" [label="bb 0x80005c6\n3 insn\nldr r6, [r0, #4]\nstr r5, [r0, #4]\ncbnz r0, #0x80005d6"];
     "bb:0x80005cc" [label="bb 0x80005cc\n1 insn\nb #0x8000592"];
     "bb:0x80005ce" [label="bb 0x80005ce\n4 insn\nmovs r6, #0\nmovs r0, #0\ncmp r0, #0\nbeq #0x8000592"];
-    "bb:0x80005d6" [label="bb 0x80005d6\n3 insn\nstrb r5, [r0, #1]\nldr r1, [r0, #0xc]\nblx r1\n4 call(s)"];
+    "bb:0x80005d6" [label="bb 0x80005d6\n3 insn\nstrb r5, [r0, #1]\nldr r1, [r0, #0xc]\nblx r1\n1 call(s), 4 candidate target(s)"];
     "bb:0x80005dc" [label="bb 0x80005dc\n3 insn\nmov r0, r6\ncmp r0, #0\nbne #0x80005c6"];
     "bb:0x80005e2" [label="bb 0x80005e2\n1 insn\nb #0x80005ce"];
     "bb:0x80005e4" [label="bb 0x80005e4\n2 insn\nclrex\nb #0x800058a"];

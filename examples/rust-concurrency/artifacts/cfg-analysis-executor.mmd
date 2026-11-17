@@ -46,7 +46,7 @@ flowchart LR
     b0_134219206["bb 0x80005c6<br/>3 insn<br/>ldr r6, (r0, #4)<br/>str r5, (r0, #4)<br/>cbnz r0, #0x80005d6"]
     b0_134219212["bb 0x80005cc<br/>1 insn<br/>b #0x8000592"]
     b0_134219214["bb 0x80005ce<br/>4 insn<br/>movs r6, #0<br/>movs r0, #0<br/>cmp r0, #0<br/>beq #0x8000592"]
-    b0_134219222["bb 0x80005d6<br/>3 insn<br/>strb r5, (r0, #1)<br/>ldr r1, (r0, #0xc)<br/>blx r1<br/>4 call(s)"]
+    b0_134219222["bb 0x80005d6<br/>3 insn<br/>strb r5, (r0, #1)<br/>ldr r1, (r0, #0xc)<br/>blx r1<br/>1 call(s), 4 candidate target(s)"]
     b0_134219228["bb 0x80005dc<br/>3 insn<br/>mov r0, r6<br/>cmp r0, #0<br/>bne #0x80005c6"]
     b0_134219234["bb 0x80005e2<br/>1 insn<br/>b #0x80005ce"]
     b0_134219236["bb 0x80005e4<br/>2 insn<br/>clrex<br/>b #0x800058a"]
