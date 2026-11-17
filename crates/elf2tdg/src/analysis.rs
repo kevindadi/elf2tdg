@@ -1574,7 +1574,8 @@ impl<'a> Analyzer<'a> {
                 | ValueSource::OrImmediate { .. }
                 | ValueSource::AddRegister { .. }
                 | ValueSource::IndexedLoad { .. }
-                | ValueSource::ShiftRegister { .. } => {}
+                | ValueSource::ShiftRegister { .. }
+                | ValueSource::Select { .. } => {}
             }
         }
         if let Some(IndirectTarget::Memory(address)) = instruction.indirect {

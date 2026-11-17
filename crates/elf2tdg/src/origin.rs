@@ -11,8 +11,8 @@
 //! entries stay opaque rather than being guessed.
 
 use crate::arch::{
-    DecodedInsn, IndirectTarget, ValueSource, argument_index_for_register, argument_register,
-    pc_register, pointer_size,
+    DecodedInsn, IndirectTarget, MemoryWriteSource, ValueSource, argument_index_for_register,
+    argument_register, pc_register, pointer_size,
 };
 use crate::loader::Image;
 use std::collections::BTreeSet;
@@ -49,6 +49,20 @@ pub fn resolve_argument_value(
     resolve_register(image, decoded, before, register, 0)
 }
 
+/// Resolves the value produced by the value effect at `index`.
+///
+/// This is used for return-value summaries: the caller identifies a write to
+/// the ABI return register and asks origin tracking to resolve its source.
+#[must_use]
+pub fn resolve_definition_value(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    index: usize,
+) -> Option<u64> {
+    let effect = decoded.get(index)?.value?;
+    resolve_effect(image, decoded, index, effect.source, 0)
+}
+
 fn resolve_register(
     image: &Image,
     decoded: &[DecodedInsn],
@@ -68,66 +82,83 @@ fn resolve_register(
         });
         let (index, effect) = found?;
         match effect.source {
-            ValueSource::Immediate(value) | ValueSource::Address(value) => return Some(value),
-            ValueSource::LoadAddress(address) => {
-                // Keep data addresses here: a loaded value can be a vtable or
-                // an object whose slot is dereferenced by the caller. Import
-                // GOT slots resolve to their synthetic external-function
-                // pseudo-address.
-                return memory_pointer_value(image, address);
-            }
-            ValueSource::LoadFromRegister { base, disp } => {
-                let base_value = if Some(base) == pc_register(image.arch) {
-                    Some(pc_value(
-                        image.arch,
-                        decoded[index].address,
-                        decoded[index].size,
-                    )?)
-                } else {
-                    resolve_register(image, decoded, index, base, depth + 1)
-                };
-                if let Some(base_value) = base_value {
-                    let address = base_value.wrapping_add_signed(disp);
-                    if let Some(value) = memory_pointer_value(image, address) {
-                        return Some(value);
-                    }
-                }
-                // A stack spill is a common `-O0` pattern: the pointer is
-                // stored through `[rbp+disp]` and loaded back later. Follow
-                // the matching store when the base register has no known
-                // absolute value.
-                if let Some((store_index, source)) = memory_slot_source(decoded, index, base, disp)
-                {
-                    return resolve_register(image, decoded, store_index, source, depth + 1);
-                }
-                return None;
-            }
             ValueSource::Copy(source) => {
                 register = source;
                 before = index;
             }
-            ValueSource::AddImmediate { base, imm } => {
-                let base_value = if Some(base) == pc_register(image.arch) {
-                    pc_value(image.arch, decoded[index].address, decoded[index].size)?
-                } else {
-                    resolve_register(image, decoded, index, base, depth + 1)?
-                };
-                return Some(base_value.wrapping_add_signed(imm));
-            }
-            ValueSource::OrImmediate { base, imm } => {
-                let base_value = if Some(base) == pc_register(image.arch) {
-                    pc_value(image.arch, decoded[index].address, decoded[index].size)?
-                } else {
-                    resolve_register(image, decoded, index, base, depth + 1)?
-                };
-                return Some(base_value | imm);
-            }
-            ValueSource::AddRegister { .. }
-            | ValueSource::IndexedLoad { .. }
-            | ValueSource::ShiftRegister { .. } => return None,
+            source => return resolve_effect(image, decoded, index, source, depth),
         }
     }
     None
+}
+
+fn resolve_effect(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    index: usize,
+    source: ValueSource,
+    depth: usize,
+) -> Option<u64> {
+    if depth > 32 {
+        return None;
+    }
+    match source {
+        ValueSource::Immediate(value) | ValueSource::Address(value) => Some(value),
+        ValueSource::LoadAddress(address) => {
+            // Keep data addresses here: a loaded value can be a vtable or an
+            // object whose slot is dereferenced by the caller. Import GOT
+            // slots resolve to their synthetic external-function
+            // pseudo-address.
+            memory_pointer_value(image, address)
+        }
+        ValueSource::LoadFromRegister { base, disp } => {
+            let base_value = if Some(base) == pc_register(image.arch) {
+                Some(pc_value(
+                    image.arch,
+                    decoded[index].address,
+                    decoded[index].size,
+                )?)
+            } else {
+                resolve_register(image, decoded, index, base, depth + 1)
+            };
+            if let Some(base_value) = base_value {
+                let address = base_value.wrapping_add_signed(disp);
+                if let Some(value) = memory_pointer_value(image, address) {
+                    return Some(value);
+                }
+            }
+            // A stack spill is a common `-O0` pattern: the pointer is stored
+            // through `[rbp+disp]` and loaded back later. Follow the matching
+            // store when the base register has no known absolute value.
+            match memory_slot_source(decoded, index, base, disp)? {
+                (store_index, MemoryWriteSource::Register(source)) => {
+                    resolve_register(image, decoded, store_index, source, depth + 1)
+                }
+                (_, MemoryWriteSource::Immediate(value)) => Some(value),
+            }
+        }
+        ValueSource::Copy(source) => resolve_register(image, decoded, index, source, depth + 1),
+        ValueSource::AddImmediate { base, imm } => {
+            let base_value = if Some(base) == pc_register(image.arch) {
+                pc_value(image.arch, decoded[index].address, decoded[index].size)?
+            } else {
+                resolve_register(image, decoded, index, base, depth + 1)?
+            };
+            Some(base_value.wrapping_add_signed(imm))
+        }
+        ValueSource::OrImmediate { base, imm } => {
+            let base_value = if Some(base) == pc_register(image.arch) {
+                pc_value(image.arch, decoded[index].address, decoded[index].size)?
+            } else {
+                resolve_register(image, decoded, index, base, depth + 1)?
+            };
+            Some(base_value | imm)
+        }
+        ValueSource::AddRegister { .. }
+        | ValueSource::IndexedLoad { .. }
+        | ValueSource::ShiftRegister { .. }
+        | ValueSource::Select { .. } => None,
+    }
 }
 
 /// Resolves a statically identifiable indirect call/branch target expression.
@@ -181,11 +212,59 @@ pub fn resolve_indirect_target_value(
                 let address = base_value.wrapping_add_signed(disp);
                 memory_pointer_value(image, address)
             } else {
-                let (store_index, source) = memory_slot_source(decoded, before, base, disp)?;
-                resolve_register(image, decoded, store_index, source, 0)
+                match memory_slot_source(decoded, before, base, disp)? {
+                    (store_index, MemoryWriteSource::Register(source)) => {
+                        resolve_register(image, decoded, store_index, source, 0)
+                    }
+                    (_, MemoryWriteSource::Immediate(value)) => Some(value),
+                }
             }
         }
     }
+}
+
+/// Returns the direct call whose ABI return value produced `register` at
+/// `site`, together with the call site.
+///
+/// The scan stops at any modeled write to the register or at control flow that
+/// leaves the sequential path. Unmodeled register writes can still slip
+/// through, so callers treat the result as candidate evidence rather than a
+/// proven data-flow fact.
+#[must_use]
+pub fn returned_call_before(
+    decoded: &[DecodedInsn],
+    site: u64,
+    register: capstone::RegId,
+) -> Option<(u64, u64)> {
+    let mut register = register;
+    let mut before = decoded.partition_point(|instruction| instruction.address < site);
+    for _ in 0..16 {
+        let mut copy = None;
+        for index in (0..before).rev() {
+            let instruction = &decoded[index];
+            if let Some(effect) = instruction.value
+                && effect.dest == register
+            {
+                let ValueSource::Copy(source) = effect.source else {
+                    return None;
+                };
+                copy = Some((index, source));
+                break;
+            }
+            if instruction.is_return || instruction.is_jump {
+                return None;
+            }
+            if instruction.is_call {
+                return instruction
+                    .direct_target
+                    .map(|target| (target, instruction.address));
+            }
+        }
+        let (index, source) = copy?;
+        register = source;
+        before = index;
+    }
+    None
 }
 
 /// Maximum number of distinct field-store values considered for a bounded
@@ -377,7 +456,13 @@ pub fn resolve_field_store_candidates(
             if write.disp != disp {
                 continue;
             }
-            let Some(value) = resolve_register(image, decoded, index, write.source, 0) else {
+            let value = match write.source {
+                MemoryWriteSource::Register(source) => {
+                    resolve_register(image, decoded, index, source, 0)
+                }
+                MemoryWriteSource::Immediate(value) => Some(value),
+            };
+            let Some(value) = value else {
                 continue;
             };
             let canonical = image.canonical_address(value);
@@ -390,6 +475,44 @@ pub fn resolve_field_store_candidates(
         }
     }
     candidates.into_iter().collect()
+}
+
+/// Collects executable values stored to the stack slot `[base + disp]`.
+///
+/// A branchy assignment such as `fn = cond ? a : b` writes the same local
+/// slot from different paths. The bounded search accepts only slots whose
+/// every modeled store resolves to executable code.
+#[must_use]
+pub fn resolve_stack_slot_candidates(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    base: capstone::RegId,
+    disp: i64,
+) -> Option<Vec<u64>> {
+    let mut values = BTreeSet::new();
+    for (index, instruction) in decoded.iter().enumerate() {
+        let Some(write) = instruction.memory_write else {
+            continue;
+        };
+        if write.base != base || write.disp != disp {
+            continue;
+        }
+        let value = match write.source {
+            MemoryWriteSource::Register(source) => {
+                resolve_register(image, decoded, index, source, 0)
+            }
+            MemoryWriteSource::Immediate(value) => Some(value),
+        }?;
+        let canonical = image.canonical_address(value);
+        if !image.is_executable(canonical) {
+            return None;
+        }
+        values.insert(canonical);
+        if values.len() > MAX_FIELD_STORE_CANDIDATES {
+            return None;
+        }
+    }
+    (!values.is_empty()).then(|| values.into_iter().collect())
 }
 
 fn memory_pointer_value(image: &Image, address: u64) -> Option<u64> {
@@ -509,15 +632,112 @@ pub fn resolve_indexed_pointer_table(
     else {
         return None;
     };
+    let table_base =
+        indexed_table_base(image, decoded, table_register, disp, load_index, load_index)?;
+    indexed_pointer_table_targets(image, decoded, site, index, table_base, scale)
+}
+
+/// Resolves an indirect call that loads its target from an indexed table of
+/// absolute function pointers.
+///
+/// Handles both `call [table + index*scale]` operands and a register loaded
+/// from an indexed table immediately before the call. The table is bounded by
+/// a recovered comparison when available and by the containing section.
+#[must_use]
+pub fn resolve_indexed_call_targets(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    target: IndirectTarget,
+) -> Option<Vec<u64>> {
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    match target {
+        IndirectTarget::Register(register) => {
+            let (load_index, effect) = latest_definition(decoded, before, register)?;
+            let ValueSource::IndexedLoad {
+                base,
+                index,
+                scale,
+                disp,
+                ..
+            } = effect.source
+            else {
+                return None;
+            };
+            // A call or control transfer between the table load and the call
+            // can replace the register or bypass the load on another path.
+            if decoded[load_index.saturating_add(1)..before]
+                .iter()
+                .any(|instruction| {
+                    instruction.is_call || instruction.is_jump || instruction.is_return
+                })
+            {
+                return None;
+            }
+            let table_base =
+                indexed_table_base(image, decoded, base, disp, load_index, load_index)?;
+            indexed_pointer_table_targets(image, decoded, site, index, table_base, scale)
+        }
+        IndirectTarget::IndexedMemory {
+            base,
+            index,
+            scale,
+            disp,
+        } => {
+            let call_index = before.checked_sub(1)?;
+            let table_base = indexed_table_base(image, decoded, base, disp, call_index, before)?;
+            indexed_pointer_table_targets(image, decoded, site, index, table_base, scale)
+        }
+        IndirectTarget::Memory(_)
+        | IndirectTarget::RegisterMemory { .. }
+        | IndirectTarget::RegisterOffset { .. }
+        | IndirectTarget::TableBranch { .. }
+        | IndirectTarget::TableLoad { .. }
+        | IndirectTarget::BranchTable { .. } => None,
+    }
+}
+
+fn indexed_table_base(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    base: Option<capstone::RegId>,
+    disp: i64,
+    instruction_index: usize,
+    resolve_before: usize,
+) -> Option<u64> {
+    let Some(base) = base else {
+        return u64::try_from(disp).ok();
+    };
+    let base_value = if Some(base) == pc_register(image.arch) {
+        pc_value(
+            image.arch,
+            decoded.get(instruction_index)?.address,
+            decoded[instruction_index].size,
+        )?
+    } else {
+        resolve_register(image, decoded, resolve_before, base, 0)?
+    };
+    Some(base_value.wrapping_add_signed(disp))
+}
+
+fn indexed_pointer_table_targets(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    index: capstone::RegId,
+    table_base: u64,
+    scale: u8,
+) -> Option<Vec<u64>> {
     if !matches!(scale, 4 | 8) {
         return None;
     }
-    let table_base = if let Some(table_register) = table_register {
-        resolve_register(image, decoded, load_index, table_register, 0)?.wrapping_add_signed(disp)
-    } else {
-        u64::try_from(disp).ok()?
-    };
-    let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
+    let mut limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
+    if let Some(size) = image.data_symbols.get(&table_base)
+        && let Ok(entry_size) = u64::try_from(usize::from(scale))
+        && let Ok(symbol_entries) = usize::try_from(*size / entry_size)
+    {
+        limit = limit.min(symbol_entries);
+    }
     let mut targets = Vec::new();
     for raw in read_table_entries(image, table_base, usize::from(scale), limit) {
         let target = image.canonical_address(raw);
@@ -546,6 +766,12 @@ pub fn resolve_riscv_jump_table(
 ) -> Option<Vec<u64>> {
     let before = decoded.partition_point(|instruction| instruction.address < site);
     let (definition_index, definition) = latest_definition(decoded, before, jump_register)?;
+    if decoded[definition_index.saturating_add(1)..before]
+        .iter()
+        .any(|instruction| instruction.is_call || instruction.is_jump || instruction.is_return)
+    {
+        return None;
+    }
     let (load_index, load_effect, relative_base) = match definition.source {
         ValueSource::LoadFromRegister { .. } => (definition_index, definition, None),
         ValueSource::AddRegister {
@@ -1103,7 +1329,7 @@ fn memory_slot_source(
     before: usize,
     base: capstone::RegId,
     disp: i64,
-) -> Option<(usize, capstone::RegId)> {
+) -> Option<(usize, MemoryWriteSource)> {
     (0..before).rev().find_map(|index| {
         let write = decoded[index].memory_write?;
         (write.base == base && write.disp == disp).then_some((index, write.source))
@@ -1225,6 +1451,9 @@ fn trace_argument(
             ValueSource::LoadFromRegister { base, disp } => {
                 if let Some((store_index, source)) = memory_slot_source(decoded, index, base, disp)
                 {
+                    let MemoryWriteSource::Register(source) = source else {
+                        return None;
+                    };
                     register = source;
                     before = store_index;
                     continue;
@@ -1242,7 +1471,8 @@ fn trace_argument(
             | ValueSource::OrImmediate { .. }
             | ValueSource::AddRegister { .. }
             | ValueSource::IndexedLoad { .. }
-            | ValueSource::ShiftRegister { .. } => return None,
+            | ValueSource::ShiftRegister { .. }
+            | ValueSource::Select { .. } => return None,
         }
     }
     None
@@ -1278,6 +1508,9 @@ pub fn forwarded_argument_index(
             }
             ValueSource::LoadFromRegister { base, disp } => {
                 let (store_index, source) = memory_slot_source(decoded, index, base, disp)?;
+                let MemoryWriteSource::Register(source) = source else {
+                    return None;
+                };
                 register = source;
                 before = store_index;
             }
@@ -1288,7 +1521,8 @@ pub fn forwarded_argument_index(
             | ValueSource::OrImmediate { .. }
             | ValueSource::AddRegister { .. }
             | ValueSource::IndexedLoad { .. }
-            | ValueSource::ShiftRegister { .. } => return None,
+            | ValueSource::ShiftRegister { .. }
+            | ValueSource::Select { .. } => return None,
         }
     }
     None

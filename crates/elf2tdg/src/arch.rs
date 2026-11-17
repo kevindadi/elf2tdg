@@ -58,6 +58,13 @@ pub enum ValueSource {
         /// Left shift amount.
         shift: u8,
     },
+    /// Choose one of two registers based on a condition.
+    Select {
+        /// Value when the condition is true.
+        left: RegId,
+        /// Value when the condition is false.
+        right: RegId,
+    },
     /// Signed or unsigned load from an indexed table entry.
     IndexedLoad {
         /// Optional base register; `None` means an absolute table address.
@@ -141,19 +148,28 @@ pub enum IndirectTarget {
     },
 }
 
-/// A register stored through a base register plus displacement.
+/// Value stored by a memory write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryWriteSource {
+    /// A register value.
+    Register(RegId),
+    /// A constant written directly to memory.
+    Immediate(u64),
+}
+
+/// A value stored through a base register plus displacement.
 ///
-/// This is intentionally limited to a single register source. It lets origin
-/// tracking follow a value spilled to the stack (common at `-O0`) without a
-/// full memory SSA.
+/// This is intentionally limited to one register or immediate source. It lets
+/// origin tracking follow a value spilled to the stack (common at `-O0`)
+/// without a full memory SSA.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemoryWrite {
     /// Base register.
     pub base: RegId,
     /// Signed displacement.
     pub disp: i64,
-    /// Stored register.
-    pub source: RegId,
+    /// Stored value.
+    pub source: MemoryWriteSource,
 }
 
 /// A decoded instruction with normalized control-flow metadata.
@@ -995,8 +1011,12 @@ fn x86_memory_write(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option
     if memory.index().0 != 0 {
         return None;
     }
-    let x86::X86OperandType::Reg(source) = operands.get(1)?.op_type else {
-        return None;
+    let source = match operands.get(1)?.op_type {
+        x86::X86OperandType::Reg(source) => MemoryWriteSource::Register(x86_64_register(source)),
+        x86::X86OperandType::Imm(value) => {
+            MemoryWriteSource::Immediate(u64::from_ne_bytes(value.to_ne_bytes()))
+        }
+        _ => return None,
     };
     (memory.base().0 != 0).then_some(MemoryWrite {
         base: x86_64_register(memory.base()),
@@ -1025,7 +1045,7 @@ fn aarch64_memory_write(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
     (memory.base().0 != 0).then_some(MemoryWrite {
         base: memory.base(),
         disp: i64::from(memory.disp()),
-        source: *source,
+        source: MemoryWriteSource::Register(*source),
     })
 }
 
@@ -1053,7 +1073,7 @@ fn arm_memory_write(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option
     (memory.base().0 != 0).then_some(MemoryWrite {
         base: memory.base(),
         disp: i64::from(memory.disp()),
-        source,
+        source: MemoryWriteSource::Register(source),
     })
 }
 
@@ -1075,7 +1095,7 @@ fn riscv_memory_write(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Opti
     (memory.base().0 != 0).then_some(MemoryWrite {
         base: memory.base(),
         disp: memory.disp(),
-        source: *source,
+        source: MemoryWriteSource::Register(*source),
     })
 }
 
@@ -1155,6 +1175,21 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
                 }
                 _ => None,
             }
+        }
+        "csel" => {
+            let arm64::Arm64OperandType::Reg(left) = &operands.get(1)?.op_type else {
+                return None;
+            };
+            let arm64::Arm64OperandType::Reg(right) = &operands.get(2)?.op_type else {
+                return None;
+            };
+            Some(ValueEffect {
+                dest,
+                source: ValueSource::Select {
+                    left: aarch64_register(*left),
+                    right: aarch64_register(*right),
+                },
+            })
         }
         "mov" => {
             let source = match &operands.get(1)?.op_type {
@@ -1357,6 +1392,7 @@ fn riscv_value_effect(
 }
 
 #[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::too_many_lines)]
 fn arm_value_effect(
     detail: &capstone::InsnDetail<'_>,
     address: u64,
@@ -1445,12 +1481,27 @@ fn arm_value_effect(
                 };
                 let literal = pc_value.wrapping_add_signed(i64::from(memory.disp()));
                 ValueSource::LoadAddress(literal)
-            } else {
-                // Simple register-based field load. Indexed/writeback forms
-                // need memory-SSA and remain unmodeled.
-                if memory.base().0 == 0 || memory.index().0 != 0 {
+            } else if memory.base().0 == 0 {
+                return None;
+            } else if memory.index().0 != 0 {
+                // Fixed-width pointer tables use an indexed load, for example
+                // Thumb `ldr.w r3, [r2, r1, lsl #2]`.
+                let shift = match operands.get(1)?.shift {
+                    arm::ArmShift::Invalid => 0,
+                    arm::ArmShift::Lsl(shift) if shift <= 3 => shift,
+                    _ => return None,
+                };
+                if memory.scale() < 0 {
                     return None;
                 }
+                ValueSource::IndexedLoad {
+                    base: Some(memory.base()),
+                    index: memory.index(),
+                    scale: 1u8.checked_shl(shift)?,
+                    disp: i64::from(memory.disp()),
+                    signed: false,
+                }
+            } else {
                 ValueSource::LoadFromRegister {
                     base: memory.base(),
                     disp: i64::from(memory.disp()),
@@ -1644,6 +1695,18 @@ pub fn argument_register(arch: ArchKind, index: usize) -> Option<RegId> {
     Some(RegId(register))
 }
 
+/// Returns the ABI register holding a scalar or pointer return value.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub fn return_register(arch: ArchKind) -> RegId {
+    match arch {
+        ArchKind::Thumb | ArchKind::Arm => RegId(arm::ArmReg::ARM_REG_R0 as u16),
+        ArchKind::X86_64 => RegId(x86::X86Reg::X86_REG_RAX as u16),
+        ArchKind::Aarch64 => RegId(arm64::Arm64Reg::ARM64_REG_X0 as u16),
+        ArchKind::Riscv32 | ArchKind::Riscv64 => RegId(riscv::RiscVReg::RISCV_REG_A0 as u16),
+    }
+}
+
 /// Returns the ABI argument index for a register, when it is one of the
 /// incoming argument registers.
 #[must_use]
@@ -1659,6 +1722,31 @@ pub fn argument_index_for_register(arch: ArchKind, register: RegId) -> Option<us
         }
     }
     None
+}
+
+/// Returns whether `register` is conventionally used as a frame or stack
+/// pointer, where a base-plus-displacement load names a local stack slot.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub fn is_frame_register(arch: ArchKind, register: RegId) -> bool {
+    let candidates: &[u32] = match arch {
+        ArchKind::Thumb | ArchKind::Arm => &[
+            arm::ArmReg::ARM_REG_R7,
+            arm::ArmReg::ARM_REG_R11,
+            arm::ArmReg::ARM_REG_SP,
+        ],
+        ArchKind::X86_64 => &[x86::X86Reg::X86_REG_RBP, x86::X86Reg::X86_REG_RSP],
+        ArchKind::Aarch64 => &[
+            arm64::Arm64Reg::ARM64_REG_X29,
+            arm64::Arm64Reg::ARM64_REG_SP,
+        ],
+        ArchKind::Riscv32 | ArchKind::Riscv64 => {
+            &[riscv::RiscVReg::RISCV_REG_S0, riscv::RiscVReg::RISCV_REG_SP]
+        }
+    };
+    candidates
+        .iter()
+        .any(|candidate| u16::try_from(*candidate).is_ok_and(|c| register.0 == c))
 }
 
 /// Returns the program-counter register for value-origin resolution.
