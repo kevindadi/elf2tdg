@@ -117,6 +117,12 @@ and edge IDs include the target address. See
 [`cfg-analysis-executor.svg`](artifacts/cfg-analysis-executor.svg) for the CFG
 view.
 
+The executor event loop is classified `noreturn` from its recovered CFG. The
+`panic_const_async_fn_resumed` path in each task poll is an API-level noreturn
+call, so those CFG blocks end with `noreturn-call` and have no return
+continuation. The shared return paths of the task polls remain reachable from
+their other branches.
+
 ## Select a task CFG by source name
 
 Context names are first-class CFG selectors. Both forms select the real task

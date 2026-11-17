@@ -118,7 +118,9 @@ field identify the concrete `TaskStorage<...>::poll` functions plus
 
 A `null_target: true` call record has a statically null function pointer and no
 call edge. It is not unresolved: the diagnostic `null-indirect-call-target`
-records the dead call site, and DOT/Mermaid render a `null target` note.
+records the dead call site, and DOT/Mermaid render a `null target` note. When
+the instruction is unconditional it also cannot return, so its path has no
+`call-return` continuation; the call record carries `"noreturn": true`.
 
 A multi-target call record looks like:
 
@@ -226,7 +228,7 @@ each of them.
 
 ## JSON document
 
-`cfg_schema_version` is `1.5` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.6` and is independent of the TDG schema version.
 Every document contains image metadata, diagnostics, and the selected
 functions. Version 1.1 adds an optional per-function `inline_frames` list
 recovered from DWARF. Version 1.2 scopes diagnostics to the selected functions
@@ -235,11 +237,12 @@ Version 1.3 adds an optional `no_code` descriptor for functions that have no
 machine code in the image. Version 1.4 adds `null_target` to CFG call records
 whose target expression is a statically null function pointer. Version 1.5
 represents a bounded indirect target set as one call site with a `candidates`
-array instead of duplicate call records.
+array instead of duplicate call records. Version 1.6 adds function and call
+`noreturn` classification and the `noreturn-call` terminator.
 
 ```json
 {
-  "cfg_schema_version": "1.5",
+  "cfg_schema_version": "1.6",
   "image": { "arch": "thumb", "...": "..." },
   "functions": [
     {
@@ -358,7 +361,8 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `instructions` | full instruction list with raw bytes and control-flow flags |
 | `calls` | call sites owned by this block |
 | `cycles` | static instruction-cost sum for the block |
-| `terminator` | `fallthrough`, `call`, `return`, `branch`, `jump`, `unresolved` |
+| `terminator` | `fallthrough`, `call`, `noreturn-call`, `return`, `branch`, `jump`, `unresolved` |
+| `noreturn` | `api` or `control-flow` when the function cannot return; absent otherwise |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
 | `inline_frames` | unique `DW_TAG_inlined_subroutine` ranges inside the function |
 
@@ -393,12 +397,56 @@ executable code address.
 | `kind` | Meaning |
 |---|---|
 | `fallthrough` | sequential control flow, including the not-taken side of a conditional |
-| `call-return` | continuation after a call; every call ends its own block |
+| `call-return` | continuation after a call that can return; noreturn calls do not create this edge |
 | `branch` | taken conditional branch within the function |
 | `jump` | direct or statically resolved indirect unconditional jump, including a self-loop |
 
 Calls are not control-flow edges. They are retained on blocks and are rendered
 as dashed call-target edges in DOT/Mermaid.
+
+### Noreturn calls and continuation semantics
+
+A call record with `"noreturn": true` cannot return to the instruction after
+the call. Its block terminates with `noreturn-call`, has no `call-return`
+successor, and is labelled `noreturn` in DOT/Mermaid. Conditional calls are
+never marked noreturn because the not-taken path still reaches the
+continuation. A call is marked only when every possible target is classified
+noreturn; mixed candidate sets retain the continuation. A statically null
+target is treated as terminating because executing the call cannot return.
+
+Functions are classified in two ways:
+
+- `api` — a recognized noreturn symbol or ABI entry point, including C
+  `abort`/`_exit`/`exit`, `pthread_exit`, `longjmp`, assertion and stack-check
+  failures, C++ `std::terminate`/`__cxa_throw`/`_Unwind_Resume`, Rust
+  `core::panicking::*` entry points, allocation failure handlers, and embedded
+  system-reset/fatal APIs;
+- `control-flow` — the recovered CFG has no path back to the caller. This
+  covers halt loops such as `DefaultHandler`, fault stubs, panic handlers, and
+  callers that only reach other noreturn functions.
+
+Control-flow classification is a monotone fixed point over the call graph.
+Tentative functions are reconsidered after their callees are classified, so a
+caller of a user panic handler or a `loop {}` helper becomes noreturn without
+an explicit annotation. Unresolved calls and unresolved jumps are treated as
+possibly returning; the classifier never guesses noreturn from incomplete
+control flow. Once a call site is noreturn, blocks that were reachable only
+through its continuation are removed. A shared block that is also reachable
+from another branch remains.
+
+The TDG mirrors the classification in function extensions:
+
+```json
+"ext": {
+  "elf2tdg.noreturn": true,
+  "elf2tdg.noreturn_source": "control-flow"
+}
+```
+
+The TDG call edge itself is retained; only the intra-function continuation and
+its `call-return` edge are removed. This preserves call-graph reachability and
+call-site cost attribution while preventing impossible post-call paths from
+being counted as executable.
 
 `calls` may contain tail calls recovered from indirect jumps (`tail: true`,
 usually `direct: false`). `recovered_calls` carries call sites found by the
@@ -408,8 +456,9 @@ containing basic block, so they are kept at function level with
 
 ## Current limits
 
-- Calls end their basic block and return to a new block; call targets remain
-  metadata, not intra-function CFG edges.
+- Calls end their basic block; returning calls continue in a new block, while
+  noreturn calls have no continuation. Call targets remain metadata, not
+  intra-function CFG edges.
 - Recognized jump-table forms on x86-64, ARM Thumb/A32, common AArch64
   relative byte/halfword/word and absolute-pointer layouts, and RISC-V
   absolute-pointer and table-relative offset layouts are expanded. Guarded

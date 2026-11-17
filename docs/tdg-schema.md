@@ -86,7 +86,9 @@ a function entry point.
 A `BasicBlock` carries an address, size, successor block IDs, optional
 per-instruction timing detail, and optional `BlockTiming`. Calls are **not**
 basic-block successors; every call/thread-control relation is an `Edge` at the
-top level.
+top level. A call whose every possible target is noreturn contributes no CFG
+continuation block, so its caller's `BasicBlock.successors` is empty at that
+site.
 
 Function discovery is seeded by symbols, the ELF entry point, Cortex-M vector
 entries and direct call targets. When no local code symbols exist, common
@@ -94,12 +96,16 @@ prologue patterns add conservative seeds and a `stripped-heuristic-seeds`
 diagnostic. `Function.source` is filled from the DWARF line program when
 available; it is informational and does not affect graph identity.
 
-The CFG layer records block terminators (`fallthrough`, `call`, `return`,
-`branch`, `jump`, `unresolved`), typed edges (`fallthrough`, `call-return`,
-`branch`, `jump`), per-block calls, raw instruction bytes and static
-instruction costs. Calls are block-owned metadata, not intra-function edges;
-every call ends its basic block and returns to a new continuation block.
-`--view cfg` exports this format.
+The CFG layer records block terminators (`fallthrough`, `call`,
+`noreturn-call`, `return`, `branch`, `jump`, `unresolved`), typed edges
+(`fallthrough`, `call-return`, `branch`, `jump`), per-block calls, raw
+instruction bytes and static instruction costs. Calls are block-owned metadata,
+not intra-function edges. Every call ends its basic block; returning calls
+continue in a new block, while calls to noreturn functions have no
+`call-return` continuation. Functions classified noreturn carry
+`ext["elf2tdg.noreturn"] = true` and
+`ext["elf2tdg.noreturn_source"] = "api" | "control-flow"`. `--view cfg` exports
+this format.
 
 ## 4. Contexts
 
@@ -357,7 +363,7 @@ confidence encoding. It is supported for DOT and Mermaid only; JSON is
 unaffected.
 
 `--view cfg` switches the output from the TDG to the intermediate function
-CFG. CFG JSON uses its own `cfg_schema_version` (`1.5`), includes full
+CFG. CFG JSON uses its own `cfg_schema_version` (`1.6`), includes full
 instruction/raw-byte information by default, carries optional per-function
 inline-frame ranges from DWARF, scopes diagnostics to the selected functions
 with a `diagnostics_omitted` count, records a `no_code` reason for external or
@@ -493,8 +499,8 @@ M2 adds debug-info-assisted recovery and hardened optimized-code heuristics:
 M3 analysis extensions currently implement:
 
 - a petgraph-based `FunctionCfg` intermediate representation, CFG JSON/DOT/
-  Mermaid output, function selection, raw instruction/byte retention and
-  call-return block boundaries;
+  Mermaid output, function selection, raw instruction/byte retention,
+  call-return block boundaries and noreturn continuation pruning;
 - AArch64 entry recovery through absolute `adr`/`adrp` + `add`, literal `ldr`,
   register loads, copies and `movz`/`movk` chains;
 - RISC-V entry recovery through `auipc` + `addi`, `lui` + `addi`, loads,

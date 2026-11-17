@@ -124,7 +124,13 @@ Implemented:
   (`endbr64`/`push rbp; mov rbp,rsp`, `push {...,lr}`, `stp x29,x30`, RISC-V
   stack adjustment), with a `stripped-heuristic-seeds` diagnostic.
 - Statically null indirect call targets (for example an empty vtable drop slot)
-  are marked `null_target` instead of being reported as unresolved.
+  are marked `null_target` instead of being reported as unresolved; when the
+  call is unconditional, its dead continuation is removed as well.
+- Noreturn classification covers API terminators (`abort`, `_exit`, panic
+  entry points, C++ termination helpers) and CFG-derived halt loops. Calls to
+  noreturn functions get a `noreturn-call` terminator and no `call-return`
+  continuation; unreachable continuation blocks are removed, while shared
+  return blocks stay reachable from their other predecessors.
 - External imports and zero-size logical task entries remain selectable CFG
   functions. Their JSON view carries a `no_code` reason and empty block list;
   DOT/Mermaid render an explicit dashed no-code note instead of an empty graph.
@@ -134,8 +140,8 @@ Implemented:
   helper symbol that merely contains the name.
 - CFG CLI view: `--view cfg` exports lossless per-function JSON or
   DOT/Mermaid CFGs, with function selection (`--function`), typed control-flow
-  edges, call/return blocks, call targets, indirect-target expressions, raw
-  instruction bytes and source locations. Concrete instructions can be omitted
+  edges, call/return blocks, noreturn continuation pruning, call targets,
+  indirect-target expressions, raw instruction bytes and source locations. Concrete instructions can be omitted
   from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
   is a multi-root system slice: main/startup, every valid vector-table ISR,
   task/async contexts, callbacks and function-pointer escapes. Default-handler

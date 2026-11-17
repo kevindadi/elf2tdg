@@ -57,6 +57,9 @@ The analyzer reports:
 - direct call edges `Reset_Handler -> SystemInit`, `Reset_Handler -> main`,
   `main -> sensor_task`, `main -> delay`, and `sensor_task -> delay`;
 - an `isr-activate` edge from vector 53 to the ISR context;
+- `main` and `Reset_Handler` classified `noreturn` from their CFGs: the reset
+  handler's fallback loop after `main()` is pruned as unreachable, while
+  `main`'s own infinite loop remains;
 - Cortex-M0 bounded cycle estimates and wall-clock nanoseconds at 48 MHz.
 
 For example, the JSON contains a static block sum of 16–20 cycles for
