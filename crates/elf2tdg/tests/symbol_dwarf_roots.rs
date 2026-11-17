@@ -206,5 +206,42 @@ fn recovers_symbol_and_dwarf_function_roots() {
         );
     }
 
+    // Discovery roots are deliberately not execution roots: pruning from
+    // execution roots must not treat an uncalled symbol as live.
+    let execution_roots = stripped_analysis
+        .cfg
+        .execution_roots(stripped_tdg, &stripped_image);
+    let main = cfg_function(&stripped_analysis.cfg, "main");
+    assert!(
+        execution_roots.contains(&main.id),
+        "main must remain an execution root"
+    );
+    for function in [stripped_symbol, stripped_dwarf] {
+        assert!(
+            !execution_roots.contains(&function.id),
+            "{} must not be an execution root",
+            function.primary_name
+        );
+    }
+    let execution_reachable =
+        stripped_analysis
+            .cfg
+            .reachable_from_execution_roots(stripped_tdg, &stripped_image, false);
+    assert!(
+        execution_reachable
+            .iter()
+            .any(|candidate| candidate.id == main.id),
+        "execution reachability must include main"
+    );
+    for function in [stripped_symbol, stripped_dwarf] {
+        assert!(
+            !execution_reachable
+                .iter()
+                .any(|candidate| candidate.id == function.id),
+            "execution reachability must exclude {}",
+            function.primary_name
+        );
+    }
+
     let _ = std::fs::remove_dir_all(binary.parent().expect("fixture directory"));
 }

@@ -256,6 +256,47 @@ fn site_outside_function_is_reported() {
 }
 
 #[test]
+fn unresolved_call_edge_validates_and_checks_candidates() {
+    let mut tdg = sample();
+    let (caller, site) = tdg
+        .edges
+        .iter()
+        .find_map(|edge| match edge {
+            Edge::Call { caller, site, .. } => Some((caller.clone(), *site)),
+            _ => None,
+        })
+        .expect("sample has a call edge");
+    tdg.edges.push(Edge::UnresolvedCall {
+        id: EdgeId::new("e:unresolved-call:test"),
+        caller: caller.clone(),
+        site,
+        tail: false,
+        candidates: Vec::new(),
+        confidence: Confidence::Unknown,
+    });
+    let issues = tdg.validate();
+    assert!(issues.is_empty(), "unexpected issues: {issues:#?}");
+
+    let edge = tdg
+        .edges
+        .iter_mut()
+        .find_map(|edge| match edge {
+            Edge::UnresolvedCall { candidates, .. } => Some(candidates),
+            _ => None,
+        })
+        .expect("unresolved edge");
+    edge.push(FunctionId::new("fn:0xdead"));
+    let issues = tdg.validate();
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.code == ValidationCode::DanglingReference
+                && issue.path.contains("/candidates/0")),
+        "unexpected issues: {issues:#?}"
+    );
+}
+
+#[test]
 fn non_spawn_scope_member_is_reported() {
     let mut tdg = sample();
     tdg.scopes.push(Scope {
