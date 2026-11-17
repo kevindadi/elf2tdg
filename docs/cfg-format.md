@@ -115,6 +115,10 @@ they share the call instruction and continuation block. Candidate entries have
 Embassy's task-poll dispatch, where stores to a task-header field identify the
 concrete `TaskStorage<...>::poll` functions plus `poll_exited`.
 
+A `null_target: true` call record has a statically null function pointer and no
+call edge. It is not unresolved: the diagnostic `null-indirect-call-target`
+records the dead call site, and DOT/Mermaid render a `null target` note.
+
 `unresolved: true` in a block's `calls` entry means an indirect call or an
 indirect tail jump had no static target. A `tail: true` entry records a jump
 that leaves the function; unresolved tail jumps are retained as candidates so
@@ -203,17 +207,18 @@ each of them.
 
 ## JSON document
 
-`cfg_schema_version` is `1.3` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.4` and is independent of the TDG schema version.
 Every document contains image metadata, diagnostics, and the selected
 functions. Version 1.1 adds an optional per-function `inline_frames` list
 recovered from DWARF. Version 1.2 scopes diagnostics to the selected functions
 and adds `diagnostics_omitted` when other image diagnostics were filtered out.
 Version 1.3 adds an optional `no_code` descriptor for functions that have no
-machine code in the image.
+machine code in the image. Version 1.4 adds `null_target` to CFG call records
+whose target expression is a statically null function pointer.
 
 ```json
 {
-  "cfg_schema_version": "1.3",
+  "cfg_schema_version": "1.4",
   "image": { "arch": "thumb", "...": "..." },
   "functions": [
     {

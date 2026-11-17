@@ -357,7 +357,7 @@ confidence encoding. It is supported for DOT and Mermaid only; JSON is
 unaffected.
 
 `--view cfg` switches the output from the TDG to the intermediate function
-CFG. CFG JSON uses its own `cfg_schema_version` (`1.3`), includes full
+CFG. CFG JSON uses its own `cfg_schema_version` (`1.4`), includes full
 instruction/raw-byte information by default, carries optional per-function
 inline-frame ranges from DWARF, scopes diagnostics to the selected functions
 with a `diagnostics_omitted` count, records a `no_code` reason for external or

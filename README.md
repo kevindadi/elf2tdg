@@ -123,6 +123,8 @@ Implemented:
   seeds are supplemented by architecture-aware prologue scanning
   (`endbr64`/`push rbp; mov rbp,rsp`, `push {...,lr}`, `stp x29,x30`, RISC-V
   stack adjustment), with a `stripped-heuristic-seeds` diagnostic.
+- Statically null indirect call targets (for example an empty vtable drop slot)
+  are marked `null_target` instead of being reported as unresolved.
 - External imports and zero-size logical task entries remain selectable CFG
   functions. Their JSON view carries a `no_code` reason and empty block list;
   DOT/Mermaid render an explicit dashed no-code note instead of an empty graph.
