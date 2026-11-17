@@ -8,8 +8,10 @@
 use std::path::{Path, PathBuf};
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
+use elf2tdg::cfg::CfgTerminator;
 use elf2tdg::loader;
 use elf2tdg_schema::{Confidence, Edge};
+use petgraph::visit::IntoEdgeReferences;
 
 fn fixture_elf() -> Option<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -141,4 +143,30 @@ fn resolves_allocator_and_trait_object_calls() {
     assert_eq!(null_calls.len(), 1);
     assert!(!null_calls[0].unresolved);
     assert!(null_calls[0].target.is_none());
+    assert!(
+        null_calls[0].noreturn,
+        "an executed null function pointer cannot return"
+    );
+    let null_site = null_calls[0].site;
+    let call_sensor = analysis
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name.contains("::run"))
+        .expect("run CFG");
+    let null_block = call_sensor
+        .cfg
+        .blocks_by_address
+        .values()
+        .map(|node| &call_sensor.cfg.graph[*node])
+        .find(|block| block.calls.iter().any(|call| call.site == null_site))
+        .expect("null call block");
+    assert_eq!(null_block.terminator, CfgTerminator::NoreturnCall);
+    assert!(
+        !call_sensor.cfg.graph.edge_references().any(|edge| {
+            edge.weight().kind == elf2tdg::cfg::CfgEdgeKind::CallReturn
+                && edge.weight().site == null_site
+        }),
+        "null-target call must not have a call-return edge"
+    );
 }

@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
-use elf2tdg::cfg;
+use elf2tdg::cfg::{self, CfgNoreturnReason};
 use elf2tdg::loader::{self, ArchKind};
 use elf2tdg_schema::{Confidence, ContextKind, Edge, FunctionKind, SpawnTarget};
 
@@ -240,6 +240,18 @@ fn recovers_embassy_task_contexts_and_spawns() {
         .iter()
         .find(|function| function.primary_name.contains("Executor>::run"))
         .expect("Embassy executor function");
+    assert_eq!(
+        executor.noreturn,
+        Some(CfgNoreturnReason::ControlFlow),
+        "the executor event loop never returns"
+    );
+    let panic = analysis
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name.contains("::panicking::panic_fmt"))
+        .expect("core panic entry point");
+    assert_eq!(panic.noreturn, Some(CfgNoreturnReason::Api));
     let cfg_candidates: Vec<_> = executor
         .cfg
         .blocks_by_address
