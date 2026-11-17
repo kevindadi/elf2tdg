@@ -2046,6 +2046,18 @@ impl<'a> Analyzer<'a> {
                     .collect();
                 if (1..=16).contains(&targets.len()) {
                     let count = targets.len();
+                    let method = self
+                        .image
+                        .dwarf
+                        .as_ref()
+                        .and_then(|dwarf| {
+                            u64::try_from(slot).ok().and_then(|slot| {
+                                dwarf
+                                    .vtable_method_at(slot)
+                                    .and_then(|entry| entry.name.as_deref())
+                            })
+                        })
+                        .map_or_else(String::new, |name| format!(" (`{name}`)"));
                     resolutions.push(CandidateCallResolution {
                         caller: function_address,
                         site,
@@ -2054,7 +2066,7 @@ impl<'a> Analyzer<'a> {
                         conditional,
                         code: "resolved-trait-object-candidates",
                         message: format!(
-                            "trait-object call at 0x{site:x} has {count} vtable method candidate(s) at slot +{slot}"
+                            "trait-object call at 0x{site:x} has {count} vtable method candidate(s) at slot +{slot}{method}"
                         ),
                     });
                 }
