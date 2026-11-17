@@ -3,8 +3,9 @@ FIXTURE_DIR := tests/fixtures/cortex_m0
 FIXTURE_ELF := $(FIXTURE_DIR)/firmware.elf
 SPAWN_FIXTURE_DIR := tests/fixtures/cortex_m_spawn
 SPAWN_FIXTURE_ELF := $(SPAWN_FIXTURE_DIR)/firmware.elf
+ALLOC_FIXTURE_DIR := tests/fixtures/rust_alloc_trait
 
-.PHONY: schema test lint fixture examples analyze-fixture analyze-spawn-fixture analyze-cfg-fixture analyze-elf-fixture clean
+.PHONY: schema test lint fixture alloc-fixture examples analyze-fixture analyze-spawn-fixture analyze-cfg-fixture analyze-elf-fixture clean
 
 schema:
 	$(CARGO) run --quiet -p elf2tdg-schema --example dump_schema > schema/tdg.schema.json
@@ -19,6 +20,9 @@ lint:
 fixture:
 	$(MAKE) -C $(FIXTURE_DIR)
 	$(MAKE) -C $(SPAWN_FIXTURE_DIR)
+
+alloc-fixture:
+	$(MAKE) -C $(ALLOC_FIXTURE_DIR)
 
 examples:
 	$(MAKE) -C examples/rust-concurrency
@@ -52,5 +56,6 @@ clean:
 	$(CARGO) clean
 	$(MAKE) -C $(FIXTURE_DIR) clean
 	$(MAKE) -C $(SPAWN_FIXTURE_DIR) clean
+	$(MAKE) -C $(ALLOC_FIXTURE_DIR) clean
 	$(MAKE) -C examples/rust-concurrency clean
 	$(MAKE) -C examples/cortex-m0-isr clean
