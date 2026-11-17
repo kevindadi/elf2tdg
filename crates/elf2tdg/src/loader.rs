@@ -589,7 +589,7 @@ pub fn load_from_bytes(bytes: &[u8], path: impl AsRef<Path>) -> Result<Image> {
     let (relocated_pointers, imported_slots) =
         collect_pointer_relocations(&file, &sections, byte_order, arch, &symbols);
     let (dwarf, dwarf_error) = if has_debug_info {
-        match crate::dwarf::parse(&file, byte_order) {
+        match crate::dwarf::parse(&file, byte_order, crate::arch::pointer_size(arch)) {
             Ok(info) => (Some(info), None),
             Err(error) => (None, Some(error)),
         }
