@@ -3337,6 +3337,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         }
     }
 

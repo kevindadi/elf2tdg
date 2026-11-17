@@ -1344,6 +1344,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         }
     }
 
@@ -1577,6 +1578,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         };
         let engine = Decoder::new(ArchKind::X86_64).unwrap();
         let load = engine
@@ -1703,6 +1705,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         };
         let engine = Decoder::new(ArchKind::X86_64).unwrap();
         let load = engine
@@ -1765,6 +1768,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         };
         let engine = Decoder::new(ArchKind::X86_64).unwrap();
         let lea = engine
@@ -1896,6 +1900,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         };
         assert_eq!(
             resolve_vtable_slot_candidates(&image, &[&decoded], 24),
@@ -1961,6 +1966,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         };
         let engine = Decoder::new(ArchKind::X86_64).unwrap();
         let call = engine

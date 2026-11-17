@@ -226,6 +226,9 @@ pub struct Image {
     pub sections: Vec<Section>,
     /// Function-like symbols in executable sections.
     pub symbols: Vec<ImageSymbol>,
+    /// Sizes of allocated data symbols keyed by address. Used to bound table
+    /// scans to an object's declared extent.
+    pub data_symbols: BTreeMap<u64, u64>,
     /// Whether a symbol table exists.
     pub has_symbols: bool,
     /// Whether DWARF debug sections exist.
@@ -554,6 +557,29 @@ pub fn load_from_bytes(bytes: &[u8], path: impl AsRef<Path>) -> Result<Image> {
     }
 
     synthesize_plt_symbols(&file, &sections, arch, &mut seen, &mut symbols);
+    let mut data_symbols = BTreeMap::new();
+    for symbol in file.symbols().chain(file.dynamic_symbols()) {
+        let size = symbol.size();
+        if size == 0
+            || !matches!(symbol.kind(), SymbolKind::Data | SymbolKind::Unknown)
+            || !symbol
+                .name()
+                .is_ok_and(|name| !name.is_empty() && !name.starts_with('$'))
+        {
+            continue;
+        }
+        let address = symbol.address();
+        if !sections
+            .iter()
+            .any(|section| section.alloc && !section.executable && section.contains(address))
+        {
+            continue;
+        }
+        data_symbols
+            .entry(address)
+            .and_modify(|current: &mut u64| *current = (*current).max(size))
+            .or_insert(size);
+    }
     let has_symbols = !symbols.is_empty();
     let vector_table = if matches!(arch, ArchKind::Thumb | ArchKind::Arm) {
         detect_vector_table(&sections, byte_order, arch)
@@ -582,6 +608,7 @@ pub fn load_from_bytes(bytes: &[u8], path: impl AsRef<Path>) -> Result<Image> {
         segments,
         sections,
         symbols,
+        data_symbols,
         has_symbols,
         has_debug_info,
         has_relocations,

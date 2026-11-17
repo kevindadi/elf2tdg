@@ -3334,6 +3334,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         };
         assert_eq!(architecture_root_addresses(&image), vec![0x1000, 0x1008]);
     }
@@ -3367,6 +3368,7 @@ mod tests {
             vector_table: Vec::new(),
             dwarf: None,
             dwarf_error: None,
+            data_symbols: std::collections::BTreeMap::default(),
         };
         assert_eq!(architecture_root_addresses(&image), vec![0x1000, 0x1004]);
     }
