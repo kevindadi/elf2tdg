@@ -402,6 +402,34 @@ impl ProgramCfg {
     /// Returns a human-readable error when the selector matches no function or
     /// is ambiguous.
     pub fn select(&self, selector: Option<&str>) -> Result<Vec<&CfgFunction>, String> {
+        self.select_impl(selector, None)
+    }
+
+    /// Selects CFG functions with task-context aliases from `tdg`.
+    ///
+    /// In addition to function names, symbols and addresses, a selector may
+    /// name an execution context (for example `app::sensor_task`). The
+    /// context's entry function is then selected, so an async task name maps
+    /// to its real `TaskStorage<...>::poll` function instead of a helper that
+    /// merely contains the task name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable error when the selector matches no function or
+    /// context, or when the match is ambiguous.
+    pub fn select_with_tdg(
+        &self,
+        tdg: &Tdg,
+        selector: Option<&str>,
+    ) -> Result<Vec<&CfgFunction>, String> {
+        self.select_impl(selector, Some(tdg))
+    }
+
+    fn select_impl(
+        &self,
+        selector: Option<&str>,
+        tdg: Option<&Tdg>,
+    ) -> Result<Vec<&CfgFunction>, String> {
         let Some(selector) = selector else {
             return Ok(self.functions.iter().collect());
         };
@@ -420,6 +448,28 @@ impl ProgramCfg {
                 .map(|function| vec![function])
                 .ok_or_else(|| format!("no function starts at {selector}"));
         }
+        // Task/thread context names take precedence over helper functions
+        // whose symbols merely contain the same text (for example Embassy
+        // future initialization helpers).
+        if let Some(tdg) = tdg {
+            let aliases = unique_functions(
+                tdg.contexts
+                    .iter()
+                    .filter(|context| is_task_context(context.kind))
+                    .filter(|context| context_matches(&context.name, selector))
+                    .filter_map(|context| self.cfg_function_for_tdg_id(tdg, &context.entry)),
+            );
+            if aliases.len() == 1 {
+                return Ok(aliases);
+            }
+            if aliases.len() > 1 {
+                return Err(format!(
+                    "function selector {selector:?} matches multiple task contexts ({} matches)",
+                    aliases.len()
+                ));
+            }
+        }
+
         let matches = |name: &str| {
             let normalized = normalize_crate_hashes(name);
             normalized == selector || name == selector
@@ -442,7 +492,8 @@ impl ProgramCfg {
                 exact.len()
             ));
         }
-        let partial: Vec<&CfgFunction> = self
+
+        let mut partial: Vec<&CfgFunction> = self
             .functions
             .iter()
             .filter(|function| {
@@ -457,6 +508,15 @@ impl ProgramCfg {
                         .any(|name| normalize_crate_hashes(name).contains(selector))
             })
             .collect();
+        if let Some(tdg) = tdg {
+            partial.extend(
+                tdg.contexts
+                    .iter()
+                    .filter(|context| normalize_crate_hashes(&context.name).contains(selector))
+                    .filter_map(|context| self.cfg_function_for_tdg_id(tdg, &context.entry)),
+            );
+        }
+        let partial = unique_functions(partial);
         match partial.len() {
             0 => Err(format!("no function matches {selector:?}")),
             1 => Ok(partial),
@@ -695,7 +755,7 @@ impl ProgramCfg {
                 return Ok((entries, selected));
             }
         }
-        let functions = self.select(Some(root))?;
+        let functions = self.select_with_tdg(tdg, Some(root))?;
         let ids: Vec<FunctionId> = functions
             .iter()
             .map(|function| function.id.clone())
@@ -724,6 +784,39 @@ impl ProgramCfg {
             })
         })
     }
+}
+
+fn is_task_context(kind: ContextKind) -> bool {
+    matches!(
+        kind,
+        ContextKind::Thread
+            | ContextKind::ScopedThread
+            | ContextKind::AsyncTask
+            | ContextKind::Executor
+            | ContextKind::TimerCallback
+    )
+}
+
+fn context_matches(name: &str, selector: &str) -> bool {
+    let normalized = normalize_crate_hashes(name);
+    normalized == selector
+        || normalized
+            .rsplit("::")
+            .next()
+            .is_some_and(|short| short == selector)
+}
+
+fn unique_functions<'a>(
+    functions: impl IntoIterator<Item = &'a CfgFunction>,
+) -> Vec<&'a CfgFunction> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for function in functions {
+        if seen.insert(function.id.clone()) {
+            unique.push(function);
+        }
+    }
+    unique
 }
 
 fn riscv_trap_targets(image: &Image) -> Vec<u64> {
@@ -1016,7 +1109,7 @@ pub fn render_json(
     selector: Option<&str>,
     include_instructions: bool,
 ) -> Result<String, String> {
-    let selected = program.select(selector)?;
+    let selected = program.select_with_tdg(tdg, selector)?;
     render_json_selected(program, tdg, &selected, include_instructions)
 }
 
@@ -1309,6 +1402,26 @@ pub fn render_dot(
     ))
 }
 
+/// Renders a CFG as Graphviz DOT with task-context selector aliases from
+/// `tdg`.
+///
+/// # Errors
+///
+/// Returns an error when the selector matches nothing or is ambiguous.
+pub fn render_dot_with_tdg(
+    program: &ProgramCfg,
+    tdg: &Tdg,
+    selector: Option<&str>,
+    include_instructions: bool,
+) -> Result<String, String> {
+    let selected = program.select_with_tdg(tdg, selector)?;
+    Ok(render_dot_selected(
+        program,
+        &selected,
+        include_instructions,
+    ))
+}
+
 /// Renders an explicitly selected set of function CFGs as Graphviz DOT.
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -1436,6 +1549,26 @@ pub fn render_mermaid(
     include_instructions: bool,
 ) -> Result<String, String> {
     let selected = program.select(selector)?;
+    Ok(render_mermaid_selected(
+        program,
+        &selected,
+        include_instructions,
+    ))
+}
+
+/// Renders a CFG as a Mermaid flowchart with task-context selector aliases
+/// from `tdg`.
+///
+/// # Errors
+///
+/// Returns an error when the selector matches nothing or is ambiguous.
+pub fn render_mermaid_with_tdg(
+    program: &ProgramCfg,
+    tdg: &Tdg,
+    selector: Option<&str>,
+    include_instructions: bool,
+) -> Result<String, String> {
+    let selected = program.select_with_tdg(tdg, selector)?;
     Ok(render_mermaid_selected(
         program,
         &selected,

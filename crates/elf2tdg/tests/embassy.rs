@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
+use elf2tdg::cfg;
 use elf2tdg::loader::{self, ArchKind};
 use elf2tdg_schema::{Confidence, ContextKind, Edge, FunctionKind, SpawnTarget};
 
@@ -101,6 +102,59 @@ fn recovers_embassy_task_contexts_and_spawns() {
         assert!(entry.primary_name.contains("TaskStorage<"));
         assert!(entry.primary_name.ends_with("::poll"));
     }
+
+    for (selector, task) in [
+        ("rust_concurrency::app_main", "__app_main_task"),
+        ("app_main", "__app_main_task"),
+        ("rust_concurrency::sensor_task", "__sensor_task_task"),
+        ("sensor_task", "__sensor_task_task"),
+        ("rust_concurrency::monitor_task", "__monitor_task_task"),
+        ("monitor_task", "__monitor_task_task"),
+    ] {
+        let selected = analysis
+            .cfg
+            .select_with_tdg(&analysis.tdg, Some(selector))
+            .unwrap_or_else(|error| panic!("{selector}: {error}"));
+        assert_eq!(selected.len(), 1, "{selector}");
+        assert!(
+            selected[0].primary_name.contains("TaskStorage<"),
+            "{selector} should map to the task poll entry, got {}",
+            selected[0].primary_name
+        );
+        assert!(
+            selected[0].primary_name.contains(task),
+            "{selector} should map to {task}, got {}",
+            selected[0].primary_name
+        );
+    }
+
+    let reachable = analysis
+        .cfg
+        .reachable_from(&analysis.tdg, "sensor_task")
+        .expect("task reachability");
+    assert!(reachable.iter().any(|function| {
+        function.primary_name.contains("TaskStorage<")
+            && function.primary_name.contains("__sensor_task_task")
+    }));
+
+    let rendered = cfg::render_json(&analysis.cfg, &analysis.tdg, Some("sensor_task"), false)
+        .expect("task selector JSON");
+    let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("valid CFG JSON");
+    assert!(
+        rendered["functions"][0]["primary_name"]
+            .as_str()
+            .is_some_and(
+                |name| name.contains("TaskStorage<") && name.contains("__sensor_task_task")
+            )
+    );
+
+    let dot = cfg::render_dot_with_tdg(&analysis.cfg, &analysis.tdg, Some("sensor_task"), false)
+        .expect("task selector DOT");
+    assert!(dot.contains("TaskStorage<"));
+    let mermaid =
+        cfg::render_mermaid_with_tdg(&analysis.cfg, &analysis.tdg, Some("sensor_task"), false)
+            .expect("task selector Mermaid");
+    assert!(mermaid.contains("TaskStorage<"));
 
     let spawns: Vec<&Edge> = tdg
         .edges

@@ -43,7 +43,8 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = View::Tdg)]
     view: View,
 
-    /// Select one function for CFG output by name, symbol, or 0x address.
+    /// Select one function for CFG output by name, symbol, task context, or 0x
+    /// address. Task names map to their execution-context entry function.
     #[arg(long, conflicts_with = "all_functions")]
     function: Option<String>,
 
@@ -53,7 +54,8 @@ struct Cli {
     all_functions: bool,
 
     /// Export only functions reachable from ROOT through calls and task
-    /// creation. Without this flag the CFG uses all asynchronous execution
+    /// creation. ROOT may be a function name, task context, symbol, or 0x
+    /// address. Without this flag the CFG uses all asynchronous execution
     /// roots: main, startup, ISR vectors, tasks and callbacks.
     #[arg(
         long,
@@ -142,7 +144,7 @@ fn select_cfg_functions<'a>(
     image: &Image,
 ) -> std::result::Result<Vec<&'a CfgFunction>, String> {
     if let Some(selector) = cli.function.as_deref() {
-        program.select(Some(selector))
+        program.select_with_tdg(tdg, Some(selector))
     } else if cli.all_functions {
         Ok(program.functions.iter().collect())
     } else if let Some(root) = cli.reachable_from.as_deref() {
