@@ -357,10 +357,11 @@ confidence encoding. It is supported for DOT and Mermaid only; JSON is
 unaffected.
 
 `--view cfg` switches the output from the TDG to the intermediate function
-CFG. CFG JSON uses its own `cfg_schema_version` (`1.2`), includes full
+CFG. CFG JSON uses its own `cfg_schema_version` (`1.3`), includes full
 instruction/raw-byte information by default, carries optional per-function
 inline-frame ranges from DWARF, scopes diagnostics to the selected functions
-with a `diagnostics_omitted` count, and can omit instruction arrays with
+with a `diagnostics_omitted` count, records a `no_code` reason for external or
+logical functions without machine code, and can omit instruction arrays with
 `--no-cfg-instructions`. Without a selector, the CFG is limited to
 functions reachable from a multi-root system scope (main/startup, vector-table
 ISRs, tasks and callbacks). `--reachable-from ROOT` selects one root and

@@ -198,15 +198,17 @@ each of them.
 
 ## JSON document
 
-`cfg_schema_version` is `1.2` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.3` and is independent of the TDG schema version.
 Every document contains image metadata, diagnostics, and the selected
 functions. Version 1.1 adds an optional per-function `inline_frames` list
 recovered from DWARF. Version 1.2 scopes diagnostics to the selected functions
 and adds `diagnostics_omitted` when other image diagnostics were filtered out.
+Version 1.3 adds an optional `no_code` descriptor for functions that have no
+machine code in the image.
 
 ```json
 {
-  "cfg_schema_version": "1.2",
+  "cfg_schema_version": "1.3",
   "image": { "arch": "thumb", "...": "..." },
   "functions": [
     {
@@ -328,6 +330,23 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `terminator` | `fallthrough`, `call`, `return`, `branch`, `jump`, `unresolved` |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
 | `inline_frames` | unique `DW_TAG_inlined_subroutine` ranges inside the function |
+
+Functions that have no machine code in the image are still selectable and
+renderable. Their `blocks` array is empty and the function carries:
+
+```json
+"no_code": {
+  "reason": "external",
+  "message": "declared external symbol; no machine code in this image"
+}
+```
+
+`reason` is `external` for PLT/GOT imports and other undefined symbols,
+`logical` for zero-size logical task entries created by a runtime spawn rule,
+and `unavailable` when no basic blocks could be recovered for another reason.
+DOT and Mermaid render a dashed note inside the function cluster instead of an
+empty graph. External GOT pseudo-addresses and logical spawn-site addresses are
+metadata addresses, not instruction addresses.
 
 `indirect` is retained when known: `register`, `register-memory`, `memory`,
 `register-offset`, `indexed-memory`, `table-branch`, `table-load`, or
