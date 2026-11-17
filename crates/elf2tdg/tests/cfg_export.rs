@@ -141,23 +141,38 @@ fn cfg_retains_gap_recovered_calls_and_tdg_parity() {
     let _ = recovered;
     for edge in &analysis.tdg.edges {
         let Edge::Call {
-            caller, site, tail, ..
+            caller,
+            callee,
+            site,
+            tail,
+            ..
         } = edge
         else {
             continue;
         };
         let function = analysis.cfg.function(caller).expect("caller CFG");
+        let matches = |call: &&elf2tdg::cfg::CfgCallSite| {
+            call.site == site.get()
+                && call.tail == *tail
+                && if call.candidates.is_empty() {
+                    call.target_function.as_ref() == Some(callee)
+                } else {
+                    call.candidates
+                        .iter()
+                        .any(|candidate| candidate.target_function.as_ref() == Some(callee))
+                }
+        };
         let in_blocks = function
             .cfg
             .blocks_by_address
             .values()
             .flat_map(|node| function.cfg.graph[*node].calls.iter())
-            .any(|call| call.site == site.get() && call.tail == *tail);
+            .any(|call| matches(&call));
         let in_recovered = function
             .cfg
             .recovered_calls
             .iter()
-            .any(|call| call.site == site.get() && call.tail == *tail);
+            .any(|call| matches(&call));
         assert!(
             in_blocks || in_recovered,
             "TDG call at {} is missing from CFG",
@@ -193,7 +208,11 @@ fn cfg_blocks_match_tdg_blocks() {
     }
     for edge in &analysis.tdg.edges {
         let Edge::Call {
-            caller, site, tail, ..
+            caller,
+            callee,
+            site,
+            tail,
+            ..
         } = edge
         else {
             continue;
@@ -207,7 +226,17 @@ fn cfg_blocks_match_tdg_blocks() {
             .blocks_by_address
             .values()
             .flat_map(|node| cfg_function.cfg.graph[*node].calls.iter())
-            .any(|call| call.site == site.get() && call.tail == *tail);
+            .any(|call| {
+                call.site == site.get()
+                    && call.tail == *tail
+                    && if call.candidates.is_empty() {
+                        call.target_function.as_ref() == Some(callee)
+                    } else {
+                        call.candidates
+                            .iter()
+                            .any(|candidate| candidate.target_function.as_ref() == Some(callee))
+                    }
+            });
         assert!(
             found,
             "TDG call edge at {} is not represented in the CFG",

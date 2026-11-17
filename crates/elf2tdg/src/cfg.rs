@@ -22,7 +22,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.4";
+pub const CFG_SCHEMA_VERSION: &str = "1.5";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -177,14 +177,24 @@ pub struct CfgInlineFrame {
     pub depth: u32,
 }
 
+/// One candidate target of a multi-target indirect call.
+#[derive(Clone, Debug)]
+pub struct CfgCallCandidate {
+    /// Candidate target address.
+    pub target: u64,
+    /// Candidate function ID, when the target is a function entry.
+    pub target_function: Option<FunctionId>,
+}
+
 /// A call site retained inside its containing basic block.
+///
+/// There is exactly one record per call instruction. A bounded indirect call
+/// keeps its alternatives in `candidates`; `target` remains the single-target
+/// fast path.
 #[derive(Clone, Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CfgCallSite {
     /// Call instruction address.
-    ///
-    /// Multiple entries may share a site when a bounded indirect call has
-    /// several candidate targets.
     pub site: u64,
     /// Resolved target address, when known.
     pub target: Option<u64>,
@@ -202,6 +212,8 @@ pub struct CfgCallSite {
     pub unresolved: bool,
     /// The target expression evaluates to a statically null function pointer.
     pub null_target: bool,
+    /// Alternative targets when the call site has a bounded target set.
+    pub candidates: Vec<CfgCallCandidate>,
 }
 
 /// A basic block in a function CFG.
@@ -1120,6 +1132,15 @@ struct CfgCallView {
     unresolved: bool,
     #[serde(skip_serializing_if = "is_false")]
     null_target: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    candidates: Vec<CfgCallCandidateView>,
+}
+
+#[derive(Serialize)]
+struct CfgCallCandidateView {
+    target: Addr,
+    target_function: Option<FunctionId>,
+    target_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1321,6 +1342,19 @@ fn call_view(program: &ProgramCfg, call: &CfgCallSite) -> CfgCallView {
         heuristic: call.heuristic,
         unresolved: call.unresolved,
         null_target: call.null_target,
+        candidates: call
+            .candidates
+            .iter()
+            .map(|candidate| CfgCallCandidateView {
+                target: Addr::new(candidate.target),
+                target_function: candidate.target_function.clone(),
+                target_name: candidate.target_function.as_ref().and_then(|id| {
+                    program
+                        .function(id)
+                        .map(|function| normalize_crate_hashes(&function.primary_name))
+                }),
+            })
+            .collect(),
     }
 }
 
@@ -1560,8 +1594,6 @@ pub fn render_dot_selected(
         for node in cfg.blocks_by_address.values() {
             let block = &cfg.graph[*node];
             for call in &block.calls {
-                let (key, label) = call_target(program, call);
-                call_nodes.entry(key.clone()).or_insert(label);
                 let label = if call.unresolved {
                     "call?".to_owned()
                 } else if call.null_target {
@@ -1571,12 +1603,15 @@ pub fn render_dot_selected(
                 } else {
                     "call".to_owned()
                 };
-                let _ = writeln!(
-                    out,
-                    "    \"{}\" -> \"{}\" [label=\"{label}\", color=\"#117a65\", fontcolor=\"#117a65\", style=dashed];",
-                    dot_escape(block.id.as_str()),
-                    dot_escape(&key)
-                );
+                for (key, target_label) in call_targets(program, call) {
+                    call_nodes.entry(key.clone()).or_insert(target_label);
+                    let _ = writeln!(
+                        out,
+                        "    \"{}\" -> \"{}\" [label=\"{label}\", color=\"#117a65\", fontcolor=\"#117a65\", style=dashed];",
+                        dot_escape(block.id.as_str()),
+                        dot_escape(&key)
+                    );
+                }
             }
         }
         if !cfg.recovered_calls.is_empty() {
@@ -1588,14 +1623,15 @@ pub fn render_dot_selected(
                 cfg.recovered_calls.len()
             );
             for call in &cfg.recovered_calls {
-                let (key, label) = call_target(program, call);
-                call_nodes.entry(key.clone()).or_insert(label);
-                let _ = writeln!(
-                    out,
-                    "    \"{}\" -> \"{}\" [label=\"heuristic call\", color=\"#b9770e\", fontcolor=\"#b9770e\", style=dashed];",
-                    dot_escape(&source),
-                    dot_escape(&key)
-                );
+                for (key, label) in call_targets(program, call) {
+                    call_nodes.entry(key.clone()).or_insert(label);
+                    let _ = writeln!(
+                        out,
+                        "    \"{}\" -> \"{}\" [label=\"heuristic call\", color=\"#b9770e\", fontcolor=\"#b9770e\", style=dashed];",
+                        dot_escape(&source),
+                        dot_escape(&key)
+                    );
+                }
             }
         }
         let _ = writeln!(out, "  }}");
@@ -1733,43 +1769,42 @@ pub fn render_mermaid_selected(
                 continue;
             };
             for call in &block.calls {
-                let (key, label) = call_target(program, call);
-                let id = if let Some((id, _)) = call_nodes.get(&key) {
-                    id.clone()
+                let relation = if call.unresolved {
+                    "call?"
+                } else if call.null_target {
+                    "null target"
+                } else if call.tail {
+                    "tail call"
                 } else {
-                    let id = format!("call{}", call_nodes.len());
-                    call_nodes.insert(key, (id.clone(), label.clone()));
-                    let _ = writeln!(out, "  {id}[\"{}\"]", mermaid_escape(&label));
-                    id
+                    "call"
                 };
-                let _ = writeln!(
-                    out,
-                    "  {source} -.->|{}| {id}",
-                    if call.unresolved {
-                        "call?"
-                    } else if call.null_target {
-                        "null target"
-                    } else if call.tail {
-                        "tail call"
+                for (key, label) in call_targets(program, call) {
+                    let id = if let Some((id, _)) = call_nodes.get(&key) {
+                        id.clone()
                     } else {
-                        "call"
-                    }
-                );
+                        let id = format!("call{}", call_nodes.len());
+                        call_nodes.insert(key, (id.clone(), label.clone()));
+                        let _ = writeln!(out, "  {id}[\"{}\"]", mermaid_escape(&label));
+                        id
+                    };
+                    let _ = writeln!(out, "  {source} -.->|{relation}| {id}");
+                }
             }
         }
         if !cfg.recovered_calls.is_empty() {
             let recovered_id = format!("rec{function_index}");
             for call in &cfg.recovered_calls {
-                let (key, label) = call_target(program, call);
-                let id = if let Some((id, _)) = call_nodes.get(&key) {
-                    id.clone()
-                } else {
-                    let id = format!("call{}", call_nodes.len());
-                    call_nodes.insert(key, (id.clone(), label.clone()));
-                    let _ = writeln!(out, "  {id}[\"{}\"]", mermaid_escape(&label));
-                    id
-                };
-                let _ = writeln!(out, "  {recovered_id} -.->|recovered call| {id}");
+                for (key, label) in call_targets(program, call) {
+                    let id = if let Some((id, _)) = call_nodes.get(&key) {
+                        id.clone()
+                    } else {
+                        let id = format!("call{}", call_nodes.len());
+                        call_nodes.insert(key, (id.clone(), label.clone()));
+                        let _ = writeln!(out, "  {id}[\"{}\"]", mermaid_escape(&label));
+                        id
+                    };
+                    let _ = writeln!(out, "  {recovered_id} -.->|recovered call| {id}");
+                }
             }
         }
     }
@@ -1791,19 +1826,56 @@ fn block_label(block: &CfgBlock, include_instructions: bool) -> String {
         }
     }
     if !block.calls.is_empty() {
-        let _ = write!(label, "\n{} call(s)", block.calls.len());
+        let candidate_count: usize = block.calls.iter().map(|call| call.candidates.len()).sum();
+        if candidate_count == 0 {
+            let _ = write!(label, "\n{} call(s)", block.calls.len());
+        } else {
+            let _ = write!(
+                label,
+                "\n{} call(s), {} candidate target(s)",
+                block.calls.len(),
+                candidate_count
+            );
+        }
     }
     label
 }
 
-fn call_target(program: &ProgramCfg, call: &CfgCallSite) -> (String, String) {
+fn call_targets(program: &ProgramCfg, call: &CfgCallSite) -> Vec<(String, String)> {
     if call.null_target {
-        return (
+        return vec![(
             format!("call:null:0x{:x}", call.site),
             "null function pointer".to_owned(),
-        );
+        )];
     }
-    if let Some(function_id) = &call.target_function {
+    if !call.candidates.is_empty() {
+        return call
+            .candidates
+            .iter()
+            .map(|candidate| {
+                target_label(
+                    program,
+                    candidate.target,
+                    candidate.target_function.as_ref(),
+                )
+            })
+            .collect();
+    }
+    if let Some(target) = call.target {
+        return vec![target_label(program, target, call.target_function.as_ref())];
+    }
+    vec![(
+        format!("call:unresolved:0x{:x}", call.site),
+        "unresolved call".to_owned(),
+    )]
+}
+
+fn target_label(
+    program: &ProgramCfg,
+    target: u64,
+    target_function: Option<&FunctionId>,
+) -> (String, String) {
+    if let Some(function_id) = target_function {
         if let Some(function) = program.function(function_id) {
             let name = crate::rules::normalize_crate_hashes(&function.primary_name);
             return (
@@ -1813,16 +1885,10 @@ fn call_target(program: &ProgramCfg, call: &CfgCallSite) -> (String, String) {
         }
         return (
             format!("call:{function_id}"),
-            format!("{function_id}\\n(entry)"),
+            format!("{function_id}\n(entry)"),
         );
     }
-    if let Some(target) = call.target {
-        return (format!("call:0x{target:x}"), format!("0x{target:x}"));
-    }
-    (
-        format!("call:unresolved:0x{:x}", call.site),
-        "unresolved call".to_owned(),
-    )
+    (format!("call:0x{target:x}"), format!("0x{target:x}"))
 }
 
 fn shorten(value: &str, max_chars: usize) -> String {
@@ -1898,6 +1964,7 @@ mod tests {
             heuristic: false,
             unresolved: false,
             null_target: false,
+            candidates: Vec::new(),
         }
     }
 

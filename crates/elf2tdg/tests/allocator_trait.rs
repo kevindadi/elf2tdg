@@ -113,10 +113,17 @@ fn resolves_allocator_and_trait_object_calls() {
         .flat_map(|node| call_sensor.cfg.graph[*node].calls.iter())
         .filter(|call| call.site == site.get())
         .collect();
-    assert_eq!(cfg_candidates.len(), 2);
-    assert!(cfg_candidates.iter().all(|call| {
-        !call.unresolved && call.heuristic && call.tail && call.target_function.is_some()
-    }));
+    assert_eq!(cfg_candidates.len(), 1);
+    let call_site = cfg_candidates[0];
+    assert!(!call_site.unresolved && call_site.heuristic && call_site.tail);
+    assert!(call_site.target.is_none());
+    assert_eq!(call_site.candidates.len(), 2);
+    assert!(
+        call_site
+            .candidates
+            .iter()
+            .all(|candidate| candidate.target_function.is_some())
+    );
 
     let null_calls: Vec<_> = analysis
         .cfg

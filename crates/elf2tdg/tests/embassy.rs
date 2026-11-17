@@ -247,11 +247,15 @@ fn recovers_embassy_task_contexts_and_spawns() {
         .flat_map(|node| executor.cfg.graph[*node].calls.iter())
         .filter(|call| call.site == site.get())
         .collect();
-    assert_eq!(cfg_candidates.len(), 4, "CFG multi-target call records");
-    assert!(cfg_candidates.iter().all(|call| {
-        !call.unresolved
-            && call.heuristic
-            && call.target_function.is_some()
-            && call.target.is_some()
-    }));
+    assert_eq!(cfg_candidates.len(), 1, "one call instruction");
+    let call_site = cfg_candidates[0];
+    assert!(!call_site.unresolved && call_site.heuristic);
+    assert!(call_site.target.is_none());
+    assert_eq!(call_site.candidates.len(), 4, "four candidate targets");
+    assert!(
+        call_site
+            .candidates
+            .iter()
+            .all(|candidate| candidate.target_function.is_some() && candidate.target != 0)
+    );
 }

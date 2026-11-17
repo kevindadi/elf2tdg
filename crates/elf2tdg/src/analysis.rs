@@ -990,6 +990,7 @@ impl<'a> Analyzer<'a> {
                     heuristic: call.heuristic,
                     unresolved: false,
                     null_target: false,
+                    candidates: Vec::new(),
                 },
             );
         }
@@ -1007,6 +1008,7 @@ impl<'a> Analyzer<'a> {
                         heuristic: false,
                         unresolved: false,
                         null_target: true,
+                        candidates: Vec::new(),
                     },
                 );
                 continue;
@@ -1029,6 +1031,7 @@ impl<'a> Analyzer<'a> {
                     heuristic: false,
                     unresolved: true,
                     null_target: false,
+                    candidates: Vec::new(),
                 }
             });
         }
@@ -1051,6 +1054,7 @@ impl<'a> Analyzer<'a> {
                     heuristic: false,
                     unresolved: true,
                     null_target: false,
+                    candidates: Vec::new(),
                 });
         }
 
@@ -1677,9 +1681,10 @@ impl<'a> Analyzer<'a> {
                 heuristic: false,
                 unresolved: false,
                 null_target: true,
+                candidates: Vec::new(),
             };
             let updated = self.functions.get_mut(&caller).is_some_and(|function| {
-                replace_unresolved_cfg_call(&mut function.cfg, site, vec![null_call])
+                replace_unresolved_cfg_call(&mut function.cfg, site, null_call)
             });
             if !updated {
                 continue;
@@ -1724,22 +1729,36 @@ impl<'a> Analyzer<'a> {
                 code,
                 message,
             } = resolution;
-            let candidate_calls: Vec<cfg::CfgCallSite> = targets
-                .iter()
-                .map(|target| cfg::CfgCallSite {
-                    site,
-                    target: Some(*target),
-                    target_function: Some(function_id(*target)),
-                    direct: false,
-                    tail,
-                    conditional,
-                    heuristic: true,
-                    unresolved: false,
-                    null_target: false,
-                })
-                .collect();
+            let (target, target_function, candidates) = if targets.len() == 1 {
+                let target = targets[0];
+                (Some(target), Some(function_id(target)), Vec::new())
+            } else {
+                (
+                    None,
+                    None,
+                    targets
+                        .iter()
+                        .map(|target| cfg::CfgCallCandidate {
+                            target: *target,
+                            target_function: Some(function_id(*target)),
+                        })
+                        .collect(),
+                )
+            };
+            let candidate_call = cfg::CfgCallSite {
+                site,
+                target,
+                target_function,
+                direct: false,
+                tail,
+                conditional,
+                heuristic: true,
+                unresolved: false,
+                null_target: false,
+                candidates,
+            };
             let updated = self.functions.get_mut(&caller).is_some_and(|function| {
-                replace_unresolved_cfg_call(&mut function.cfg, site, candidate_calls)
+                replace_unresolved_cfg_call(&mut function.cfg, site, candidate_call)
             });
             if !updated {
                 continue;
@@ -1897,6 +1916,7 @@ impl<'a> Analyzer<'a> {
                 heuristic: false,
                 unresolved: false,
                 null_target: false,
+                candidates: Vec::new(),
             };
             let Some(function) = self.functions.get_mut(&function_address) else {
                 continue;
@@ -2089,61 +2109,68 @@ impl<'a> Analyzer<'a> {
             })
             .collect();
         for (caller, call) in &cfg_calls {
-            let Some(target) = call.target else {
-                continue;
-            };
-            if call.unresolved {
+            if call.unresolved || call.null_target {
                 continue;
             }
-            let Some(callee) = self.resolve_function_address(target) else {
-                self.diag(
-                    Severity::Warning,
-                    "call-target-unresolved",
-                    format!(
-                        "call at 0x{:x} targets 0x{target:x}, but no callee node exists",
-                        call.site
-                    ),
-                    Some(*caller),
-                    Some(call.site),
-                );
-                continue;
-            };
-            let mut confidence = if call.heuristic {
-                Confidence::Low
-            } else if !call.direct {
-                Confidence::Medium
-            } else if callee == target {
-                Confidence::High
+            let targets: Vec<u64> = if call.candidates.is_empty() {
+                call.target.into_iter().collect()
             } else {
-                self.diag(
-                    Severity::Info,
-                    "call-into-function-body",
-                    format!(
-                        "call at 0x{:x} targets 0x{target:x} inside function 0x{callee:x}",
-                        call.site
-                    ),
-                    Some(*caller),
-                    Some(call.site),
-                );
-                Confidence::Medium
+                call.candidates
+                    .iter()
+                    .map(|candidate| candidate.target)
+                    .collect()
             };
-            if call.conditional && !call.heuristic {
-                confidence = Confidence::Medium;
+            for target in targets {
+                let Some(callee) = self.resolve_function_address(target) else {
+                    self.diag(
+                        Severity::Warning,
+                        "call-target-unresolved",
+                        format!(
+                            "call at 0x{:x} targets 0x{target:x}, but no callee node exists",
+                            call.site
+                        ),
+                        Some(*caller),
+                        Some(call.site),
+                    );
+                    continue;
+                };
+                let mut confidence = if call.heuristic {
+                    Confidence::Low
+                } else if !call.direct {
+                    Confidence::Medium
+                } else if callee == target {
+                    Confidence::High
+                } else {
+                    self.diag(
+                        Severity::Info,
+                        "call-into-function-body",
+                        format!(
+                            "call at 0x{:x} targets 0x{target:x} inside function 0x{callee:x}",
+                            call.site
+                        ),
+                        Some(*caller),
+                        Some(call.site),
+                    );
+                    Confidence::Medium
+                };
+                if call.conditional && !call.heuristic {
+                    confidence = Confidence::Medium;
+                }
+                let id = format!("e:call:0x{:x}:0x{target:x}", call.site);
+                if !edge_ids.insert(id.clone()) {
+                    continue;
+                }
+                edges.push(Edge::Call {
+                    id: EdgeId::new(id),
+                    caller: function_id(*caller),
+                    callee: function_id(callee),
+                    site: Addr::new(call.site),
+                    direct: call.direct,
+                    tail: call.tail,
+                    inlined: false,
+                    confidence,
+                });
             }
-            let id = format!("e:call:0x{:x}:0x{target:x}", call.site);
-            if !edge_ids.insert(id.clone()) {
-                continue;
-            }
-            edges.push(Edge::Call {
-                id: EdgeId::new(id),
-                caller: function_id(*caller),
-                callee: function_id(callee),
-                site: Addr::new(call.site),
-                direct: call.direct,
-                tail: call.tail,
-                inlined: false,
-                confidence,
-            });
         }
 
         for vector in &isr_vectors {
@@ -2520,7 +2547,7 @@ impl<'a> Analyzer<'a> {
 fn replace_unresolved_cfg_call(
     function_cfg: &mut cfg::FunctionCfg,
     site: u64,
-    calls: Vec<cfg::CfgCallSite>,
+    resolved: cfg::CfgCallSite,
 ) -> bool {
     for node in function_cfg.blocks_by_address.values() {
         let block = &mut function_cfg.graph[*node];
@@ -2534,8 +2561,8 @@ fn replace_unresolved_cfg_call(
         block
             .calls
             .retain(|call| !(call.site == site && call.unresolved));
-        block.calls.extend(calls);
-        block.calls.sort_by_key(|call| (call.site, call.target));
+        block.calls.push(resolved);
+        block.calls.sort_by_key(|call| call.site);
         return true;
     }
     if function_cfg
@@ -2546,10 +2573,8 @@ fn replace_unresolved_cfg_call(
         function_cfg
             .recovered_calls
             .retain(|call| !(call.site == site && call.unresolved));
-        function_cfg.recovered_calls.extend(calls);
-        function_cfg
-            .recovered_calls
-            .sort_by_key(|call| (call.site, call.target));
+        function_cfg.recovered_calls.push(resolved);
+        function_cfg.recovered_calls.sort_by_key(|call| call.site);
         return true;
     }
     false
