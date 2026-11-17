@@ -945,6 +945,126 @@ pub fn normalize_crate_hashes(name: &str) -> String {
     out
 }
 
+/// Returns true when a function is known by API or ABI convention not to
+/// return to its caller.
+///
+/// This is deliberately a name-based classification: it covers C/POSIX exit
+/// and abort entry points, Rust panic entry points, compiler runtime failure
+/// hooks and C++ termination/unwind helpers. Functions that merely contain a
+/// halt loop are classified from their recovered control-flow graph instead.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn is_noreturn_name(name: &str) -> bool {
+    let normalized = normalize_crate_hashes(name);
+    // Rust monomorphized names end in `::<...>`; drop that suffix before
+    // taking the final path component so `begin_panic::<&str>` still matches.
+    let path = normalized
+        .split("::<")
+        .next()
+        .unwrap_or(normalized.as_str());
+    let bare = path
+        .rsplit("::")
+        .next()
+        .unwrap_or(path)
+        .split('<')
+        .next()
+        .unwrap_or(path)
+        .split('(')
+        .next()
+        .unwrap_or(path)
+        .trim();
+    let namespaced = normalized.contains("::");
+
+    if !namespaced
+        && matches!(
+            bare,
+            "abort"
+                | "_abort"
+                | "exit"
+                | "_exit"
+                | "_Exit"
+                | "quick_exit"
+                | "thrd_exit"
+                | "pthread_exit"
+                | "longjmp"
+                | "_longjmp"
+                | "siglongjmp"
+                | "__longjmp_chk"
+                | "__assert"
+                | "__assert_fail"
+                | "__assert_func"
+                | "__assert_perror_fail"
+                | "__stack_chk_fail"
+                | "__stack_chk_fail_local"
+                | "__libc_fatal"
+                | "__cxa_throw"
+                | "__cxa_rethrow"
+                | "__cxa_pure_virtual"
+                | "__cxa_call_terminate"
+                | "terminate"
+                | "_Unwind_Resume"
+                | "__rust_start_panic"
+                | "rust_begin_unwind"
+                | "rust_panic"
+                | "__rust_alloc_error_handler"
+                | "__rg_oom"
+                | "NVIC_SystemReset"
+                | "__NVIC_SystemReset"
+                | "k_panic"
+                | "z_fatal_error"
+                | "arch_system_halt"
+                | "esp_system_abort"
+                | "esp_restart"
+        )
+    {
+        return true;
+    }
+
+    if normalized.contains("::panicking::")
+        && (bare.starts_with("panic")
+            || bare.starts_with("begin_panic")
+            || bare.starts_with("rust_panic")
+            || bare == "assert_failed")
+    {
+        return true;
+    }
+    if normalized.contains("::intrinsics::") && matches!(bare, "abort" | "unreachable") {
+        return true;
+    }
+    if normalized.contains("::hint::") && bare == "unreachable_unchecked" {
+        return true;
+    }
+    if normalized.contains("::process::") && matches!(bare, "abort" | "exit" | "_exit") {
+        return true;
+    }
+    if normalized.contains("::alloc::")
+        && matches!(bare, "handle_alloc_error" | "capacity_overflow")
+    {
+        return true;
+    }
+    if (normalized.contains("::option::") || normalized.contains("::result::"))
+        && bare == "unwrap_failed"
+    {
+        return true;
+    }
+    if normalized.contains("::slice::index::")
+        && bare.starts_with("slice_")
+        && bare.ends_with("_fail")
+    {
+        return true;
+    }
+    if normalized.contains("::str::") && bare == "slice_error_fail" {
+        return true;
+    }
+    if normalized.contains("std::terminate")
+        || normalized.contains("__gnu_cxx::__verbose_terminate_handler")
+        || normalized.starts_with("_ZSt9terminate")
+    {
+        return true;
+    }
+    false
+}
+
 /// Extracts the Itanium-mangled lambda/callable marker from a C++ thread
 /// constructor such as
 /// `_ZNSt6threadC1IZ4mainEUlvE_JEvEEOT_DpOT0_`.
@@ -1054,8 +1174,9 @@ pub fn is_runtime_internal(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuleOp, cpp_callable_marker, extract_first_generic_arg, is_runtime_internal,
-        match_demangled_name, match_function, match_inline_names, normalize_crate_hashes,
+        RuleOp, cpp_callable_marker, extract_first_generic_arg, is_noreturn_name,
+        is_runtime_internal, match_demangled_name, match_function, match_inline_names,
+        normalize_crate_hashes,
     };
     use elf2tdg_schema::{
         Addr, Function, FunctionId, FunctionKind, Language, LockKind, LockOperation, SpawnKind,
@@ -1272,5 +1393,42 @@ mod tests {
             Some("Z4mainEUlvE_")
         );
         assert_eq!(cpp_callable_marker("_ZNSt6threadD1Ev"), None);
+    }
+
+    #[test]
+    fn classifies_noreturn_api_names() {
+        for name in [
+            "abort",
+            "_exit",
+            "std::process::exit",
+            "pthread_exit",
+            "longjmp",
+            "__stack_chk_fail",
+            "__cxa_throw",
+            "std::terminate",
+            "core[581b33c2f4131567]::panicking::panic_fmt",
+            "core::panicking::panic_const::panic_const_async_fn_resumed",
+            "core::panicking::begin_panic::<&str>",
+            "core::panicking::assert_failed::<u32>",
+            "core::option::Option<T>::unwrap_failed",
+            "alloc::alloc::handle_alloc_error",
+            "core::slice::index::slice_end_index_len_fail",
+            "NVIC_SystemReset",
+            "k_panic",
+        ] {
+            assert!(is_noreturn_name(name), "{name} should be noreturn");
+        }
+        for name in [
+            "main",
+            "app::abort",
+            "app::halt_forever",
+            "core::panicking::panic_count::increase",
+            "core::fmt::write",
+            "DefaultHandler",
+            "HardFault",
+            "malloc",
+        ] {
+            assert!(!is_noreturn_name(name), "{name} should not be noreturn");
+        }
     }
 }

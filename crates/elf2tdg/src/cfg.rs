@@ -22,7 +22,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.5";
+pub const CFG_SCHEMA_VERSION: &str = "1.6";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -32,6 +32,8 @@ pub enum CfgTerminator {
     Fallthrough,
     /// Ends with a call; the next block is the return continuation.
     Call,
+    /// Ends with a call that cannot return to this function.
+    NoreturnCall,
     /// Returns from the function.
     Return,
     /// Conditional branch.
@@ -40,6 +42,17 @@ pub enum CfgTerminator {
     Jump,
     /// Unresolved control transfer.
     Unresolved,
+}
+
+/// Why a function is known not to return to its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgNoreturnReason {
+    /// A well-known noreturn API/ABI symbol, such as `abort`, `exit` or a
+    /// Rust panic entry point.
+    Api,
+    /// The recovered control-flow graph has no path back to the caller.
+    ControlFlow,
 }
 
 /// Kind of an intra-function CFG edge.
@@ -212,6 +225,10 @@ pub struct CfgCallSite {
     pub unresolved: bool,
     /// The target expression evaluates to a statically null function pointer.
     pub null_target: bool,
+    /// The call cannot return to its continuation because every possible
+    /// target is noreturn, or because its target is statically null.
+    /// Conditional calls are never marked noreturn.
+    pub noreturn: bool,
     /// Alternative targets when the call site has a bounded target set.
     pub candidates: Vec<CfgCallCandidate>,
 }
@@ -347,6 +364,100 @@ impl FunctionCfg {
     pub fn block(&self, node: NodeIndex) -> Option<&CfgBlock> {
         self.graph.node_weight(node)
     }
+
+    /// Removes call-return continuations for call sites marked noreturn and
+    /// deletes blocks that were reachable only through those continuations.
+    ///
+    /// Blocks that were already unreachable before pruning are retained, as
+    /// are blocks named by intra-function call targets.
+    pub fn prune_noreturn_continuations(&mut self) -> bool {
+        let Some(entry) = self.entry else {
+            return false;
+        };
+        let before = self.reachable_nodes(entry);
+        let mut changed = false;
+        for node in self.blocks_by_address.values().copied().collect::<Vec<_>>() {
+            let Some(block) = self.graph.node_weight(node) else {
+                continue;
+            };
+            let Some(last) = block.instructions.last() else {
+                continue;
+            };
+            if !last.is_call {
+                continue;
+            }
+            let noreturn = block
+                .calls
+                .iter()
+                .find(|call| call.site == last.address)
+                .is_some_and(|call| call.noreturn && !call.conditional);
+            if !noreturn {
+                continue;
+            }
+            let edges: Vec<_> = self
+                .graph
+                .edges_directed(node, petgraph::Direction::Outgoing)
+                .filter(|edge| {
+                    edge.weight().kind == CfgEdgeKind::CallReturn
+                        && edge.weight().site == last.address
+                })
+                .map(|edge| edge.id())
+                .collect();
+            for edge in edges {
+                self.graph.remove_edge(edge);
+                changed = true;
+            }
+            if self.graph[node].terminator != CfgTerminator::NoreturnCall {
+                self.graph[node].terminator = CfgTerminator::NoreturnCall;
+                changed = true;
+            }
+        }
+        if !changed {
+            return false;
+        }
+
+        let after = self.reachable_nodes(entry);
+        let removed: Vec<NodeIndex> = before.difference(&after).copied().collect();
+        if removed.is_empty() {
+            return true;
+        }
+        for node in removed {
+            self.graph.remove_node(node);
+        }
+        self.blocks_by_address
+            .retain(|_, node| self.graph.contains_node(*node));
+        true
+    }
+
+    fn reachable_nodes(&self, entry: NodeIndex) -> BTreeSet<NodeIndex> {
+        let mut roots = BTreeSet::from([entry]);
+        for call in self
+            .blocks_by_address
+            .values()
+            .flat_map(|node| self.graph[*node].calls.iter())
+            .chain(self.recovered_calls.iter())
+        {
+            let targets = call
+                .target
+                .into_iter()
+                .chain(call.candidates.iter().map(|candidate| candidate.target));
+            let target_node = targets.filter_map(|target| self.blocks_by_address.get(&target));
+            roots.extend(target_node.copied());
+        }
+        let mut reachable = BTreeSet::new();
+        let mut pending: Vec<NodeIndex> = roots.into_iter().collect();
+        while let Some(node) = pending.pop() {
+            if !reachable.insert(node) {
+                continue;
+            }
+            pending.extend(
+                self.graph
+                    .neighbors_directed(node, petgraph::Direction::Outgoing)
+                    .filter(|next| !reachable.contains(next)),
+            );
+        }
+        reachable
+    }
 }
 
 /// Exportable metadata and graph for one function.
@@ -375,6 +486,8 @@ pub struct CfgFunction {
     /// Inlined subroutine ranges inside this function, ordered by address and
     /// depth.
     pub inline_frames: Vec<CfgInlineFrame>,
+    /// Why this function cannot return, when known.
+    pub noreturn: Option<CfgNoreturnReason>,
     /// Function CFG.
     pub cfg: FunctionCfg,
 }
@@ -403,6 +516,17 @@ impl CfgFunction {
             section: function.section.clone().unwrap_or_default(),
             source: function.source.clone(),
             inline_frames: Vec::new(),
+            noreturn: function
+                .ext
+                .get("elf2tdg.noreturn")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                .then(|| match function.ext.get("elf2tdg.noreturn_source") {
+                    Some(serde_json::Value::String(source)) if source == "control-flow" => {
+                        CfgNoreturnReason::ControlFlow
+                    }
+                    _ => CfgNoreturnReason::Api,
+                }),
             cfg: FunctionCfg::default(),
         }
     }
@@ -1043,6 +1167,8 @@ struct CfgFunctionView {
     inline_frames: Vec<CfgInlineView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     no_code: Option<CfgNoCodeView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    noreturn: Option<CfgNoreturnReason>,
     entry: Option<BlockId>,
     blocks: Vec<CfgBlockView>,
     edges: Vec<CfgEdgeView>,
@@ -1132,6 +1258,8 @@ struct CfgCallView {
     unresolved: bool,
     #[serde(skip_serializing_if = "is_false")]
     null_target: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    noreturn: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     candidates: Vec<CfgCallCandidateView>,
 }
@@ -1316,6 +1444,7 @@ fn function_view(
         source: function.source.clone(),
         inline_frames,
         no_code: no_code_view(function),
+        noreturn: function.noreturn,
         entry: cfg
             .entry
             .and_then(|node| cfg.graph.node_weight(node))
@@ -1342,6 +1471,7 @@ fn call_view(program: &ProgramCfg, call: &CfgCallSite) -> CfgCallView {
         heuristic: call.heuristic,
         unresolved: call.unresolved,
         null_target: call.null_target,
+        noreturn: call.noreturn,
         candidates: call
             .candidates
             .iter()
@@ -1598,6 +1728,8 @@ pub fn render_dot_selected(
                     "call?".to_owned()
                 } else if call.null_target {
                     "null target".to_owned()
+                } else if call.noreturn {
+                    "noreturn call".to_owned()
                 } else if call.tail {
                     "tail call".to_owned()
                 } else {
@@ -1773,6 +1905,8 @@ pub fn render_mermaid_selected(
                     "call?"
                 } else if call.null_target {
                     "null target"
+                } else if call.noreturn {
+                    "noreturn call"
                 } else if call.tail {
                     "tail call"
                 } else {
@@ -1836,6 +1970,11 @@ fn block_label(block: &CfgBlock, include_instructions: bool) -> String {
                 block.calls.len(),
                 candidate_count
             );
+        }
+        if block.terminator == CfgTerminator::NoreturnCall
+            || block.calls.iter().any(|call| call.noreturn)
+        {
+            let _ = write!(label, "\nnoreturn");
         }
     }
     label
@@ -1964,6 +2103,7 @@ mod tests {
             heuristic: false,
             unresolved: false,
             null_target: false,
+            noreturn: false,
             candidates: Vec::new(),
         }
     }
@@ -1998,6 +2138,7 @@ mod tests {
             section: String::new(),
             source: None,
             inline_frames: Vec::new(),
+            noreturn: None,
             cfg: FunctionCfg::default(),
         }
     }
@@ -2106,6 +2247,7 @@ mod tests {
             section: ".text".to_owned(),
             source: None,
             inline_frames: Vec::new(),
+            noreturn: None,
             cfg,
         };
         let program = ProgramCfg::new(vec![function]);

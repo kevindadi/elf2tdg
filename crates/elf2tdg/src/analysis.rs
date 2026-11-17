@@ -9,6 +9,8 @@ use elf2tdg_schema::{
     SCHEMA_VERSION, Scheduling, Severity, SourceLoc, Tdg, TimingInfo, ToolInfo,
 };
 
+use petgraph::stable_graph::NodeIndex;
+
 use crate::arch::{DecodedInsn, Decoder, IndirectTarget, ValueSource, pointer_size};
 use crate::cfg;
 use crate::error::{Error, Result};
@@ -112,6 +114,7 @@ struct FunctionDraft {
     demangled: Option<String>,
     language: Language,
     kind: FunctionKind,
+    noreturn: Option<cfg::CfgNoreturnReason>,
     cfg: cfg::FunctionCfg,
     analyzed: bool,
 }
@@ -247,6 +250,7 @@ impl<'a> Analyzer<'a> {
         self.resolve_embassy_executor_calls();
         self.resolve_trait_object_calls();
         self.resolve_calls();
+        self.infer_noreturn_functions();
         self.build_tdg()
     }
 
@@ -258,6 +262,14 @@ impl<'a> Analyzer<'a> {
                 continue;
             }
             let choice = choose_name(std::slice::from_ref(name));
+            let display = if choice.display.is_empty() {
+                name.clone()
+            } else {
+                choice.display.clone()
+            };
+            let noreturn = classify_noreturn_names(
+                std::iter::once(name.as_str()).chain(std::iter::once(display.as_str())),
+            );
             self.functions.insert(
                 *slot,
                 FunctionDraft {
@@ -265,14 +277,11 @@ impl<'a> Analyzer<'a> {
                     size: 0,
                     section: ".external".to_owned(),
                     names: vec![name.clone()],
-                    display: if choice.display.is_empty() {
-                        name.clone()
-                    } else {
-                        choice.display
-                    },
+                    display,
                     demangled: choice.demangled,
                     language: choice.language,
                     kind: FunctionKind::External,
+                    noreturn,
                     cfg: cfg::FunctionCfg::default(),
                     analyzed: true,
                 },
@@ -430,6 +439,12 @@ impl<'a> Analyzer<'a> {
             } else {
                 FunctionKind::Normal
             };
+            let noreturn = classify_noreturn_names(
+                seed.names
+                    .iter()
+                    .map(String::as_str)
+                    .chain(std::iter::once(choice.display.as_str())),
+            );
             self.functions.insert(
                 address,
                 FunctionDraft {
@@ -441,6 +456,7 @@ impl<'a> Analyzer<'a> {
                     demangled: choice.demangled,
                     language: choice.language,
                     kind,
+                    noreturn,
                     cfg: cfg::FunctionCfg::default(),
                     analyzed: false,
                 },
@@ -687,14 +703,16 @@ impl<'a> Analyzer<'a> {
                 .map(|target| self.image.canonical_address(target));
 
             if insn.is_call {
+                let mut direct_noreturn = false;
                 if let Some(target) = target {
                     if self.image.is_executable(target) {
+                        direct_noreturn = self.function_is_noreturn(target);
                         calls.push(CallDraft {
                             caller: start,
                             site: current,
                             target,
                             tail: false,
-                            conditional: false,
+                            conditional: insn.is_conditional,
                             heuristic: false,
                             direct: true,
                         });
@@ -716,7 +734,7 @@ impl<'a> Analyzer<'a> {
                 } else {
                     unresolved_indirect_calls.push((current, insn_text(&insn)));
                 }
-                if next < end {
+                if !direct_noreturn && !insn.is_conditional && next < end {
                     starts.insert(next);
                     work.push_back(next);
                 }
@@ -931,7 +949,7 @@ impl<'a> Analyzer<'a> {
                 site: insn.address,
                 target,
                 tail: false,
-                conditional: false,
+                conditional: insn.is_conditional,
                 heuristic: false,
                 direct: false,
             });
@@ -990,6 +1008,7 @@ impl<'a> Analyzer<'a> {
                     heuristic: call.heuristic,
                     unresolved: false,
                     null_target: false,
+                    noreturn: !call.conditional && self.function_is_noreturn(call.target),
                     candidates: Vec::new(),
                 },
             );
@@ -1008,6 +1027,7 @@ impl<'a> Analyzer<'a> {
                         heuristic: false,
                         unresolved: false,
                         null_target: true,
+                        noreturn: false,
                         candidates: Vec::new(),
                     },
                 );
@@ -1027,10 +1047,11 @@ impl<'a> Analyzer<'a> {
                     }),
                     direct: insn.direct_target.is_some(),
                     tail: false,
-                    conditional: false,
+                    conditional: insn.is_conditional,
                     heuristic: false,
                     unresolved: true,
                     null_target: false,
+                    noreturn: false,
                     candidates: Vec::new(),
                 }
             });
@@ -1054,6 +1075,7 @@ impl<'a> Analyzer<'a> {
                     heuristic: false,
                     unresolved: true,
                     null_target: false,
+                    noreturn: false,
                     candidates: Vec::new(),
                 });
         }
@@ -1080,6 +1102,10 @@ impl<'a> Analyzer<'a> {
             }
             let last = instructions.last().expect("non-empty instructions");
             let block_end = last.address + u64::from(last.size);
+            let noreturn_call = last.is_call
+                && call_sites
+                    .get(&last.address)
+                    .is_some_and(|call| call.noreturn && !call.conditional);
             let mut successors = Vec::new();
             if last.is_return {
                 // no successors
@@ -1102,7 +1128,7 @@ impl<'a> Analyzer<'a> {
                 if last.is_conditional && decoded.contains_key(&block_end) {
                     successors.push(block_end);
                 }
-            } else if decoded.contains_key(&block_end) {
+            } else if !noreturn_call && decoded.contains_key(&block_end) {
                 successors.push(block_end);
             }
             successors.sort_unstable();
@@ -1157,6 +1183,7 @@ impl<'a> Analyzer<'a> {
                     resolved_indirect_jumps
                         .get(&last.address)
                         .map(Vec::as_slice),
+                    noreturn_call,
                 ),
             });
         }
@@ -1181,6 +1208,194 @@ impl<'a> Analyzer<'a> {
             function.analyzed = true;
         }
         self.calls.extend(calls);
+    }
+
+    fn function_is_noreturn(&self, address: u64) -> bool {
+        self.resolve_function_address(address)
+            .and_then(|address| self.functions.get(&address))
+            .is_some_and(|function| function.noreturn.is_some())
+    }
+
+    fn call_is_noreturn(&self, call: &cfg::CfgCallSite) -> bool {
+        if call.unresolved || call.conditional {
+            return false;
+        }
+        if call.null_target {
+            // A statically null function pointer traps if this path executes.
+            return true;
+        }
+        let targets: Vec<u64> = if call.candidates.is_empty() {
+            call.target.into_iter().collect()
+        } else {
+            call.candidates
+                .iter()
+                .map(|candidate| candidate.target)
+                .collect()
+        };
+        !targets.is_empty()
+            && targets
+                .iter()
+                .all(|target| self.function_is_noreturn(*target))
+    }
+
+    fn refresh_call_noreturn(&mut self) -> bool {
+        let mut updates = Vec::new();
+        for (address, function) in &self.functions {
+            for call in function
+                .cfg
+                .blocks_by_address
+                .values()
+                .flat_map(|node| function.cfg.graph[*node].calls.iter())
+                .chain(function.cfg.recovered_calls.iter())
+            {
+                let noreturn = self.call_is_noreturn(call);
+                if noreturn != call.noreturn {
+                    updates.push((*address, call.site, noreturn));
+                }
+            }
+        }
+        let mut changed = false;
+        for (address, site, noreturn) in updates {
+            changed |= self.set_call_noreturn(address, site, noreturn);
+        }
+        changed
+    }
+
+    fn set_call_noreturn(&mut self, function_address: u64, site: u64, noreturn: bool) -> bool {
+        let Some(function) = self.functions.get_mut(&function_address) else {
+            return false;
+        };
+        let nodes: Vec<NodeIndex> = function.cfg.blocks_by_address.values().copied().collect();
+        let mut changed = false;
+        for node in nodes {
+            for call in &mut function.cfg.graph[node].calls {
+                if call.site == site && call.noreturn != noreturn {
+                    call.noreturn = noreturn;
+                    changed = true;
+                }
+            }
+        }
+        for call in &mut function.cfg.recovered_calls {
+            if call.site == site && call.noreturn != noreturn {
+                call.noreturn = noreturn;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Iteratively classifies functions whose recovered CFG has no path back
+    /// to the caller, then removes return continuations that are impossible.
+    ///
+    /// The iteration is monotone: a function only ever moves from "may
+    /// return" to "noreturn". A reverse call-site index lets a newly inferred
+    /// callee dirty only its actual callers instead of rescanning the image.
+    fn infer_noreturn_functions(&mut self) {
+        let callers_by_callee = self.callers_by_callee();
+        self.refresh_call_noreturn();
+
+        let mut dirty: BTreeSet<u64> = BTreeSet::new();
+        let addresses: Vec<u64> = self.functions.keys().copied().collect();
+        for address in addresses {
+            self.classify_function_if_noreturn(address, &callers_by_callee, &mut dirty);
+        }
+        while let Some(address) = dirty.pop_first() {
+            self.classify_function_if_noreturn(address, &callers_by_callee, &mut dirty);
+        }
+
+        for function in self.functions.values_mut() {
+            function.cfg.prune_noreturn_continuations();
+        }
+    }
+
+    fn classify_function_if_noreturn(
+        &mut self,
+        address: u64,
+        callers_by_callee: &BTreeMap<u64, Vec<(u64, u64)>>,
+        dirty: &mut BTreeSet<u64>,
+    ) {
+        let should_mark = self.functions.get(&address).is_some_and(|function| {
+            function.noreturn.is_none()
+                && function.cfg.entry.is_some()
+                && !cfg_may_return(&function.cfg)
+        });
+        if !should_mark {
+            return;
+        }
+        let Some(function) = self.functions.get_mut(&address) else {
+            return;
+        };
+        function.noreturn = Some(cfg::CfgNoreturnReason::ControlFlow);
+        self.refresh_callers_of(address, callers_by_callee, dirty);
+    }
+
+    fn callers_by_callee(&self) -> BTreeMap<u64, Vec<(u64, u64)>> {
+        let mut callers: BTreeMap<u64, Vec<(u64, u64)>> = BTreeMap::new();
+        for (address, function) in &self.functions {
+            for call in function
+                .cfg
+                .blocks_by_address
+                .values()
+                .flat_map(|node| function.cfg.graph[*node].calls.iter())
+                .chain(function.cfg.recovered_calls.iter())
+            {
+                let targets = if call.candidates.is_empty() {
+                    call.target.into_iter().collect::<Vec<_>>()
+                } else {
+                    call.candidates
+                        .iter()
+                        .map(|candidate| candidate.target)
+                        .collect()
+                };
+                for target in targets {
+                    if let Some(callee) = self.resolve_function_address(target) {
+                        callers
+                            .entry(callee)
+                            .or_default()
+                            .push((*address, call.site));
+                    }
+                }
+            }
+        }
+        for sites in callers.values_mut() {
+            sites.sort_unstable();
+            sites.dedup();
+        }
+        callers
+    }
+
+    fn call_site(&self, caller: u64, site: u64) -> Option<cfg::CfgCallSite> {
+        let function = self.functions.get(&caller)?;
+        function
+            .cfg
+            .blocks_by_address
+            .values()
+            .flat_map(|node| function.cfg.graph[*node].calls.iter())
+            .chain(function.cfg.recovered_calls.iter())
+            .find(|call| call.site == site)
+            .cloned()
+    }
+
+    fn refresh_callers_of(
+        &mut self,
+        callee: u64,
+        callers_by_callee: &BTreeMap<u64, Vec<(u64, u64)>>,
+        dirty: &mut BTreeSet<u64>,
+    ) {
+        let Some(sites) = callers_by_callee.get(&callee).cloned() else {
+            return;
+        };
+        for (caller, site) in sites {
+            let Some(call) = self.call_site(caller, site) else {
+                continue;
+            };
+            if call.noreturn || !self.call_is_noreturn(&call) {
+                continue;
+            }
+            if self.set_call_noreturn(caller, site, true) {
+                dirty.insert(caller);
+            }
+        }
     }
 
     fn resolve_indirect_jump_targets(
@@ -1254,12 +1469,17 @@ impl<'a> Analyzer<'a> {
         start: u64,
         end: u64,
         resolved_jump: Option<&[u64]>,
+        noreturn_call: bool,
     ) -> cfg::CfgTerminator {
         if last.is_return {
             return cfg::CfgTerminator::Return;
         }
         if last.is_call {
-            return cfg::CfgTerminator::Call;
+            return if noreturn_call {
+                cfg::CfgTerminator::NoreturnCall
+            } else {
+                cfg::CfgTerminator::Call
+            };
         }
         if last.is_jump {
             let target = last
@@ -1414,7 +1634,7 @@ impl<'a> Analyzer<'a> {
                         site: cursor,
                         target,
                         tail: false,
-                        conditional: false,
+                        conditional: instruction.is_conditional,
                         heuristic: true,
                         direct: true,
                     });
@@ -1681,6 +1901,7 @@ impl<'a> Analyzer<'a> {
                 heuristic: false,
                 unresolved: false,
                 null_target: true,
+                noreturn: false,
                 candidates: Vec::new(),
             };
             let updated = self.functions.get_mut(&caller).is_some_and(|function| {
@@ -1745,6 +1966,10 @@ impl<'a> Analyzer<'a> {
                         .collect(),
                 )
             };
+            let noreturn = !conditional
+                && targets
+                    .iter()
+                    .all(|target| self.function_is_noreturn(*target));
             let candidate_call = cfg::CfgCallSite {
                 site,
                 target,
@@ -1755,6 +1980,7 @@ impl<'a> Analyzer<'a> {
                 heuristic: true,
                 unresolved: false,
                 null_target: false,
+                noreturn,
                 candidates,
             };
             let updated = self.functions.get_mut(&caller).is_some_and(|function| {
@@ -1916,6 +2142,7 @@ impl<'a> Analyzer<'a> {
                 heuristic: false,
                 unresolved: false,
                 null_target: false,
+                noreturn: !conditional && self.function_is_noreturn(target),
                 candidates: Vec::new(),
             };
             let Some(function) = self.functions.get_mut(&function_address) else {
@@ -2011,6 +2238,7 @@ impl<'a> Analyzer<'a> {
                 demangled: None,
                 language: Language::Unknown,
                 kind: FunctionKind::Normal,
+                noreturn: None,
                 cfg: cfg::FunctionCfg::default(),
                 analyzed: false,
             },
@@ -2370,6 +2598,7 @@ impl<'a> Analyzer<'a> {
                             column: source.column,
                         }),
                     inline_frames,
+                    noreturn: draft.noreturn,
                     cfg: draft.cfg.clone(),
                 }
             })
@@ -2457,6 +2686,21 @@ impl<'a> Analyzer<'a> {
             })
         });
 
+        let mut ext = BTreeMap::new();
+        if let Some(reason) = draft.noreturn {
+            ext.insert("elf2tdg.noreturn".to_owned(), serde_json::Value::Bool(true));
+            ext.insert(
+                "elf2tdg.noreturn_source".to_owned(),
+                serde_json::Value::String(
+                    match reason {
+                        cfg::CfgNoreturnReason::Api => "api",
+                        cfg::CfgNoreturnReason::ControlFlow => "control-flow",
+                    }
+                    .to_owned(),
+                ),
+            );
+        }
+
         Function {
             id: function_id(draft.address),
             primary_name: draft.display.clone(),
@@ -2480,7 +2724,7 @@ impl<'a> Analyzer<'a> {
                     column: source.column,
                 }),
             inline_sites: Vec::new(),
-            ext: BTreeMap::new(),
+            ext,
         }
     }
 
@@ -2578,6 +2822,87 @@ fn replace_unresolved_cfg_call(
         return true;
     }
     false
+}
+
+fn classify_noreturn_names<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Option<cfg::CfgNoreturnReason> {
+    names
+        .into_iter()
+        .any(rules::is_noreturn_name)
+        .then_some(cfg::CfgNoreturnReason::Api)
+}
+
+fn cfg_may_return(function_cfg: &cfg::FunctionCfg) -> bool {
+    let Some(entry) = function_cfg.entry else {
+        return true;
+    };
+    let nodes: Vec<NodeIndex> = function_cfg.blocks_by_address.values().copied().collect();
+    let mut may_return: BTreeMap<NodeIndex, bool> =
+        nodes.iter().map(|node| (*node, false)).collect();
+    loop {
+        let mut changed = false;
+        for node in &nodes {
+            if may_return.get(node).copied().unwrap_or(false) {
+                continue;
+            }
+            let block = &function_cfg.graph[*node];
+            let successors: Vec<NodeIndex> = function_cfg
+                .graph
+                .neighbors_directed(*node, petgraph::Direction::Outgoing)
+                .collect();
+            if block_may_return(block, &successors, &may_return) {
+                may_return.insert(*node, true);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    may_return.get(&entry).copied().unwrap_or(true)
+}
+
+fn block_may_return(
+    block: &cfg::CfgBlock,
+    successors: &[NodeIndex],
+    may_return: &BTreeMap<NodeIndex, bool>,
+) -> bool {
+    let successor_returns = || {
+        successors
+            .iter()
+            .any(|successor| may_return.get(successor).copied().unwrap_or(false))
+    };
+    let call = block
+        .instructions
+        .last()
+        .and_then(|last| block.calls.iter().find(|call| call.site == last.address));
+    match block.terminator {
+        cfg::CfgTerminator::NoreturnCall => false,
+        cfg::CfgTerminator::Return | cfg::CfgTerminator::Unresolved => true,
+        cfg::CfgTerminator::Call => {
+            if call.is_some_and(|call| call.noreturn && !call.conditional) {
+                false
+            } else if successors.is_empty() {
+                true
+            } else {
+                successor_returns()
+            }
+        }
+        cfg::CfgTerminator::Jump => {
+            if let Some(call) = call.filter(|call| call.tail) {
+                // A tail call transfers the caller's return to the callee.
+                !call.noreturn
+            } else if successors.is_empty() {
+                true
+            } else {
+                successor_returns()
+            }
+        }
+        cfg::CfgTerminator::Fallthrough | cfg::CfgTerminator::Branch => {
+            successors.is_empty() || successor_returns()
+        }
+    }
 }
 
 fn is_embassy_executor_function(name: &str) -> bool {
