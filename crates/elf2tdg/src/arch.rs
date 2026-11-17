@@ -1544,7 +1544,7 @@ fn x86_value_effect(
         }
         x86::X86OperandType::Mem(memory) => {
             if memory.index().0 != 0 {
-                if !matches!(mnemonic, "movslq" | "movsxd") {
+                if !mnemonic.starts_with("mov") {
                     return None;
                 }
                 let scale = u8::try_from(memory.scale()).ok()?;
@@ -1559,7 +1559,16 @@ fn x86_value_effect(
                         index: x86_64_register(memory.index()),
                         scale,
                         disp: memory.disp(),
-                        signed: true,
+                        signed: matches!(
+                            mnemonic,
+                            "movslq"
+                                | "movsxd"
+                                | "movsx"
+                                | "movsbl"
+                                | "movswl"
+                                | "movsbq"
+                                | "movswq"
+                        ),
                     },
                 });
             }

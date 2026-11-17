@@ -500,7 +500,7 @@ pub fn resolve_indexed_pointer_table(
     let before = decoded.partition_point(|instruction| instruction.address < site);
     let (load_index, effect) = latest_definition(decoded, before, jump_register)?;
     let ValueSource::IndexedLoad {
-        base: Some(table_register),
+        base: table_register,
         index,
         scale,
         disp,
@@ -512,8 +512,11 @@ pub fn resolve_indexed_pointer_table(
     if !matches!(scale, 4 | 8) {
         return None;
     }
-    let table_base =
-        resolve_register(image, decoded, load_index, table_register, 0)?.wrapping_add_signed(disp);
+    let table_base = if let Some(table_register) = table_register {
+        resolve_register(image, decoded, load_index, table_register, 0)?.wrapping_add_signed(disp)
+    } else {
+        u64::try_from(disp).ok()?
+    };
     let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
     let mut targets = Vec::new();
     for raw in read_table_entries(image, table_base, usize::from(scale), limit) {
@@ -750,7 +753,7 @@ pub fn resolve_offset_jump_table(
         return None;
     };
     let ValueSource::IndexedLoad {
-        base: Some(table_register),
+        base: table_register,
         index,
         scale,
         disp,
@@ -762,8 +765,11 @@ pub fn resolve_offset_jump_table(
     if !matches!(scale, 1 | 2 | 4 | 8) {
         return None;
     }
-    let table_base =
-        resolve_register(image, decoded, add_index, table_register, 0)?.wrapping_add_signed(disp);
+    let table_base = if let Some(table_register) = table_register {
+        resolve_register(image, decoded, add_index, table_register, 0)?.wrapping_add_signed(disp)
+    } else {
+        u64::try_from(disp).ok()?
+    };
     let code_base = resolve_register(image, decoded, add_index, code_register, 0)?;
     let limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
     let mut targets = Vec::new();
