@@ -16,6 +16,7 @@ use crate::arch::{
     return_register,
 };
 use crate::cfg;
+use crate::dwarf::DwarfInfo;
 use crate::error::{Error, Result};
 use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section, VectorEntry};
 use crate::origin;
@@ -258,6 +259,7 @@ impl<'a> Analyzer<'a> {
         self.resolve_computed_indirect_calls();
         self.resolve_embassy_executor_calls();
         self.resolve_trait_object_calls();
+        self.resolve_dwarf_typed_field_calls();
         self.resolve_calls();
         self.infer_noreturn_functions();
         self.build_tdg()
@@ -2387,6 +2389,159 @@ impl<'a> Analyzer<'a> {
         candidates.sort_unstable();
         candidates.dedup();
         (candidates.len() <= MAX_COMPUTED_CALL_CANDIDATES).then_some(candidates)
+    }
+
+    /// Resolves dynamic field calls when DWARF types identify the loaded field
+    /// as a function pointer and typed global objects provide concrete values.
+    fn resolve_dwarf_typed_field_calls(&mut self) -> bool {
+        let Some(dwarf) = self.image.dwarf.as_ref() else {
+            return false;
+        };
+        let sites = self.unresolved_call_sites();
+        if sites.is_empty() {
+            return false;
+        }
+        let pointer = u64::try_from(pointer_size(self.image.arch)).unwrap_or(0);
+        if pointer == 0 {
+            return false;
+        }
+        let mut resolutions = Vec::new();
+        let mut typed_cache: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+        for (caller, site, tail, conditional) in sites {
+            let Some(decoded) = self.decoded_by_function.get(&caller) else {
+                continue;
+            };
+            let Some(instruction) = decoded
+                .iter()
+                .find(|instruction| instruction.address == site && instruction.is_call)
+            else {
+                continue;
+            };
+            let Some(reference) = instruction.indirect else {
+                continue;
+            };
+            let Some(offset) = origin::indirect_field_load(decoded, site, reference) else {
+                continue;
+            };
+            let Ok(offset) = u64::try_from(offset) else {
+                continue;
+            };
+            let Some(field) = dwarf.function_pointer_field_at(offset) else {
+                continue;
+            };
+            let candidates = typed_cache
+                .entry(offset)
+                .or_insert_with(|| self.typed_global_field_candidates(dwarf, offset, pointer));
+            let Some(targets) = self.known_call_targets(candidates.iter().copied()) else {
+                continue;
+            };
+            if !(1..=MAX_COMPUTED_CALL_CANDIDATES).contains(&targets.len()) {
+                continue;
+            }
+            let count = targets.len();
+            let field_name = field.name.as_deref().unwrap_or("<anonymous>");
+            resolutions.push(CandidateCallResolution {
+                caller,
+                site,
+                targets,
+                tail,
+                conditional,
+                code: "resolved-typed-field-candidates",
+                message: format!(
+                    "indirect call at 0x{site:x} has {count} candidate target(s) from DWARF function-pointer field +{offset} (`{field_name}`)"
+                ),
+            });
+        }
+        self.apply_candidate_calls(resolutions)
+    }
+
+    fn typed_global_field_candidates(
+        &self,
+        dwarf: &DwarfInfo,
+        offset: u64,
+        pointer: u64,
+    ) -> Vec<u64> {
+        let Ok(pointer_len) = usize::try_from(pointer) else {
+            return Vec::new();
+        };
+        let mut candidates = BTreeSet::new();
+        for variable in dwarf
+            .variables
+            .iter()
+            .filter(|variable| variable.address.is_some())
+        {
+            let Some(address) = variable.address else {
+                continue;
+            };
+            let direct = variable
+                .aggregate_index
+                .and_then(|index| dwarf.aggregates.get(index))
+                .filter(|aggregate| {
+                    aggregate
+                        .members
+                        .iter()
+                        .any(|member| member.offset == offset && member.function_pointer)
+                });
+            let indirect = variable
+                .pointee_aggregate_index
+                .and_then(|index| dwarf.aggregates.get(index))
+                .filter(|aggregate| {
+                    aggregate
+                        .members
+                        .iter()
+                        .any(|member| member.offset == offset && member.function_pointer)
+                });
+            let (object, aggregate, is_direct) = if let Some(aggregate) = direct {
+                (address, aggregate, true)
+            } else if let Some(aggregate) = indirect {
+                let Some(value) = self.image.read_uint(address, pointer_len) else {
+                    continue;
+                };
+                let object = self.image.canonical_address(value);
+                if object == 0 || !self.is_allocated_data(object) {
+                    continue;
+                }
+                (object, aggregate, false)
+            } else {
+                continue;
+            };
+            if aggregate
+                .byte_size
+                .is_some_and(|size| offset.checked_add(pointer).is_none_or(|end| end > size))
+            {
+                continue;
+            }
+            if is_direct
+                && variable
+                    .byte_size
+                    .is_some_and(|size| offset.checked_add(pointer).is_none_or(|end| end > size))
+            {
+                continue;
+            }
+            let Some(slot) = object.checked_add(offset) else {
+                continue;
+            };
+            let Some(value) = self.image.read_uint(slot, pointer_len) else {
+                continue;
+            };
+            let target = self.image.canonical_address(value);
+            if target != 0 && self.image.is_executable(target) {
+                candidates.insert(target);
+                if candidates.len() > MAX_COMPUTED_CALL_CANDIDATES {
+                    return Vec::new();
+                }
+            }
+        }
+        candidates.into_iter().collect()
+    }
+
+    fn is_allocated_data(&self, address: u64) -> bool {
+        self.image.sections.iter().any(|section| {
+            section.alloc
+                && !section.executable
+                && address >= section.address
+                && address < section.end()
+        })
     }
 
     fn resolve_forwarded_indirect_calls(&mut self) -> bool {
