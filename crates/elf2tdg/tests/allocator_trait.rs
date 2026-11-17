@@ -93,6 +93,7 @@ fn resolves_allocator_and_trait_object_calls() {
         })
         .collect();
     assert_eq!(candidates.len(), 2, "two trait implementations");
+    let mut method_addresses = Vec::new();
     for callee in &candidates {
         let target = tdg
             .functions
@@ -100,6 +101,13 @@ fn resolves_allocator_and_trait_object_calls() {
             .find(|function| &function.id == *callee)
             .expect("candidate method");
         assert!(target.primary_name.contains("::Sensor>::read"));
+        method_addresses.push(target.address.get());
+    }
+    for address in method_addresses {
+        assert!(
+            analysis.cfg.pointer_roots.contains(&address),
+            "vtable method 0x{address:x} should be a pointer root"
+        );
     }
 
     let call_sensor = analysis
