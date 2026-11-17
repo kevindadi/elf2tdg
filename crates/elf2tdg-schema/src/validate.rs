@@ -721,6 +721,22 @@ impl Validator<'_> {
                     self.check_function_ref(functions, callee, &format!("{path}/callee"));
                     self.check_site(functions, caller, *site, &format!("{path}/site"));
                 }
+                Edge::UnresolvedCall {
+                    caller,
+                    site,
+                    candidates,
+                    ..
+                } => {
+                    self.check_function_ref(functions, caller, &format!("{path}/caller"));
+                    self.check_site(functions, caller, *site, &format!("{path}/site"));
+                    for (candidate_index, function) in candidates.iter().enumerate() {
+                        self.check_function_ref(
+                            functions,
+                            function,
+                            &format!("{path}/candidates/{candidate_index}"),
+                        );
+                    }
+                }
                 Edge::Spawn {
                     from_function,
                     target,

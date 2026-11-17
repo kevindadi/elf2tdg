@@ -75,6 +75,7 @@ impl<'a> Visible<'a> {
                         functions.insert(callback.as_str());
                     }
                     Edge::Call { .. }
+                    | Edge::UnresolvedCall { .. }
                     | Edge::Await { .. }
                     | Edge::IsrActivate { .. }
                     | Edge::Preempts { .. } => {}
@@ -95,7 +96,8 @@ impl<'a> Visible<'a> {
     }
 
     fn edge_visible(&self, edge: &Edge) -> bool {
-        self.projection == Projection::Full || !matches!(edge, Edge::Call { .. })
+        self.projection == Projection::Full
+            || !matches!(edge, Edge::Call { .. } | Edge::UnresolvedCall { .. })
     }
 }
 
@@ -244,6 +246,27 @@ pub fn render_dot_with(tdg: &Tdg, options: GraphOptions) -> String {
                     dot_escape(callee.as_str()),
                     if *tail { "tail" } else { "call" },
                     if *tail { "dashed" } else { "solid" }
+                );
+            }
+            Edge::UnresolvedCall {
+                id,
+                caller,
+                site,
+                tail,
+                ..
+            } => {
+                opaque_node(&mut out, id.as_str(), "call", 0);
+                let label = if *tail {
+                    format!("tail call? @0x{:x}", site.get())
+                } else {
+                    format!("call? @0x{:x}", site.get())
+                };
+                let _ = writeln!(
+                    out,
+                    "  \"{}\" -> \"{}\" [label=\"{}\", color=\"#999999\", fontcolor=\"#777777\", style=dashed];",
+                    dot_escape(caller.as_str()),
+                    dot_escape(&format!("opaque:{}", id.as_str())),
+                    dot_escape(&label)
                 );
             }
             Edge::Spawn {
@@ -693,6 +716,26 @@ pub fn render_mermaid_with(tdg: &Tdg, options: GraphOptions) -> String {
                     ids.id_for(caller.as_str()),
                     if *tail { "tail" } else { "call" },
                     ids.id_for(callee.as_str())
+                );
+            }
+            Edge::UnresolvedCall {
+                id,
+                caller,
+                site,
+                tail,
+                ..
+            } => {
+                let target = mermaid_opaque(&mut ids, &mut out, id.as_str(), "call", 0);
+                let label = if *tail {
+                    format!("tail call? @0x{:x}", site.get())
+                } else {
+                    format!("call? @0x{:x}", site.get())
+                };
+                let _ = writeln!(
+                    out,
+                    "  {} -.->|{}| {target}",
+                    ids.id_for(caller.as_str()),
+                    label
                 );
             }
             Edge::Spawn {

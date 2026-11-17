@@ -30,7 +30,7 @@ pub use validate::{ValidationCode, ValidationError, ValidationIssue};
 ///
 /// Consumers should accept all `1.x` versions and reject unknown major
 /// versions. New optional fields may appear in minor releases.
-pub const SCHEMA_VERSION: &str = "1.2";
+pub const SCHEMA_VERSION: &str = "1.3";
 
 impl model::Tdg {
     /// Generates the JSON Schema for the TDG document format.

@@ -1246,6 +1246,13 @@ fn tdg_reachability(tdg: &Tdg) -> BTreeMap<FunctionId, Vec<FunctionId>> {
     for edge in &tdg.edges {
         match edge {
             Edge::Call { caller, callee, .. } => add(caller, callee),
+            Edge::UnresolvedCall {
+                caller, candidates, ..
+            } => {
+                for candidate in candidates {
+                    add(caller, candidate);
+                }
+            }
             Edge::Spawn {
                 from_function,
                 target,

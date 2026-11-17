@@ -652,6 +652,51 @@
           ]
         },
         {
+          "description": "A call site whose target could not be resolved.\n\nThis is an explicit unknown/may-call edge. Graph consumers must not\ntreat the caller as having no outbound calls, and reachability or\ndead-code elimination must preserve an unknown continuation.",
+          "type": "object",
+          "properties": {
+            "caller": {
+              "description": "Calling function.",
+              "$ref": "#/$defs/FunctionId"
+            },
+            "candidates": {
+              "description": "Candidate callees when a bounded but incomplete resolution produced\nany.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FunctionId"
+              }
+            },
+            "confidence": {
+              "description": "Resolution confidence.",
+              "$ref": "#/$defs/Confidence"
+            },
+            "id": {
+              "description": "Stable edge ID (`e:unresolved-call:...`).",
+              "$ref": "#/$defs/EdgeId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "unresolved-call"
+            },
+            "site": {
+              "description": "Call site address in `caller`.",
+              "$ref": "#/$defs/Address"
+            },
+            "tail": {
+              "description": "Whether this is a tail call (the call site is a jump).",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "caller",
+            "site",
+            "tail",
+            "confidence"
+          ]
+        },
+        {
           "description": "Creation of a new execution context.",
           "type": "object",
           "properties": {

@@ -429,6 +429,27 @@ pub enum Edge {
         /// Resolution confidence.
         confidence: Confidence,
     },
+    /// A call site whose target could not be resolved.
+    ///
+    /// This is an explicit unknown/may-call edge. Graph consumers must not
+    /// treat the caller as having no outbound calls, and reachability or
+    /// dead-code elimination must preserve an unknown continuation.
+    UnresolvedCall {
+        /// Stable edge ID (`e:unresolved-call:...`).
+        id: EdgeId,
+        /// Calling function.
+        caller: FunctionId,
+        /// Call site address in `caller`.
+        site: Addr,
+        /// Whether this is a tail call (the call site is a jump).
+        tail: bool,
+        /// Candidate callees when a bounded but incomplete resolution produced
+        /// any.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        candidates: Vec<FunctionId>,
+        /// Resolution confidence.
+        confidence: Confidence,
+    },
     /// Creation of a new execution context.
     Spawn {
         /// Stable edge ID (`e:...`).
@@ -557,6 +578,7 @@ impl Edge {
     pub fn id(&self) -> &EdgeId {
         match self {
             Self::Call { id, .. }
+            | Self::UnresolvedCall { id, .. }
             | Self::Spawn { id, .. }
             | Self::Join { id, .. }
             | Self::Await { id, .. }
@@ -571,6 +593,7 @@ impl Edge {
     pub fn site(&self) -> Option<Addr> {
         match self {
             Self::Call { site, .. }
+            | Self::UnresolvedCall { site, .. }
             | Self::Spawn { site, .. }
             | Self::Join { site, .. }
             | Self::Await { site, .. }

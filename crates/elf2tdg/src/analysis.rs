@@ -2937,6 +2937,28 @@ impl<'a> Analyzer<'a> {
             }
         }
 
+        for (caller, call) in &cfg_calls {
+            if !call.unresolved || call.null_target {
+                continue;
+            }
+            let id = format!("e:unresolved-call:0x{caller:x}:0x{:x}", call.site);
+            if !edge_ids.insert(id.clone()) {
+                continue;
+            }
+            edges.push(Edge::UnresolvedCall {
+                id: EdgeId::new(id),
+                caller: function_id(*caller),
+                site: Addr::new(call.site),
+                tail: call.tail,
+                candidates: call
+                    .candidates
+                    .iter()
+                    .filter_map(|candidate| candidate.target_function.clone())
+                    .collect(),
+                confidence: Confidence::Unknown,
+            });
+        }
+
         for vector in &isr_vectors {
             let handler = self.image.canonical_address(vector.handler);
             let Some(function_address) = self.resolve_function_address(handler) else {
