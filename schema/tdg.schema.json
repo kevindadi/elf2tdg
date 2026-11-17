@@ -599,7 +599,7 @@
       "description": "A typed edge.\n\nThe `kind` field selects the variant. Every edge has an ID, a source/site\nand explicit confidence; there are no implicit guesses.",
       "oneOf": [
         {
-          "description": "Ordinary call-graph edge.",
+          "description": "Ordinary call-graph edge.\n\nA bounded indirect target set may be represented as multiple `Call`\nedges sharing the same `site`, one per candidate callee.",
           "type": "object",
           "properties": {
             "callee": {

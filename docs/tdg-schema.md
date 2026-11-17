@@ -145,6 +145,11 @@ There are no silent guesses.
 | `isr-activate` | vector → context | hardware activation of an ISR |
 | `preempts` | context → context | derived priority-based preemption; `derived: true` |
 
+A bounded indirect target set may produce multiple `Call` edges with the same
+`site`, one per candidate callee. Edge IDs include the target address. This is
+used for Embassy's executor task-poll dispatch, where the task pointer is
+dynamic but the poll-field stores identify the candidate poll functions.
+
 Call edges distinguish:
 
 - `direct`: target resolved statically;

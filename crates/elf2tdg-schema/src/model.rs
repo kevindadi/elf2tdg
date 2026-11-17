@@ -408,6 +408,9 @@ pub enum PriorityScheme {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Edge {
     /// Ordinary call-graph edge.
+    ///
+    /// A bounded indirect target set may be represented as multiple `Call`
+    /// edges sharing the same `site`, one per candidate callee.
     Call {
         /// Stable edge ID (`e:...`).
         id: EdgeId,

@@ -182,6 +182,9 @@ pub struct CfgInlineFrame {
 #[allow(clippy::struct_excessive_bools)]
 pub struct CfgCallSite {
     /// Call instruction address.
+    ///
+    /// Multiple entries may share a site when a bounded indirect call has
+    /// several candidate targets.
     pub site: u64,
     /// Resolved target address, when known.
     pub target: Option<u64>,

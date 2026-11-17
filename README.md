@@ -89,6 +89,10 @@ Implemented:
   inspected and a unique entry is resolved. Stack spill/reload pairs
   (`mov [rbp-16], rsi` / `mov rdx, [rbp-16]`) are followed, so `-O0` C wrappers
   and function pointers stored in memory are covered.
+- Embassy executor task-poll dispatch is expanded into bounded multi-target
+  call edges. The analyzer reads the task-header field load and collects
+  concrete `TaskStorage<...>::poll`/`poll_exited` values stored to the same
+  field across the image; multiple `Call` edges share the call site.
 - Indirect-call and tail-call recovery for register-held function pointers,
   static pointer chains, vtable slots, relocated GOT entries and
   caller-argument expressions. Import GOT slots resolve to synthesized PLT
@@ -298,9 +302,11 @@ sensor task, USART1 IRQ 37, and a Cortex-M vector table. The analyzer recovers:
 starts a thread-mode executor, runs an `app_main` async task, and spawns sensor
 and monitor tasks. The analyzer recovers six contexts (startup, main, app_main,
 sensor, monitor, HardFault), three `rust-embassy` spawn edges, and resolves each
-task to its `TaskStorage<...>::poll` entry. Inlined `Spawner::spawn` call sites
-are recovered from DWARF. Unused Cortex-M vectors that alias `DefaultHandler`
-are filtered instead of producing false ISR contexts.
+task to its `TaskStorage<...>::poll` entry. The executor's dynamic poll dispatch
+is expanded into four low-confidence candidate call edges. Inlined
+`Spawner::spawn` call sites are recovered from DWARF. Unused Cortex-M vectors
+that alias `DefaultHandler` are filtered instead of producing false ISR
+contexts.
 
 `tests/fixtures/cortex_m_spawn/main.c` calls `xTaskCreate(my_task, ...)`.
 M1 resolves the entry pointer from the Thumb literal pool and emits a FreeRTOS

@@ -103,6 +103,13 @@ do not change CFG output.
 
 ## Unresolved call and jump sites
 
+A block's `calls` array may contain multiple entries with the same `site` when
+a bounded indirect target set is known. Each entry is one candidate target;
+they share the call instruction and continuation block. Candidate entries have
+`unresolved: false`, `direct: false` and `heuristic: true`. This is used for
+Embassy's task-poll dispatch, where stores to a task-header field identify the
+concrete `TaskStorage<...>::poll` functions plus `poll_exited`.
+
 `unresolved: true` in a block's `calls` entry means an indirect call or an
 indirect tail jump had no static target. A `tail: true` entry records a jump
 that leaves the function; unresolved tail jumps are retained as candidates so
