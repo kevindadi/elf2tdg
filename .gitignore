@@ -1,6 +1,7 @@
 /target
 examples/rust-concurrency/target
 tests/fixtures/rust_alloc_trait/target
+tests/fixtures/rust_static_trait/target
 **/*.rs.bk
 
 # Ad-hoc full-image CFG exports

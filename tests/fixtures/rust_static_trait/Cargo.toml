@@ -1,0 +1,22 @@
+[package]
+name = "rust-static-trait"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "rust-static-trait"
+path = "main.rs"
+
+[dependencies]
+cortex-m-rt = "0.7.7"
+
+[profile.analysis]
+inherits = "release"
+opt-level = 1
+debug = true
+lto = "thin"
+strip = "none"
+panic = "abort"
+
+[workspace]

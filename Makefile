@@ -4,8 +4,9 @@ FIXTURE_ELF := $(FIXTURE_DIR)/firmware.elf
 SPAWN_FIXTURE_DIR := tests/fixtures/cortex_m_spawn
 SPAWN_FIXTURE_ELF := $(SPAWN_FIXTURE_DIR)/firmware.elf
 ALLOC_FIXTURE_DIR := tests/fixtures/rust_alloc_trait
+STATIC_TRAIT_FIXTURE_DIR := tests/fixtures/rust_static_trait
 
-.PHONY: schema test lint fuzz fuzz-seed fixture alloc-fixture examples analyze-fixture analyze-spawn-fixture analyze-cfg-fixture analyze-elf-fixture clean
+.PHONY: schema test lint fuzz fuzz-seed fixture alloc-fixture static-trait-fixture examples analyze-fixture analyze-spawn-fixture analyze-cfg-fixture analyze-elf-fixture clean
 
 schema:
 	$(CARGO) run --quiet -p elf2tdg-schema --example dump_schema > schema/tdg.schema.json
@@ -26,6 +27,8 @@ fuzz-seed:
 		fuzz/corpus/elf_analysis/cortex-m0-isr.elf
 	cp tests/fixtures/rust_alloc_trait/firmware.elf \
 		fuzz/corpus/elf_analysis/rust-alloc-trait.elf
+	cp tests/fixtures/rust_static_trait/firmware.elf \
+		fuzz/corpus/elf_analysis/rust-static-trait.elf
 
 fuzz: fuzz-seed
 	cargo +nightly fuzz run elf_analysis -- -max_len=2097152
@@ -36,6 +39,9 @@ fixture:
 
 alloc-fixture:
 	$(MAKE) -C $(ALLOC_FIXTURE_DIR)
+
+static-trait-fixture:
+	$(MAKE) -C $(STATIC_TRAIT_FIXTURE_DIR)
 
 examples:
 	$(MAKE) -C examples/rust-concurrency
@@ -71,5 +77,6 @@ clean:
 	$(MAKE) -C $(FIXTURE_DIR) clean
 	$(MAKE) -C $(SPAWN_FIXTURE_DIR) clean
 	$(MAKE) -C $(ALLOC_FIXTURE_DIR) clean
+	$(MAKE) -C $(STATIC_TRAIT_FIXTURE_DIR) clean
 	$(MAKE) -C examples/rust-concurrency clean
 	$(MAKE) -C examples/cortex-m0-isr clean
