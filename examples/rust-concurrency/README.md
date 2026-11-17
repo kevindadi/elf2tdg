@@ -102,7 +102,7 @@ has one real ISR context instead of hundreds of false ones.
 The executor's task-poll dispatch (`blx r1` at `0x80005da`) is no longer left
 unresolved. The analyzer recognizes the load from task-header field `+12`,
 collects the executable values stored to that field across the image, and emits
-four bounded low-confidence call targets:
+four bounded low-confidence call targets in one CFG call site:
 
 - `app_main` `TaskStorage::poll`
 - `sensor_task` `TaskStorage::poll`
@@ -110,8 +110,9 @@ four bounded low-confidence call targets:
 - `embassy_executor::raw::poll_exited`
 
 The TDG keeps one informational `resolved-indirect-call-candidates` diagnostic
-for this site and no `unresolved-indirect-call` warning. The four call edges
-share the same site; edge IDs include the target address. See
+for this site and no `unresolved-indirect-call` warning. CFG JSON has one call
+record with four `candidates`; TDG edges remain one alternative per candidate,
+and edge IDs include the target address. See
 [`cfg-analysis-executor.json`](artifacts/cfg-analysis-executor.json) /
 [`cfg-analysis-executor.svg`](artifacts/cfg-analysis-executor.svg) for the CFG
 view.

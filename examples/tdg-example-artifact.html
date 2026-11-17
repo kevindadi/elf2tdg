@@ -585,7 +585,7 @@
           <li><strong>任务入口可落地</strong>：每个 async task 的入口解析到对应的 <code>TaskStorage&lt;...&gt;::poll</code> 机器函数，而不是只给一个名字。</li>
           <li><strong>任务名可直接选 CFG</strong>：<code>--function sensor_task</code> 或 <code>--reachable-from sensor_task</code> 会通过 context alias 映射到真实 poll 入口，不再误选 future 初始化辅助函数。</li>
           <li><strong>父链不丢</strong>：<code>main → app_main → sensor/monitor</code>，任务上下文不会全部挂在 startup 下。</li>
-          <li><strong>executor 多目标边</strong>：<code>blx r1</code> 从 task 头字段 <code>+12</code> 读取 poll 指针；分析器把该字段的存储值收敛为 4 个 low-confidence 目标，并生成同一 site 的多条 call 边。</li>
+          <li><strong>executor 多目标边</strong>：<code>blx r1</code> 从 task 头字段 <code>+12</code> 读取 poll 指针；分析器把该字段的存储值收敛为 4 个 low-confidence 目标，并在同一个 call site 中保留候选集；TDG 中生成对应的候选边。</li>
           <li><strong>内联调用点可恢复</strong>：<code>Spawner::spawn</code> 在 <code>start_tasks</code> 中被内联，但 DWARF <code>DW_TAG_inlined_subroutine</code> 仍保留源码行和地址范围。</li>
           <li><strong>向量表去噪</strong>：未使用的 Cortex-M 向量共享 <code>DefaultHandler</code> 别名，不会生成 200 多个假 ISR context；只有真实的 <code>HardFault</code> 被保留。</li>
           <li><strong>范围明确</strong>：默认 Rust 支持仅限 no_std 生态（Embassy/RTIC/core/alloc）；<code>std::thread</code> 与 Tokio 不再进入支持矩阵。</li>

@@ -108,16 +108,35 @@ do not change CFG output.
 
 ## Unresolved call and jump sites
 
-A block's `calls` array may contain multiple entries with the same `site` when
-a bounded indirect target set is known. Each entry is one candidate target;
-they share the call instruction and continuation block. Candidate entries have
-`unresolved: false`, `direct: false` and `heuristic: true`. This is used for
-Embassy's task-poll dispatch, where stores to a task-header field identify the
-concrete `TaskStorage<...>::poll` functions plus `poll_exited`.
+A block has exactly one call record per call instruction. When a bounded
+indirect target set is known, that record has `target: null`, `unresolved:
+false` and a non-empty `candidates` array. Each candidate has its own `target`,
+`target_function` and `target_name`; the block's call count therefore stays one.
+This is used for Embassy's task-poll dispatch, where stores to a task-header
+field identify the concrete `TaskStorage<...>::poll` functions plus
+`poll_exited`.
 
 A `null_target: true` call record has a statically null function pointer and no
 call edge. It is not unresolved: the diagnostic `null-indirect-call-target`
 records the dead call site, and DOT/Mermaid render a `null target` note.
+
+A multi-target call record looks like:
+
+```json
+{
+  "site": "0x80005da",
+  "target": null,
+  "target_function": null,
+  "direct": false,
+  "tail": false,
+  "heuristic": true,
+  "unresolved": false,
+  "candidates": [
+    { "target": "0x800082a", "target_function": "fn:0x800082a", "target_name": "..." },
+    { "target": "0x800085c", "target_function": "fn:0x800085c", "target_name": "..." }
+  ]
+}
+```
 
 `unresolved: true` in a block's `calls` entry means an indirect call or an
 indirect tail jump had no static target. A `tail: true` entry records a jump
@@ -207,18 +226,20 @@ each of them.
 
 ## JSON document
 
-`cfg_schema_version` is `1.4` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.5` and is independent of the TDG schema version.
 Every document contains image metadata, diagnostics, and the selected
 functions. Version 1.1 adds an optional per-function `inline_frames` list
 recovered from DWARF. Version 1.2 scopes diagnostics to the selected functions
 and adds `diagnostics_omitted` when other image diagnostics were filtered out.
 Version 1.3 adds an optional `no_code` descriptor for functions that have no
 machine code in the image. Version 1.4 adds `null_target` to CFG call records
-whose target expression is a statically null function pointer.
+whose target expression is a statically null function pointer. Version 1.5
+represents a bounded indirect target set as one call site with a `candidates`
+array instead of duplicate call records.
 
 ```json
 {
-  "cfg_schema_version": "1.4",
+  "cfg_schema_version": "1.5",
   "image": { "arch": "thumb", "...": "..." },
   "functions": [
     {
