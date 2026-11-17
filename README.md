@@ -17,9 +17,9 @@ Implemented:
 - ELF loading via `object`: sections, symbols, entry point, ARM attributes,
   Cortex-M vector tables, relocation/debug-info flags.
 - Capstone decoding for Thumb/A32, AArch64, RISC-V 32/64 and x86-64.
-- Symbol, entry, vector/trap, init/fini and pointer-seeded function discovery,
-  plus recursive-descent basic blocks represented as `FunctionCfg` values in a
-  petgraph `StableDiGraph`. Cortex-M vector tables are recognized both by
+- Symbol, DWARF-subprogram, entry, vector/trap, init/fini and pointer-seeded
+  function discovery, plus recursive-descent basic blocks represented as
+  `FunctionCfg` values in a petgraph `StableDiGraph`. Cortex-M vector tables are recognized both by
   section name and by their initial-SP/handler pattern when embedded in
   another allocated section; ARM/AArch64 exception vectors and RISC-V trap
   vectors provide roots even without calls. Typed intra-function edges, call sites, raw instruction
@@ -126,6 +126,11 @@ Implemented:
   seeds are supplemented by architecture-aware prologue scanning
   (`endbr64`/`push rbp; mov rbp,rsp`, `push {...,lr}`, `stp x29,x30`, RISC-V
   stack adjustment), with a `stripped-heuristic-seeds` diagnostic.
+- DWARF `DW_TAG_subprogram` entries seed functions whose symbol was stripped
+  and provide a display name and concrete range. All named code symbols and
+  DWARF subprogram entries are system roots, so uncalled static functions and
+  local library helpers remain in the default CFG scope even without a call,
+  callback or pointer-table reference.
 - Statically null indirect call targets (for example an empty vtable drop slot)
   are marked `null_target` instead of being reported as unresolved; when the
   call is unconditional, its dead continuation is removed as well.
@@ -163,9 +168,9 @@ Implemented:
   from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
   is a multi-root system slice: main/startup, every valid vector-table ISR,
   ARM/AArch64 exception vectors, RISC-V trap vectors, ELF init/fini entry
-  points, task/async contexts, callback registrations and global
-  function-pointer roots. Default-handler stubs shared by unused vectors are
-  excluded.
+  points, task/async contexts, callback registrations, global function-pointer
+  roots, and every function represented by a code symbol or DWARF subprogram.
+  Default-handler stubs shared by unused vectors are excluded.
   `--reachable-from ROOT` narrows the export to one root, and `--all-functions`
   exports the complete image.
 - Loader/ELF view: `--view elf` renders the loaded ELF directly as a Mermaid

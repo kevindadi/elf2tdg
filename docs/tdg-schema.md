@@ -90,11 +90,13 @@ top level. A call whose every possible target is noreturn contributes no CFG
 continuation block, so its caller's `BasicBlock.successors` is empty at that
 site.
 
-Function discovery is seeded by symbols, the ELF entry point, Cortex-M vector
-entries, ARM/AArch64 exception vectors, RISC-V trap vectors, init/fini symbols,
-global pointer roots and direct call targets. When no local code symbols exist, common
-prologue patterns add conservative seeds and a `stripped-heuristic-seeds`
-diagnostic. `Function.source` is filled from the DWARF line program when
+Function discovery is seeded by symbols, DWARF `DW_TAG_subprogram` entries,
+the ELF entry point, Cortex-M vector entries, ARM/AArch64 exception vectors,
+RISC-V trap vectors, init/fini symbols, global pointer roots and direct call
+targets. A DWARF subprogram can recover a stripped function entry and supplies
+a concrete size and display name when no ELF symbol remains. When no local code
+symbols exist, common prologue patterns add conservative seeds and a
+`stripped-heuristic-seeds` diagnostic. `Function.source` is filled from the DWARF line program when
 available; it is informational and does not affect graph identity.
 
 The CFG layer records block terminators (`fallthrough`, `call`,
@@ -194,6 +196,11 @@ Global function-pointer roots are not separate TDG edges. They are used when
 selecting the default CFG system scope and are listed in CFG JSON as
 `pointer_roots`; the TDG carries an informational `pointer-roots` diagnostic
 with the recovered count.
+
+Named code symbols and DWARF subprogram entries are also CFG system roots,
+even when no edge or pointer references them. They do not introduce new TDG
+edges; they only keep uncalled static functions and debug-info-recovered
+entries in the default CFG export.
 
 ### Lock and semaphore events
 

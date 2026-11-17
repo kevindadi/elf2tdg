@@ -38,7 +38,8 @@ Use `--view cfg` for the intermediate CFG:
 elf2tdg firmware.elf --view cfg --format json \
     --function main --output main.cfg.json
 
-# Default system export: main + startup + ISR vectors + tasks + callbacks + pointer roots
+# Default system export: main + startup + ISR vectors + tasks + callbacks +
+# pointer roots + symbol/DWARF function roots
 elf2tdg firmware.elf --view cfg --format json --output system.cfg.json
 
 # Single-root slice for focused analysis
@@ -69,9 +70,18 @@ name. `--reachable-from` accepts the same selectors. Without a selector, CFG
 output uses a multi-root system scope:
 functions reachable from main/startup, all valid vector-table ISRs, task/async
 contexts, callback registrations, function pointers recovered from global
-data, and code addresses recovered from literal/function-pointer escapes.
-`--reachable-from ROOT` narrows this to one root, and `--all-functions` exports
-the complete image.
+data, every named code symbol or DWARF subprogram entry, and code addresses
+recovered from literal/function-pointer escapes. `--reachable-from ROOT`
+narrows this to one root, and `--all-functions` exports the complete image.
+
+Plain function symbols and DWARF `DW_TAG_subprogram` entries are roots even
+when no call, callback registration or data pointer reaches them. This keeps
+uncalled static functions, cold fragments and local library helpers visible,
+and lets a debug build recover function entries whose ELF symbols were stripped
+but whose DWARF subprogram DIE and concrete range remain. A symbol name takes
+precedence over a DWARF name; DWARF supplies the display name only when the
+symbol was removed. PLT stubs, external imports and default-handler stubs are
+not added through this rule.
 
 Vector-table roots are read from `.vector_table`/`.isr_vector`-style sections.
 The initial stack word is skipped, Thumb bits are cleared and unused vectors
@@ -116,7 +126,8 @@ another allocated section. ARM/AArch64 exception-vector sections and RISC-V
 Executable symbols with recognizable `vector`, `trap` or `exception` names
 (such as `vectors`, `__vector_table`, `trap_entry` or `exception_handler`) are
 also retained. `_init`/`_fini` and libc startup symbols are architecture-level
-roots as well.
+roots as well. Every remaining named code symbol and DWARF subprogram entry is
+a general function root rather than an architecture-specific one.
 Computed trap dispatch through `auipc`+`jalr` or a value written to `mtvec`/
 `VBAR` still needs `--reachable-from` or `--all-functions`.
 
