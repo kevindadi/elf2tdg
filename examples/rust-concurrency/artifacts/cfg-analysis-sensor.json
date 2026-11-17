@@ -1,5 +1,5 @@
 {
-  "cfg_schema_version": "1.5",
+  "cfg_schema_version": "1.6",
   "image": {
     "path": "artifacts/rust-concurrency-analysis.elf",
     "arch": "thumb",
@@ -671,14 +671,15 @@
               "tail": false,
               "conditional": false,
               "heuristic": false,
-              "unresolved": false
+              "unresolved": false,
+              "noreturn": true
             }
           ],
           "cycles": {
             "min": 3.0,
             "max": 5.0
           },
-          "terminator": "call"
+          "terminator": "noreturn-call"
         }
       ],
       "edges": [

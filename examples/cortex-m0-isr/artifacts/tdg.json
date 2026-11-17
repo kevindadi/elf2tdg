@@ -458,6 +458,10 @@
         "file": "main.c",
         "line": 38,
         "column": 16
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     },
     {
@@ -501,34 +505,6 @@
           "id": "bb:0x8000168",
           "address": "0x8000168",
           "size": 4,
-          "successors": [
-            "bb:0x800016c"
-          ],
-          "timing": {
-            "model": "cortex-m0",
-            "cycles": {
-              "min": 2.0,
-              "max": 4.0
-            },
-            "time_ns": {
-              "min": 41.666666666666664,
-              "max": 83.33333333333333
-            },
-            "frequency_domain": "clk:core",
-            "confidence": "medium",
-            "caveats": [
-              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
-              "Cortex-M0/M0+ modeled as a single-issue in-order pipeline."
-            ]
-          }
-        },
-        {
-          "id": "bb:0x800016c",
-          "address": "0x800016c",
-          "size": 4,
-          "successors": [
-            "bb:0x800016c"
-          ],
           "timing": {
             "model": "cortex-m0",
             "cycles": {
@@ -550,10 +526,10 @@
       ],
       "timing": {
         "static_block_sum_cycles": {
-          "min": 9.0,
-          "max": 17.0
+          "min": 7.0,
+          "max": 13.0
         },
-        "modeled_blocks": 3,
+        "modeled_blocks": 2,
         "unmodeled_blocks": 0,
         "caveats": [
           "Sum of static block costs; this is not a path time or a WCET bound."
@@ -563,6 +539,10 @@
         "file": "main.c",
         "line": 45,
         "column": 26
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     },
     {
@@ -643,6 +623,10 @@
         "file": "main.c",
         "line": 52,
         "column": 28
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     }
   ],

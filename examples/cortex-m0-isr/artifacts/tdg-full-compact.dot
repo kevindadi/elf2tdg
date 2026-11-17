@@ -8,7 +8,7 @@ digraph tdg {
   "fn:0x8000118" [label="sensor_task\n0x8000118\n20-26 cyc", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
   "fn:0x8000138" [label="USART1_IRQHandler\n0x8000138\n16-20 cyc", fillcolor="#fff1c9", color="#555555", style="rounded,filled"];
   "fn:0x8000150" [label="main\n0x8000150\n9-17 cyc", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
-  "fn:0x8000160" [label="Reset_Handler\n0x8000160\n9-17 cyc", fillcolor="#dff3df", color="#555555", style="rounded,filled"];
+  "fn:0x8000160" [label="Reset_Handler\n0x8000160\n7-13 cyc", fillcolor="#dff3df", color="#555555", style="rounded,filled"];
   "fn:0x8000170" [label="Default_Handler\n0x8000170\n5-9 cyc", fillcolor="#fff1c9", color="#555555", style="rounded,filled"];
   "ctx:isr:53" [label="USART1_IRQHandler\nisr", shape=box, style="filled", fillcolor="#fdebd0", color="#444444"];
   "ctx:isr:53" -> "fn:0x8000138" [label="entry", style=dotted, color="#4a6fa5", fontcolor="#4a6fa5"];

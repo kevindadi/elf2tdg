@@ -77,7 +77,7 @@
 <path fill="#dff3df" stroke="#555555" d="M247.94,-49C247.94,-49 189.24,-49 189.24,-49 183.24,-49 177.24,-43 177.24,-37 177.24,-37 177.24,-17 177.24,-17 177.24,-11 183.24,-5 189.24,-5 189.24,-5 247.94,-5 247.94,-5 253.94,-5 259.94,-11 259.94,-17 259.94,-17 259.94,-37 259.94,-37 259.94,-43 253.94,-49 247.94,-49"/>
 <text xml:space="preserve" text-anchor="middle" x="218.59" y="-36" font-family="Helvetica,sans-Serif" font-size="10.00">Reset_Handler</text>
 <text xml:space="preserve" text-anchor="middle" x="218.59" y="-24" font-family="Helvetica,sans-Serif" font-size="10.00">0x8000160</text>
-<text xml:space="preserve" text-anchor="middle" x="218.59" y="-12" font-family="Helvetica,sans-Serif" font-size="10.00">9&#45;17 cyc</text>
+<text xml:space="preserve" text-anchor="middle" x="218.59" y="-12" font-family="Helvetica,sans-Serif" font-size="10.00">7&#45;13 cyc</text>
 </g>
 <!-- fn:0x8000160&#45;&gt;fn:0x80000d8 -->
 <g id="edge7" class="edge">

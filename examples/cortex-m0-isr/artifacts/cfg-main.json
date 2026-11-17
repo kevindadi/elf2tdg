@@ -1,7 +1,7 @@
 {
-  "cfg_schema_version": "1.5",
+  "cfg_schema_version": "1.6",
   "image": {
-    "path": "examples/cortex-m0-isr/artifacts/cortex-m0-isr.elf",
+    "path": "artifacts/cortex-m0-isr.elf",
     "arch": "thumb",
     "endianness": "little",
     "entry": "0x8000161",
@@ -28,6 +28,7 @@
         "line": 38,
         "column": 16
       },
+      "noreturn": "control-flow",
       "entry": "bb:0x8000150",
       "blocks": [
         {

@@ -36,11 +36,8 @@ flowchart LR
   subgraph cfg5["Reset_Handler\n0x8000160"]
     direction LR
     b5_134218080["bb 0x8000160<br/>3 insn<br/>push (r7, lr)<br/>add r7, sp, #0<br/>bl #0x80000d8<br/>1 call(s)"]
-    b5_134218088["bb 0x8000168<br/>1 insn<br/>bl #0x8000150<br/>1 call(s)"]
-    b5_134218092["bb 0x800016c<br/>2 insn<br/>mov r8, r8<br/>b #0x800016c"]
+    b5_134218088["bb 0x8000168<br/>1 insn<br/>bl #0x8000150<br/>1 call(s)<br/>noreturn"]
     b5_134218080 -->|return| b5_134218088
-    b5_134218088 -->|return| b5_134218092
-    b5_134218092 ==>|jump| b5_134218092
   end
   call0["delay<br/>0x80000ec"]
   b2_134218008 -.->|call| call0
@@ -50,4 +47,4 @@ flowchart LR
   call2["SystemInit<br/>0x80000d8"]
   b5_134218080 -.->|call| call2
   call3["main<br/>0x8000150"]
-  b5_134218088 -.->|call| call3
+  b5_134218088 -.->|noreturn call| call3

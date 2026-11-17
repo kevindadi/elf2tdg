@@ -3,7 +3,7 @@ digraph tdg {
   graph [fontname="Helvetica", label="elf2tdg TDG (concurrency projection)", labelloc=t];
   node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#555555"];
   edge [fontname="Helvetica", fontsize=9];
-  "fn:0x8000400" [label="Reset\n0x8000400\n23-50 cyc", fillcolor="#dff3df", color="#555555", style="rounded,filled"];
+  "fn:0x8000400" [label="Reset\n0x8000400\n22-49 cyc", fillcolor="#dff3df", color="#555555", style="rounded,filled"];
   "fn:0x80004aa" [label="<embassy_executor::platform::thread::Executor>::run::<rust_concurrency:...\n0x80004aa\n137-210 cyc", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
   "fn:0x80005ea" [label="rust_concurrency::start_tasks\n0x80005ea\n168-263 cyc", fillcolor="#ffffff", color="#555555", style="rounded,filled"];
   "fn:0x800082a" [label="<embassy_executor::raw::TaskStorage<rust_concurrency::__app_main_task::...\n0x800082a\n21-32 cyc", fillcolor="#ffffff", color="#555555", style="rounded,filled"];

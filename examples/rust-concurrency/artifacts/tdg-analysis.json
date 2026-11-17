@@ -241,9 +241,6 @@
           "id": "bb:0x8000422",
           "address": "0x8000422",
           "size": 4,
-          "successors": [
-            "bb:0x8000426"
-          ],
           "timing": {
             "model": "cortex-m4",
             "cycles": {
@@ -261,40 +258,22 @@
               "Load/store and branch penalties are table-based; cache/TCM configuration is not modeled."
             ]
           }
-        },
-        {
-          "id": "bb:0x8000426",
-          "address": "0x8000426",
-          "size": 2,
-          "timing": {
-            "model": "cortex-m4",
-            "cycles": {
-              "min": 1.0,
-              "max": 1.0
-            },
-            "time_ns": {
-              "min": 5.9523809523809526,
-              "max": 5.9523809523809526
-            },
-            "frequency_domain": "clk:core",
-            "confidence": "medium",
-            "caveats": [
-              "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
-              "Load/store and branch penalties are table-based; cache/TCM configuration is not modeled."
-            ]
-          }
         }
       ],
       "timing": {
         "static_block_sum_cycles": {
-          "min": 23.0,
-          "max": 50.0
+          "min": 22.0,
+          "max": 49.0
         },
-        "modeled_blocks": 9,
+        "modeled_blocks": 8,
         "unmodeled_blocks": 0,
         "caveats": [
           "Sum of static block costs; this is not a path time or a WCET bound."
         ]
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     },
     {
@@ -375,6 +354,10 @@
       "source": {
         "file": "panicking.rs",
         "line": 60
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "api"
       }
     },
     {
@@ -427,6 +410,10 @@
       "source": {
         "file": "panicking.rs",
         "line": 173
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "api"
       }
     },
     {
@@ -515,6 +502,10 @@
       "source": {
         "file": "lib.rs",
         "line": 1153
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     },
     {
@@ -2001,6 +1992,10 @@
       "source": {
         "file": "src/platform/cortex_m.rs",
         "line": 100
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     },
     {
@@ -3884,6 +3879,10 @@
       "source": {
         "file": "main.rs",
         "line": 56
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     },
     {
@@ -4539,6 +4538,10 @@
       "source": {
         "file": "main.rs",
         "line": 55
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     },
     {
@@ -4619,6 +4622,10 @@
       "source": {
         "file": "lib.rs",
         "line": 1146
+      },
+      "ext": {
+        "elf2tdg.noreturn": true,
+        "elf2tdg.noreturn_source": "control-flow"
       }
     }
   ],

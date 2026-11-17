@@ -1,7 +1,7 @@
 {
-  "cfg_schema_version": "1.5",
+  "cfg_schema_version": "1.6",
   "image": {
-    "path": "examples/cortex-m0-isr/artifacts/cortex-m0-isr.elf",
+    "path": "artifacts/cortex-m0-isr.elf",
     "arch": "thumb",
     "endianness": "little",
     "entry": "0x8000161",
@@ -1242,6 +1242,7 @@
         "line": 38,
         "column": 16
       },
+      "noreturn": "control-flow",
       "entry": "bb:0x8000150",
       "blocks": [
         {
@@ -1464,6 +1465,7 @@
         "line": 45,
         "column": 26
       },
+      "noreturn": "control-flow",
       "entry": "bb:0x8000160",
       "blocks": [
         {
@@ -1583,65 +1585,15 @@
               "tail": false,
               "conditional": false,
               "heuristic": false,
-              "unresolved": false
+              "unresolved": false,
+              "noreturn": true
             }
           ],
           "cycles": {
             "min": 2.0,
             "max": 4.0
           },
-          "terminator": "call"
-        },
-        {
-          "id": "bb:0x800016c",
-          "address": "0x800016c",
-          "size": 4,
-          "instructions": [
-            {
-              "address": "0x800016c",
-              "size": 2,
-              "bytes": "c046",
-              "mnemonic": "mov",
-              "operands": "r8, r8",
-              "text": "mov r8, r8",
-              "is_call": false,
-              "is_jump": false,
-              "is_return": false,
-              "is_conditional": false,
-              "direct_target": null,
-              "indirect": null,
-              "source": {
-                "file": "main.c",
-                "line": 48,
-                "column": 5
-              }
-            },
-            {
-              "address": "0x800016e",
-              "size": 2,
-              "bytes": "fde7",
-              "mnemonic": "b",
-              "operands": "#0x800016c",
-              "text": "b #0x800016c",
-              "is_call": false,
-              "is_jump": true,
-              "is_return": false,
-              "is_conditional": false,
-              "direct_target": "0x800016c",
-              "indirect": null,
-              "source": {
-                "file": "main.c",
-                "line": 48,
-                "column": 5
-              }
-            }
-          ],
-          "calls": [],
-          "cycles": {
-            "min": 2.0,
-            "max": 4.0
-          },
-          "terminator": "jump"
+          "terminator": "noreturn-call"
         }
       ],
       "edges": [
@@ -1650,20 +1602,6 @@
           "to": "bb:0x8000168",
           "kind": "call-return",
           "site": "0x8000164",
-          "conditional": false
-        },
-        {
-          "from": "bb:0x8000168",
-          "to": "bb:0x800016c",
-          "kind": "call-return",
-          "site": "0x8000168",
-          "conditional": false
-        },
-        {
-          "from": "bb:0x800016c",
-          "to": "bb:0x800016c",
-          "kind": "jump",
-          "site": "0x800016e",
           "conditional": false
         }
       ],

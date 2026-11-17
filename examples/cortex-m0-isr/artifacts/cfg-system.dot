@@ -43,13 +43,10 @@ digraph cfg {
   subgraph cluster_cfg_5 {
     label="Reset_Handler\n0x8000160"; labeljust=l; fontsize=10; color="#999999";
     "bb:0x8000160" [label="bb 0x8000160\n3 insn\npush {r7, lr}\nadd r7, sp, #0\nbl #0x80000d8\n1 call(s)"];
-    "bb:0x8000168" [label="bb 0x8000168\n1 insn\nbl #0x8000150\n1 call(s)"];
-    "bb:0x800016c" [label="bb 0x800016c\n2 insn\nmov r8, r8\nb #0x800016c"];
+    "bb:0x8000168" [label="bb 0x8000168\n1 insn\nbl #0x8000150\n1 call(s)\nnoreturn"];
     "bb:0x8000160" -> "bb:0x8000168" [label="return", color="#4a6fa5", style="solid"];
-    "bb:0x8000168" -> "bb:0x800016c" [label="return", color="#4a6fa5", style="solid"];
-    "bb:0x800016c" -> "bb:0x800016c" [label="jump", color="#333333", style="bold"];
     "bb:0x8000160" -> "call:fn:0x80000d8" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
-    "bb:0x8000168" -> "call:fn:0x8000150" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x8000168" -> "call:fn:0x8000150" [label="noreturn call", color="#117a65", fontcolor="#117a65", style=dashed];
   }
   "call:fn:0x80000d8" [label="SystemInit\n0x80000d8", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
   "call:fn:0x80000ec" [label="delay\n0x80000ec", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];

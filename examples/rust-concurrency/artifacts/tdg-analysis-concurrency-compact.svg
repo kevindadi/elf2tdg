@@ -16,7 +16,7 @@
 <path fill="#dff3df" stroke="#555555" d="M564.46,-44C564.46,-44 522.97,-44 522.97,-44 516.97,-44 510.97,-38 510.97,-32 510.97,-32 510.97,-12 510.97,-12 510.97,-6 516.97,0 522.97,0 522.97,0 564.46,0 564.46,0 570.46,0 576.46,-6 576.46,-12 576.46,-12 576.46,-32 576.46,-32 576.46,-38 570.46,-44 564.46,-44"/>
 <text xml:space="preserve" text-anchor="middle" x="543.71" y="-31" font-family="Helvetica,sans-Serif" font-size="10.00">Reset</text>
 <text xml:space="preserve" text-anchor="middle" x="543.71" y="-19" font-family="Helvetica,sans-Serif" font-size="10.00">0x8000400</text>
-<text xml:space="preserve" text-anchor="middle" x="543.71" y="-7" font-family="Helvetica,sans-Serif" font-size="10.00">23&#45;50 cyc</text>
+<text xml:space="preserve" text-anchor="middle" x="543.71" y="-7" font-family="Helvetica,sans-Serif" font-size="10.00">22&#45;49 cyc</text>
 </g>
 <!-- fn:0x80004aa -->
 <g id="node2" class="node">
