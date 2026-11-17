@@ -1,0 +1,22 @@
+[package]
+name = "elf2tdg-fuzz"
+version = "0.1.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+elf2tdg = { path = "../crates/elf2tdg" }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "elf_analysis"
+path = "fuzz_targets/elf_analysis.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

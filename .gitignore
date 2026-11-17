@@ -5,3 +5,9 @@ tests/fixtures/rust_alloc_trait/target
 
 # Ad-hoc full-image CFG exports
 all.dot
+
+# cargo-fuzz output
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage

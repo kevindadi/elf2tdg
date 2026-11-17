@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/elf2tdg-schema", "crates/elf2tdg"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"
