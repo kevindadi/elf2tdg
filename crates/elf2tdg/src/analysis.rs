@@ -612,6 +612,7 @@ impl<'a> Analyzer<'a> {
         work.push_back(start);
         let mut calls: Vec<CallDraft> = Vec::new();
         let mut unresolved_indirect_calls: Vec<(u64, String)> = Vec::new();
+        let mut null_indirect_sites: BTreeSet<u64> = BTreeSet::new();
         let mut unresolved_indirect_jumps: Vec<(u64, String)> = Vec::new();
         let mut resolved_indirect_jumps: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
         let mut hit_instruction_limit = false;
@@ -899,13 +900,26 @@ impl<'a> Analyzer<'a> {
             let Some(reference) = insn.indirect else {
                 continue;
             };
-            let Some(target) = origin::resolve_indirect_target(
+            let Some(value) = origin::resolve_indirect_target_value(
                 self.image,
                 &decoded_sorted,
                 insn.address,
                 reference,
             ) else {
                 continue;
+            };
+            if value == 0 {
+                null_indirect_sites.insert(insn.address);
+                continue;
+            }
+            let target = if self.image.import_name_at(value).is_some() {
+                self.image.canonical_address(value)
+            } else {
+                let canonical = self.image.canonical_address(value);
+                if !self.image.is_executable(canonical) {
+                    continue;
+                }
+                canonical
             };
             if !self.functions.contains_key(&target)
                 || !resolved_indirect.insert((insn.address, target))
@@ -934,7 +948,7 @@ impl<'a> Analyzer<'a> {
             );
         }
         for (site, text) in unresolved_indirect_calls {
-            if resolved_indirect_sites.contains(&site) {
+            if resolved_indirect_sites.contains(&site) || null_indirect_sites.contains(&site) {
                 continue;
             }
             self.diag(
@@ -943,6 +957,17 @@ impl<'a> Analyzer<'a> {
                 format!("indirect call at 0x{site:x} ({text}) has no statically known target"),
                 Some(start),
                 Some(site),
+            );
+        }
+        for site in &null_indirect_sites {
+            self.diag(
+                Severity::Info,
+                "null-indirect-call-target",
+                format!(
+                    "indirect call at 0x{site:x} reads a statically null function pointer; no call edge"
+                ),
+                Some(start),
+                Some(*site),
             );
         }
         self.decoded_by_function
@@ -964,10 +989,28 @@ impl<'a> Analyzer<'a> {
                     conditional: call.conditional,
                     heuristic: call.heuristic,
                     unresolved: false,
+                    null_target: false,
                 },
             );
         }
         for insn in decoded_sorted.iter().filter(|insn| insn.is_call) {
+            if null_indirect_sites.contains(&insn.address) {
+                call_sites.insert(
+                    insn.address,
+                    cfg::CfgCallSite {
+                        site: insn.address,
+                        target: None,
+                        target_function: None,
+                        direct: false,
+                        tail: false,
+                        conditional: insn.is_conditional,
+                        heuristic: false,
+                        unresolved: false,
+                        null_target: true,
+                    },
+                );
+                continue;
+            }
             call_sites.entry(insn.address).or_insert_with(|| {
                 let target = insn
                     .direct_target
@@ -985,6 +1028,7 @@ impl<'a> Analyzer<'a> {
                     conditional: false,
                     heuristic: false,
                     unresolved: true,
+                    null_target: false,
                 }
             });
         }
@@ -1006,6 +1050,7 @@ impl<'a> Analyzer<'a> {
                     conditional: insn.is_conditional,
                     heuristic: false,
                     unresolved: true,
+                    null_target: false,
                 });
         }
 
@@ -1509,6 +1554,7 @@ impl<'a> Analyzer<'a> {
         let min_slot = i64::try_from(pointer.saturating_mul(3)).unwrap_or(i64::MAX);
         let callers = self.callers_by_target();
         let mut resolutions = Vec::new();
+        let mut null_resolutions = Vec::new();
         for (&function_address, function) in &self.functions {
             let Some(decoded) = self.decoded_by_function.get(&function_address) else {
                 continue;
@@ -1579,6 +1625,14 @@ impl<'a> Analyzer<'a> {
                 let Some(slot) = origin::indirect_field_load(decoded, site, target) else {
                     continue;
                 };
+                if slot == 0 {
+                    let values =
+                        origin::resolve_vtable_slot_values(self.image, &decoded_functions, slot);
+                    if !values.is_empty() && values.iter().all(|value| *value == 0) {
+                        null_resolutions.push((function_address, site, tail, conditional));
+                    }
+                    continue;
+                }
                 if slot < min_slot {
                     continue;
                 }
@@ -1605,7 +1659,57 @@ impl<'a> Analyzer<'a> {
                 }
             }
         }
-        self.apply_candidate_calls(resolutions)
+        let null_changed = self.apply_null_indirect_calls(null_resolutions);
+        let candidate_changed = self.apply_candidate_calls(resolutions);
+        null_changed || candidate_changed
+    }
+
+    fn apply_null_indirect_calls(&mut self, resolutions: Vec<(u64, u64, bool, bool)>) -> bool {
+        let mut changed = false;
+        for (caller, site, tail, conditional) in resolutions {
+            let null_call = cfg::CfgCallSite {
+                site,
+                target: None,
+                target_function: None,
+                direct: false,
+                tail,
+                conditional,
+                heuristic: false,
+                unresolved: false,
+                null_target: true,
+            };
+            let updated = self.functions.get_mut(&caller).is_some_and(|function| {
+                replace_unresolved_cfg_call(&mut function.cfg, site, vec![null_call])
+            });
+            if !updated {
+                continue;
+            }
+            let caller_id = function_id(caller);
+            self.diagnostics.retain(|diagnostic| {
+                !((diagnostic.code == "unresolved-indirect-call"
+                    || diagnostic.code == "unresolved-indirect-jump")
+                    && diagnostic.function.as_ref() == Some(&caller_id)
+                    && diagnostic.site == Some(Addr::new(site)))
+            });
+            self.diagnostic_keys
+                .retain(|(diagnostic_code, function, diagnostic_site)| {
+                    !((*diagnostic_code == "unresolved-indirect-call"
+                        || *diagnostic_code == "unresolved-indirect-jump")
+                        && *function == Some(caller)
+                        && *diagnostic_site == Some(site))
+                });
+            self.diag(
+                Severity::Info,
+                "null-indirect-call-target",
+                format!(
+                    "indirect call at 0x{site:x} reads a statically null vtable target; no call edge"
+                ),
+                Some(caller),
+                Some(site),
+            );
+            changed = true;
+        }
+        changed
     }
 
     fn apply_candidate_calls(&mut self, resolutions: Vec<CandidateCallResolution>) -> bool {
@@ -1631,6 +1735,7 @@ impl<'a> Analyzer<'a> {
                     conditional,
                     heuristic: true,
                     unresolved: false,
+                    null_target: false,
                 })
                 .collect();
             let updated = self.functions.get_mut(&caller).is_some_and(|function| {
@@ -1791,6 +1896,7 @@ impl<'a> Analyzer<'a> {
                 conditional,
                 heuristic: false,
                 unresolved: false,
+                null_target: false,
             };
             let Some(function) = self.functions.get_mut(&function_address) else {
                 continue;

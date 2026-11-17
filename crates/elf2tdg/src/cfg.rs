@@ -22,7 +22,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.3";
+pub const CFG_SCHEMA_VERSION: &str = "1.4";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -200,6 +200,8 @@ pub struct CfgCallSite {
     pub heuristic: bool,
     /// Target was not resolved.
     pub unresolved: bool,
+    /// The target expression evaluates to a statically null function pointer.
+    pub null_target: bool,
 }
 
 /// A basic block in a function CFG.
@@ -1116,6 +1118,8 @@ struct CfgCallView {
     conditional: bool,
     heuristic: bool,
     unresolved: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    null_target: bool,
 }
 
 #[derive(Serialize)]
@@ -1316,6 +1320,7 @@ fn call_view(program: &ProgramCfg, call: &CfgCallSite) -> CfgCallView {
         conditional: call.conditional,
         heuristic: call.heuristic,
         unresolved: call.unresolved,
+        null_target: call.null_target,
     }
 }
 
@@ -1559,6 +1564,8 @@ pub fn render_dot_selected(
                 call_nodes.entry(key.clone()).or_insert(label);
                 let label = if call.unresolved {
                     "call?".to_owned()
+                } else if call.null_target {
+                    "null target".to_owned()
                 } else if call.tail {
                     "tail call".to_owned()
                 } else {
@@ -1740,6 +1747,8 @@ pub fn render_mermaid_selected(
                     "  {source} -.->|{}| {id}",
                     if call.unresolved {
                         "call?"
+                    } else if call.null_target {
+                        "null target"
                     } else if call.tail {
                         "tail call"
                     } else {
@@ -1788,6 +1797,12 @@ fn block_label(block: &CfgBlock, include_instructions: bool) -> String {
 }
 
 fn call_target(program: &ProgramCfg, call: &CfgCallSite) -> (String, String) {
+    if call.null_target {
+        return (
+            format!("call:null:0x{:x}", call.site),
+            "null function pointer".to_owned(),
+        );
+    }
     if let Some(function_id) = &call.target_function {
         if let Some(function) = program.function(function_id) {
             let name = crate::rules::normalize_crate_hashes(&function.primary_name);
@@ -1817,6 +1832,11 @@ fn shorten(value: &str, max_chars: usize) -> String {
     let mut shortened: String = value.chars().take(max_chars.saturating_sub(3)).collect();
     shortened.push_str("...");
     shortened
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn dot_escape(value: &str) -> String {
@@ -1877,6 +1897,7 @@ mod tests {
             conditional: false,
             heuristic: false,
             unresolved: false,
+            null_target: false,
         }
     }
 

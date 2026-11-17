@@ -18,6 +18,7 @@ fn fixture_elf() -> Option<PathBuf> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn resolves_allocator_and_trait_object_calls() {
     let Some(path) = fixture_elf() else {
         return;
@@ -44,6 +45,20 @@ fn resolves_allocator_and_trait_object_calls() {
         )
     });
     assert!(allocator_call, "allocator call should be a direct edge");
+
+    assert!(
+        !tdg.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "unresolved-indirect-call"
+                || diagnostic.code == "unresolved-indirect-jump"
+        }),
+        "the fixture should have no unresolved indirect calls"
+    );
+    assert!(
+        tdg.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "null-indirect-call-target"),
+        "the null drop slot should be reported without creating an edge"
+    );
 
     let trait_call = tdg
         .diagnostics
@@ -102,4 +117,21 @@ fn resolves_allocator_and_trait_object_calls() {
     assert!(cfg_candidates.iter().all(|call| {
         !call.unresolved && call.heuristic && call.tail && call.target_function.is_some()
     }));
+
+    let null_calls: Vec<_> = analysis
+        .cfg
+        .functions
+        .iter()
+        .flat_map(|function| {
+            function
+                .cfg
+                .blocks_by_address
+                .values()
+                .flat_map(|node| function.cfg.graph[*node].calls.iter())
+        })
+        .filter(|call| call.null_target)
+        .collect();
+    assert_eq!(null_calls.len(), 1);
+    assert!(!null_calls[0].unresolved);
+    assert!(null_calls[0].target.is_none());
 }

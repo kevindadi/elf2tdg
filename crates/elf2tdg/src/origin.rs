@@ -142,29 +142,7 @@ pub fn resolve_indirect_target(
     site: u64,
     target: IndirectTarget,
 ) -> Option<u64> {
-    let before = decoded.partition_point(|instruction| instruction.address < site);
-    let value = match target {
-        IndirectTarget::Register(register) => {
-            resolve_register(image, decoded, before, register, 0)?
-        }
-        IndirectTarget::RegisterOffset { register, offset } => {
-            resolve_register(image, decoded, before, register, 0)?.wrapping_add_signed(offset)
-        }
-        IndirectTarget::Memory(address) => memory_pointer_value(image, address)?,
-        IndirectTarget::IndexedMemory { .. }
-        | IndirectTarget::TableBranch { .. }
-        | IndirectTarget::TableLoad { .. }
-        | IndirectTarget::BranchTable { .. } => return None,
-        IndirectTarget::RegisterMemory { base, disp } => {
-            if let Some(base_value) = resolve_register(image, decoded, before, base, 0) {
-                let address = base_value.wrapping_add_signed(disp);
-                memory_pointer_value(image, address)?
-            } else {
-                let (store_index, source) = memory_slot_source(decoded, before, base, disp)?;
-                resolve_register(image, decoded, store_index, source, 0)?
-            }
-        }
-    };
+    let value = resolve_indirect_target_value(image, decoded, site, target)?;
     // A GOT slot without a local PLT stub resolves to a synthetic external
     // function whose pseudo-address is the slot itself.
     if image.import_name_at(value).is_some() {
@@ -172,6 +150,42 @@ pub fn resolve_indirect_target(
     }
     let canonical = image.canonical_address(value);
     image.is_executable(canonical).then_some(canonical)
+}
+
+/// Returns the raw statically known register/memory value at an indirect
+/// target, before requiring the value to name executable code.
+///
+/// A `Some(0)` result is a statically null function pointer; callers can
+/// distinguish that from an unknown dynamic target and avoid reporting a
+/// spurious unresolved call.
+#[must_use]
+pub fn resolve_indirect_target_value(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    site: u64,
+    target: IndirectTarget,
+) -> Option<u64> {
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    match target {
+        IndirectTarget::Register(register) => resolve_register(image, decoded, before, register, 0),
+        IndirectTarget::RegisterOffset { register, offset } => {
+            Some(resolve_register(image, decoded, before, register, 0)?.wrapping_add_signed(offset))
+        }
+        IndirectTarget::Memory(address) => memory_pointer_value(image, address),
+        IndirectTarget::IndexedMemory { .. }
+        | IndirectTarget::TableBranch { .. }
+        | IndirectTarget::TableLoad { .. }
+        | IndirectTarget::BranchTable { .. } => None,
+        IndirectTarget::RegisterMemory { base, disp } => {
+            if let Some(base_value) = resolve_register(image, decoded, before, base, 0) {
+                let address = base_value.wrapping_add_signed(disp);
+                memory_pointer_value(image, address)
+            } else {
+                let (store_index, source) = memory_slot_source(decoded, before, base, disp)?;
+                resolve_register(image, decoded, store_index, source, 0)
+            }
+        }
+    }
 }
 
 /// Maximum number of distinct field-store values considered for a bounded
@@ -251,6 +265,54 @@ pub fn resolve_vtable_slot_candidates(
     if slot < header || !(slot - header).is_multiple_of(pointer) {
         return Vec::new();
     }
+    let mut candidates = BTreeSet::new();
+    for base in collect_vtable_bases(image, decoded_functions) {
+        let Some(method) = vtable_slot_value(image, base, slot, pointer) else {
+            continue;
+        };
+        let method = image.canonical_address(method);
+        if image.is_executable(method) {
+            candidates.insert(method);
+            if candidates.len() > MAX_VTABLE_CANDIDATES {
+                return Vec::new();
+            }
+        }
+    }
+    candidates.into_iter().collect()
+}
+
+/// Returns raw values stored at `slot` in candidate vtable-shaped tables.
+///
+/// This includes header slots such as the drop entry at offset zero, allowing
+/// callers to recognize a statically null drop target even when the vtable base
+/// itself is not statically known.
+#[must_use]
+pub fn resolve_vtable_slot_values(
+    image: &Image,
+    decoded_functions: &[&[DecodedInsn]],
+    slot: i64,
+) -> Vec<u64> {
+    let pointer = pointer_size(image.arch);
+    let Ok(slot) = usize::try_from(slot) else {
+        return Vec::new();
+    };
+    if !slot.is_multiple_of(pointer) {
+        return Vec::new();
+    }
+    let mut values = BTreeSet::new();
+    for base in collect_vtable_bases(image, decoded_functions) {
+        let Some(value) = vtable_slot_value(image, base, slot, pointer) else {
+            continue;
+        };
+        values.insert(value);
+        if values.len() > MAX_VTABLE_CANDIDATES {
+            return Vec::new();
+        }
+    }
+    values.into_iter().collect()
+}
+
+fn collect_vtable_bases(image: &Image, decoded_functions: &[&[DecodedInsn]]) -> BTreeSet<u64> {
     let mut bases = BTreeSet::new();
     for decoded in decoded_functions {
         for (index, instruction) in decoded.iter().enumerate() {
@@ -264,21 +326,24 @@ pub fn resolve_vtable_slot_candidates(
             if is_read_only_data(image, value) {
                 bases.insert(value);
                 if bases.len() > MAX_VTABLE_BASES {
-                    return Vec::new();
+                    return BTreeSet::new();
                 }
             }
         }
     }
-    let mut candidates = BTreeSet::new();
-    for base in bases {
-        if let Some(method) = vtable_method(image, base, slot, pointer) {
-            candidates.insert(method);
-            if candidates.len() > MAX_VTABLE_CANDIDATES {
-                return Vec::new();
-            }
-        }
+    bases
+}
+
+fn vtable_slot_value(image: &Image, base: u64, slot: usize, pointer: usize) -> Option<u64> {
+    let drop = image.read_uint(base, pointer)?;
+    let _size = image.read_uint(base + pointer as u64, pointer)?;
+    let align = image.read_uint(base + (pointer * 2) as u64, pointer)?;
+    let drop_ok = drop == 0 || image.is_executable(image.canonical_address(drop));
+    let align_ok = align != 0 && align.is_power_of_two() && align <= 4096;
+    if !drop_ok || !align_ok {
+        return None;
     }
-    candidates.into_iter().collect()
+    image.read_uint(base + slot as u64, pointer)
 }
 
 fn is_read_only_data(image: &Image, address: u64) -> bool {
@@ -289,17 +354,6 @@ fn is_read_only_data(image: &Image, address: u64) -> bool {
             && address >= section.address
             && address < section.address.saturating_add(section.size)
     })
-}
-
-fn vtable_method(image: &Image, base: u64, slot: usize, pointer: usize) -> Option<u64> {
-    let drop = image.read_uint(base, pointer)?;
-    let _size = image.read_uint(base + pointer as u64, pointer)?;
-    let align = image.read_uint(base + (pointer * 2) as u64, pointer)?;
-    let method = image.read_uint(base + slot as u64, pointer)?;
-    let drop_ok = drop == 0 || image.is_executable(image.canonical_address(drop));
-    let align_ok = align != 0 && align.is_power_of_two() && align <= 4096;
-    let method = image.canonical_address(method);
-    (drop_ok && align_ok && image.is_executable(method)).then_some(method)
 }
 
 /// Collects executable values stored to `[base + disp]` anywhere in the
@@ -1250,7 +1304,8 @@ mod tests {
     use super::{
         evaluate_argument_spec, forwarded_argument_index, indirect_argument_spec,
         indirect_field_load, jump_table_bound, read_table_entries, resolve_argument_pointer,
-        resolve_field_store_candidates, resolve_indirect_target, resolve_vtable_slot_candidates,
+        resolve_field_store_candidates, resolve_indirect_target, resolve_indirect_target_value,
+        resolve_vtable_slot_candidates, resolve_vtable_slot_values,
     };
     use crate::arch::Decoder;
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
@@ -1314,6 +1369,28 @@ mod tests {
         let call = engine.decode_one(&text[2..], 0x1002).unwrap().expect("blx");
         let target = call.indirect.expect("register target");
         assert_eq!(indirect_field_load(&[load, call], 0x1002, target), Some(12));
+    }
+
+    #[test]
+    fn distinguishes_null_indirect_target_value() {
+        // mov rax, 0; call rax
+        let code = vec![0x48, 0xc7, 0xc0, 0, 0, 0, 0, 0xff, 0xd0];
+        let engine = Decoder::new(ArchKind::X86_64).unwrap();
+        let mov = engine.decode_one(&code[..7], 0x1000).unwrap().expect("mov");
+        let call = engine
+            .decode_one(&code[7..], 0x1007)
+            .unwrap()
+            .expect("call");
+        let target = call.indirect.expect("register target");
+        assert_eq!(
+            resolve_indirect_target_value(
+                &image(ArchKind::X86_64, 0x1000, code),
+                &[mov, call],
+                0x1007,
+                target
+            ),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1822,6 +1899,7 @@ mod tests {
             resolve_vtable_slot_candidates(&image, &[&decoded], 16),
             Vec::<u64>::new()
         );
+        assert_eq!(resolve_vtable_slot_values(&image, &[&decoded], 0), vec![0]);
     }
 
     #[test]
