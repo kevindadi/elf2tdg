@@ -554,6 +554,14 @@ M3 analysis extensions currently implement:
 - function-pointer values loaded from globals or recoverable memory slots, and
   indirect calls through a register or direct memory pointer (`direct: false`,
   medium confidence);
+- indexed function-pointer call tables, including direct indexed operands,
+  register loads from fixed-width pointer tables and RISC-V table-relative
+  sequences; data-symbol sizes bound table scans when available;
+- branch-sensitive return-value summaries for direct callees, so getters and
+  factories returning a function pointer resolve indirect calls, with bounded
+  candidate sets when paths disagree;
+- local stack-slot function pointers initialized from immediate or register
+  stores, including branchy assignments;
 - Embassy task-handle poll await rule;
 - DWARF line-program source file/line/column extraction for functions;
 - per-function DWARF inline-frame ranges with source call sites, and typed
@@ -562,10 +570,9 @@ M3 analysis extensions currently implement:
 - stripped-image prologue seeding when no local code symbols exist;
 - real C, C++ and OpenMP integration fixtures in addition to the Rust fixtures.
 
-Still deferred: arbitrary computed pointer targets; full C++ callable/type
-demangling; OpenMP task/barrier edges; general `.await` lowering; DWARF
-variable/type data; multi-level wrapper forwarding and transformed forwarded
-values. Function names still come from
-the symbol table in normal images. M7 auto-detection from `7E-M` attributes
-falls back to the Cortex-M4 table, so use `--cpu cortex-m7` when the exact core
-is known.
+Still deferred: arbitrary computed pointer targets beyond the bounded table,
+return and stack-slot patterns above; full C++ callable/type demangling; OpenMP
+task/barrier edges; general `.await` lowering; DWARF variable/type and
+location-expression data; multi-level wrapper forwarding and transformed
+forwarded values. M7 auto-detection from `7E-M` attributes falls back to the
+Cortex-M4 table, so use `--cpu cortex-m7` when the exact core is known.

@@ -118,6 +118,15 @@ Implemented:
   known caller agrees on one target. These edges carry `direct: false` and
   medium confidence; ambiguous or dynamic targets remain unresolved with
   diagnostics.
+- Indexed function-pointer call tables are expanded into bounded candidate
+  sets, covering `call [table + index*scale]`, register loads from an indexed
+  table, and RISC-V table-relative call sequences. Table scans use a recovered
+  comparison bound and allocated data-symbol sizes when available.
+- Direct callee return values feed indirect calls: getters/factories such as
+  `get_handler()()` resolve through branch-sensitive return-register
+  summaries. Local stack slots initialized with immediate or register function
+  pointers are also followed, including branchy assignments. These produce
+  `resolved-call-table` and `resolved-returned-indirect-call` diagnostics.
 - OpenMP parallel-region `Scope` nodes with implicit join membership.
 - Embassy task-handle poll await rule in addition to spawn detection.
 - DWARF line-program extraction: functions receive source file/line/column
@@ -191,17 +200,19 @@ Implemented:
 
 Still deferred:
 
-- Indexed jump tables, C++ vtable dispatch and fully computed pointer targets;
-  the current indirect resolver handles register/memory-held pointers only.
+- Fully computed pointer targets beyond the bounded patterns above, such as
+  values transformed through arbitrary arithmetic, indirect callees, or
+  pointer state that crosses more than a few call levels.
 - Fully type-aware C++ callable recovery and libc++ demangling; the current
   `_M_run` marker heuristic is conservative and does not recover the lambda
   body itself.
 - OpenMP task/barrier edges beyond the parallel-region scope and spawn.
 - General `.await` lowering beyond recognized runtime handle poll functions.
-- DWARF variable/type data; source locations and inline call sites are
-  extracted, but function names still come from the symbol table.
-- Name-aware stripped-image recovery beyond prologue seeding (for example
-  recovery of C++ lambdas and virtual methods without symbols).
+- DWARF variable/type data and location expressions; function names, ranges,
+  source locations and inline call sites are extracted.
+- Name-aware stripped-image recovery beyond prologue and DWARF-subprogram
+  seeding (for example recovery of C++ lambdas and virtual methods without
+  symbols).
 - Wrapper forwarding through multiple user levels and through values that are
   transformed before the runtime call.
 

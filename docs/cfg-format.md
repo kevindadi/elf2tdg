@@ -197,6 +197,22 @@ Indirect calls and jumps are also resolved through:
 - ABI arguments of the containing function, evaluated at direct caller sites
   (for example a function-pointer dispatch helper or a C++ virtual call on a
   static object);
+- indexed function-pointer call tables, both direct operands such as
+  `call [table + index*scale]` and a register loaded from an indexed table
+  immediately before the call. The scan is bounded by a recovered comparison
+  and by the allocated data symbol at the table base when one exists; matches
+  produce `resolved-call-table` candidate sets. RISC-V table-relative
+  `slli`/`add`/`load`/`jalr` sequences are included;
+- return values of direct callees. A getter or factory such as
+  `get_handler()()` is summarized by walking back from each reachable return
+  to the ABI return-register definition, including copies, AArch64 `csel` and
+  branch-selected returns. A unique target becomes a direct-target call
+  record; multiple targets become a bounded candidate set with a
+  `resolved-returned-indirect-call` diagnostic;
+- local stack slots containing function pointers, including immediate stores
+  and branchy assignments. Frame-relative loads are resolved from every
+  modeled store to the same slot, so `void (*fn)(void) = handler; fn()` works
+  even when the compiler materializes the value through a stack slot;
 - Rust trait-object method slots, using validated vtable-shaped read-only
   tables referenced by pointer constants in the caller/callee neighborhood.
   These produce low-confidence candidate call or tail-call edges and a
@@ -256,11 +272,11 @@ report `branch-table` with an optional base and index.
 Caller-argument propagation accepts only a unique executable target across the
 known callers and marks the resulting call as indirect/medium confidence. If
 any known caller cannot be evaluated, the call stays unresolved.
-A target that depends on a heap/stack object outside the bounded vtable
-candidate analysis, or on disagreeing callers, stays `unresolved` with an
-`unresolved-indirect-call` diagnostic rather than being guessed. The CFG JSON
-still records the raw instruction, call site and indirect target expression for
-each of them.
+A target that depends on a heap object outside the bounded vtable/field
+analysis, on an unresolved function return, or on disagreeing callers stays
+`unresolved` with an `unresolved-indirect-call` diagnostic rather than being
+guessed. The CFG JSON still records the raw instruction, call site and indirect
+target expression for each of them.
 
 ## JSON document
 
