@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use elf2tdg_schema::{
-    Addr, AwaitTarget, BlockId, ContextId, ContextKind, CostRange, Diagnostic, Edge, FunctionId,
-    FunctionKind, ImageInfo, JoinTarget, Language, SourceLoc, SpawnTarget, Tdg,
+    Addr, AwaitTarget, BlockId, ContextId, ContextKind, CostRange, Diagnostic, Edge, Function,
+    FunctionId, FunctionKind, ImageInfo, JoinTarget, Language, SourceLoc, SpawnTarget, Tdg,
 };
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
@@ -22,7 +22,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.2";
+pub const CFG_SCHEMA_VERSION: &str = "1.3";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -370,6 +370,28 @@ pub struct CfgFunction {
 pub struct ProgramCfg {
     /// Functions sorted by address.
     pub functions: Vec<CfgFunction>,
+}
+
+impl CfgFunction {
+    /// Builds an empty CFG record from a TDG function that has no machine code
+    /// in this image, such as an external import or a logical task entry.
+    #[must_use]
+    pub fn from_tdg_function(function: &Function) -> Self {
+        Self {
+            id: function.id.clone(),
+            primary_name: function.primary_name.clone(),
+            demangled_name: function.demangled_name.clone(),
+            symbols: function.symbols.clone(),
+            language: function.language,
+            kind: function.kind,
+            address: function.address.get(),
+            size: function.size,
+            section: function.section.clone().unwrap_or_default(),
+            source: function.source.clone(),
+            inline_frames: Vec::new(),
+            cfg: FunctionCfg::default(),
+        }
+    }
 }
 
 impl ProgramCfg {
@@ -1005,10 +1027,18 @@ struct CfgFunctionView {
     source: Option<SourceLoc>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     inline_frames: Vec<CfgInlineView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    no_code: Option<CfgNoCodeView>,
     entry: Option<BlockId>,
     blocks: Vec<CfgBlockView>,
     edges: Vec<CfgEdgeView>,
     recovered_calls: Vec<CfgCallView>,
+}
+
+#[derive(Serialize)]
+struct CfgNoCodeView {
+    reason: &'static str,
+    message: &'static str,
 }
 
 #[derive(Serialize)]
@@ -1151,6 +1181,42 @@ pub fn render_json_selected(
     serde_json::to_string_pretty(&document).map_err(|error| error.to_string())
 }
 
+fn no_code_view(function: &CfgFunction) -> Option<CfgNoCodeView> {
+    if !function.cfg.blocks_by_address.is_empty() {
+        return None;
+    }
+    let (reason, message) = match function.kind {
+        FunctionKind::External => (
+            "external",
+            "declared external symbol; no machine code in this image",
+        ),
+        FunctionKind::TaskEntry if function.size == 0 => (
+            "logical",
+            "logical task entry; no standalone machine code at the spawn site",
+        ),
+        _ => (
+            "unavailable",
+            "no basic blocks were recovered for this function",
+        ),
+    };
+    Some(CfgNoCodeView { reason, message })
+}
+
+fn no_code_label(function: &CfgFunction) -> Option<String> {
+    let view = no_code_view(function)?;
+    let name = normalize_crate_hashes(&function.primary_name);
+    Some(format!(
+        "{}\n{}\n{}",
+        match view.reason {
+            "external" => "external function",
+            "logical" => "logical task entry",
+            _ => "no CFG blocks",
+        },
+        shorten(&name, 64),
+        view.message
+    ))
+}
+
 fn function_view(
     program: &ProgramCfg,
     function: &CfgFunction,
@@ -1224,6 +1290,7 @@ fn function_view(
         section: function.section.clone(),
         source: function.source.clone(),
         inline_frames,
+        no_code: no_code_view(function),
         entry: cfg
             .entry
             .and_then(|node| cfg.graph.node_weight(node))
@@ -1454,6 +1521,13 @@ pub fn render_dot_selected(
             dot_escape(&shorten(&name, 64)),
             function.address
         );
+        if let Some(label) = no_code_label(function) {
+            let _ = writeln!(
+                out,
+                "    \"nocode_{function_index}\" [label=\"{}\", shape=note, style=\"dashed,filled\", fillcolor=\"#f4f6f7\", color=\"#999999\"];",
+                dot_escape(&label)
+            );
+        }
         for node in cfg.blocks_by_address.values() {
             let block = &cfg.graph[*node];
             let _ = writeln!(
@@ -1597,6 +1671,13 @@ pub fn render_mermaid_selected(
             function.address
         );
         let _ = writeln!(out, "    direction LR");
+        if let Some(label) = no_code_label(function) {
+            let _ = writeln!(
+                out,
+                "    nc{function_index}[\"{}\"]",
+                mermaid_escape(&label)
+            );
+        }
         for node in cfg.blocks_by_address.values() {
             let block = &cfg.graph[*node];
             let id = format!("b{function_index}_{}", block.address);
@@ -1761,7 +1842,8 @@ fn mermaid_escape(value: &str) -> String {
 mod tests {
     use super::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
-        CfgTerminator, FunctionCfg, ProgramCfg, riscv_trap_targets,
+        CfgTerminator, FunctionCfg, ProgramCfg, function_view, render_dot_selected,
+        render_mermaid_selected, riscv_trap_targets,
     };
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
     use elf2tdg_schema::{FunctionId, FunctionKind, Language};
@@ -1813,6 +1895,56 @@ mod tests {
             cycles: None,
             terminator,
         }
+    }
+
+    fn no_code_function(kind: FunctionKind, name: &str, address: u64) -> CfgFunction {
+        CfgFunction {
+            id: FunctionId::new(format!("fn:0x{address:x}")),
+            primary_name: name.to_owned(),
+            demangled_name: Some(name.to_owned()),
+            symbols: vec![name.to_owned()],
+            language: Language::Rust,
+            kind,
+            address,
+            size: 0,
+            section: String::new(),
+            source: None,
+            inline_frames: Vec::new(),
+            cfg: FunctionCfg::default(),
+        }
+    }
+
+    #[test]
+    fn renders_external_and_logical_functions_without_code() {
+        let external = no_code_function(FunctionKind::External, "malloc", 0x2000);
+        let logical = no_code_function(FunctionKind::TaskEntry, "app::sensor_task", 0x3000);
+        let program = ProgramCfg::new(vec![external, logical]);
+
+        let external_view =
+            serde_json::to_value(function_view(&program, &program.functions[0], false))
+                .expect("external view");
+        assert_eq!(external_view["no_code"]["reason"], "external");
+        assert_eq!(external_view["blocks"].as_array().map(Vec::len), Some(0));
+        let logical_view =
+            serde_json::to_value(function_view(&program, &program.functions[1], false))
+                .expect("logical view");
+        assert_eq!(logical_view["no_code"]["reason"], "logical");
+        assert_eq!(logical_view["blocks"].as_array().map(Vec::len), Some(0));
+
+        assert_eq!(
+            program
+                .select(Some("app::sensor_task"))
+                .expect("logical selector")
+                .len(),
+            1
+        );
+        let selected: Vec<&CfgFunction> = program.functions.iter().collect();
+        let dot = render_dot_selected(&program, &selected, false);
+        assert!(dot.contains("external function"));
+        assert!(dot.contains("logical task entry"));
+        let mermaid = render_mermaid_selected(&program, &selected, false);
+        assert!(mermaid.contains("external function"));
+        assert!(mermaid.contains("logical task entry"));
     }
 
     fn fixture() -> FunctionCfg {

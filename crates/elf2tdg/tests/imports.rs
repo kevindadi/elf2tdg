@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
+use elf2tdg::cfg;
 use elf2tdg::loader;
 use elf2tdg_schema::{Edge, FunctionKind};
 
@@ -66,7 +67,9 @@ fn resolves_got_imports_as_external_functions() {
         "free should have a GLOB_DAT slot"
     );
 
-    let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let tdg = &analysis.tdg;
     tdg.ensure_valid().expect("TDG must validate");
     let main = tdg
         .functions
@@ -102,6 +105,29 @@ fn resolves_got_imports_as_external_functions() {
         }),
         "GOT import calls in main must be resolved"
     );
+
+    for import in ["malloc", "realloc", "free"] {
+        let selected = analysis
+            .cfg
+            .select(Some(import))
+            .unwrap_or_else(|error| panic!("{import}: {error}"));
+        assert_eq!(selected.len(), 1, "{import}");
+        assert_eq!(selected[0].kind, FunctionKind::External);
+        assert!(selected[0].cfg.blocks_by_address.is_empty());
+        let json = cfg::render_json_selected(&analysis.cfg, tdg, &selected, false)
+            .expect("external CFG JSON");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid CFG JSON");
+        assert_eq!(value["functions"][0]["no_code"]["reason"], "external");
+        assert_eq!(
+            value["functions"][0]["blocks"].as_array().map(Vec::len),
+            Some(0)
+        );
+        let dot = cfg::render_dot_selected(&analysis.cfg, &selected, false);
+        assert!(dot.contains("external function"));
+        assert!(dot.contains("no machine code"));
+        let mermaid = cfg::render_mermaid_selected(&analysis.cfg, &selected, false);
+        assert!(mermaid.contains("external function"));
+    }
 
     let _ = std::fs::remove_dir_all(binary.parent().expect("fixture directory"));
 }

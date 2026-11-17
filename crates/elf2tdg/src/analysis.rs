@@ -1784,7 +1784,7 @@ impl<'a> Analyzer<'a> {
 
     #[allow(clippy::too_many_lines)]
     fn build_tdg(mut self) -> Result<AnalysisOutput> {
-        let program_cfg = self.build_program_cfg();
+        let mut program_cfg = self.build_program_cfg();
         let isr_vectors = std::mem::take(&mut self.isr_vectors);
         let startup_address = self.startup_address;
         let Some(startup_address) = startup_address else {
@@ -1976,6 +1976,16 @@ impl<'a> Analyzer<'a> {
             &self.decoded_by_function,
             self.image,
         );
+        for logical in &logical_functions {
+            if program_cfg.function(&logical.id).is_none() {
+                program_cfg
+                    .functions
+                    .push(cfg::CfgFunction::from_tdg_function(logical));
+            }
+        }
+        program_cfg.functions.sort_by(|left, right| {
+            (left.address, left.id.as_str()).cmp(&(right.address, right.id.as_str()))
+        });
         functions.extend(logical_functions);
         functions.sort_by(|left, right| {
             (left.address, left.id.as_str()).cmp(&(right.address, right.id.as_str()))
@@ -2698,6 +2708,58 @@ mod tests {
             })
             .expect("pthread spawn edge");
         assert_eq!(spawn.as_str(), "pthread");
+    }
+
+    #[test]
+    fn exposes_logical_embassy_task_in_program_cfg() {
+        let spawn_name = "<embassy_executor::spawner::Spawner>::spawn::<app::task>";
+        let image = image_with_code(
+            vec![
+                0xe8, 0x0b, 0x00, 0x00, 0x00, // call 0x1010
+                0xc3, // ret
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+                0xc3, // ret at 0x1010
+            ],
+            vec![("main", 0x1000, 6), (spawn_name, 0x1010, 1)],
+        );
+        let analysis =
+            analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        let logical = analysis
+            .tdg
+            .functions
+            .iter()
+            .find(|function| {
+                function.kind == FunctionKind::TaskEntry
+                    && function
+                        .ext
+                        .get("elf2tdg.logical_task")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+            })
+            .expect("logical task entry");
+        let cfg_function = analysis
+            .cfg
+            .function(&logical.id)
+            .expect("logical CFG function");
+        assert!(cfg_function.cfg.blocks_by_address.is_empty());
+        assert_eq!(cfg_function.kind, FunctionKind::TaskEntry);
+
+        let selected = analysis
+            .cfg
+            .select_with_tdg(&analysis.tdg, Some("app::task"))
+            .expect("logical selector");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, logical.id);
+
+        let json = crate::cfg::render_json(&analysis.cfg, &analysis.tdg, Some("app::task"), false)
+            .expect("logical CFG JSON");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(value["functions"][0]["kind"], "task-entry");
+        assert_eq!(value["functions"][0]["no_code"]["reason"], "logical");
+        assert_eq!(
+            value["functions"][0]["blocks"].as_array().map(Vec::len),
+            Some(0)
+        );
     }
 
     #[test]
