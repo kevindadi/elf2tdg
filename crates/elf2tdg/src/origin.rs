@@ -15,6 +15,7 @@ use crate::arch::{
     pc_register, pointer_size,
 };
 use crate::loader::Image;
+use std::collections::BTreeSet;
 
 /// Resolves the function pointer passed in argument `arg_index` at `site`.
 ///
@@ -171,6 +172,92 @@ pub fn resolve_indirect_target(
     }
     let canonical = image.canonical_address(value);
     image.is_executable(canonical).then_some(canonical)
+}
+
+/// Maximum number of distinct field-store values considered for a bounded
+/// multi-target indirect call.
+const MAX_FIELD_STORE_CANDIDATES: usize = 32;
+
+/// Returns the field displacement loaded by an indirect call target.
+///
+/// `blx r1` after `ldr r1, [r0, #12]` has an unresolved base register, but the
+/// field offset is still statically known. The caller can then look for stores
+/// to the same field offset elsewhere in the image.
+#[must_use]
+pub fn indirect_field_load(
+    decoded: &[DecodedInsn],
+    site: u64,
+    target: IndirectTarget,
+) -> Option<i64> {
+    let before = decoded.partition_point(|instruction| instruction.address < site);
+    match target {
+        IndirectTarget::Register(register) => {
+            field_offset_from_register(decoded, before, register, 0)
+        }
+        IndirectTarget::RegisterMemory { disp, .. } => Some(disp),
+        IndirectTarget::RegisterOffset { .. }
+        | IndirectTarget::Memory(_)
+        | IndirectTarget::IndexedMemory { .. }
+        | IndirectTarget::TableBranch { .. }
+        | IndirectTarget::TableLoad { .. }
+        | IndirectTarget::BranchTable { .. } => None,
+    }
+}
+
+fn field_offset_from_register(
+    decoded: &[DecodedInsn],
+    before: usize,
+    register: capstone::RegId,
+    depth: usize,
+) -> Option<i64> {
+    if depth > 16 {
+        return None;
+    }
+    let (index, effect) = (0..before).rev().find_map(|index| {
+        let effect = decoded[index].value?;
+        (effect.dest == register).then_some((index, effect))
+    })?;
+    match effect.source {
+        ValueSource::LoadFromRegister { disp, .. } => Some(disp),
+        ValueSource::Copy(source) => field_offset_from_register(decoded, index, source, depth + 1),
+        _ => None,
+    }
+}
+
+/// Collects executable values stored to `[base + disp]` anywhere in the
+/// decoded image.
+///
+/// This is deliberately a bounded, object-insensitive candidate search. The
+/// caller must additionally restrict the result to plausible functions before
+/// turning it into multi-target CFG edges.
+#[must_use]
+pub fn resolve_field_store_candidates(
+    image: &Image,
+    decoded_functions: &[&[DecodedInsn]],
+    disp: i64,
+) -> Vec<u64> {
+    let mut candidates = BTreeSet::new();
+    for decoded in decoded_functions {
+        for (index, instruction) in decoded.iter().enumerate() {
+            let Some(write) = instruction.memory_write else {
+                continue;
+            };
+            if write.disp != disp {
+                continue;
+            }
+            let Some(value) = resolve_register(image, decoded, index, write.source, 0) else {
+                continue;
+            };
+            let canonical = image.canonical_address(value);
+            if image.is_executable(canonical) {
+                candidates.insert(canonical);
+                if candidates.len() > MAX_FIELD_STORE_CANDIDATES {
+                    return Vec::new();
+                }
+            }
+        }
+    }
+    candidates.into_iter().collect()
 }
 
 fn memory_pointer_value(image: &Image, address: u64) -> Option<u64> {
@@ -1083,8 +1170,9 @@ fn pc_value(arch: crate::loader::ArchKind, address: u64, size: u8) -> Option<u64
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_argument_spec, forwarded_argument_index, indirect_argument_spec, jump_table_bound,
-        read_table_entries, resolve_argument_pointer, resolve_indirect_target,
+        evaluate_argument_spec, forwarded_argument_index, indirect_argument_spec,
+        indirect_field_load, jump_table_bound, read_table_entries, resolve_argument_pointer,
+        resolve_field_store_candidates, resolve_indirect_target,
     };
     use crate::arch::Decoder;
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
@@ -1137,6 +1225,17 @@ mod tests {
             resolve_argument_pointer(&image, &decoded, 0x1007, 2),
             Some(0x1010)
         );
+    }
+
+    #[test]
+    fn models_thumb_register_field_load() {
+        // ldr r1, [r0, #12]; blx r1
+        let text = [0xc1, 0x68, 0x88, 0x47];
+        let engine = Decoder::new(ArchKind::Thumb).unwrap();
+        let load = engine.decode_one(&text[..2], 0x1000).unwrap().expect("ldr");
+        let call = engine.decode_one(&text[2..], 0x1002).unwrap().expect("blx");
+        let target = call.indirect.expect("register target");
+        assert_eq!(indirect_field_load(&[load, call], 0x1002, target), Some(12));
     }
 
     #[test]
@@ -1523,6 +1622,51 @@ mod tests {
         assert_eq!(
             resolve_indirect_target(&image, &[lea, load, call], 0x100a, target),
             Some(0x2000)
+        );
+    }
+
+    #[test]
+    fn recovers_field_offset_from_register_load() {
+        // mov rbp, [rdi + 0x0c]; call rbp
+        let text = [0x48, 0x8b, 0x6f, 0x0c, 0xff, 0xd5];
+        let engine = Decoder::new(ArchKind::X86_64).unwrap();
+        let load = engine
+            .decode_one(&text[..4], 0x1000)
+            .unwrap()
+            .expect("load");
+        let call = engine
+            .decode_one(&text[4..], 0x1004)
+            .unwrap()
+            .expect("call");
+        let target = call.indirect.expect("register target");
+        assert_eq!(indirect_field_load(&[load, call], 0x1004, target), Some(12));
+    }
+
+    #[test]
+    fn collects_executable_values_stored_to_a_field_offset() {
+        // mov eax, 0x1000; mov [rbx + 0x0c], rax;
+        // mov eax, 0x1010; mov [rbx + 0x0c], rax
+        let text = [
+            0xb8, 0x00, 0x10, 0x00, 0x00, 0x48, 0x89, 0x43, 0x0c, 0xb8, 0x10, 0x10, 0x00, 0x00,
+            0x48, 0x89, 0x43, 0x0c,
+        ];
+        let image = image(ArchKind::X86_64, 0x1000, text.to_vec());
+        let engine = Decoder::new(ArchKind::X86_64).unwrap();
+        let decode = |range: std::ops::Range<usize>, address: u64| {
+            engine
+                .decode_one(&text[range], address)
+                .unwrap()
+                .expect("instruction")
+        };
+        let decoded = vec![
+            decode(0..5, 0x1000),
+            decode(5..9, 0x1005),
+            decode(9..14, 0x1009),
+            decode(14..18, 0x100e),
+        ];
+        assert_eq!(
+            resolve_field_store_candidates(&image, &[&decoded], 12),
+            vec![0x1000, 0x1010]
         );
     }
 

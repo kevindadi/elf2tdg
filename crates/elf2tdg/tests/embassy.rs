@@ -6,9 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::loader::{self, ArchKind};
-use elf2tdg_schema::{ContextKind, Edge, FunctionKind, SpawnTarget};
+use elf2tdg_schema::{Confidence, ContextKind, Edge, FunctionKind, SpawnTarget};
 
 fn example_elf() -> Option<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -26,7 +26,9 @@ fn recovers_embassy_task_contexts_and_spawns() {
     assert_eq!(image.arch, ArchKind::Thumb);
     assert!(!image.vector_table.is_empty(), "Cortex-M vector table");
 
-    let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let tdg = &analysis.tdg;
     tdg.ensure_valid().expect("TDG must validate");
 
     assert!(
@@ -136,4 +138,66 @@ fn recovers_embassy_task_contexts_and_spawns() {
         .collect();
     assert_eq!(isr_contexts.len(), 1, "only HardFault is a real vector");
     assert_eq!(isr_contexts[0].name, "HardFault");
+
+    assert!(
+        !tdg.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unresolved-indirect-call"),
+        "the executor task poll dispatch should have bounded targets"
+    );
+    let candidate_diagnostic = tdg
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "resolved-indirect-call-candidates")
+        .expect("multi-target resolution diagnostic");
+    let site = candidate_diagnostic.site.expect("candidate call site");
+    let candidate_edges: Vec<_> = tdg
+        .edges
+        .iter()
+        .filter_map(|edge| match edge {
+            Edge::Call {
+                site: edge_site,
+                direct: false,
+                confidence: Confidence::Low,
+                callee,
+                ..
+            } if *edge_site == site => Some(callee),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(candidate_edges.len(), 4, "three task polls + poll_exited");
+    for callee in &candidate_edges {
+        let target = tdg
+            .functions
+            .iter()
+            .find(|function| &function.id == *callee)
+            .expect("candidate target function");
+        assert!(
+            target.primary_name.contains("TaskStorage<")
+                || target.primary_name.ends_with("poll_exited"),
+            "unexpected candidate target: {}",
+            target.primary_name
+        );
+    }
+
+    let executor = analysis
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name.contains("Executor>::run"))
+        .expect("Embassy executor function");
+    let cfg_candidates: Vec<_> = executor
+        .cfg
+        .blocks_by_address
+        .values()
+        .flat_map(|node| executor.cfg.graph[*node].calls.iter())
+        .filter(|call| call.site == site.get())
+        .collect();
+    assert_eq!(cfg_candidates.len(), 4, "CFG multi-target call records");
+    assert!(cfg_candidates.iter().all(|call| {
+        !call.unresolved
+            && call.heuristic
+            && call.target_function.is_some()
+            && call.target.is_some()
+    }));
 }

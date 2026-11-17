@@ -7,6 +7,7 @@ ARTIFACTS := artifacts
 ELF_ANALYSIS := $(ARTIFACTS)/rust-concurrency-analysis.elf
 ANALYSIS_BIN := target/$(TARGET)/analysis/rust-concurrency
 MAIN_ANALYSIS := rust_concurrency::start_tasks
+EXECUTOR_ANALYSIS := Executor>::run
 TIMING := --cpu cortex-m4 --freq 168MHz
 TOOL := CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu $(CARGO) run --quiet $(CARGO_FLAGS) --manifest-path $(ROOT)/Cargo.toml -p elf2tdg --
 
@@ -47,6 +48,17 @@ analysis: $(ELF_ANALYSIS)
 	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view cfg --format mermaid \
 		--function $(MAIN_ANALYSIS) \
 		--output $(ARTIFACTS)/cfg-analysis-main.mmd
+	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view cfg --format json \
+		--function '$(EXECUTOR_ANALYSIS)' \
+		--output $(ARTIFACTS)/cfg-analysis-executor.json
+	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view cfg --format dot \
+		--function '$(EXECUTOR_ANALYSIS)' \
+		--output $(ARTIFACTS)/cfg-analysis-executor.dot
+	dot -Tsvg $(ARTIFACTS)/cfg-analysis-executor.dot \
+		-o $(ARTIFACTS)/cfg-analysis-executor.svg
+	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view cfg --format mermaid \
+		--function '$(EXECUTOR_ANALYSIS)' \
+		--output $(ARTIFACTS)/cfg-analysis-executor.mmd
 	$(TOOL) $(ELF_ANALYSIS) --view elf --elf-max-insns 128 \
 		--output $(ARTIFACTS)/elf-layout-analysis.mmd
 

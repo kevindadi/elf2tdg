@@ -57,6 +57,9 @@ The analyzer is given an explicit Cortex-M4 timing model at 168 MHz.
 | [`artifacts/cfg-analysis-main.json`](artifacts/cfg-analysis-main.json) | lossless CFG JSON for `rust_concurrency::start_tasks`, including `inline_frames` |
 | [`artifacts/cfg-analysis-main.svg`](artifacts/cfg-analysis-main.svg) | function CFG diagram for the analysis build |
 | [`artifacts/cfg-analysis-main.mmd`](artifacts/cfg-analysis-main.mmd) | Mermaid source for the analysis CFG |
+| [`artifacts/cfg-analysis-executor.json`](artifacts/cfg-analysis-executor.json) | executor CFG with the four candidate poll-dispatch calls |
+| [`artifacts/cfg-analysis-executor.svg`](artifacts/cfg-analysis-executor.svg) | rendered executor CFG |
+| [`artifacts/cfg-analysis-executor.mmd`](artifacts/cfg-analysis-executor.mmd) | Mermaid source for the executor CFG |
 | [`artifacts/elf-layout-analysis.mmd`](artifacts/elf-layout-analysis.mmd) | loader-backed ELF layout for the analysis build |
 
 A browser walkthrough with the diagram and legend is
@@ -93,9 +96,22 @@ with a second weak name such as `PendSV`). The analyzer checks all symbol
 aliases at a vector address and skips these shared default stubs, so the example
 has one real ISR context instead of hundreds of false ones.
 
-The remaining diagnostic is an indirect control transfer inside the executor's
-function-pointer dispatch (`blx r1`). It is a dynamic target in the executor,
-not an unrecognized application API call.
+The executor's task-poll dispatch (`blx r1` at `0x80005da`) is no longer left
+unresolved. The analyzer recognizes the load from task-header field `+12`,
+collects the executable values stored to that field across the image, and emits
+four bounded low-confidence call targets:
+
+- `app_main` `TaskStorage::poll`
+- `sensor_task` `TaskStorage::poll`
+- `monitor_task` `TaskStorage::poll`
+- `embassy_executor::raw::poll_exited`
+
+The TDG keeps one informational `resolved-indirect-call-candidates` diagnostic
+for this site and no `unresolved-indirect-call` warning. The four call edges
+share the same site; edge IDs include the target address. See
+[`cfg-analysis-executor.json`](artifacts/cfg-analysis-executor.json) /
+[`cfg-analysis-executor.svg`](artifacts/cfg-analysis-executor.svg) for the CFG
+view.
 
 ## Scope
 

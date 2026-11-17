@@ -1368,10 +1368,13 @@ fn arm_value_effect(
         .or_else(|| mnemonic.strip_suffix(".n"))
         .unwrap_or(mnemonic);
     let writes_move = mnemonic.starts_with("mov") && !mnemonic.starts_with("movt");
-    let writes_load = mnemonic.starts_with("ldr") && !mnemonic.starts_with("ldrd");
+    let writes_top_half = mnemonic == "movt";
+    // Only model pointer-sized LDR; byte/halfword loads do not produce a
+    // pointer value and must not feed function-pointer resolution.
+    let writes_load = mnemonic == "ldr";
     let is_address = mnemonic.starts_with("adr");
     let is_addition = mnemonic.starts_with("add");
-    if !(writes_move || writes_load || is_address || is_addition) {
+    if !(writes_move || writes_top_half || writes_load || is_address || is_addition) {
         return None;
     }
     let ArchDetail::ArmDetail(arm) = detail.arch_detail() else {
@@ -1401,6 +1404,22 @@ fn arm_value_effect(
         });
     }
 
+    if writes_top_half {
+        let immediate = match operands.get(1)?.op_type {
+            arm::ArmOperandType::Imm(value)
+            | arm::ArmOperandType::Cimm(value)
+            | arm::ArmOperandType::Pimm(value) => u64::try_from(value).ok()?,
+            _ => return None,
+        };
+        return Some(ValueEffect {
+            dest,
+            source: ValueSource::OrImmediate {
+                base: dest,
+                imm: immediate << 16,
+            },
+        });
+    }
+
     let source = match operands.get(1)?.op_type {
         arm::ArmOperandType::Reg(register) => ValueSource::Copy(register),
         arm::ArmOperandType::Imm(value)
@@ -1418,16 +1437,25 @@ fn arm_value_effect(
                 return None;
             }
             let pc = RegId(arm::ArmReg::ARM_REG_PC as u16);
-            if memory.base() != pc {
-                return None;
-            }
-            let pc_value = if thumb {
-                (address + 4) & !3
+            if memory.base() == pc {
+                let pc_value = if thumb {
+                    (address + 4) & !3
+                } else {
+                    (address + 8) & !3
+                };
+                let literal = pc_value.wrapping_add_signed(i64::from(memory.disp()));
+                ValueSource::LoadAddress(literal)
             } else {
-                (address + 8) & !3
-            };
-            let literal = pc_value.wrapping_add_signed(i64::from(memory.disp()));
-            ValueSource::LoadAddress(literal)
+                // Simple register-based field load. Indexed/writeback forms
+                // need memory-SSA and remain unmodeled.
+                if memory.base().0 == 0 || memory.index().0 != 0 {
+                    return None;
+                }
+                ValueSource::LoadFromRegister {
+                    base: memory.base(),
+                    disp: i64::from(memory.disp()),
+                }
+            }
         }
         _ => return None,
     };

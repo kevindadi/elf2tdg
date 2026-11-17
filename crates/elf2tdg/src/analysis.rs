@@ -14,6 +14,7 @@ use crate::cfg;
 use crate::error::{Error, Result};
 use crate::loader::{ByteOrder, ElfKind, Image, VectorEntry};
 use crate::origin;
+use crate::rules;
 use crate::timing::{CORE_DOMAIN, TimingModel};
 
 const DEFAULT_MAX_FUNCTIONS: usize = 20_000;
@@ -233,6 +234,7 @@ impl<'a> Analyzer<'a> {
         }
 
         self.resolve_remaining_functions()?;
+        self.resolve_embassy_executor_calls();
         self.resolve_calls();
         self.build_tdg()
     }
@@ -1403,6 +1405,141 @@ impl<'a> Analyzer<'a> {
     /// Only a unique statically executable target is accepted. This recovers
     /// common vtable/function-pointer dispatch patterns without guessing when
     /// callers disagree or the argument is dynamic.
+    /// Expands the Embassy executor's task-poll dispatch into bounded
+    /// multi-target call edges.
+    ///
+    /// `Executor::run` loads a poll function pointer from the task header and
+    /// calls it indirectly. The task pointer itself is dynamic, but the field
+    /// offset is fixed and the image contains stores of concrete poll entries
+    /// to that field. Collecting those values gives a conservative target set.
+    fn resolve_embassy_executor_calls(&mut self) -> bool {
+        let decoded_functions: Vec<&[DecodedInsn]> = self
+            .decoded_by_function
+            .values()
+            .map(Vec::as_slice)
+            .collect();
+        let mut resolutions: Vec<(u64, u64, Vec<u64>, i64)> = Vec::new();
+        let mut seen_sites = BTreeSet::new();
+        for (&function_address, function) in &self.functions {
+            if !is_embassy_executor_function(&function.display) {
+                continue;
+            }
+            let Some(decoded) = self.decoded_by_function.get(&function_address) else {
+                continue;
+            };
+            let mut sites = BTreeSet::new();
+            for node in function.cfg.blocks_by_address.values() {
+                for call in &function.cfg.graph[*node].calls {
+                    if call.unresolved {
+                        sites.insert(call.site);
+                    }
+                }
+            }
+            for call in &function.cfg.recovered_calls {
+                if call.unresolved {
+                    sites.insert(call.site);
+                }
+            }
+            for site in sites {
+                if !seen_sites.insert((function_address, site)) {
+                    continue;
+                }
+                let Some(instruction) = decoded
+                    .iter()
+                    .find(|instruction| instruction.address == site && instruction.is_call)
+                else {
+                    continue;
+                };
+                let Some(target) = instruction.indirect else {
+                    continue;
+                };
+                let Some(disp) = origin::indirect_field_load(decoded, site, target) else {
+                    continue;
+                };
+                if !(0..=0x1000).contains(&disp) {
+                    continue;
+                }
+                let targets: BTreeSet<u64> =
+                    origin::resolve_field_store_candidates(self.image, &decoded_functions, disp)
+                        .into_iter()
+                        .filter_map(|target| self.resolve_function_address(target))
+                        .filter(|target| {
+                            self.functions
+                                .get(target)
+                                .is_some_and(|function| is_embassy_poll_target(&function.display))
+                        })
+                        .collect();
+                if (2..=16).contains(&targets.len()) {
+                    resolutions.push((function_address, site, targets.into_iter().collect(), disp));
+                }
+            }
+        }
+        self.apply_embassy_multi_target_calls(resolutions)
+    }
+
+    fn apply_embassy_multi_target_calls(
+        &mut self,
+        resolutions: Vec<(u64, u64, Vec<u64>, i64)>,
+    ) -> bool {
+        let mut changed = false;
+        for (caller, site, targets, disp) in resolutions {
+            let candidate_calls: Vec<cfg::CfgCallSite> = targets
+                .iter()
+                .map(|target| cfg::CfgCallSite {
+                    site,
+                    target: Some(*target),
+                    target_function: Some(function_id(*target)),
+                    direct: false,
+                    tail: false,
+                    conditional: false,
+                    heuristic: true,
+                    unresolved: false,
+                })
+                .collect();
+            let updated = self.functions.get_mut(&caller).is_some_and(|function| {
+                replace_unresolved_cfg_call(&mut function.cfg, site, candidate_calls)
+            });
+            if !updated {
+                continue;
+            }
+            for target in &targets {
+                self.calls.push(CallDraft {
+                    caller,
+                    site,
+                    target: *target,
+                    tail: false,
+                    conditional: false,
+                    heuristic: true,
+                    direct: false,
+                });
+            }
+            let caller_id = function_id(caller);
+            self.diagnostics.retain(|diagnostic| {
+                !(diagnostic.code == "unresolved-indirect-call"
+                    && diagnostic.function.as_ref() == Some(&caller_id)
+                    && diagnostic.site == Some(Addr::new(site)))
+            });
+            self.diagnostic_keys
+                .retain(|(code, function, diagnostic_site)| {
+                    !(code == "unresolved-indirect-call"
+                        && *function == Some(caller)
+                        && *diagnostic_site == Some(site))
+                });
+            self.diag(
+                Severity::Info,
+                "resolved-indirect-call-candidates",
+                format!(
+                    "indirect call at 0x{site:x} has {} candidate target(s) from stores to field +{disp}",
+                    targets.len()
+                ),
+                Some(caller),
+                Some(site),
+            );
+            changed = true;
+        }
+        changed
+    }
+
     fn resolve_forwarded_indirect_calls(&mut self) -> bool {
         let callers = self.callers_by_target();
         if callers.is_empty() {
@@ -2132,6 +2269,54 @@ impl<'a> Analyzer<'a> {
             details: BTreeMap::new(),
         });
     }
+}
+
+fn replace_unresolved_cfg_call(
+    function_cfg: &mut cfg::FunctionCfg,
+    site: u64,
+    calls: Vec<cfg::CfgCallSite>,
+) -> bool {
+    for node in function_cfg.blocks_by_address.values() {
+        let block = &mut function_cfg.graph[*node];
+        if !block
+            .calls
+            .iter()
+            .any(|call| call.site == site && call.unresolved)
+        {
+            continue;
+        }
+        block
+            .calls
+            .retain(|call| !(call.site == site && call.unresolved));
+        block.calls.extend(calls);
+        block.calls.sort_by_key(|call| (call.site, call.target));
+        return true;
+    }
+    if function_cfg
+        .recovered_calls
+        .iter()
+        .any(|call| call.site == site && call.unresolved)
+    {
+        function_cfg
+            .recovered_calls
+            .retain(|call| !(call.site == site && call.unresolved));
+        function_cfg.recovered_calls.extend(calls);
+        function_cfg
+            .recovered_calls
+            .sort_by_key(|call| (call.site, call.target));
+        return true;
+    }
+    false
+}
+
+fn is_embassy_executor_function(name: &str) -> bool {
+    let name = rules::normalize_crate_hashes(name);
+    name.contains("embassy_executor::") && name.contains("Executor")
+}
+
+fn is_embassy_poll_target(name: &str) -> bool {
+    let name = rules::normalize_crate_hashes(name);
+    (name.contains("TaskStorage<") && name.ends_with("::poll")) || name.ends_with("poll_exited")
 }
 
 fn update_cfg_call_site(function_cfg: &mut cfg::FunctionCfg, call: cfg::CfgCallSite) -> bool {

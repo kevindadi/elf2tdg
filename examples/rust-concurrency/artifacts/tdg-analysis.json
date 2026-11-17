@@ -4726,6 +4726,50 @@
     },
     {
       "kind": "call",
+      "id": "e:call:0x80005da:0x800082a",
+      "caller": "fn:0x80004aa",
+      "callee": "fn:0x800082a",
+      "site": "0x80005da",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "low"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x80005da:0x800085c",
+      "caller": "fn:0x80004aa",
+      "callee": "fn:0x800085c",
+      "site": "0x80005da",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "low"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x80005da:0x800089a",
+      "caller": "fn:0x80004aa",
+      "callee": "fn:0x800089a",
+      "site": "0x80005da",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "low"
+    },
+    {
+      "kind": "call",
+      "id": "e:call:0x80005da:0x80008d8",
+      "caller": "fn:0x80004aa",
+      "callee": "fn:0x80008d8",
+      "site": "0x80005da",
+      "direct": false,
+      "tail": false,
+      "inlined": false,
+      "confidence": "low"
+    },
+    {
+      "kind": "call",
       "id": "e:call:0x8000618:0x8000472",
       "caller": "fn:0x80005ea",
       "callee": "fn:0x8000472",
@@ -4926,9 +4970,9 @@
   ],
   "diagnostics": [
     {
-      "code": "unresolved-indirect-call",
-      "severity": "warning",
-      "message": "indirect call at 0x80005da (blx r1) has no statically known target",
+      "code": "resolved-indirect-call-candidates",
+      "severity": "info",
+      "message": "indirect call at 0x80005da has 4 candidate target(s) from stores to field +12",
       "function": "fn:0x80004aa",
       "site": "0x80005da"
     }
