@@ -557,8 +557,9 @@ impl ProgramCfg {
     #[must_use]
     pub fn function_at(&self, address: u64) -> Option<&CfgFunction> {
         self.functions
-            .iter()
-            .find(|function| function.address == address)
+            .binary_search_by_key(&address, |function| function.address)
+            .ok()
+            .map(|index| &self.functions[index])
     }
 
     /// Selects functions by exact name, symbol, or `0x` address. Without a
@@ -727,14 +728,38 @@ impl ProgramCfg {
         Ok(self.selected_from_reachable(tdg, &reachable, selected_ids))
     }
 
+    /// Resolves an address to a non-special function suitable for a general
+    /// symbol/DWARF root. Default-handler stubs, PLT stubs and external
+    /// imports are not code bodies in this image and are excluded.
+    fn function_root_at<'a>(
+        &'a self,
+        default_handlers: &BTreeSet<u64>,
+        address: u64,
+    ) -> Option<&'a CfgFunction> {
+        if default_handlers.contains(&address) {
+            return None;
+        }
+        let function = self.function_covering(address)?;
+        (!is_default_handler(function)
+            && !matches!(function.kind, FunctionKind::Plt | FunctionKind::External))
+        .then_some(function)
+    }
+
     /// Collects execution roots: main/startup/task contexts, Cortex-M vector
     /// handlers, ARM/AArch64 exception vectors, RISC-V trap vectors, callbacks,
-    /// global pointer roots, init/fini entry points and the ELF entry point.
+    /// global pointer roots, symbol/DWARF function entries, init/fini entry
+    /// points and the ELF entry point.
     ///
     /// Default handler stubs repeated across unused vectors are excluded.
     #[must_use]
     pub fn system_roots(&self, tdg: &Tdg, image: &Image) -> Vec<FunctionId> {
         let mut roots = BTreeSet::new();
+        let default_handlers: BTreeSet<u64> = image
+            .symbols
+            .iter()
+            .filter(|symbol| is_default_handler_name(&symbol.name))
+            .map(|symbol| symbol.canonical_address)
+            .collect();
         for context in &tdg.contexts {
             let function = self.cfg_function_for_tdg_id(tdg, &context.entry);
             let default = function.is_some_and(is_default_handler)
@@ -748,7 +773,7 @@ impl ProgramCfg {
             }
         }
         for target in architecture_root_addresses(image) {
-            if is_default_handler_address(image, target) {
+            if default_handlers.contains(&target) {
                 continue;
             }
             if let Some(function) = self.function_covering(target)
@@ -768,6 +793,25 @@ impl ProgramCfg {
                 && !matches!(function.kind, FunctionKind::Plt | FunctionKind::External)
             {
                 roots.insert(function.id.clone());
+            }
+        }
+        for symbol in &image.symbols {
+            if let Some(function) =
+                self.function_root_at(&default_handlers, symbol.canonical_address)
+            {
+                roots.insert(function.id.clone());
+            }
+        }
+        if let Some(dwarf) = &image.dwarf {
+            for function in &dwarf.functions {
+                let Some((low, _)) = function.primary_range() else {
+                    continue;
+                };
+                if let Some(function) =
+                    self.function_root_at(&default_handlers, image.canonical_address(low))
+                {
+                    roots.insert(function.id.clone());
+                }
             }
         }
         if let Some(function) = self.function_covering(image.canonical_address(image.entry)) {
@@ -1112,14 +1156,6 @@ fn is_default_handler(function: &CfgFunction) -> bool {
 fn is_default_handler_name(name: &str) -> bool {
     let normalized = normalize_crate_hashes(name).to_ascii_lowercase();
     normalized.contains("default_handler") || normalized.contains("defaulthandler")
-}
-
-fn is_default_handler_address(image: &Image, address: u64) -> bool {
-    image
-        .symbols
-        .iter()
-        .filter(|symbol| symbol.canonical_address == address)
-        .any(|symbol| is_default_handler_name(&symbol.name))
 }
 
 fn is_runtime_boundary(function: &CfgFunction) -> bool {
