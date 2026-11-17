@@ -10,7 +10,7 @@
 //! bounded type/variable view: aggregate members, pointer/subroutine/array
 //! facts, global addresses and frame-relative locals used by points-to.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gimli::{AttributeValue, Dwarf, EndianSlice, RunTimeEndian, constants};
 use object::{Object, ObjectSection};
@@ -24,6 +24,7 @@ const MAX_DWARF_TYPES: usize = 200_000;
 const MAX_DWARF_AGGREGATES: usize = 100_000;
 const MAX_DWARF_MEMBERS: usize = 1_000_000;
 const MAX_DWARF_VARIABLES: usize = 500_000;
+const MAX_DWARF_VTABLES: usize = 100_000;
 const MAX_TYPE_DEPTH: usize = 16;
 
 type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
@@ -44,6 +45,10 @@ pub struct DwarfInfo {
     pub variables: Vec<DwarfVariable>,
     /// Structure, class and union layouts.
     pub aggregates: Vec<DwarfAggregate>,
+    /// Aggregate layouts that represent a Rust trait-object fat pointer.
+    pub trait_object_layouts: Vec<DwarfTraitObjectLayout>,
+    /// Rust vtable objects described by global variables.
+    pub vtables: Vec<DwarfVtable>,
     /// Extraction stopped at a safety limit.
     pub truncated: bool,
     /// Prefix maximum of `high_pc`, parallel to `inlined_calls`.
@@ -187,6 +192,34 @@ impl DwarfInfo {
         self.aggregates.get(aggregate)?.members.get(member)
     }
 
+    /// Returns the trait-object fat-pointer layout for `aggregate_index`.
+    #[must_use]
+    pub fn trait_object_layout(&self, aggregate_index: usize) -> Option<&DwarfTraitObjectLayout> {
+        self.trait_object_layouts
+            .binary_search_by_key(&aggregate_index, |layout| layout.aggregate_index)
+            .ok()
+            .and_then(|index| self.trait_object_layouts.get(index))
+    }
+
+    /// Returns the DWARF vtable starting at `address`.
+    #[must_use]
+    pub fn vtable_at(&self, address: u64) -> Option<&DwarfVtable> {
+        let index = self
+            .vtables
+            .binary_search_by_key(&address, |vtable| vtable.address)
+            .ok()?;
+        self.vtables.get(index)
+    }
+
+    /// Returns a non-header vtable entry at `offset`.
+    #[must_use]
+    pub fn vtable_method_at(&self, offset: u64) -> Option<&DwarfVtableEntry> {
+        self.vtables
+            .iter()
+            .flat_map(|vtable| vtable.entries.iter())
+            .find(|entry| entry.offset == offset && !entry.header)
+    }
+
     /// Returns the frame-relative variable at `frame_offset` in the function
     /// starting at `function_low`.
     #[must_use]
@@ -217,6 +250,9 @@ impl DwarfInfo {
             .variables
             .partition_point(|variable| variable.address.is_some());
         self.function_pointer_fields.clear();
+        self.trait_object_layouts.clear();
+        self.vtables.clear();
+        let mut seen_vtables = BTreeSet::new();
         for (aggregate_index, aggregate) in self.aggregates.iter().enumerate() {
             for (member_index, member) in aggregate.members.iter().enumerate() {
                 if member.function_pointer {
@@ -225,7 +261,65 @@ impl DwarfInfo {
                         .or_insert((aggregate_index, member_index));
                 }
             }
+            if let Some(name) = aggregate.name.as_deref()
+                && name.contains("dyn ")
+                && let Some(vtable) = aggregate
+                    .members
+                    .iter()
+                    .find(|member| member.name.as_deref() == Some("vtable"))
+            {
+                let data = aggregate
+                    .members
+                    .iter()
+                    .find(|member| matches!(member.name.as_deref(), Some("pointer" | "data")));
+                self.trait_object_layouts.push(DwarfTraitObjectLayout {
+                    name: Some(name.to_owned()),
+                    aggregate_index,
+                    byte_size: aggregate.byte_size,
+                    data_offset: data.map_or(0, |member| member.offset),
+                    vtable_offset: vtable.offset,
+                    data_type_name: data.and_then(|member| member.type_name.clone()),
+                    vtable_type_name: vtable.type_name.clone(),
+                });
+            }
         }
+        self.trait_object_layouts
+            .sort_by_key(|layout| layout.aggregate_index);
+        for variable in &self.variables[..self.global_variables_end] {
+            let Some(address) = variable.address else {
+                continue;
+            };
+            let Some(aggregate) = variable
+                .aggregate_index
+                .and_then(|index| self.aggregates.get(index))
+            else {
+                continue;
+            };
+            if !is_vtable_aggregate(aggregate) || !seen_vtables.insert(address) {
+                continue;
+            }
+            if self.vtables.len() >= MAX_DWARF_VTABLES {
+                self.truncated = true;
+                break;
+            }
+            self.vtables.push(DwarfVtable {
+                address,
+                name: variable.name.clone(),
+                type_name: variable.type_name.clone(),
+                byte_size: variable.byte_size,
+                entries: aggregate
+                    .members
+                    .iter()
+                    .map(|member| DwarfVtableEntry {
+                        name: member.name.clone(),
+                        offset: member.offset,
+                        type_name: member.type_name.clone(),
+                        header: member.name.as_deref().is_some_and(is_vtable_header_name),
+                    })
+                    .collect(),
+            });
+        }
+        self.vtables.sort_by_key(|vtable| vtable.address);
     }
 
     fn build_inline_index(&mut self) {
@@ -336,6 +430,8 @@ pub struct DwarfVariable {
     pub aggregate_index: Option<usize>,
     /// Aggregate type index for the pointee of a pointer variable.
     pub pointee_aggregate_index: Option<usize>,
+    /// Aggregate element type index for an array variable.
+    pub element_aggregate_index: Option<usize>,
     /// The variable is a formal parameter rather than a local.
     pub is_parameter: bool,
 }
@@ -366,6 +462,59 @@ pub struct DwarfMember {
     pub function_pointer: bool,
     /// The member's type is an array of function pointers.
     pub function_pointer_array: bool,
+    /// Aggregate type index when the member itself is an aggregate.
+    pub aggregate_index: Option<usize>,
+    /// Aggregate element type index when the member is an array.
+    pub element_aggregate_index: Option<usize>,
+    /// Array element count when the member is an array.
+    pub array_count: Option<u64>,
+}
+
+/// A Rust trait-object fat-pointer layout recovered from DWARF.
+#[derive(Debug, Clone, Default)]
+pub struct DwarfTraitObjectLayout {
+    /// Type name, for example `&dyn Trait` or `Box<dyn Trait>`.
+    pub name: Option<String>,
+    /// Aggregate type index.
+    pub aggregate_index: usize,
+    /// Size of one fat pointer.
+    pub byte_size: Option<u64>,
+    /// Offset of the data pointer.
+    pub data_offset: u64,
+    /// Offset of the vtable pointer.
+    pub vtable_offset: u64,
+    /// Type name of the data member.
+    pub data_type_name: Option<String>,
+    /// Type name of the vtable member.
+    pub vtable_type_name: Option<String>,
+}
+
+/// A Rust vtable object described by a global DWARF variable.
+#[derive(Debug, Clone, Default)]
+pub struct DwarfVtable {
+    /// Vtable object address.
+    pub address: u64,
+    /// DWARF variable name.
+    pub name: Option<String>,
+    /// Resolved vtable structure type name.
+    pub type_name: Option<String>,
+    /// Vtable size in bytes.
+    pub byte_size: Option<u64>,
+    /// Header and method entries in offset order.
+    pub entries: Vec<DwarfVtableEntry>,
+}
+
+/// One vtable slot.
+#[derive(Debug, Clone, Default)]
+pub struct DwarfVtableEntry {
+    /// Member name.
+    pub name: Option<String>,
+    /// Byte offset in the vtable.
+    pub offset: u64,
+    /// Resolved member type name.
+    pub type_name: Option<String>,
+    /// Whether this is a Rust vtable header entry.
+    pub header: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -466,6 +615,24 @@ struct TypeFacts {
     array_count: Option<u64>,
     aggregate: Option<usize>,
     pointee_aggregate: Option<usize>,
+    element_aggregate: Option<usize>,
+}
+
+fn is_vtable_header_name(name: &str) -> bool {
+    matches!(name, "drop_in_place" | "drop" | "size" | "align")
+}
+
+fn is_vtable_aggregate(aggregate: &DwarfAggregate) -> bool {
+    aggregate
+        .name
+        .as_deref()
+        .is_some_and(|name| name.contains("vtable"))
+        || ["drop_in_place", "size", "align"].iter().all(|name| {
+            aggregate
+                .members
+                .iter()
+                .any(|member| member.name.as_deref() == Some(*name))
+        })
 }
 
 fn raw_type_class(tag: gimli::DwTag) -> Option<TypeClass> {
@@ -634,6 +801,7 @@ fn resolve_type_facts(
                 facts.name = raw.name.clone().or_else(|| target.name.clone());
                 facts.function_pointer_array = target.function_pointer;
                 facts.array_count = raw.array_count;
+                facts.element_aggregate = target.aggregate;
                 facts.byte_size = raw.byte_size.or_else(|| {
                     target
                         .byte_size
@@ -868,6 +1036,11 @@ fn append_unit_records(info: &mut DwarfInfo, records: UnitRecords, pointer_size:
                 byte_size: member.byte_size.or(facts.byte_size),
                 function_pointer: facts.function_pointer,
                 function_pointer_array: facts.function_pointer_array,
+                aggregate_index: facts.aggregate.map(|index| aggregate_base + index),
+                element_aggregate_index: facts
+                    .element_aggregate
+                    .map(|index| aggregate_base + index),
+                array_count: facts.array_count,
             });
         }
         info.aggregates.push(aggregate);
@@ -899,6 +1072,7 @@ fn append_unit_records(info: &mut DwarfInfo, records: UnitRecords, pointer_size:
             array_count: facts.array_count,
             aggregate_index: facts.aggregate.map(|index| aggregate_base + index),
             pointee_aggregate_index: facts.pointee_aggregate.map(|index| aggregate_base + index),
+            element_aggregate_index: facts.element_aggregate.map(|index| aggregate_base + index),
             is_parameter: raw.is_parameter,
         });
     }
