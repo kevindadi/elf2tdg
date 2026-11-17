@@ -150,6 +150,12 @@ Implemented:
   sensor_task` resolve an execution-context alias to its entry function, so
   async task names select their real `TaskStorage<...>::poll` CFG rather than a
   helper symbol that merely contains the name.
+- CFG structural validation checks entry/map/node consistency, block and
+  instruction ranges, call-site ownership and flag combinations, terminator
+  semantics, edge kinds/sites and cross-function target references.
+  `ProgramCfg`, `CfgFunction` and `FunctionCfg` expose
+  `validate`/`validate_with_limit`/`ensure_valid`; analysis refuses to publish
+  an invalid CFG.
 - CFG CLI view: `--view cfg` exports lossless per-function JSON or
   DOT/Mermaid CFGs, with function selection (`--function`), typed control-flow
   edges, call/return blocks, noreturn continuation pruning, call targets,
@@ -203,6 +209,15 @@ counts are explicitly **not** execution-time or WCET bounds.
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+```
+
+The normal test suite includes deterministic malformed-ELF and CFG-invariant
+smoke coverage. The libFuzzer harness under [`fuzz/`](fuzz/) requires a nightly
+toolchain and `cargo-fuzz`:
+
+```sh
+make fuzz-seed
+make fuzz
 ```
 
 The C fixtures are built with `arm-none-eabi-gcc`:
@@ -381,6 +396,7 @@ docs/tdg-legend.md        diagram shapes, colors, edge styles and confidence
 schema/tdg.schema.json    generated JSON Schema (2020-12)
 examples/                 worked Rust and Cortex-M examples plus artifacts
 tests/fixtures/           C firmware and Rust allocator/trait fixtures
+fuzz/                     cargo-fuzz ELF/CFG validation harness
 ```
 
 See [docs/tdg-schema.md](docs/tdg-schema.md) for the TDG model,

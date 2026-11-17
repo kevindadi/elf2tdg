@@ -346,6 +346,12 @@ surface diagnostics rather than silently dropping uncertain edges.
 `ensure_valid()` before publishing a document; consumers should call
 `validate()` defensively.
 
+The intermediate CFG has a separate validator exposed by `ProgramCfg`,
+`CfgFunction` and `FunctionCfg`. It checks graph/map consistency, basic-block
+and instruction ranges, call-site and terminator semantics, edge consistency,
+pointer-root duplicates and cross-function references. Analysis validates the
+CFG automatically before returning. See [cfg-format.md](cfg-format.md#cfg-validation).
+
 ## 9. Output views
 
 JSON is canonical. DOT and Mermaid are projections intended for humans. The

@@ -483,6 +483,32 @@ bounded gap scan after an unresolved indirect jump. They have no proven
 containing basic block, so they are kept at function level with
 `heuristic: true`; they are not silently dropped from the TDG.
 
+## CFG validation
+
+Every analysis validates the complete `ProgramCfg` before returning. The same
+checker is available directly:
+
+- `ProgramCfg::validate()`, `validate_with_limit(n)` and `ensure_valid()`;
+- `CfgFunction::validate()` and `ensure_valid()`;
+- `FunctionCfg::validate()` and `ensure_valid()`.
+
+Validation checks entry and address-map/node consistency, block and
+instruction ranges, one call record per call instruction, call-site ownership,
+target/candidate/unresolved/null flag combinations, terminator semantics,
+edge kinds and sites, duplicate edges, pointer-root duplicates and
+cross-function target references. It returns structured
+`CfgValidationIssue { code, path, message }` values and a
+`CfgValidationError` from `ensure_valid()`.
+
+Reachability is deliberately not required: retained orphan blocks and
+intra-function call targets are valid. An invalid CFG produced during analysis
+is reported as a fatal validation error rather than being exported.
+
+Deterministic malformed-ELF and CFG-invariant tests run in the normal test
+suite. A libFuzzer harness is provided under [`fuzz/`](../fuzz/); it loads
+arbitrary bytes through `loader::load_from_bytes`, runs a bounded analysis and
+asserts that both the TDG and CFG validate.
+
 ## Current limits
 
 - Calls end their basic block; returning calls continue in a new block, while
