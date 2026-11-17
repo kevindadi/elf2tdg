@@ -119,6 +119,10 @@ Implemented:
   seeds are supplemented by architecture-aware prologue scanning
   (`endbr64`/`push rbp; mov rbp,rsp`, `push {...,lr}`, `stp x29,x30`, RISC-V
   stack adjustment), with a `stripped-heuristic-seeds` diagnostic.
+- CFG task-name mapping: `--function sensor_task` and `--reachable-from
+  sensor_task` resolve an execution-context alias to its entry function, so
+  async task names select their real `TaskStorage<...>::poll` CFG rather than a
+  helper symbol that merely contains the name.
 - CFG CLI view: `--view cfg` exports lossless per-function JSON or
   DOT/Mermaid CFGs, with function selection (`--function`), typed control-flow
   edges, call/return blocks, call targets, indirect-target expressions, raw
@@ -251,8 +255,8 @@ Useful flags:
 | `--format json|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
 | `--view tdg|cfg|elf` | final TDG (default), per-function CFG, or loader-backed ELF layout |
 | `--elf-max-insns N` | maximum disassembly instructions per executable section in `--view elf` (default 256; 0 = unlimited) |
-| `--function NAME|0xADDR` | select one function for CFG output |
-| `--reachable-from NAME|0xADDR` | narrow the CFG to one reachability root |
+| `--function NAME|CONTEXT|0xADDR` | select one function or task context for CFG output; task names map to their poll entry |
+| `--reachable-from NAME|CONTEXT|0xADDR` | narrow the CFG to one function or task-context root |
 | `--no-prune-runtime` | expand panic/format/compiler-builtins/drop-glue boundaries during CFG reachability |
 | `--all-functions` | export CFGs for every function, including unreachable code |
 | `--no-cfg-instructions` | omit concrete instructions from CFG JSON and DOT/Mermaid labels |

@@ -583,6 +583,7 @@
           <li><strong>6 个执行上下文</strong>：startup、main、app_main、sensor、monitor、HardFault ISR。</li>
           <li><strong>3 条 spawn</strong>：executor 启动 app_main，app_main 再派生 sensor 与 monitor，全部标记为 <code>rust-embassy</code>。</li>
           <li><strong>任务入口可落地</strong>：每个 async task 的入口解析到对应的 <code>TaskStorage&lt;...&gt;::poll</code> 机器函数，而不是只给一个名字。</li>
+          <li><strong>任务名可直接选 CFG</strong>：<code>--function sensor_task</code> 或 <code>--reachable-from sensor_task</code> 会通过 context alias 映射到真实 poll 入口，不再误选 future 初始化辅助函数。</li>
           <li><strong>父链不丢</strong>：<code>main → app_main → sensor/monitor</code>，任务上下文不会全部挂在 startup 下。</li>
           <li><strong>executor 多目标边</strong>：<code>blx r1</code> 从 task 头字段 <code>+12</code> 读取 poll 指针；分析器把该字段的存储值收敛为 4 个 low-confidence 目标，并生成同一 site 的多条 call 边。</li>
           <li><strong>内联调用点可恢复</strong>：<code>Spawner::spawn</code> 在 <code>start_tasks</code> 中被内联，但 DWARF <code>DW_TAG_inlined_subroutine</code> 仍保留源码行和地址范围。</li>
@@ -608,7 +609,7 @@
       </div>
       <figcaption class="diagram-note">
         <span>任务入口直接指向真实的 <code>TaskStorage::poll</code> 函数；executor 的 <code>blx r1</code> 已展开为 4 个 low-confidence 候选目标，没有 unresolved 诊断。<a href="rust-concurrency/artifacts/tdg-analysis-concurrency.svg" target="_blank" rel="noopener">完整 SVG ↗</a></span>
-        <span><a href="rust-concurrency/artifacts/cfg-analysis-executor.svg" target="_blank" rel="noopener">executor CFG · 4 candidate calls ↗</a></span>
+        <span><a href="rust-concurrency/artifacts/cfg-analysis-executor.svg" target="_blank" rel="noopener">executor CFG · 4 candidate calls ↗</a> · <a href="rust-concurrency/artifacts/cfg-analysis-sensor.svg" target="_blank" rel="noopener">sensor_task CFG ↗</a></span>
         <span><code>--projection concurrency</code></span>
       </figcaption>
     </figure>

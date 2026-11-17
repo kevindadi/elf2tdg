@@ -60,8 +60,13 @@ elf2tdg firmware.elf --view cfg --format json --function main \
     --no-cfg-instructions --output main-blocks.json
 ```
 
-`--function` accepts an exact function name or symbol, a unique substring, or a
-`0x` address. Without a selector, CFG output uses a multi-root system scope:
+`--function` accepts an exact function name or symbol, a unique substring, a
+task/execution-context name, or a `0x` address. Task names map to the context
+entry function, so `--function sensor_task` or
+`--function app::sensor_task` selects the real `TaskStorage<...>::poll` body
+instead of an initialization helper whose symbol happens to contain the task
+name. `--reachable-from` accepts the same selectors. Without a selector, CFG
+output uses a multi-root system scope:
 functions reachable from main/startup, all valid vector-table ISRs, task/async
 contexts, callbacks and code addresses recovered from literal/function-pointer
 escapes. `--reachable-from ROOT` narrows this to one root, and
