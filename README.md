@@ -17,9 +17,12 @@ Implemented:
 - ELF loading via `object`: sections, symbols, entry point, ARM attributes,
   Cortex-M vector tables, relocation/debug-info flags.
 - Capstone decoding for Thumb/A32, AArch64, RISC-V 32/64 and x86-64.
-- Symbol/entry/vector-seeded function discovery and recursive-descent basic
-  blocks, represented as `FunctionCfg` values in a petgraph
-  `StableDiGraph`. Typed intra-function edges, call sites, raw instruction
+- Symbol, entry, vector/trap, init/fini and pointer-seeded function discovery,
+  plus recursive-descent basic blocks represented as `FunctionCfg` values in a
+  petgraph `StableDiGraph`. Cortex-M vector tables are recognized both by
+  section name and by their initial-SP/handler pattern when embedded in
+  another allocated section; ARM/AArch64 exception vectors and RISC-V trap
+  vectors provide roots even without calls. Typed intra-function edges, call sites, raw instruction
   bytes and terminators are retained for the CFG view and downstream consumers.
 - TDG function blocks and call edges are derived from the CFG instead of a
   second control-flow representation.
@@ -101,9 +104,9 @@ Implemented:
   static pointer chains, vtable slots, relocated GOT entries and
   caller-argument expressions. Import GOT slots resolve to synthesized PLT
   stubs when one exists. Switch jump tables are expanded into CFG case edges,
-  bounded by a preceding comparison when available: x86-64 absolute and
-  PIE-relative indexed tables, ARM Thumb `tbb`/`tbh`, common AArch64
-  byte/halfword/word-offset table sequences, ARM A32
+  bounded by a preceding comparison when available: x86-64 absolute,
+  base-less indexed and PIE-relative tables, ARM Thumb `tbb`/`tbh`, common
+  AArch64 byte/halfword/word-offset table sequences, ARM A32
   `ldrls pc, [pc, rN, lsl #2]` absolute-address tables and
   `addls pc, pc, rN, lsl #2` branch tables, AArch64 absolute-pointer
   tables, and RISC-V absolute-pointer and table-relative offset tables.
@@ -153,8 +156,10 @@ Implemented:
   indirect-target expressions, raw instruction bytes and source locations. Concrete instructions can be omitted
   from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
   is a multi-root system slice: main/startup, every valid vector-table ISR,
-  task/async contexts, callback registrations and global function-pointer
-  roots. Default-handler stubs shared by unused vectors are excluded.
+  ARM/AArch64 exception vectors, RISC-V trap vectors, ELF init/fini entry
+  points, task/async contexts, callback registrations and global
+  function-pointer roots. Default-handler stubs shared by unused vectors are
+  excluded.
   `--reachable-from ROOT` narrows the export to one root, and `--all-functions`
   exports the complete image.
 - Loader/ELF view: `--view elf` renders the loaded ELF directly as a Mermaid

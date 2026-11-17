@@ -91,7 +91,8 @@ continuation block, so its caller's `BasicBlock.successors` is empty at that
 site.
 
 Function discovery is seeded by symbols, the ELF entry point, Cortex-M vector
-entries and direct call targets. When no local code symbols exist, common
+entries, ARM/AArch64 exception vectors, RISC-V trap vectors, init/fini symbols,
+global pointer roots and direct call targets. When no local code symbols exist, common
 prologue patterns add conservative seeds and a `stripped-heuristic-seeds`
 diagnostic. `Function.source` is filled from the DWARF line program when
 available; it is informational and does not affect graph identity.
@@ -387,9 +388,10 @@ inline-frame ranges from DWARF, scopes diagnostics to the selected functions
 with a `diagnostics_omitted` count, records a `no_code` reason for external or
 logical functions without machine code, and can omit instruction arrays with
 `--no-cfg-instructions`. Without a selector, the CFG is limited to
-functions reachable from a multi-root system scope (main/startup, vector-table
-ISRs, tasks, callback registrations and global function-pointer roots).
-`--reachable-from ROOT` selects one root and
+functions reachable from a multi-root system scope (main/startup, Cortex-M
+vector-table ISRs, ARM/AArch64 exception vectors, RISC-V trap vectors, ELF
+init/fini entry points, tasks, callback registrations and global
+function-pointer roots). `--reachable-from ROOT` selects one root and
 `--all-functions` exports the complete image. Default handler stubs for unused
 vectors are excluded; code-address escapes and pointer relocations extend the
 worklist. DOT and Mermaid CFG views render function clusters, typed block edges

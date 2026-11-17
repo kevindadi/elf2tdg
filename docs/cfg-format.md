@@ -107,11 +107,18 @@ or destructor behavior.
 Filtering happens after analysis, so it reduces export size and layout time but
 does not change ELF decoding or TDG construction time.
 
-ARM Cortex-M vector tables are the primary static-root source. RISC-V
-`.trap`/vector sections are also scanned for direct jump/call targets
-(`jal`), so common trap tables become roots. Trap dispatch through
-`auipc`+`jalr` or other computed targets still needs `--reachable-from` or
-`--all-functions`.
+ARM Cortex-M vector tables are the primary static-root source. Detection is
+not limited to one section name: the loader also recognizes the characteristic
+initial-SP word followed by Thumb handler addresses when a table is embedded in
+another allocated section. ARM/AArch64 exception-vector sections and RISC-V
+`.trap`/vector sections contribute their base address and direct branch targets
+(`b`/`jal`), so vector/trap dispatch becomes reachable without a call edge.
+Executable symbols with recognizable `vector`, `trap` or `exception` names
+(such as `vectors`, `__vector_table`, `trap_entry` or `exception_handler`) are
+also retained. `_init`/`_fini` and libc startup symbols are architecture-level
+roots as well.
+Computed trap dispatch through `auipc`+`jalr` or a value written to `mtvec`/
+`VBAR` still needs `--reachable-from` or `--all-functions`.
 
 CFG output includes concrete instructions by default: JSON carries the full
 `instructions` arrays with raw bytes, and DOT/Mermaid block labels print the
@@ -197,6 +204,10 @@ Switch tables are recognized in these layouts:
 - x86-64 direct indexed memory: `jmp qword ptr [table + index*8]`;
 - x86-64 PIE-relative:
   `lea table(%rip), %rdx; movslq (%rdx,%rdi,4), %rax; add %rdx,%rax; jmp *%rax`;
+- x86-64 absolute pointer and offset tables whose indexed load has no base
+  register, such as `mov table(,%rdi,8), %rax; jmp *%rax`, or
+  `lea table(%rip), %rdx; movslq table(,%rdi,4), %rax;
+  add %rdx,%rax; jmp *%rax`;
 - ARM Thumb `tbb [pc, rN]` and `tbh [pc, rN, lsl #1]`, including
   register-based table bases;
 - AArch64 relative byte and halfword tables such as
@@ -477,13 +488,18 @@ containing basic block, so they are kept at function level with
 - Calls end their basic block; returning calls continue in a new block, while
   noreturn calls have no continuation. Call targets remain metadata, not
   intra-function CFG edges.
-- Recognized jump-table forms on x86-64, ARM Thumb/A32, common AArch64
-  relative byte/halfword/word and absolute-pointer layouts, and RISC-V
-  absolute-pointer and table-relative offset layouts are expanded. Guarded
-  tables larger than 256 entries are supported; unguarded scans stay
-  conservative. Computed/indirect tables remain unresolved; heap/stack
-  trait-object vtable calls are handled only through bounded candidate
-  resolution, not full field-sensitive points-to.
+- Recognized jump-table forms on x86-64 (including base-less absolute pointer
+  and offset tables), ARM Thumb/A32, common AArch64 relative
+  byte/halfword/word and absolute-pointer layouts, and RISC-V absolute-pointer
+  and table-relative offset layouts are expanded. Guarded tables larger than
+  256 entries are supported; unguarded scans stay conservative.
+  Computed/indirect tables remain unresolved; heap/stack trait-object vtable
+  calls are handled only through bounded candidate resolution, not full
+  field-sensitive points-to.
+- Cortex-M vector tables are found by section name or by the initial-SP and
+  Thumb-handler pattern. ARM/AArch64 exception vectors and RISC-V trap vectors
+  need a recognizable vector/trap/exception section or symbol; a bare table
+  installed at run time through `VBAR`/`mtvec` is not recovered.
 - Pointer roots require a direct pointer-shaped function address in an
   allocated data section. Nested pointer tables, computed function pointers,
   encoded jump tables and pointers built at run time are not chased.
