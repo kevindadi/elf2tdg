@@ -543,7 +543,7 @@ pub fn load(path: &Path) -> Result<Image> {
     synthesize_plt_symbols(&file, &sections, arch, &mut seen, &mut symbols);
     let has_symbols = !symbols.is_empty();
     let vector_table = if matches!(arch, ArchKind::Thumb | ArchKind::Arm) {
-        detect_vector_table(&sections, byte_order)
+        detect_vector_table(&sections, byte_order, arch)
     } else {
         Vec::new()
     };
@@ -932,20 +932,121 @@ fn contains_ascii(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|window| window == needle)
 }
 
-fn detect_vector_table(sections: &[Section], byte_order: ByteOrder) -> Vec<VectorEntry> {
-    let Some(section) = sections.iter().find(|section| {
-        section.name == ".isr_vector"
-            || section.name == ".vector_table"
-            || section.name == ".vectors"
-            || section.name.ends_with("_vector_table")
-            || section.name.ends_with("_vectors")
-    }) else {
+fn detect_vector_table(
+    sections: &[Section],
+    byte_order: ByteOrder,
+    arch: ArchKind,
+) -> Vec<VectorEntry> {
+    let mut named: Vec<(&Section, usize)> = sections
+        .iter()
+        .filter(|section| is_vector_table_section_name(&section.name))
+        .map(|section| (section, 0usize))
+        .collect();
+    named.sort_by_key(|(section, _)| section.address);
+
+    for (section, offset) in named {
+        let entries = parse_vector_table(section, offset, sections, byte_order);
+        if !entries.is_empty() {
+            return entries;
+        }
+    }
+
+    // Cortex-M images do not always keep the vector table in a specially
+    // named section. Look for the characteristic initial-SP word followed by
+    // Thumb reset/handler addresses anywhere in the first part of an allocated
+    // section, preferring non-executable data but also covering tables placed
+    // at the start of `.text`.
+    if arch == ArchKind::Thumb {
+        let mut candidates: Vec<&Section> = sections
+            .iter()
+            .filter(|section| section.alloc && !section.data.is_empty())
+            .collect();
+        candidates.sort_by_key(|section| (!section.executable, section.address));
+        for section in candidates {
+            let search_end = section.data.len().min(0x2000);
+            let mut offset = 0usize;
+            while offset + 8 <= search_end {
+                if looks_like_cortex_m_vector_table(section, offset, sections, byte_order) {
+                    let entries = parse_vector_table(section, offset, sections, byte_order);
+                    if !entries.is_empty() {
+                        return entries;
+                    }
+                }
+                offset += 4;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn is_vector_table_section_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == ".isr_vector"
+        || name == ".vector_table"
+        || name == ".vectors"
+        || name == ".vector"
+        || name.starts_with(".isr_vector.")
+        || name.starts_with(".vector_table.")
+        || name.starts_with(".vectors.")
+        || name.ends_with("_vector_table")
+        || name.ends_with("_vectors")
+        || name.ends_with(".isr_vector")
+        || name.ends_with(".vector_table")
+        || name.ends_with(".vectors")
+        || name.ends_with(".vector")
+}
+
+fn looks_like_cortex_m_vector_table(
+    section: &Section,
+    offset: usize,
+    sections: &[Section],
+    byte_order: ByteOrder,
+) -> bool {
+    let Some(initial_sp) = byte_order.read_u32(&section.data, offset) else {
+        return false;
+    };
+    if initial_sp == 0 || initial_sp % 4 != 0 {
+        return false;
+    }
+    if !points_into_writable_memory(sections, u64::from(initial_sp)) {
+        return false;
+    }
+    let mut handlers = 0usize;
+    for index in 1..8 {
+        let Some(raw) = byte_order.read_u32(&section.data, offset + index * 4) else {
+            break;
+        };
+        let raw = u64::from(raw);
+        if raw == 0 || raw == u64::from(u32::MAX) {
+            continue;
+        }
+        if raw & 1 == 0 || !is_executable_in(sections, raw & !1) {
+            continue;
+        }
+        handlers += 1;
+    }
+    handlers >= 2
+}
+
+fn points_into_writable_memory(sections: &[Section], address: u64) -> bool {
+    sections.iter().any(|section| {
+        section.alloc && section.writable && address >= section.address && address <= section.end()
+    })
+}
+
+fn parse_vector_table(
+    section: &Section,
+    offset: usize,
+    sections: &[Section],
+    byte_order: ByteOrder,
+) -> Vec<VectorEntry> {
+    let Some(remaining) = section.data.len().checked_sub(offset) else {
         return Vec::new();
     };
+    let words = remaining / 4;
     let mut entries = Vec::new();
-    let words = section.data.len() / 4;
     for index in 1..words.min(1024) {
-        let Some(raw) = byte_order.read_u32(&section.data, index * 4) else {
+        let Some(raw) = byte_order.read_u32(&section.data, offset + index * 4) else {
             break;
         };
         let raw = u64::from(raw);
@@ -967,7 +1068,35 @@ fn detect_vector_table(sections: &[Section], byte_order: ByteOrder) -> Vec<Vecto
 
 #[cfg(test)]
 mod tests {
-    use super::{ByteOrder, ElfKind, elf_kind, load};
+    use super::{ArchKind, ByteOrder, ElfKind, Section, detect_vector_table, elf_kind, load};
+
+    fn section(
+        name: &str,
+        address: u64,
+        size: u64,
+        data: Vec<u8>,
+        executable: bool,
+        writable: bool,
+    ) -> Section {
+        Section {
+            name: name.to_owned(),
+            address,
+            size,
+            data,
+            executable,
+            writable,
+            alloc: true,
+        }
+    }
+
+    fn vector_words(initial_sp: u32, handlers: &[u32]) -> Vec<u8> {
+        let mut words = vec![initial_sp];
+        words.extend_from_slice(handlers);
+        words
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<u8>>()
+    }
 
     #[test]
     fn detects_elf_kind() {
@@ -977,6 +1106,45 @@ mod tests {
         assert_eq!(elf_kind(&bytes, ByteOrder::Little), ElfKind::Exec);
         bytes[16] = 3;
         assert_eq!(elf_kind(&bytes, ByteOrder::Little), ElfKind::Dyn);
+    }
+
+    #[test]
+    fn detects_named_cortex_m_vector_table() {
+        let sections = vec![
+            section(
+                ".isr_vector",
+                0x0800_0000,
+                16,
+                vector_words(0x2000_00f0, &[0x0800_0101, 0x0800_0201, 0x0800_0301]),
+                false,
+                false,
+            ),
+            section(".text", 0x0800_0100, 0x300, vec![0; 0x300], true, false),
+            section(".ram", 0x2000_0000, 0x100, vec![0; 0x100], false, true),
+        ];
+        let entries = detect_vector_table(&sections, ByteOrder::Little, ArchKind::Thumb);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].index, 1);
+        assert_eq!(entries[0].handler, 0x0800_0100);
+        assert_eq!(entries[2].handler, 0x0800_0300);
+    }
+
+    #[test]
+    fn detects_embedded_cortex_m_vector_table() {
+        let mut text = vec![0u8; 0x300];
+        text[0x100..0x110].copy_from_slice(&vector_words(
+            0x2000_00f0,
+            &[0x0800_0201, 0x0800_0301, 0x0800_0101],
+        ));
+        let sections = vec![
+            section(".text", 0x0800_0100, 0x300, text, true, false),
+            section(".ram", 0x2000_0000, 0x100, vec![0; 0x100], false, true),
+        ];
+        let entries = detect_vector_table(&sections, ByteOrder::Little, ArchKind::Thumb);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].index, 1);
+        assert_eq!(entries[0].handler, 0x0800_0200);
+        assert_eq!(entries[1].handler, 0x0800_0300);
     }
 
     #[test]

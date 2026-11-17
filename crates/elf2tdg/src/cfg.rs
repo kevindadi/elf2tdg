@@ -727,8 +727,9 @@ impl ProgramCfg {
         Ok(self.selected_from_reachable(tdg, &reachable, selected_ids))
     }
 
-    /// Collects asynchronous execution roots: main/startup/task contexts,
-    /// vector-table ISR entries, callbacks and the ELF entry point.
+    /// Collects execution roots: main/startup/task contexts, Cortex-M vector
+    /// handlers, ARM/AArch64 exception vectors, RISC-V trap vectors, callbacks,
+    /// global pointer roots, init/fini entry points and the ELF entry point.
     ///
     /// Default handler stubs repeated across unused vectors are excluded.
     #[must_use]
@@ -746,18 +747,10 @@ impl ProgramCfg {
                 roots.insert(context.entry.clone());
             }
         }
-        for vector in &image.vector_table {
-            let handler = image.canonical_address(vector.handler);
-            if is_default_handler_address(image, handler) {
+        for target in architecture_root_addresses(image) {
+            if is_default_handler_address(image, target) {
                 continue;
             }
-            if let Some(function) = self.function_covering(handler)
-                && !is_default_handler(function)
-            {
-                roots.insert(function.id.clone());
-            }
-        }
-        for target in riscv_trap_targets(image) {
             if let Some(function) = self.function_covering(target)
                 && !is_default_handler(function)
             {
@@ -994,17 +987,57 @@ fn unique_functions<'a>(
     unique
 }
 
-fn riscv_trap_targets(image: &Image) -> Vec<u64> {
-    if !matches!(image.arch, ArchKind::Riscv32 | ArchKind::Riscv64) {
-        return Vec::new();
+/// Returns architecture-level root addresses that are not ordinary call
+/// targets: vector/trap handlers, exception-vector code and ELF init/fini
+/// entry points.
+#[must_use]
+pub(crate) fn architecture_root_addresses(image: &Image) -> Vec<u64> {
+    let mut roots: BTreeSet<u64> = image
+        .vector_table
+        .iter()
+        .map(|vector| image.canonical_address(vector.handler))
+        .collect();
+    for symbol in &image.symbols {
+        if matches!(
+            symbol.name.as_str(),
+            "_init" | "_fini" | "__libc_csu_init" | "__libc_csu_fini"
+        ) || is_architecture_root_symbol_name(&symbol.name)
+        {
+            roots.insert(symbol.canonical_address);
+        }
     }
+
     let Ok(decoder) = Decoder::new(image.arch) else {
-        return Vec::new();
+        return roots.into_iter().collect();
     };
-    let mut targets = BTreeSet::new();
-    for section in image.sections.iter().filter(|section| {
-        section.executable && (section.name.contains("trap") || section.name.contains("vector"))
-    }) {
+    let step = matches!(
+        image.arch,
+        ArchKind::Thumb | ArchKind::Riscv32 | ArchKind::Riscv64
+    )
+    .then_some(2usize)
+    .unwrap_or(4);
+    for section in image
+        .sections
+        .iter()
+        .filter(|section| section.executable && is_architecture_root_section(&section.name))
+    {
+        roots.insert(section.address);
+        if image.arch == ArchKind::Aarch64 && section.data.len() >= 128 {
+            // AArch64 exception-vector entries are 128 bytes apart. Each
+            // entry can be code rather than a branch, so retain its address.
+            for index in 0..16usize {
+                let Some(offset) = index.checked_mul(128) else {
+                    break;
+                };
+                if offset >= section.data.len() {
+                    break;
+                }
+                let words = &section.data[offset..section.data.len().min(offset + 4)];
+                if words.iter().any(|byte| *byte != 0) {
+                    roots.insert(section.address.saturating_add(offset as u64));
+                }
+            }
+        }
         let mut offset = 0usize;
         while offset < section.data.len() {
             let address = section.address.saturating_add(offset as u64);
@@ -1014,15 +1047,62 @@ fn riscv_trap_targets(image: &Image) -> Vec<u64> {
                         && !instruction.is_conditional
                         && let Some(target) = instruction.direct_target
                     {
-                        targets.insert(image.canonical_address(target));
+                        let target = image.canonical_address(target);
+                        if image.is_executable(target) {
+                            roots.insert(target);
+                        }
                     }
                     offset = offset.saturating_add(usize::from(instruction.size.max(2)));
                 }
-                _ => offset = offset.saturating_add(2),
+                _ => offset = offset.saturating_add(step),
             }
         }
     }
-    targets.into_iter().collect()
+    roots.into_iter().collect()
+}
+
+fn is_architecture_root_symbol_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let name = name.trim_start_matches('_');
+    matches!(
+        name,
+        "vector"
+            | "vectors"
+            | "vector_table"
+            | "isr_vector"
+            | "trap"
+            | "trap_entry"
+            | "trap_handler"
+            | "exception"
+            | "exceptions"
+            | "exception_handler"
+            | "exception_vectors"
+    ) || name.ends_with("_vector_table")
+        || name.ends_with("_vectors")
+        || name.ends_with("_trap")
+        || name.ends_with("_trap_entry")
+        || name.ends_with("_trap_handler")
+        || name.ends_with("_exception_handler")
+}
+
+fn is_architecture_root_section(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        ".vector",
+        ".vectors",
+        ".vector_table",
+        ".isr_vector",
+        ".isr",
+        ".trap",
+        ".trap_vector",
+        ".exception",
+        ".exceptions",
+        ".exception_vectors",
+    ]
+    .iter()
+    .any(|prefix| {
+        name == *prefix || name.starts_with(&format!("{prefix}.")) || name.ends_with(prefix)
+    })
 }
 
 fn is_default_handler(function: &CfgFunction) -> bool {
@@ -2090,8 +2170,8 @@ fn mermaid_escape(value: &str) -> String {
 mod tests {
     use super::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
-        CfgTerminator, FunctionCfg, ProgramCfg, function_view, render_dot_selected,
-        render_mermaid_selected, riscv_trap_targets,
+        CfgTerminator, FunctionCfg, ProgramCfg, architecture_root_addresses, function_view,
+        render_dot_selected, render_mermaid_selected,
     };
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
     use elf2tdg_schema::{FunctionId, FunctionKind, Language};
@@ -2296,11 +2376,55 @@ mod tests {
             relocated_pointers: std::collections::BTreeMap::new(),
             imported_slots: std::collections::BTreeMap::new(),
             segments: Vec::new(),
+            sections: vec![
+                Section {
+                    name: ".trap".to_owned(),
+                    address: 0x1000,
+                    size: 4,
+                    data: vec![0x6f, 0x00, 0x80, 0x00],
+                    executable: true,
+                    writable: false,
+                    alloc: true,
+                },
+                Section {
+                    name: ".text".to_owned(),
+                    address: 0x1008,
+                    size: 4,
+                    data: vec![0x67, 0x80, 0x00, 0x00],
+                    executable: true,
+                    writable: false,
+                    alloc: true,
+                },
+            ],
+            symbols: Vec::new(),
+            has_symbols: false,
+            has_debug_info: false,
+            has_relocations: false,
+            arm_cpu: None,
+            vector_table: Vec::new(),
+            dwarf: None,
+            dwarf_error: None,
+        };
+        assert_eq!(architecture_root_addresses(&image), vec![0x1000, 0x1008]);
+    }
+
+    #[test]
+    fn extracts_aarch64_exception_vector_entries() {
+        // b #0x1004 at 0x1000; ret at 0x1004.
+        let image = Image {
+            path: "vectors.elf".into(),
+            arch: ArchKind::Aarch64,
+            byte_order: ByteOrder::Little,
+            elf_kind: ElfKind::Exec,
+            entry: 0x1000,
+            relocated_pointers: std::collections::BTreeMap::new(),
+            imported_slots: std::collections::BTreeMap::new(),
+            segments: Vec::new(),
             sections: vec![Section {
-                name: ".trap".to_owned(),
+                name: ".vectors".to_owned(),
                 address: 0x1000,
-                size: 4,
-                data: vec![0x6f, 0x00, 0x80, 0x00],
+                size: 8,
+                data: vec![0x01, 0x00, 0x00, 0x14, 0xc0, 0x03, 0x5f, 0xd6],
                 executable: true,
                 writable: false,
                 alloc: true,
@@ -2314,6 +2438,6 @@ mod tests {
             dwarf: None,
             dwarf_error: None,
         };
-        assert_eq!(riscv_trap_targets(&image), vec![0x1008]);
+        assert_eq!(architecture_root_addresses(&image), vec![0x1000, 0x1004]);
     }
 }

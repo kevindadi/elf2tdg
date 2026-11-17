@@ -378,6 +378,7 @@ impl<'a> Analyzer<'a> {
         }
 
         self.discover_pointer_roots(&mut seeds);
+        self.discover_architecture_roots(&mut seeds);
 
         if seeds.is_empty() {
             return Ok(());
@@ -547,6 +548,19 @@ impl<'a> Analyzer<'a> {
             );
         }
         self.pointer_roots = roots;
+    }
+
+    fn discover_architecture_roots(&mut self, seeds: &mut BTreeMap<u64, Seed>) {
+        for target in cfg::architecture_root_addresses(self.image) {
+            if !self.image.is_executable(target) {
+                continue;
+            }
+            seeds.entry(target).or_insert_with(|| Seed {
+                names: Vec::new(),
+                size: 0,
+                section: self.image.section_name_for(target).map(str::to_owned),
+            });
+        }
     }
 
     fn looks_like_function(&self, address: u64) -> bool {
