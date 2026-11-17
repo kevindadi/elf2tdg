@@ -125,7 +125,8 @@ the information is not lost. Common causes in Rust images are:
 - calls through a GOT/`.data.rel.ro` slot whose dynamic relocation could not be
   applied;
 - imported libc functions reached through an unresolved GOT slot;
-- calls through opaque async state machines or trait objects.
+- calls through opaque async state machines or trait objects that cannot be
+  associated with a plausible vtable candidate.
 
 Relative relocations for the supported architectures are applied when reading
 pointer-sized slots, which resolves many `R_*_RELATIVE` GOT entries. Import
@@ -138,7 +139,11 @@ Indirect calls and jumps are also resolved through:
 - direct memory slots and vtable entries whose bases are statically known;
 - ABI arguments of the containing function, evaluated at direct caller sites
   (for example a function-pointer dispatch helper or a C++ virtual call on a
-  static object).
+  static object);
+- Rust trait-object method slots, using validated vtable-shaped read-only
+  tables referenced by pointer constants in the caller/callee neighborhood.
+  These produce low-confidence candidate call or tail-call edges and a
+  `resolved-trait-object-candidates` diagnostic.
 
 A resolved jump whose target lies inside the same function becomes a `branch`
 or `jump` CFG edge. A resolved jump to another function is emitted as a call
@@ -190,8 +195,8 @@ report `branch-table` with an optional base and index.
 Caller-argument propagation accepts only a unique executable target across the
 known callers and marks the resulting call as indirect/medium confidence. If
 any known caller cannot be evaluated, the call stays unresolved.
-A target that depends on a heap/stack object, a dynamic trait object or
-disagreeing callers stays `unresolved` with an
+A target that depends on a heap/stack object outside the bounded vtable
+candidate analysis, or on disagreeing callers, stays `unresolved` with an
 `unresolved-indirect-call` diagnostic rather than being guessed. The CFG JSON
 still records the raw instruction, call site and indirect target expression for
 each of them.
@@ -383,8 +388,9 @@ containing basic block, so they are kept at function level with
   relative byte/halfword/word and absolute-pointer layouts, and RISC-V
   absolute-pointer and table-relative offset layouts are expanded. Guarded
   tables larger than 256 entries are supported; unguarded scans stay
-  conservative. Computed/indirect tables and vtable dispatch on heap/stack
-  objects remain unresolved indirect jumps.
+  conservative. Computed/indirect tables remain unresolved; heap/stack
+  trait-object vtable calls are handled only through bounded candidate
+  resolution, not full field-sensitive points-to.
 - CFG node IDs are stable within an analysis but are not persisted across
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;

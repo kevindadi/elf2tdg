@@ -435,7 +435,8 @@ cores still need calibration data for meaningful bounds.
 
 ## 13. Non-goals for v1
 
-- Full data flow or points-to analysis.
+- Full field-sensitive heap/data-flow points-to analysis; only bounded vtable
+  candidate resolution is implemented.
 - A WCET proof or automatic loop-bound inference.
 - Executing the firmware or reconstructing runtime traces.
 - Perfect recovery from fully stripped, LTO+ICF images (symbols are expected;
