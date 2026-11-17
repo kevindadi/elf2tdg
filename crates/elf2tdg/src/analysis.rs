@@ -9,7 +9,7 @@ use elf2tdg_schema::{
     SCHEMA_VERSION, Scheduling, Severity, SourceLoc, Tdg, TimingInfo, ToolInfo,
 };
 
-use crate::arch::{DecodedInsn, Decoder, IndirectTarget, ValueSource};
+use crate::arch::{DecodedInsn, Decoder, IndirectTarget, ValueSource, pointer_size};
 use crate::cfg;
 use crate::error::{Error, Result};
 use crate::loader::{ByteOrder, ElfKind, Image, VectorEntry};
@@ -114,6 +114,16 @@ struct FunctionDraft {
     kind: FunctionKind,
     cfg: cfg::FunctionCfg,
     analyzed: bool,
+}
+
+struct CandidateCallResolution {
+    caller: u64,
+    site: u64,
+    targets: Vec<u64>,
+    tail: bool,
+    conditional: bool,
+    code: &'static str,
+    message: String,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +245,7 @@ impl<'a> Analyzer<'a> {
 
         self.resolve_remaining_functions()?;
         self.resolve_embassy_executor_calls();
+        self.resolve_trait_object_calls();
         self.resolve_calls();
         self.build_tdg()
     }
@@ -1418,7 +1429,7 @@ impl<'a> Analyzer<'a> {
             .values()
             .map(Vec::as_slice)
             .collect();
-        let mut resolutions: Vec<(u64, u64, Vec<u64>, i64)> = Vec::new();
+        let mut resolutions: Vec<CandidateCallResolution> = Vec::new();
         let mut seen_sites = BTreeSet::new();
         for (&function_address, function) in &self.functions {
             if !is_embassy_executor_function(&function.display) {
@@ -1470,19 +1481,145 @@ impl<'a> Analyzer<'a> {
                         })
                         .collect();
                 if (2..=16).contains(&targets.len()) {
-                    resolutions.push((function_address, site, targets.into_iter().collect(), disp));
+                    let count = targets.len();
+                    resolutions.push(CandidateCallResolution {
+                        caller: function_address,
+                        site,
+                        targets: targets.into_iter().collect(),
+                        tail: false,
+                        conditional: false,
+                        code: "resolved-indirect-call-candidates",
+                        message: format!(
+                            "indirect call at 0x{site:x} has {count} candidate target(s) from stores to field +{disp}"
+                        ),
+                    });
                 }
             }
         }
-        self.apply_embassy_multi_target_calls(resolutions)
+        self.apply_candidate_calls(resolutions)
     }
 
-    fn apply_embassy_multi_target_calls(
-        &mut self,
-        resolutions: Vec<(u64, u64, Vec<u64>, i64)>,
-    ) -> bool {
+    /// Resolves unresolved trait-object method calls from vtable-shaped
+    /// read-only tables. The vtable base is object-insensitive; candidates are
+    /// accepted only when the slot is a Rust method slot and the table header
+    /// is plausible.
+    #[allow(clippy::too_many_lines)]
+    fn resolve_trait_object_calls(&mut self) -> bool {
+        let pointer = pointer_size(self.image.arch);
+        let min_slot = i64::try_from(pointer.saturating_mul(3)).unwrap_or(i64::MAX);
+        let callers = self.callers_by_target();
+        let mut resolutions = Vec::new();
+        for (&function_address, function) in &self.functions {
+            let Some(decoded) = self.decoded_by_function.get(&function_address) else {
+                continue;
+            };
+            let mut related = BTreeSet::new();
+            related.insert(function_address);
+            for call in function
+                .cfg
+                .blocks_by_address
+                .values()
+                .flat_map(|node| function.cfg.graph[*node].calls.iter())
+            {
+                if let Some(target) = call.target
+                    && let Some(callee) = self.resolve_function_address(target)
+                    && self.functions.contains_key(&callee)
+                {
+                    related.insert(callee);
+                }
+            }
+            if let Some(caller_sites) = callers.get(&function_address) {
+                for (caller, _) in caller_sites {
+                    related.insert(*caller);
+                    let Some(caller_function) = self.functions.get(caller) else {
+                        continue;
+                    };
+                    for call in caller_function
+                        .cfg
+                        .blocks_by_address
+                        .values()
+                        .flat_map(|node| caller_function.cfg.graph[*node].calls.iter())
+                    {
+                        if let Some(target) = call.target
+                            && let Some(callee) = self.resolve_function_address(target)
+                            && self.functions.contains_key(&callee)
+                        {
+                            related.insert(callee);
+                        }
+                    }
+                }
+            }
+            let decoded_functions: Vec<&[DecodedInsn]> = related
+                .iter()
+                .filter_map(|address| self.decoded_by_function.get(address).map(Vec::as_slice))
+                .collect();
+            let mut function_cache: BTreeMap<i64, Vec<u64>> = BTreeMap::new();
+            let mut sites = BTreeSet::new();
+            for node in function.cfg.blocks_by_address.values() {
+                for call in &function.cfg.graph[*node].calls {
+                    if call.unresolved {
+                        sites.insert((call.site, call.tail, call.conditional));
+                    }
+                }
+            }
+            for call in &function.cfg.recovered_calls {
+                if call.unresolved {
+                    sites.insert((call.site, call.tail, call.conditional));
+                }
+            }
+            for (site, tail, conditional) in sites {
+                let Some(instruction) = decoded.iter().find(|instruction| {
+                    instruction.address == site && (instruction.is_call || instruction.is_jump)
+                }) else {
+                    continue;
+                };
+                let Some(target) = instruction.indirect else {
+                    continue;
+                };
+                let Some(slot) = origin::indirect_field_load(decoded, site, target) else {
+                    continue;
+                };
+                if slot < min_slot {
+                    continue;
+                }
+                let candidates = function_cache.entry(slot).or_insert_with(|| {
+                    origin::resolve_vtable_slot_candidates(self.image, &decoded_functions, slot)
+                });
+                let targets: BTreeSet<u64> = candidates
+                    .iter()
+                    .filter_map(|target| self.resolve_function_address(*target))
+                    .collect();
+                if (1..=16).contains(&targets.len()) {
+                    let count = targets.len();
+                    resolutions.push(CandidateCallResolution {
+                        caller: function_address,
+                        site,
+                        targets: targets.into_iter().collect(),
+                        tail,
+                        conditional,
+                        code: "resolved-trait-object-candidates",
+                        message: format!(
+                            "trait-object call at 0x{site:x} has {count} vtable method candidate(s) at slot +{slot}"
+                        ),
+                    });
+                }
+            }
+        }
+        self.apply_candidate_calls(resolutions)
+    }
+
+    fn apply_candidate_calls(&mut self, resolutions: Vec<CandidateCallResolution>) -> bool {
         let mut changed = false;
-        for (caller, site, targets, disp) in resolutions {
+        for resolution in resolutions {
+            let CandidateCallResolution {
+                caller,
+                site,
+                targets,
+                tail,
+                conditional,
+                code,
+                message,
+            } = resolution;
             let candidate_calls: Vec<cfg::CfgCallSite> = targets
                 .iter()
                 .map(|target| cfg::CfgCallSite {
@@ -1490,8 +1627,8 @@ impl<'a> Analyzer<'a> {
                     target: Some(*target),
                     target_function: Some(function_id(*target)),
                     direct: false,
-                    tail: false,
-                    conditional: false,
+                    tail,
+                    conditional,
                     heuristic: true,
                     unresolved: false,
                 })
@@ -1507,34 +1644,27 @@ impl<'a> Analyzer<'a> {
                     caller,
                     site,
                     target: *target,
-                    tail: false,
-                    conditional: false,
+                    tail,
+                    conditional,
                     heuristic: true,
                     direct: false,
                 });
             }
             let caller_id = function_id(caller);
             self.diagnostics.retain(|diagnostic| {
-                !(diagnostic.code == "unresolved-indirect-call"
+                !((diagnostic.code == "unresolved-indirect-call"
+                    || diagnostic.code == "unresolved-indirect-jump")
                     && diagnostic.function.as_ref() == Some(&caller_id)
                     && diagnostic.site == Some(Addr::new(site)))
             });
             self.diagnostic_keys
-                .retain(|(code, function, diagnostic_site)| {
-                    !(code == "unresolved-indirect-call"
+                .retain(|(diagnostic_code, function, diagnostic_site)| {
+                    !((*diagnostic_code == "unresolved-indirect-call"
+                        || *diagnostic_code == "unresolved-indirect-jump")
                         && *function == Some(caller)
                         && *diagnostic_site == Some(site))
                 });
-            self.diag(
-                Severity::Info,
-                "resolved-indirect-call-candidates",
-                format!(
-                    "indirect call at 0x{site:x} has {} candidate target(s) from stores to field +{disp}",
-                    targets.len()
-                ),
-                Some(caller),
-                Some(site),
-            );
+            self.diag(Severity::Info, code, message, Some(caller), Some(site));
             changed = true;
         }
         changed

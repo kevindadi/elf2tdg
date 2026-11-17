@@ -224,6 +224,84 @@ fn field_offset_from_register(
     }
 }
 
+/// Maximum number of vtable method targets returned for one slot offset.
+const MAX_VTABLE_CANDIDATES: usize = 32;
+/// Safety bound on candidate data pointers inspected for one call site.
+const MAX_VTABLE_BASES: usize = 4096;
+
+/// Resolves possible method targets for a Rust trait-object vtable slot.
+///
+/// `slot` is the byte offset loaded from the vtable base. Rust trait-object
+/// vtables start with drop/size/align entries, so method slots begin at
+/// `3 * pointer_size`. Candidate vtable bases come only from pointer constants
+/// in the supplied decoded functions, which keeps unrelated rodata tables from
+/// leaking into a call site. The scan validates the vtable header and collects
+/// executable methods at the requested slot.
+#[must_use]
+pub fn resolve_vtable_slot_candidates(
+    image: &Image,
+    decoded_functions: &[&[DecodedInsn]],
+    slot: i64,
+) -> Vec<u64> {
+    let pointer = pointer_size(image.arch);
+    let Ok(slot) = usize::try_from(slot) else {
+        return Vec::new();
+    };
+    let header = pointer.saturating_mul(3);
+    if slot < header || !(slot - header).is_multiple_of(pointer) {
+        return Vec::new();
+    }
+    let mut bases = BTreeSet::new();
+    for decoded in decoded_functions {
+        for (index, instruction) in decoded.iter().enumerate() {
+            let Some(effect) = instruction.value else {
+                continue;
+            };
+            let Some(value) = resolve_register(image, decoded, index + 1, effect.dest, 0) else {
+                continue;
+            };
+            let value = image.canonical_address(value);
+            if is_read_only_data(image, value) {
+                bases.insert(value);
+                if bases.len() > MAX_VTABLE_BASES {
+                    return Vec::new();
+                }
+            }
+        }
+    }
+    let mut candidates = BTreeSet::new();
+    for base in bases {
+        if let Some(method) = vtable_method(image, base, slot, pointer) {
+            candidates.insert(method);
+            if candidates.len() > MAX_VTABLE_CANDIDATES {
+                return Vec::new();
+            }
+        }
+    }
+    candidates.into_iter().collect()
+}
+
+fn is_read_only_data(image: &Image, address: u64) -> bool {
+    image.sections.iter().any(|section| {
+        section.alloc
+            && !section.executable
+            && !section.writable
+            && address >= section.address
+            && address < section.address.saturating_add(section.size)
+    })
+}
+
+fn vtable_method(image: &Image, base: u64, slot: usize, pointer: usize) -> Option<u64> {
+    let drop = image.read_uint(base, pointer)?;
+    let _size = image.read_uint(base + pointer as u64, pointer)?;
+    let align = image.read_uint(base + (pointer * 2) as u64, pointer)?;
+    let method = image.read_uint(base + slot as u64, pointer)?;
+    let drop_ok = drop == 0 || image.is_executable(image.canonical_address(drop));
+    let align_ok = align != 0 && align.is_power_of_two() && align <= 4096;
+    let method = image.canonical_address(method);
+    (drop_ok && align_ok && image.is_executable(method)).then_some(method)
+}
+
 /// Collects executable values stored to `[base + disp]` anywhere in the
 /// decoded image.
 ///
@@ -1172,7 +1250,7 @@ mod tests {
     use super::{
         evaluate_argument_spec, forwarded_argument_index, indirect_argument_spec,
         indirect_field_load, jump_table_bound, read_table_entries, resolve_argument_pointer,
-        resolve_field_store_candidates, resolve_indirect_target,
+        resolve_field_store_candidates, resolve_indirect_target, resolve_vtable_slot_candidates,
     };
     use crate::arch::Decoder;
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
@@ -1667,6 +1745,82 @@ mod tests {
         assert_eq!(
             resolve_field_store_candidates(&image, &[&decoded], 12),
             vec![0x1000, 0x1010]
+        );
+    }
+
+    #[test]
+    fn collects_trait_object_vtable_slot_candidates() {
+        let mut code = Vec::new();
+        for value in [0x2000u64, 0x2100, 0x2200] {
+            code.extend_from_slice(&[0x48, 0xb8]);
+            code.extend_from_slice(&value.to_le_bytes());
+        }
+        code.push(0xc3);
+        let engine = Decoder::new(ArchKind::X86_64).unwrap();
+        let mut decoded = Vec::new();
+        let mut offset = 0usize;
+        while offset < code.len() {
+            let instruction = engine
+                .decode_one(&code[offset..], 0x1000 + offset as u64)
+                .unwrap()
+                .expect("x86 instruction");
+            offset += usize::from(instruction.size);
+            decoded.push(instruction);
+        }
+        let mut rodata = vec![0u8; 0x300];
+        rodata[16..24].copy_from_slice(&1u64.to_le_bytes());
+        rodata[24..32].copy_from_slice(&0x1010u64.to_le_bytes());
+        rodata[0x100 + 16..0x100 + 24].copy_from_slice(&1u64.to_le_bytes());
+        rodata[0x100 + 24..0x100 + 32].copy_from_slice(&0x1020u64.to_le_bytes());
+        // Invalid shape: alignment is not a power of two.
+        rodata[0x200 + 8..0x200 + 16].copy_from_slice(&0u64.to_le_bytes());
+        rodata[0x200 + 16..0x200 + 24].copy_from_slice(&3u64.to_le_bytes());
+        rodata[0x200 + 24..0x200 + 32].copy_from_slice(&0x1010u64.to_le_bytes());
+        let image = Image {
+            path: "vtables.elf".into(),
+            arch: ArchKind::X86_64,
+            byte_order: ByteOrder::Little,
+            elf_kind: ElfKind::Exec,
+            entry: 0x1000,
+            relocated_pointers: std::collections::BTreeMap::default(),
+            imported_slots: std::collections::BTreeMap::default(),
+            segments: Vec::new(),
+            sections: vec![
+                Section {
+                    name: ".text".to_owned(),
+                    address: 0x1000,
+                    size: 0x200,
+                    data: vec![0; 0x200],
+                    executable: true,
+                    writable: false,
+                    alloc: true,
+                },
+                Section {
+                    name: ".rodata".to_owned(),
+                    address: 0x2000,
+                    size: rodata.len() as u64,
+                    data: rodata,
+                    executable: false,
+                    writable: false,
+                    alloc: true,
+                },
+            ],
+            symbols: Vec::new(),
+            has_symbols: false,
+            has_debug_info: false,
+            has_relocations: false,
+            arm_cpu: None,
+            vector_table: Vec::new(),
+            dwarf: None,
+            dwarf_error: None,
+        };
+        assert_eq!(
+            resolve_vtable_slot_candidates(&image, &[&decoded], 24),
+            vec![0x1010, 0x1020]
+        );
+        assert_eq!(
+            resolve_vtable_slot_candidates(&image, &[&decoded], 16),
+            Vec::<u64>::new()
         );
     }
 
