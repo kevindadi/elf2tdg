@@ -732,9 +732,16 @@ fn indexed_pointer_table_targets(
         return None;
     }
     let mut limit = jump_table_bound(decoded, site, index).unwrap_or(FALLBACK_JUMP_TABLE_ENTRIES);
-    if let Some(size) = image.data_symbols.get(&table_base)
+    let object_size = image.data_symbols.get(&table_base).copied().or_else(|| {
+        image.dwarf.as_ref().and_then(|dwarf| {
+            dwarf
+                .object_end_at(table_base)
+                .map(|end| end.saturating_sub(table_base))
+        })
+    });
+    if let Some(size) = object_size
         && let Ok(entry_size) = u64::try_from(usize::from(scale))
-        && let Ok(symbol_entries) = usize::try_from(*size / entry_size)
+        && let Ok(symbol_entries) = usize::try_from(size / entry_size)
     {
         limit = limit.min(symbol_entries);
     }
