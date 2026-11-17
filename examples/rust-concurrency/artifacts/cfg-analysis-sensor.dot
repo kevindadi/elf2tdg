@@ -1,0 +1,24 @@
+digraph cfg {
+  rankdir=LR;
+  graph [fontname="Helvetica", label="elf2tdg function CFG", labelloc=t];
+  node [fontname="Helvetica", fontsize=9, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#555555"];
+  edge [fontname="Helvetica", fontsize=8];
+  subgraph cluster_cfg_0 {
+    label="<embassy_executor::raw::TaskStorage<rust_concurrency::__senso...\n0x800085c"; labeljust=l; fontsize=10; color="#999999";
+    "bb:0x800085c" [label="bb 0x800085c\n7 insn\npush {r4, r6, r7, lr}\nadd r7, sp, #8\nsub sp, #8\nmov r4, r0\nldrb r0, [r0, #0x14]\nlsls r0, r0, #0x1f\nbne #0x800088e"];
+    "bb:0x800086a" [label="bb 0x800086a\n2 insn\nldr r0, [r4, #0x10]\nbl #0x800079c\n1 call(s)"];
+    "bb:0x8000870" [label="bb 0x8000870\n1 insn\nbl #0x80007d0\n1 call(s)"];
+    "bb:0x8000874" [label="bb 0x8000874\n11 insn\nstr r0, [sp, #4]\nadd r0, sp, #4\nmovw r0, #0x8d9\nmovt r0, #0x800\nstr r0, [r4, #0xc]\nmovs r0, #1\nstrb r0, [r4, #0x14]\nmovs r0, #0\n... +3 insn"];
+    "bb:0x800088e" [label="bb 0x800088e\n3 insn\nmovw r0, #0x964\nmovt r0, #0x800\nbl #0x800044a\n1 call(s)"];
+    "bb:0x800085c" -> "bb:0x800086a" [label="fallthrough", color="#777777", style="solid"];
+    "bb:0x800085c" -> "bb:0x800088e" [label="branch", color="#2471a3", style="solid"];
+    "bb:0x800086a" -> "bb:0x8000870" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x8000870" -> "bb:0x8000874" [label="return", color="#4a6fa5", style="solid"];
+    "bb:0x800086a" -> "call:fn:0x800079c" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x8000870" -> "call:fn:0x80007d0" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+    "bb:0x800088e" -> "call:fn:0x800044a" [label="call", color="#117a65", fontcolor="#117a65", style=dashed];
+  }
+  "call:fn:0x800044a" [label="core::panicking::panic_const::panic_const_asy...\n0x800044a", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x800079c" [label="rust_concurrency::sensor_sample\n0x800079c", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+  "call:fn:0x80007d0" [label="rust_concurrency::process\n0x80007d0", shape=note, style="dashed,filled", fillcolor="#f4f6f7", color="#999999"];
+}

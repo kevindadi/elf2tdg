@@ -1,0 +1,19 @@
+flowchart LR
+  subgraph cfg0["<embassy_executor::raw::TaskStorage<rust_concurrency::__senso...\n0x800085c"]
+    direction LR
+    b0_134219868["bb 0x800085c<br/>7 insn<br/>push (r4, r6, r7, lr)<br/>add r7, sp, #8<br/>sub sp, #8<br/>mov r4, r0<br/>ldrb r0, (r0, #0x14)<br/>lsls r0, r0, #0x1f<br/>bne #0x800088e"]
+    b0_134219882["bb 0x800086a<br/>2 insn<br/>ldr r0, (r4, #0x10)<br/>bl #0x800079c<br/>1 call(s)"]
+    b0_134219888["bb 0x8000870<br/>1 insn<br/>bl #0x80007d0<br/>1 call(s)"]
+    b0_134219892["bb 0x8000874<br/>11 insn<br/>str r0, (sp, #4)<br/>add r0, sp, #4<br/>movw r0, #0x8d9<br/>movt r0, #0x800<br/>str r0, (r4, #0xc)<br/>movs r0, #1<br/>strb r0, (r4, #0x14)<br/>movs r0, #0<br/>... +3 insn"]
+    b0_134219918["bb 0x800088e<br/>3 insn<br/>movw r0, #0x964<br/>movt r0, #0x800<br/>bl #0x800044a<br/>1 call(s)"]
+    b0_134219868 -->|fallthrough| b0_134219882
+    b0_134219868 -->|branch| b0_134219918
+    b0_134219882 -->|return| b0_134219888
+    b0_134219888 -->|return| b0_134219892
+  end
+  call0["rust_concurrency::sensor_sample<br/>0x800079c"]
+  b0_134219882 -.->|call| call0
+  call1["rust_concurrency::process<br/>0x80007d0"]
+  b0_134219888 -.->|call| call1
+  call2["core::panicking::panic_const::panic_const_asy...<br/>0x800044a"]
+  b0_134219918 -.->|call| call2

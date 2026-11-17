@@ -1,0 +1,719 @@
+{
+  "cfg_schema_version": "1.2",
+  "image": {
+    "path": "artifacts/rust-concurrency-analysis.elf",
+    "arch": "thumb",
+    "endianness": "little",
+    "entry": "0x8000401",
+    "elf_type": "exec",
+    "has_symbols": true,
+    "has_debug_info": true,
+    "has_relocations": false
+  },
+  "functions": [
+    {
+      "id": "fn:0x800085c",
+      "primary_name": "<embassy_executor[6394b51991708d7b]::raw::TaskStorage<rust_concurrency[f63282d72979e930]::__sensor_task_task::__sensor_task_task_inner_function::{closure#0}>>::poll",
+      "demangled_name": "<embassy_executor[6394b51991708d7b]::raw::TaskStorage<rust_concurrency[f63282d72979e930]::__sensor_task_task::__sensor_task_task_inner_function::{closure#0}>>::poll",
+      "symbols": [
+        "_RNvMs1_NtCs8y48w7Vmnxv_16embassy_executor3rawINtB5_11TaskStorageNCNvNvCsl8v9BujxlrE_16rust_concurrency18___sensor_task_task33___sensor_task_task_inner_function0E4pollB16_"
+      ],
+      "language": "rust",
+      "kind": "normal",
+      "address": "0x800085c",
+      "size": 62,
+      "section": ".text",
+      "source": {
+        "file": "src/raw/mod.rs",
+        "line": 247
+      },
+      "inline_frames": [
+        {
+          "name": "rust_concurrency::__sensor_task_task::__sensor_task_task_inner_function::{closure#0}",
+          "linkage_name": "_RNCNvNvCsl8v9BujxlrE_16rust_concurrency18___sensor_task_task33___sensor_task_task_inner_function0B5_",
+          "call_site": {
+            "file": "src/raw/mod.rs",
+            "line": 253,
+            "column": 22
+          },
+          "low": "0x8000864",
+          "high": "0x8000878",
+          "depth": 6
+        },
+        {
+          "name": "core::hint::black_box::<u32>",
+          "linkage_name": "_RINvNtCsdBg9YmddVZT_4core4hint9black_boxmECsl8v9BujxlrE_16rust_concurrency",
+          "call_site": {
+            "file": "main.rs",
+            "line": 29,
+            "column": 5
+          },
+          "low": "0x8000874",
+          "high": "0x8000878",
+          "depth": 9
+        },
+        {
+          "name": "<embassy_executor::raw::util::SyncUnsafeCell<core::option::Option<unsafe fn(embassy_executor::raw::TaskRef)>>>::set",
+          "linkage_name": "_RNvMs1_NtNtCs8y48w7Vmnxv_16embassy_executor3raw4utilINtB5_14SyncUnsafeCellINtNtCsdBg9YmddVZT_4core6option6OptionFUNtB7_7TaskRefEuEE3setCsl8v9BujxlrE_16rust_concurrency",
+          "call_site": {
+            "file": "src/raw/mod.rs",
+            "line": 264,
+            "column": 34
+          },
+          "low": "0x8000878",
+          "high": "0x8000882",
+          "depth": 6
+        },
+        {
+          "name": "rust_concurrency::__sensor_task_task::__sensor_task_task_inner_function::{closure#0}",
+          "linkage_name": "_RNCNvNvCsl8v9BujxlrE_16rust_concurrency18___sensor_task_task33___sensor_task_task_inner_function0B5_",
+          "call_site": {
+            "file": "src/raw/mod.rs",
+            "line": 253,
+            "column": 22
+          },
+          "low": "0x8000882",
+          "high": "0x8000886",
+          "depth": 6
+        },
+        {
+          "name": "<embassy_executor::raw::state::State>::despawn",
+          "linkage_name": "_RNvMNtNtCs8y48w7Vmnxv_16embassy_executor3raw5stateNtB2_5State7despawn",
+          "call_site": {
+            "file": "src/raw/mod.rs",
+            "line": 268,
+            "column": 32
+          },
+          "low": "0x8000886",
+          "high": "0x800088a",
+          "depth": 6
+        },
+        {
+          "name": "<core::sync::atomic::Atomic<bool>>::store",
+          "linkage_name": "_RNvMs2_NtNtCsdBg9YmddVZT_4core4sync6atomicINtB5_6AtomicbE5store",
+          "call_site": {
+            "file": "src/raw/state_atomics_arm.rs",
+            "line": 62,
+            "column": 22
+          },
+          "low": "0x8000886",
+          "high": "0x800088a",
+          "depth": 7
+        },
+        {
+          "name": "core::sync::atomic::atomic_store::<u8, false>",
+          "linkage_name": "_RINvNtNtCsdBg9YmddVZT_4core4sync6atomic12atomic_storehKb0_ECsl8v9BujxlrE_16rust_concurrency",
+          "call_site": {
+            "file": "atomic.rs",
+            "line": 839,
+            "column": 13
+          },
+          "low": "0x8000886",
+          "high": "0x800088a",
+          "depth": 8
+        },
+        {
+          "name": "rust_concurrency::__sensor_task_task::__sensor_task_task_inner_function::{closure#0}",
+          "linkage_name": "_RNCNvNvCsl8v9BujxlrE_16rust_concurrency18___sensor_task_task33___sensor_task_task_inner_function0B5_",
+          "call_site": {
+            "file": "src/raw/mod.rs",
+            "line": 253,
+            "column": 22
+          },
+          "low": "0x800088e",
+          "high": "0x800089a",
+          "depth": 6
+        }
+      ],
+      "entry": "bb:0x800085c",
+      "blocks": [
+        {
+          "id": "bb:0x800085c",
+          "address": "0x800085c",
+          "size": 14,
+          "instructions": [
+            {
+              "address": "0x800085c",
+              "size": 2,
+              "bytes": "d0b5",
+              "mnemonic": "push",
+              "operands": "{r4, r6, r7, lr}",
+              "text": "push {r4, r6, r7, lr}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/mod.rs",
+                "line": 247
+              }
+            },
+            {
+              "address": "0x800085e",
+              "size": 2,
+              "bytes": "02af",
+              "mnemonic": "add",
+              "operands": "r7, sp, #8",
+              "text": "add r7, sp, #8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/mod.rs",
+                "line": 247
+              }
+            },
+            {
+              "address": "0x8000860",
+              "size": 2,
+              "bytes": "82b0",
+              "mnemonic": "sub",
+              "operands": "sp, #8",
+              "text": "sub sp, #8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/mod.rs",
+                "line": 247
+              }
+            },
+            {
+              "address": "0x8000862",
+              "size": 2,
+              "bytes": "0446",
+              "mnemonic": "mov",
+              "operands": "r4, r0",
+              "text": "mov r4, r0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/mod.rs",
+                "line": 247
+              }
+            },
+            {
+              "address": "0x8000864",
+              "size": 2,
+              "bytes": "007d",
+              "mnemonic": "ldrb",
+              "operands": "r0, [r0, #0x14]",
+              "text": "ldrb r0, [r0, #0x14]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 27,
+                "column": 33
+              }
+            },
+            {
+              "address": "0x8000866",
+              "size": 2,
+              "bytes": "c007",
+              "mnemonic": "lsls",
+              "operands": "r0, r0, #0x1f",
+              "text": "lsls r0, r0, #0x1f",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 27,
+                "column": 33
+              }
+            },
+            {
+              "address": "0x8000868",
+              "size": 2,
+              "bytes": "11d1",
+              "mnemonic": "bne",
+              "operands": "#0x800088e",
+              "text": "bne #0x800088e",
+              "is_call": false,
+              "is_jump": true,
+              "is_return": false,
+              "is_conditional": true,
+              "direct_target": "0x800088e",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 27,
+                "column": 33
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 8.0,
+            "max": 13.0
+          },
+          "terminator": "branch"
+        },
+        {
+          "id": "bb:0x800086a",
+          "address": "0x800086a",
+          "size": 6,
+          "instructions": [
+            {
+              "address": "0x800086a",
+              "size": 2,
+              "bytes": "2069",
+              "mnemonic": "ldr",
+              "operands": "r0, [r4, #0x10]",
+              "text": "ldr r0, [r4, #0x10]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 27,
+                "column": 22
+              }
+            },
+            {
+              "address": "0x800086c",
+              "size": 4,
+              "bytes": "fff796ff",
+              "mnemonic": "bl",
+              "operands": "#0x800079c",
+              "text": "bl #0x800079c",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x800079c",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 28,
+                "column": 25
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x800086c",
+              "target": "0x800079c",
+              "target_function": "fn:0x800079c",
+              "target_name": "rust_concurrency::sensor_sample",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": {
+            "min": 3.0,
+            "max": 5.0
+          },
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x8000870",
+          "address": "0x8000870",
+          "size": 4,
+          "instructions": [
+            {
+              "address": "0x8000870",
+              "size": 4,
+              "bytes": "fff7aeff",
+              "mnemonic": "bl",
+              "operands": "#0x80007d0",
+              "text": "bl #0x80007d0",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x80007d0",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 28,
+                "column": 17
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x8000870",
+              "target": "0x80007d0",
+              "target_function": "fn:0x80007d0",
+              "target_name": "rust_concurrency::process",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": {
+            "min": 1.0,
+            "max": 3.0
+          },
+          "terminator": "call"
+        },
+        {
+          "id": "bb:0x8000874",
+          "address": "0x8000874",
+          "size": 26,
+          "instructions": [
+            {
+              "address": "0x8000874",
+              "size": 2,
+              "bytes": "0190",
+              "mnemonic": "str",
+              "operands": "r0, [sp, #4]",
+              "text": "str r0, [sp, #4]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "hint.rs",
+                "line": 491,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x8000876",
+              "size": 2,
+              "bytes": "01a8",
+              "mnemonic": "add",
+              "operands": "r0, sp, #4",
+              "text": "add r0, sp, #4",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "hint.rs",
+                "line": 491,
+                "column": 5
+              }
+            },
+            {
+              "address": "0x8000878",
+              "size": 4,
+              "bytes": "40f6d900",
+              "mnemonic": "movw",
+              "operands": "r0, #0x8d9",
+              "text": "movw r0, #0x8d9",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/util.rs",
+                "line": 48,
+                "column": 9
+              }
+            },
+            {
+              "address": "0x800087c",
+              "size": 4,
+              "bytes": "c0f60000",
+              "mnemonic": "movt",
+              "operands": "r0, #0x800",
+              "text": "movt r0, #0x800",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/util.rs",
+                "line": 48,
+                "column": 9
+              }
+            },
+            {
+              "address": "0x8000880",
+              "size": 2,
+              "bytes": "e060",
+              "mnemonic": "str",
+              "operands": "r0, [r4, #0xc]",
+              "text": "str r0, [r4, #0xc]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/util.rs",
+                "line": 48,
+                "column": 9
+              }
+            },
+            {
+              "address": "0x8000882",
+              "size": 2,
+              "bytes": "0120",
+              "mnemonic": "movs",
+              "operands": "r0, #1",
+              "text": "movs r0, #1",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 30,
+                "column": 2
+              }
+            },
+            {
+              "address": "0x8000884",
+              "size": 2,
+              "bytes": "2075",
+              "mnemonic": "strb",
+              "operands": "r0, [r4, #0x14]",
+              "text": "strb r0, [r4, #0x14]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 30,
+                "column": 2
+              }
+            },
+            {
+              "address": "0x8000886",
+              "size": 2,
+              "bytes": "0020",
+              "mnemonic": "movs",
+              "operands": "r0, #0",
+              "text": "movs r0, #0",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "atomic.rs",
+                "line": 4303,
+                "column": 24
+              }
+            },
+            {
+              "address": "0x8000888",
+              "size": 2,
+              "bytes": "2070",
+              "mnemonic": "strb",
+              "operands": "r0, [r4]",
+              "text": "strb r0, [r4]",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "atomic.rs",
+                "line": 4303,
+                "column": 24
+              }
+            },
+            {
+              "address": "0x800088a",
+              "size": 2,
+              "bytes": "02b0",
+              "mnemonic": "add",
+              "operands": "sp, #8",
+              "text": "add sp, #8",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/mod.rs",
+                "line": 279,
+                "column": 6
+              }
+            },
+            {
+              "address": "0x800088c",
+              "size": 2,
+              "bytes": "d0bd",
+              "mnemonic": "pop",
+              "operands": "{r4, r6, r7, pc}",
+              "text": "pop {r4, r6, r7, pc}",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": true,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "src/raw/mod.rs",
+                "line": 279,
+                "column": 6
+              }
+            }
+          ],
+          "calls": [],
+          "cycles": {
+            "min": 11.0,
+            "max": 13.0
+          },
+          "terminator": "return"
+        },
+        {
+          "id": "bb:0x800088e",
+          "address": "0x800088e",
+          "size": 12,
+          "instructions": [
+            {
+              "address": "0x800088e",
+              "size": 4,
+              "bytes": "40f66410",
+              "mnemonic": "movw",
+              "operands": "r0, #0x964",
+              "text": "movw r0, #0x964",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 27,
+                "column": 33
+              }
+            },
+            {
+              "address": "0x8000892",
+              "size": 4,
+              "bytes": "c0f60000",
+              "mnemonic": "movt",
+              "operands": "r0, #0x800",
+              "text": "movt r0, #0x800",
+              "is_call": false,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": null,
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 27,
+                "column": 33
+              }
+            },
+            {
+              "address": "0x8000896",
+              "size": 4,
+              "bytes": "fff7d8fd",
+              "mnemonic": "bl",
+              "operands": "#0x800044a",
+              "text": "bl #0x800044a",
+              "is_call": true,
+              "is_jump": false,
+              "is_return": false,
+              "is_conditional": false,
+              "direct_target": "0x800044a",
+              "indirect": null,
+              "source": {
+                "file": "main.rs",
+                "line": 27,
+                "column": 33
+              }
+            }
+          ],
+          "calls": [
+            {
+              "site": "0x8000896",
+              "target": "0x800044a",
+              "target_function": "fn:0x800044a",
+              "target_name": "core::panicking::panic_const::panic_const_async_fn_resumed",
+              "direct": true,
+              "tail": false,
+              "conditional": false,
+              "heuristic": false,
+              "unresolved": false
+            }
+          ],
+          "cycles": {
+            "min": 3.0,
+            "max": 5.0
+          },
+          "terminator": "call"
+        }
+      ],
+      "edges": [
+        {
+          "from": "bb:0x800085c",
+          "to": "bb:0x800086a",
+          "kind": "fallthrough",
+          "site": "0x8000868",
+          "conditional": true
+        },
+        {
+          "from": "bb:0x800085c",
+          "to": "bb:0x800088e",
+          "kind": "branch",
+          "site": "0x8000868",
+          "conditional": true
+        },
+        {
+          "from": "bb:0x800086a",
+          "to": "bb:0x8000870",
+          "kind": "call-return",
+          "site": "0x800086c",
+          "conditional": false
+        },
+        {
+          "from": "bb:0x8000870",
+          "to": "bb:0x8000874",
+          "kind": "call-return",
+          "site": "0x8000870",
+          "conditional": false
+        }
+      ],
+      "recovered_calls": []
+    }
+  ],
+  "diagnostics": [],
+  "diagnostics_omitted": 1
+}

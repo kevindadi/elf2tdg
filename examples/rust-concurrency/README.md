@@ -60,6 +60,9 @@ The analyzer is given an explicit Cortex-M4 timing model at 168 MHz.
 | [`artifacts/cfg-analysis-executor.json`](artifacts/cfg-analysis-executor.json) | executor CFG with the four candidate poll-dispatch calls |
 | [`artifacts/cfg-analysis-executor.svg`](artifacts/cfg-analysis-executor.svg) | rendered executor CFG |
 | [`artifacts/cfg-analysis-executor.mmd`](artifacts/cfg-analysis-executor.mmd) | Mermaid source for the executor CFG |
+| [`artifacts/cfg-analysis-sensor.json`](artifacts/cfg-analysis-sensor.json) | CFG selected by task name `sensor_task`, mapped to its poll entry |
+| [`artifacts/cfg-analysis-sensor.svg`](artifacts/cfg-analysis-sensor.svg) | rendered sensor-task CFG |
+| [`artifacts/cfg-analysis-sensor.mmd`](artifacts/cfg-analysis-sensor.mmd) | Mermaid source for the sensor-task CFG |
 | [`artifacts/elf-layout-analysis.mmd`](artifacts/elf-layout-analysis.mmd) | loader-backed ELF layout for the analysis build |
 
 A browser walkthrough with the diagram and legend is
@@ -112,6 +115,22 @@ share the same site; edge IDs include the target address. See
 [`cfg-analysis-executor.json`](artifacts/cfg-analysis-executor.json) /
 [`cfg-analysis-executor.svg`](artifacts/cfg-analysis-executor.svg) for the CFG
 view.
+
+## Select a task CFG by source name
+
+Context names are first-class CFG selectors. Both forms select the real task
+poll body, not the future-initialization helper:
+
+```sh
+elf2tdg artifacts/rust-concurrency-analysis.elf --view cfg --format json \
+    --function sensor_task --output sensor-task-cfg.json
+
+elf2tdg artifacts/rust-concurrency-analysis.elf --view cfg --format json \
+    --reachable-from sensor_task --output sensor-task-reachable.json
+```
+
+`app_main` and `monitor_task` work the same way. Function names such as
+`rust_concurrency::start_tasks` still select the concrete user function.
 
 ## Scope
 
