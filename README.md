@@ -121,16 +121,26 @@ Implemented:
 - Indexed function-pointer call tables are expanded into bounded candidate
   sets, covering `call [table + index*scale]`, register loads from an indexed
   table, and RISC-V table-relative call sequences. Table scans use a recovered
-  comparison bound and allocated data-symbol sizes when available.
+  comparison bound plus allocated data-symbol or DWARF variable sizes.
 - Direct callee return values feed indirect calls: getters/factories such as
   `get_handler()()` resolve through branch-sensitive return-register
   summaries. Local stack slots initialized with immediate or register function
   pointers are also followed, including branchy assignments. These produce
   `resolved-call-table` and `resolved-returned-indirect-call` diagnostics.
+- DWARF-typed function-pointer fields resolve dynamic calls such as
+  `ops->run()` when aggregate member metadata identifies the loaded field and
+  typed global objects or global pointers provide concrete candidates. The
+  result is a bounded `resolved-typed-field-candidates` call set.
 - OpenMP parallel-region `Scope` nodes with implicit join membership.
 - Embassy task-handle poll await rule in addition to spawn detection.
 - DWARF line-program extraction: functions receive source file/line/column
   information when debug info is present.
+- DWARF type and variable extraction: aggregate layouts and member offsets,
+  pointer/subroutine/array types, global variable addresses and sizes, and
+  frame-relative locals/parameters. Function-pointer fields validate dynamic
+  field calls, typed global objects and pointers-to-objects provide bounded
+  candidate sets, and variable bounds keep indexed table scans from crossing
+  into adjacent data when symbols are stripped.
 - Stripped-image fallback: when no local code symbols exist, entry/vector
   seeds are supplemented by architecture-aware prologue scanning
   (`endbr64`/`push rbp; mov rbp,rsp`, `push {...,lr}`, `stp x29,x30`, RISC-V
@@ -208,8 +218,9 @@ Still deferred:
   body itself.
 - OpenMP task/barrier edges beyond the parallel-region scope and spawn.
 - General `.await` lowering beyond recognized runtime handle poll functions.
-- DWARF variable/type data and location expressions; function names, ranges,
-  source locations and inline call sites are extracted.
+- Full DWARF type/location coverage beyond the bounded extraction above:
+  location lists, split-DWARF cross-unit references, nested anonymous
+  aggregates, and complete C++ class/vtable reconstruction.
 - Name-aware stripped-image recovery beyond prologue and DWARF-subprogram
   seeding (for example recovery of C++ lambdas and virtual methods without
   symbols).

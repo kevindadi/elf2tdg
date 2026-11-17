@@ -200,8 +200,9 @@ Indirect calls and jumps are also resolved through:
 - indexed function-pointer call tables, both direct operands such as
   `call [table + index*scale]` and a register loaded from an indexed table
   immediately before the call. The scan is bounded by a recovered comparison
-  and by the allocated data symbol at the table base when one exists; matches
-  produce `resolved-call-table` candidate sets. RISC-V table-relative
+  and by the allocated data symbol or DWARF variable at the table base when
+  one exists; matches produce `resolved-call-table` candidate sets. RISC-V
+  table-relative
   `slli`/`add`/`load`/`jalr` sequences are included;
 - return values of direct callees. A getter or factory such as
   `get_handler()()` is summarized by walking back from each reachable return
@@ -213,6 +214,11 @@ Indirect calls and jumps are also resolved through:
   and branchy assignments. Frame-relative loads are resolved from every
   modeled store to the same slot, so `void (*fn)(void) = handler; fn()` works
   even when the compiler materializes the value through a stack slot;
+- DWARF-typed function-pointer fields. A dynamic load such as `ops->run()` is
+  checked against aggregate member types; concrete values are read from typed
+  global objects and from global pointers to typed objects. The result is a
+  bounded `resolved-typed-field-candidates` call set. The field type and the
+  object's declared size keep the candidate scan conservative;
 - Rust trait-object method slots, using validated vtable-shaped read-only
   tables referenced by pointer constants in the caller/callee neighborhood.
   These produce low-confidence candidate call or tail-call edges and a
@@ -273,10 +279,37 @@ Caller-argument propagation accepts only a unique executable target across the
 known callers and marks the resulting call as indirect/medium confidence. If
 any known caller cannot be evaluated, the call stays unresolved.
 A target that depends on a heap object outside the bounded vtable/field
-analysis, on an unresolved function return, or on disagreeing callers stays
-`unresolved` with an `unresolved-indirect-call` diagnostic rather than being
-guessed. The CFG JSON still records the raw instruction, call site and indirect
-target expression for each of them.
+analysis, on a field with no DWARF function-pointer type, on an unresolved
+function return, or on disagreeing callers stays `unresolved` with an
+`unresolved-indirect-call` diagnostic rather than being guessed. The CFG JSON
+still records the raw instruction, call site and indirect target expression for
+each of them.
+
+### DWARF types and variables
+
+The DWARF reader derives a compact type/variable database alongside
+subprograms and line ranges:
+
+- `DwarfInfo::aggregates` contains structure/class/union layouts with member
+  names, byte offsets, sizes and resolved type names;
+- `DwarfInfo::variables` contains globals with `DW_OP_addr`/`DW_OP_addrx`
+  locations and frame-relative locals/parameters from `DW_OP_fbreg` or the
+  CFA expression, plus their type size and function-pointer classification;
+- pointer, reference, typedef, qualifier, subroutine and array types are
+  followed through bounded type chains; arrays expose their element count;
+- `function_pointer_field_at(offset)`, `variable_at(address)`,
+  `object_end_at(address)` and `local_variable_at` query the derived data.
+
+Points-to uses this metadata in two places. Function-pointer field offsets
+validate dynamic field calls and gather values from typed global objects or
+global pointers to those objects. The field-offset search is object-insensitive:
+several aggregate types may share an offset, so the result is a bounded set of
+low-confidence alternatives rather than a proof of the object's dynamic type.
+Allocated data-symbol sizes and DWARF variable extents bound indexed call/jump
+table scans, including images where a data symbol was stripped but its debug
+information survived. Bitfields, anonymous member flattening, location lists
+and cross-unit split-DWARF type references are intentionally not reconstructed;
+missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
