@@ -1,4 +1,4 @@
-# TDG schema v1.2
+# TDG schema v1.3
 
 This document defines the Task Dependency Graph (TDG) produced by `elf2tdg`.
 The Rust types in `crates/elf2tdg-schema` are the normative definition; the
@@ -147,6 +147,7 @@ There are no silent guesses.
 | `kind` | From → To | Purpose |
 |---|---|---|
 | `call` | function → function | direct, indirect, tail or inlined call |
+| `unresolved-call` | function → unknown | call site whose target could not be resolved; `tail` records a jump, optional `candidates` retain bounded alternatives |
 | `spawn` | function → context (or opaque target) | creation of a thread/task/executor task; a resolved entry must match the context entry |
 | `join` | function → context (or opaque target) | join/detach/abort/scope-end barrier |
 | `await` | context → context/function/opaque | `.await`, `select!`, join-handle await |
@@ -155,9 +156,17 @@ There are no silent guesses.
 | `preempts` | context → context | derived priority-based preemption; `derived: true` |
 
 A bounded indirect target set may produce multiple `Call` edges with the same
-`site`, one per candidate callee. Edge IDs include the target address. This is
-used for Embassy's executor task-poll dispatch, where the task pointer is
-dynamic but the poll-field stores identify the candidate poll functions.
+`site`, one per candidate callee. These are alternatives, not independent
+calls. Edge IDs include the target address. This is used for Embassy's
+executor task-poll dispatch, where the task pointer is dynamic but the
+poll-field stores identify the candidate poll functions.
+
+An unresolved indirect call or tail jump produces an `unresolved-call` edge
+with `confidence: unknown`. It has no resolved callee: the site itself is the
+evidence. Graph reachability and dead-code passes must treat it as an unknown
+frontier and must not infer that the caller has no outbound path. A
+`null`/statically-null call is different and remains a call-site diagnostic
+without a target edge.
 
 Call edges distinguish:
 
@@ -200,7 +209,11 @@ with the recovered count.
 Named code symbols and DWARF subprogram entries are also CFG system roots,
 even when no edge or pointer references them. They do not introduce new TDG
 edges; they only keep uncalled static functions and debug-info-recovered
-entries in the default CFG export.
+entries in the default CFG export. They are discovery roots, not execution
+roots: `ProgramCfg::execution_roots` and `reachable_from_execution_roots`
+exclude them and are the conservative base for reachability/dead-code
+analysis. Unresolved call sites remain explicit `unresolved-call` edges in the
+TDG so such analysis cannot treat an unknown callee as no callee.
 
 ### Lock and semaphore events
 
@@ -462,9 +475,10 @@ cores still need calibration data for meaningful bounds.
 
 ## 12. Versioning and compatibility
 
-- `schema_version` is `1.2` for this document. Version 1.2 adds the optional
-  top-level `locks` event list and lock/semaphore enums; v1.0/v1.1 documents
-  remain readable.
+- `schema_version` is `1.3` for this document. Version 1.2 adds the optional
+  top-level `locks` event list and lock/semaphore enums. Version 1.3 adds the
+  explicit `unresolved-call` edge kind. v1.0/v1.1/v1.2 documents remain
+  readable.
 - Minor versions add optional fields and new enum values; consumers should
   ignore unknown fields and treat unknown edge kinds/confidence values as
   `unknown` where their language permits.

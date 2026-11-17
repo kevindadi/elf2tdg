@@ -83,6 +83,14 @@ precedence over a DWARF name; DWARF supplies the display name only when the
 symbol was removed. PLT stubs, external imports and default-handler stubs are
 not added through this rule.
 
+These symbol/DWARF entries are **discovery roots**, not **execution roots**.
+`ProgramCfg::system_roots` combines both for the lossless default export;
+`ProgramCfg::execution_roots` and `reachable_from_execution_roots` omit
+discovery-only functions and are the appropriate base for reachability or
+dead-code decisions. Graph passes must also preserve unresolved call sites: in
+the TDG they are explicit `unresolved-call` edges with `confidence: unknown`,
+not missing calls.
+
 Vector-table roots are read from `.vector_table`/`.isr_vector`-style sections.
 The initial stack word is skipped, Thumb bits are cleared and unused vectors
 that all point at a default handler symbol are excluded. The reset vector and

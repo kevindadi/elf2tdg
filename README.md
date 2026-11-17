@@ -169,6 +169,15 @@ Implemented:
   and appear in CFG JSON as `pointer_roots`. Code that references a data table
   also follows a bounded run of function pointers, so callback/dispatch tables
   remain in a single-root CFG slice.
+- CFG root semantics separate execution roots (startup/main/task/ISR contexts,
+  callbacks, architecture entries and pointer roots) from discovery roots
+  (uncalled code symbols and DWARF subprograms). `ProgramCfg::execution_roots`
+  and `reachable_from_execution_roots` are the conservative base for
+  reachability and dead-code passes; the default export still includes all
+  discovered functions.
+- Unresolved indirect call and tail-jump sites are explicit `unresolved-call`
+  TDG edges with `confidence: unknown`, so graph passes do not mistake an
+  unknown call for the absence of a call.
 - External imports and zero-size logical task entries remain selectable CFG
   functions. Their JSON view carries a `no_code` reason and empty block list;
   DOT/Mermaid render an explicit dashed no-code note instead of an empty graph.
