@@ -747,19 +747,60 @@ impl ProgramCfg {
 
     /// Collects execution roots: main/startup/task contexts, Cortex-M vector
     /// handlers, ARM/AArch64 exception vectors, RISC-V trap vectors, callbacks,
-    /// global pointer roots, symbol/DWARF function entries, init/fini entry
-    /// points and the ELF entry point.
+    /// global pointer roots, init/fini entry points and the ELF entry point.
+    ///
+    /// Symbol and DWARF entries are deliberately excluded: they are discovery
+    /// roots for lossless export, not proof that the image executes the
+    /// function. Dead-code and reachability passes should start here.
+    #[must_use]
+    pub fn execution_roots(&self, tdg: &Tdg, image: &Image) -> Vec<FunctionId> {
+        let mut roots = BTreeSet::new();
+        let default_handlers = default_handler_addresses(image);
+        self.collect_execution_roots(tdg, image, &default_handlers, &mut roots);
+        roots.into_iter().collect()
+    }
+
+    /// Collects all CFG export roots: execution roots plus every function
+    /// represented by a code symbol or DWARF subprogram.
+    ///
+    /// This is the default lossless CFG scope. Use [`Self::execution_roots`]
+    /// for reachability or dead-code decisions.
     ///
     /// Default handler stubs repeated across unused vectors are excluded.
     #[must_use]
     pub fn system_roots(&self, tdg: &Tdg, image: &Image) -> Vec<FunctionId> {
         let mut roots = BTreeSet::new();
-        let default_handlers: BTreeSet<u64> = image
-            .symbols
-            .iter()
-            .filter(|symbol| is_default_handler_name(&symbol.name))
-            .map(|symbol| symbol.canonical_address)
-            .collect();
+        let default_handlers = default_handler_addresses(image);
+        self.collect_execution_roots(tdg, image, &default_handlers, &mut roots);
+        for symbol in &image.symbols {
+            if let Some(function) =
+                self.function_root_at(&default_handlers, symbol.canonical_address)
+            {
+                roots.insert(function.id.clone());
+            }
+        }
+        if let Some(dwarf) = &image.dwarf {
+            for function in &dwarf.functions {
+                let Some((low, _)) = function.primary_range() else {
+                    continue;
+                };
+                if let Some(function) =
+                    self.function_root_at(&default_handlers, image.canonical_address(low))
+                {
+                    roots.insert(function.id.clone());
+                }
+            }
+        }
+        roots.into_iter().collect()
+    }
+
+    fn collect_execution_roots(
+        &self,
+        tdg: &Tdg,
+        image: &Image,
+        default_handlers: &BTreeSet<u64>,
+        roots: &mut BTreeSet<FunctionId>,
+    ) {
         for context in &tdg.contexts {
             let function = self.cfg_function_for_tdg_id(tdg, &context.entry);
             let default = function.is_some_and(is_default_handler)
@@ -795,25 +836,6 @@ impl ProgramCfg {
                 roots.insert(function.id.clone());
             }
         }
-        for symbol in &image.symbols {
-            if let Some(function) =
-                self.function_root_at(&default_handlers, symbol.canonical_address)
-            {
-                roots.insert(function.id.clone());
-            }
-        }
-        if let Some(dwarf) = &image.dwarf {
-            for function in &dwarf.functions {
-                let Some((low, _)) = function.primary_range() else {
-                    continue;
-                };
-                if let Some(function) =
-                    self.function_root_at(&default_handlers, image.canonical_address(low))
-                {
-                    roots.insert(function.id.clone());
-                }
-            }
-        }
         if let Some(function) = self.function_covering(image.canonical_address(image.entry)) {
             roots.insert(function.id.clone());
         }
@@ -825,10 +847,10 @@ impl ProgramCfg {
                 }
             }
         }
-        roots.into_iter().collect()
     }
 
-    /// Runs multi-root worklist reachability from all asynchronous entry points.
+    /// Runs multi-root worklist reachability from all CFG export roots:
+    /// execution roots plus symbol/DWARF discovery roots.
     ///
     /// When `prune_runtime` is true, known panic/format/compiler-builtin and
     /// drop-glue functions are retained as nodes but their callees are not
@@ -841,6 +863,23 @@ impl ProgramCfg {
         prune_runtime: bool,
     ) -> Vec<&CfgFunction> {
         let roots = self.system_roots(tdg, image);
+        self.reachable_from_roots(tdg, &roots, prune_runtime)
+    }
+
+    /// Runs reachability from execution roots only.
+    ///
+    /// Symbol/DWARF discovery-only roots are not seeded. Unresolved call
+    /// edges remain explicit unknown frontiers; callers that need sound
+    /// dead-code elimination must not treat a missing candidate as absence of
+    /// a call.
+    #[must_use]
+    pub fn reachable_from_execution_roots(
+        &self,
+        tdg: &Tdg,
+        image: &Image,
+        prune_runtime: bool,
+    ) -> Vec<&CfgFunction> {
+        let roots = self.execution_roots(tdg, image);
         self.reachable_from_roots(tdg, &roots, prune_runtime)
     }
 
@@ -1151,6 +1190,15 @@ fn is_architecture_root_section(name: &str) -> bool {
 
 fn is_default_handler(function: &CfgFunction) -> bool {
     is_default_handler_name(&function.primary_name)
+}
+
+fn default_handler_addresses(image: &Image) -> BTreeSet<u64> {
+    image
+        .symbols
+        .iter()
+        .filter(|symbol| is_default_handler_name(&symbol.name))
+        .map(|symbol| symbol.canonical_address)
+        .collect()
 }
 
 fn is_default_handler_name(name: &str) -> bool {
