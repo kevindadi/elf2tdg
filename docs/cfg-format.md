@@ -219,10 +219,14 @@ Indirect calls and jumps are also resolved through:
   global objects and from global pointers to typed objects. The result is a
   bounded `resolved-typed-field-candidates` call set. The field type and the
   object's declared size keep the candidate scan conservative;
-- Rust trait-object method slots, using validated vtable-shaped read-only
-  tables referenced by pointer constants in the caller/callee neighborhood.
-  These produce low-confidence candidate call or tail-call edges and a
-  `resolved-trait-object-candidates` diagnostic.
+- Rust trait-object method slots. Candidate vtable bases come first from
+  validated vtable-shaped read-only tables referenced by pointer constants in
+  the caller/callee neighborhood. When that produces no method candidate,
+  DWARF fat-pointer layouts (`&dyn Trait`, `Box<dyn Trait>`) supply vtable
+  pointers from static fat-pointer variables, arrays/registries and nested
+  aggregate fields. These produce low-confidence candidate call or tail-call
+  edges and a `resolved-trait-object-candidates` diagnostic; a DWARF vtable
+  method name is included when available.
 
 A resolved jump whose target lies inside the same function becomes a `branch`
 or `jump` CFG edge. A resolved jump to another function is emitted as a call
@@ -296,15 +300,24 @@ subprograms and line ranges:
   locations and frame-relative locals/parameters from `DW_OP_fbreg` or the
   CFA expression, plus their type size and function-pointer classification;
 - pointer, reference, typedef, qualifier, subroutine and array types are
-  followed through bounded type chains; arrays expose their element count;
+  followed through bounded type chains; arrays expose their element count and
+  aggregate element type;
+- aggregate layouts named `&dyn ...`/`Box<dyn ...>` with `pointer` and
+  `vtable` members become trait-object layouts with data/vtable offsets;
+- Rust vtable variables and vtable-shaped aggregate types expose vtable
+  addresses, header entries and method names;
 - `function_pointer_field_at(offset)`, `variable_at(address)`,
-  `object_end_at(address)` and `local_variable_at` query the derived data.
+  `object_end_at(address)`, `local_variable_at`, `trait_object_layout`,
+  `vtable_at` and `vtable_method_at` query the derived data.
 
-Points-to uses this metadata in two places. Function-pointer field offsets
+Points-to uses this metadata in three places. Function-pointer field offsets
 validate dynamic field calls and gather values from typed global objects or
 global pointers to those objects. The field-offset search is object-insensitive:
 several aggregate types may share an offset, so the result is a bounded set of
 low-confidence alternatives rather than a proof of the object's dynamic type.
+Trait-object layouts are walked from global fat pointers, including arrays and
+nested aggregate fields, to collect vtable bases; these are a fallback after
+code-referenced vtable bases, so existing precise candidates keep precedence.
 Allocated data-symbol sizes and DWARF variable extents bound indexed call/jump
 table scans, including images where a data symbol was stripped but its debug
 information survived. Bitfields, anonymous member flattening, location lists
@@ -580,8 +593,7 @@ asserts that both the TDG and CFG validate.
   and table-relative offset layouts are expanded. Guarded tables larger than
   256 entries are supported; unguarded scans stay conservative.
   Computed/indirect tables remain unresolved; heap/stack trait-object vtable
-  calls are handled only through bounded candidate resolution, not full
-  field-sensitive points-to.
+  calls use bounded candidate resolution, not full field-sensitive points-to.
 - Cortex-M vector tables are found by section name or by the initial-SP and
   Thumb-handler pattern. ARM/AArch64 exception vectors and RISC-V trap vectors
   need a recognizable vector/trap/exception section or symbol; a bare table

@@ -566,6 +566,9 @@ M3 analysis extensions currently implement:
   locations and frame-relative locals/parameters;
 - typed function-pointer field candidates from global objects and global
   pointers to typed objects, with DWARF variable extents bounding table scans;
+- DWARF trait-object fat-pointer layouts and vtable metadata, used as a
+  fallback for static trait-object registries, arrays and nested fields when
+  code-referenced vtable bases yield no method candidate;
 - Embassy task-handle poll await rule;
 - DWARF line-program source file/line/column extraction for functions;
 - per-function DWARF inline-frame ranges with source call sites, and typed

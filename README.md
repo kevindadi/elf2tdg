@@ -98,8 +98,10 @@ Implemented:
   field across the image; multiple `Call` edges share the call site.
 - Bounded trait-object points-to: valid Rust vtable layouts in read-only data
   are matched against pointer constants from related caller/callee functions.
-  Method calls loaded from heap/stack trait objects become low-confidence
-  candidate call edges; `GlobalAlloc`/allocator calls remain direct edges.
+  DWARF fat-pointer layouts (`&dyn`, `Box<dyn>`) also supply vtable bases from
+  static fat pointers, arrays/registries and nested aggregate fields when code
+  constants do not. Method calls become low-confidence candidate call or
+  tail-call edges; `GlobalAlloc`/allocator calls remain direct edges.
 - Indirect-call and tail-call recovery for register-held function pointers,
   static pointer chains, vtable slots, relocated GOT entries and
   caller-argument expressions. Import GOT slots resolve to synthesized PLT
@@ -255,12 +257,12 @@ make -C tests/fixtures/cortex_m_spawn
 ```
 
 The checked-in Rust example is a `thumbv7em-none-eabi` no-std Embassy ELF; its
-integration test loads that artifact directly. The allocator/trait-object
-fixture also targets `thumbv7em-none-eabi` and is rebuilt with
-`make alloc-fixture`. Rebuilding either requires
-`rustup target add thumbv7em-none-eabi`. C++ and OpenMP fixtures are compiled
-on demand with `g++`/`gcc`. Tests that build fixtures report a skip when the
-required toolchain is absent.
+integration test loads that artifact directly. The allocator/trait-object and
+static trait-registry fixtures also target `thumbv7em-none-eabi` and are
+rebuilt with `make alloc-fixture` and `make static-trait-fixture`. Rebuilding
+them requires `rustup target add thumbv7em-none-eabi`. C++ and OpenMP fixtures
+are compiled on demand with `g++`/`gcc`. Tests that build fixtures report a
+skip when the required toolchain is absent.
 
 ## Usage
 
@@ -422,7 +424,7 @@ docs/elf-view.md          loader-backed ELF layout, colors and disassembly limit
 docs/tdg-legend.md        diagram shapes, colors, edge styles and confidence
 schema/tdg.schema.json    generated JSON Schema (2020-12)
 examples/                 worked Rust and Cortex-M examples plus artifacts
-tests/fixtures/           C firmware and Rust allocator/trait fixtures
+tests/fixtures/           C firmware and Rust allocator/static-trait fixtures
 fuzz/                     cargo-fuzz ELF/CFG validation harness
 ```
 

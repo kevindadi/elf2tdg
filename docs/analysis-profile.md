@@ -138,10 +138,11 @@ The same DWARF pass extracts a compact type/variable view: aggregate member
 offsets and sizes, pointer/subroutine/array types, global addresses, and
 frame-relative locals and parameters. Function-pointer fields validate
 dynamic field calls; typed global objects and pointers provide bounded
-candidate targets; and variable extents bound indexed table scans even after a
-data symbol is stripped. This is not a full type database: location lists,
-split-DWARF cross-unit references and flattened anonymous aggregates are
-outside the bounded extraction.
+candidate targets; variable extents bound indexed table scans even after a
+data symbol is stripped; and `&dyn`/`Box<dyn>` fat-pointer layouts recover
+vtable bases from static registries and nested fields. This is not a full type
+database: location lists, split-DWARF cross-unit references and flattened
+anonymous aggregates are outside the bounded extraction.
 
 The TDG also exposes typed `locks` events for acquire/try-acquire/release
 operations. The supported rules cover pthread mutex/RW-lock/semaphores,
