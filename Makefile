@@ -48,11 +48,11 @@ examples:
 	$(MAKE) -C examples/cortex-m0-isr
 
 analyze-fixture: $(FIXTURE_ELF)
-	$(CARGO) run -p elf2tdg -- $(FIXTURE_ELF) --freq 48MHz --format json \
+	$(CARGO) run -p elf2tdg -- $(FIXTURE_ELF) --view tdg --freq 48MHz --format json \
 		--output /tmp/elf2tdg-cortex-m0.json --verbose
 
 analyze-spawn-fixture: $(SPAWN_FIXTURE_ELF)
-	$(CARGO) run -p elf2tdg -- $(SPAWN_FIXTURE_ELF) --freq 48MHz --format json \
+	$(CARGO) run -p elf2tdg -- $(SPAWN_FIXTURE_ELF) --view tdg --freq 48MHz --format json \
 		--output /tmp/elf2tdg-cortex-m-spawn.json --verbose
 
 analyze-cfg-fixture: $(FIXTURE_ELF)

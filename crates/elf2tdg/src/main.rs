@@ -47,7 +47,7 @@ struct Cli {
 
     /// Graph view: the final TDG, the intermediate per-function CFG, or the
     /// loaded ELF layout.
-    #[arg(long, value_enum, default_value_t = View::Tdg)]
+    #[arg(long, value_enum, default_value_t = View::Cfg)]
     view: View,
 
     /// Select one function for CFG output by name, symbol, task context, or 0x
@@ -180,9 +180,8 @@ fn render_view(
             OutputFormat::Mermaid => output::render_mermaid_with(tdg, graph_options),
         },
         View::Cfg => match format {
-            OutputFormat::Json => cfg::render_json_selected(
+            OutputFormat::Json => cfg::render_json_program_selected(
                 &analysis.cfg,
-                tdg,
                 cfg_functions,
                 include_cfg_instructions,
             )
@@ -244,6 +243,13 @@ fn main() -> Result<()> {
     {
         anyhow::bail!(
             "--function, --all-functions, --reachable-from, --no-prune-runtime and --no-cfg-instructions are only supported with --view cfg"
+        );
+    }
+    if cli.view != View::Tdg
+        && (cli.projection != ProjectionArg::Full || cli.legend || cli.instructions)
+    {
+        anyhow::bail!(
+            "--projection, --legend and --instructions are only supported with --view tdg"
         );
     }
     if cli.view == View::Elf {
