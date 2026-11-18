@@ -6,10 +6,14 @@ the target output is a versioned JSON graph plus human-readable diagrams.
 The analyzer keeps an explicit per-function **control-flow graph** (`FunctionCfg`,
 backed by `petgraph::StableDiGraph`) between the ELF and the CFG. Basic blocks,
 raw instruction bytes, typed edges, call sites, timing and source locations are
-preserved for the CLI and a future IDA-style UI. CFG blocks and call edges are
-extends this CFG with program roots, an interprocedural call graph and concurrency annotations.
+preserved for the CLI and downstream tools. Program-level metadata extends this
+CFG with execution roots, an interprocedural call graph, concurrency
+annotations and the optional performance models below.
 
-## Status: M0 + M1 + M2 complete; M3 core analysis implemented
+## Status
+
+CFG recovery, program metadata, timing models and optional pipeline, cache,
+memory, branch-prediction and WCET analyses are implemented.
 
 Implemented:
 
@@ -34,20 +38,15 @@ Implemented:
   generic AArch64 and x86-64 statistical throughput models
   (`--cpu aarch64` / `--cpu x86-64`); they are never enabled silently.
 - Optional TOML/JSON board profiles (`--board-profile`, schema v2) supply clock
-  domains, memory regions with fetch wait states, and class/mnemonic-specific
-  cycle overrides. A Cortex-M4 resource/dependency pipeline model schedules
-  block instructions using register hazards, resource occupancy and branch
-  penalties. The CFG timing metadata records the profile ID, SHA-256 and source, and
-  profile files are strictly validated before analysis. Optional LRU
-  instruction-cache and data-cache profiles propagate concrete cache states
-  over each CFG, report per-block hit/miss ranges and add modeled miss
-  penalties; data-cache analysis also records decoded read/write memory
-  accesses. Optional branch-prediction profiles model static, BTFN or two-bit
-  bimodal direction prediction with configurable misprediction penalties.
-  Per-region data-memory timing models read/write bus widths and wait states and
-  reports access coverage plus per-region latency. Optional WCET profiles bound
-  loops and compute per-function/per-root longest-path estimates across the
-  call graph. See [docs/board-profile.md](docs/board-profile.md).
+  domains, memory regions, instruction-cost overrides and optional performance
+  models:
+  - Cortex-M4 resource/dependency pipeline scheduling with branch penalties;
+  - LRU instruction and data caches with per-block hit/miss ranges;
+  - static, BTFN or two-bit bimodal branch prediction;
+  - per-region data-memory bus widths and read/write wait states;
+  - loop-bounded per-function and per-root WCET estimates.
+  Profiles are strictly validated, and timing metadata records the profile ID,
+  SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md).
 - Versioned CFG JSON plus DOT and Mermaid renderers.
 - Runtime rule engine for spawn/join/scope/await:
   - Rust no-std: Embassy (`Spawner::spawn`, task poll) and RTIC;
@@ -339,7 +338,7 @@ Useful flags:
 | Flag | Meaning |
 |---|---|
 | `--cpu cortex-m4` | explicit timing model; Cortex-M/RISC-V are auto-detected when omitted. `aarch64` and `x86-64` select statistical generic models |
-| `--board-profile PATH` | board timing profile in TOML (or JSON with a `.json` extension); supplies CPU, clocks, memory fetch costs and instruction-cost overrides |
+| `--board-profile PATH` | board timing profile in TOML (or JSON with a `.json` extension); supplies CPU, clocks, memory timing, pipeline/cache/branch models and WCET bounds |
 | `--freq 168MHz` | core clock; enables `time_ns` in blocks and overrides the profile's core clock |
 | `--format json|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
 | `--view cfg|elf` | program CFG (default) or loader-backed ELF layout |
@@ -362,26 +361,18 @@ not bounds for a specific core.
 `--board-profile` is opt-in and never enabled by auto-detection. The profile's
 CPU model must match the ELF architecture and any explicit `--cpu`; `--freq`
 overrides its core clock while keeping its source visible in the CFG/CFG timing
-metadata. Without a
-profile, timing output is unchanged. The examples
-[`examples/profiles/cortex-m0-isr.toml`](examples/profiles/cortex-m0-isr.toml)
-and
-[`examples/profiles/cortex-m4-pipeline.toml`](examples/profiles/cortex-m4-pipeline.toml)
-and
-[`examples/profiles/cortex-m7-icache.toml`](examples/profiles/cortex-m7-icache.toml)
-and
-[`examples/profiles/cortex-m7-dcache.toml`](examples/profiles/cortex-m7-dcache.toml)
-and
-[`examples/profiles/cortex-m7-branch-prediction.toml`](examples/profiles/cortex-m7-branch-prediction.toml)
-and
-[`examples/profiles/cortex-m7-data-memory.toml`](examples/profiles/cortex-m7-data-memory.toml)
-and
-[`examples/profiles/cortex-m7-wcet.toml`](examples/profiles/cortex-m7-wcet.toml)
-and
-[`examples/profiles/cortex-m4-full-stack.toml`](examples/profiles/cortex-m4-full-stack.toml)
-show the board-cost, Cortex-M4 pipeline, instruction-cache, data-cache,
-branch-prediction, data-memory and WCET formats, including a full combined
-pipeline/cache/memory/WCET example.
+metadata. Without a profile, timing output is unchanged.
+Example profiles:
+[board costs](examples/profiles/cortex-m0-isr.toml),
+[Cortex-M4 pipeline](examples/profiles/cortex-m4-pipeline.toml),
+[I-cache](examples/profiles/cortex-m7-icache.toml),
+[D-cache](examples/profiles/cortex-m7-dcache.toml),
+[branch prediction](examples/profiles/cortex-m7-branch-prediction.toml),
+[data memory](examples/profiles/cortex-m7-data-memory.toml),
+[WCET](examples/profiles/cortex-m7-wcet.toml) and the combined
+[full-stack profile](examples/profiles/cortex-m4-full-stack.toml).
+`tests/full_stack_profile.rs` verifies that the combined model costs compose
+block by block.
 
 `--function`, `--reachable-from`, `--no-prune-runtime`,
 `--all-functions` and `--no-cfg-instructions` apply only to `--view cfg`.
