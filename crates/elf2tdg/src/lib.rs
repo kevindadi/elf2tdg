@@ -18,3 +18,4 @@ pub mod origin;
 pub mod rules;
 pub mod runtime;
 pub mod timing;
+mod wcet;

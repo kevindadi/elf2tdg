@@ -774,6 +774,34 @@ impl TimingCostModel {
                         .to_owned(),
                 );
             }
+            if let Some(wcet) = profile.wcet() {
+                params.extras.insert(
+                    "board_profile_wcet".to_owned(),
+                    "cfg-longest-path".to_owned(),
+                );
+                params.extras.insert(
+                    "board_profile_wcet_max_states".to_owned(),
+                    wcet.max_states().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_wcet_loop_bounds".to_owned(),
+                    wcet.loop_bound_count().to_string(),
+                );
+                if let Some(bound) = wcet.default_loop_bound() {
+                    params.extras.insert(
+                        "board_profile_wcet_default_loop_bound".to_owned(),
+                        bound.to_string(),
+                    );
+                }
+                params.extras.insert(
+                    "board_profile_wcet_bound_nonterminating_loops".to_owned(),
+                    wcet.bound_nonterminating_loops().to_string(),
+                );
+                caveats.push(
+                    "WCET results are CFG longest-path estimates over modeled block bounds; they are not a hardware proof."
+                        .to_owned(),
+                );
+            }
         }
         if !unknown_mnemonics.is_empty() {
             params.extras.insert(

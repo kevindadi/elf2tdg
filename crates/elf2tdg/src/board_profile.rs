@@ -52,6 +52,10 @@ const fn default_max_branch_states() -> usize {
     128
 }
 
+const fn default_wcet_max_states() -> usize {
+    100_000
+}
+
 /// A versioned description of one board's timing-relevant configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,6 +80,8 @@ pub struct BoardProfile {
     data_cache: Option<DataCacheProfile>,
     #[serde(default)]
     branch_prediction: Option<BranchPredictionProfile>,
+    #[serde(default)]
+    wcet: Option<WcetProfile>,
     #[serde(default)]
     caveats: Vec<String>,
     #[serde(default)]
@@ -448,6 +454,51 @@ impl BranchPredictionProfile {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct WcetProfile {
+    #[serde(default)]
+    default_loop_bound: Option<u32>,
+    #[serde(default = "default_wcet_max_states")]
+    max_states: usize,
+    #[serde(default)]
+    bound_nonterminating_loops: bool,
+    #[serde(default)]
+    loop_bounds: Vec<WcetLoopBound>,
+}
+
+impl WcetProfile {
+    pub(crate) fn default_loop_bound(&self) -> Option<u32> {
+        self.default_loop_bound
+    }
+
+    pub(crate) fn max_states(&self) -> usize {
+        self.max_states
+    }
+
+    pub(crate) fn loop_bound_for(&self, header: u64) -> Option<u32> {
+        self.loop_bounds
+            .iter()
+            .find(|entry| entry.header == header)
+            .map(|entry| entry.bound)
+    }
+
+    pub(crate) fn loop_bound_count(&self) -> usize {
+        self.loop_bounds.len()
+    }
+
+    pub(crate) fn bound_nonterminating_loops(&self) -> bool {
+        self.bound_nonterminating_loops
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WcetLoopBound {
+    header: u64,
+    bound: u32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PipelineProfile {
     #[serde(default = "default_issue_width")]
     issue_width: u32,
@@ -630,6 +681,7 @@ impl BoardProfile {
         self.validate_instruction_cache()?;
         self.validate_data_cache()?;
         self.validate_branch_prediction()?;
+        self.validate_wcet()?;
         for caveat in &self.caveats {
             validate_text("caveats", caveat)?;
         }
@@ -941,6 +993,42 @@ impl BoardProfile {
         Ok(())
     }
 
+    fn validate_wcet(&self) -> Result<()> {
+        let Some(wcet) = &self.wcet else {
+            return Ok(());
+        };
+        if self.schema_version < 2 {
+            return Err(Error::Config(
+                "board profile wcet requires schema_version 2".to_owned(),
+            ));
+        }
+        if wcet.default_loop_bound == Some(0) {
+            return Err(Error::Config(
+                "board profile wcet.default_loop_bound must be positive".to_owned(),
+            ));
+        }
+        if wcet.max_states == 0 {
+            return Err(Error::Config(
+                "board profile wcet.max_states must be positive".to_owned(),
+            ));
+        }
+        let mut headers = BTreeSet::new();
+        for (index, entry) in wcet.loop_bounds.iter().enumerate() {
+            if entry.bound == 0 {
+                return Err(Error::Config(format!(
+                    "board profile wcet.loop_bounds[{index}].bound must be positive"
+                )));
+            }
+            if !headers.insert(entry.header) {
+                return Err(Error::Config(format!(
+                    "board profile wcet loop header 0x{:x} is declared twice",
+                    entry.header
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_instruction_costs(&self) -> Result<()> {
         let mut selectors = BTreeSet::new();
         for (index, override_) in self.instruction_costs.iter().enumerate() {
@@ -1098,6 +1186,12 @@ impl BoardProfile {
     #[must_use]
     pub(crate) fn branch_prediction(&self) -> Option<&BranchPredictionProfile> {
         self.branch_prediction.as_ref()
+    }
+
+    /// Optional WCET analysis configuration.
+    #[must_use]
+    pub(crate) fn wcet(&self) -> Option<&WcetProfile> {
+        self.wcet.as_ref()
     }
 
     /// Largest fetch wait-state count on an executable Flash region.
@@ -1466,6 +1560,47 @@ max_states = 32
         assert!(BoardProfile::parse_toml(&zero_states).is_err());
         let bad_model = valid.replace("model = \"bimodal\"", "model = \"unknown\"");
         assert!(BoardProfile::parse_toml(&bad_model).is_err());
+    }
+
+    #[test]
+    fn validates_wcet_profiles() {
+        let valid = format!(
+            r"{}
+[wcet]
+default_loop_bound = 4
+bound_nonterminating_loops = true
+max_states = 1024
+
+[[wcet.loop_bounds]]
+header = 0x800_0100
+bound = 12
+",
+            VALID.replace("schema_version = 1", "schema_version = 2")
+        );
+        let profile = BoardProfile::parse_toml(&valid).expect("valid WCET profile");
+        let wcet = profile.wcet().expect("WCET profile");
+        assert_eq!(wcet.default_loop_bound(), Some(4));
+        assert_eq!(wcet.max_states(), 1024);
+        assert!(wcet.bound_nonterminating_loops());
+        assert_eq!(wcet.loop_bound_for(0x800_0100), Some(12));
+        assert_eq!(wcet.loop_bound_count(), 1);
+        assert!(
+            BoardProfile::parse_toml(&valid.replace("schema_version = 2", "schema_version = 1"))
+                .is_err()
+        );
+        assert!(
+            BoardProfile::parse_toml(
+                &valid.replace("default_loop_bound = 4", "default_loop_bound = 0")
+            )
+            .is_err()
+        );
+        assert!(BoardProfile::parse_toml(&valid.replace("bound = 12", "bound = 0")).is_err());
+        assert!(
+            BoardProfile::parse_toml(&valid.replace("max_states = 1024", "max_states = 0"))
+                .is_err()
+        );
+        let duplicate = format!("{valid}\n[[wcet.loop_bounds]]\nheader = 0x8000100\nbound = 2\n");
+        assert!(BoardProfile::parse_toml(&duplicate).is_err());
     }
 
     #[test]

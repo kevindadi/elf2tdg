@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.3";
+pub const CFG_SCHEMA_VERSION: &str = "2.4";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -634,6 +634,93 @@ pub struct CfgDataMemoryInfo {
     pub caveats: Vec<String>,
 }
 
+/// Worst-case execution-time status for a function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgWcetStatus {
+    /// A finite upper bound was computed.
+    Bounded,
+    /// A finite estimate was computed, but inputs are incomplete.
+    Partial,
+    /// The cost is unbounded or unsupported.
+    Unbounded,
+    /// No estimate could be computed.
+    Unknown,
+}
+
+/// WCET result for one function.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgFunctionWcet {
+    /// Result status.
+    pub status: CfgWcetStatus,
+    /// Worst-case cycles, when finite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycles: Option<f64>,
+    /// Worst-case time in nanoseconds, when a core frequency is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_ns: Option<f64>,
+    /// Worst-case local block path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<BlockId>,
+    /// Why the result is unbounded, partial or unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Unresolved call sites seen on reachable local blocks.
+    pub unresolved_calls: u32,
+    /// Calls to functions without a local WCET summary.
+    pub external_calls: u32,
+}
+
+/// WCET result for one execution root.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgWcetRoot {
+    /// Root function.
+    pub function: FunctionId,
+    /// Root category.
+    pub kind: CfgRootKind,
+    /// Human-readable task/handler name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Result status inherited from the function summary.
+    pub status: CfgWcetStatus,
+    /// Worst-case cycles, when finite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycles: Option<f64>,
+    /// Worst-case time in nanoseconds, when a core frequency is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_ns: Option<f64>,
+    /// Worst-case local block path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<BlockId>,
+}
+
+/// Program-level WCET analysis metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgWcetInfo {
+    /// Analysis model name.
+    pub model: String,
+    /// Default loop bound, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_loop_bound: Option<u32>,
+    /// Per-block unrolling state limit.
+    pub max_states: usize,
+    /// Core frequency used for `time_ns`, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_hz: Option<u64>,
+    /// Functions with a bounded result.
+    pub functions_analyzed: u32,
+    /// Functions with a partial result.
+    pub functions_partial: u32,
+    /// Functions with an unbounded result.
+    pub functions_unbounded: u32,
+    /// Functions with an unknown result.
+    pub functions_unknown: u32,
+    /// Per-root WCET results.
+    pub roots: Vec<CfgWcetRoot>,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
 /// A function CFG graph. Node IDs are internal petgraph indices; stable block
 /// IDs are carried in [`CfgBlock`].
 #[derive(Clone, Debug, Default)]
@@ -890,6 +977,8 @@ pub struct CfgFunction {
     pub noreturn: Option<CfgNoreturnReason>,
     /// Function CFG.
     pub cfg: FunctionCfg,
+    /// WCET analysis for this function, when a WCET profile is active.
+    pub wcet: Option<CfgFunctionWcet>,
 }
 
 /// Why a function is treated as a root of the program CFG.
@@ -1112,6 +1201,8 @@ pub struct ProgramCfg {
     pub branch_prediction: Option<CfgBranchPredictionInfo>,
     /// Data-memory latency analysis metadata.
     pub data_memory: Option<CfgDataMemoryInfo>,
+    /// WCET analysis metadata.
+    pub wcet: Option<CfgWcetInfo>,
     /// Analysis diagnostics.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -1146,6 +1237,7 @@ impl CfgFunction {
                     _ => CfgNoreturnReason::Api,
                 }),
             cfg: FunctionCfg::default(),
+            wcet: None,
         }
     }
 }
@@ -2288,6 +2380,8 @@ struct CfgDocument<'a> {
     branch_prediction: Option<&'a CfgBranchPredictionInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data_memory: Option<&'a CfgDataMemoryInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wcet: Option<&'a CfgWcetInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pointer_roots: Vec<Addr>,
     #[serde(skip_serializing_if = "is_empty_slice")]
@@ -2331,6 +2425,8 @@ struct CfgFunctionView {
     no_code: Option<CfgNoCodeView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     noreturn: Option<CfgNoreturnReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wcet: Option<CfgFunctionWcet>,
     entry: Option<BlockId>,
     blocks: Vec<CfgBlockView>,
     edges: Vec<CfgEdgeView>,
@@ -2521,6 +2617,7 @@ pub fn render_json_selected(
         data_cache: program.data_cache.as_ref(),
         branch_prediction: program.branch_prediction.as_ref(),
         data_memory: program.data_memory.as_ref(),
+        wcet: program.wcet.as_ref(),
         pointer_roots: program
             .pointer_roots
             .iter()
@@ -2653,6 +2750,7 @@ fn function_view(
         inline_frames,
         no_code: no_code_view(function),
         noreturn: function.noreturn,
+        wcet: function.wcet.clone(),
         entry: cfg
             .entry
             .and_then(|node| cfg.graph.node_weight(node))
@@ -4204,6 +4302,7 @@ mod tests {
             inline_frames: Vec::new(),
             noreturn: None,
             cfg: FunctionCfg::default(),
+            wcet: None,
         }
     }
 
@@ -4313,6 +4412,7 @@ mod tests {
             inline_frames: Vec::new(),
             noreturn: None,
             cfg,
+            wcet: None,
         };
         let program = ProgramCfg::new(vec![function]);
         let dot = super::render_dot(&program, Some("demo"), true).expect("dot");
@@ -4432,6 +4532,7 @@ mod tests {
             inline_frames: Vec::new(),
             noreturn: None,
             cfg,
+            wcet: None,
         }
     }
 

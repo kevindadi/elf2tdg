@@ -3242,6 +3242,15 @@ impl<'a> Analyzer<'a> {
         program_cfg.image = Some(image.clone());
         program_cfg.timing = Some(timing.clone());
         program_cfg.diagnostics.clone_from(&self.diagnostics);
+        if let Some(profile) = self
+            .timing
+            .as_ref()
+            .and_then(TimingCostModel::profile)
+            .and_then(BoardProfile::wcet)
+        {
+            let info = crate::wcet::analyze_program(&mut program_cfg, profile);
+            program_cfg.wcet = Some(info);
+        }
 
         program_cfg.ensure_valid().map_err(|error| {
             Error::CfgValidation(format!(
@@ -3312,6 +3321,7 @@ impl<'a> Analyzer<'a> {
                     inline_frames,
                     noreturn: draft.noreturn,
                     cfg: draft.cfg.clone(),
+                    wcet: None,
                 }
             })
             .collect();
