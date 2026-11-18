@@ -1,0 +1,37 @@
+schema_version = 2
+id = "board:cortex-m7-icache"
+name = "Cortex-M7 instruction-cache example"
+arch = "thumbv7em"
+cpu = "cortex-m7"
+confidence = "low"
+caveats = [
+  "Example instruction-cache profile only; replace size, associativity and miss penalty with target-board measurements.",
+]
+
+[clocks.core]
+hz = 168_000_000
+confidence = "high"
+
+[[memory]]
+name = "flash"
+start = 0x0800_0000
+size = 0x0001_0000
+kind = "flash"
+executable = true
+fetch_wait_states = 0
+fetch_width_bytes = 4
+
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0001_0000
+kind = "ram"
+
+[instruction_cache]
+size = 16_384
+line_bytes = 32
+ways = 4
+replacement = "lru"
+miss_penalty = 20
+invalidate_on_call = true
+max_states = 128

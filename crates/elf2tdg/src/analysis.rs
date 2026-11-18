@@ -2864,6 +2864,15 @@ impl<'a> Analyzer<'a> {
     #[allow(clippy::too_many_lines)]
     fn build_output(mut self) -> Result<AnalysisOutput> {
         let mut program_cfg = self.build_program_cfg();
+        if let Some(cache) = self
+            .timing
+            .as_ref()
+            .and_then(TimingCostModel::profile)
+            .and_then(BoardProfile::instruction_cache)
+        {
+            let info = crate::icache::analyze_program(&mut program_cfg, cache);
+            program_cfg.cache = Some(info);
+        }
         let isr_vectors = std::mem::take(&mut self.isr_vectors);
         let startup_address = self.startup_address;
         let Some(startup_address) = startup_address else {

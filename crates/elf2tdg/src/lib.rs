@@ -8,6 +8,7 @@ pub mod cfg_graph;
 pub mod dwarf;
 pub mod elf_view;
 pub mod error;
+mod icache;
 pub mod loader;
 pub mod origin;
 pub mod rules;

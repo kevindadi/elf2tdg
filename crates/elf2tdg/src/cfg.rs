@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.9";
+pub const CFG_SCHEMA_VERSION: &str = "2.0";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -251,8 +251,93 @@ pub struct CfgBlock {
     pub calls: Vec<CfgCallSite>,
     /// Static block cost (not a path time).
     pub cycles: Option<CostRange>,
+    /// Instruction-cache analysis for this block, when a cache profile is
+    /// active.
+    pub cache: Option<CfgBlockCache>,
     /// Control-flow terminator classification.
     pub terminator: CfgTerminator,
+}
+
+/// Instruction-cache cost analysis for one basic block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockCache {
+    /// Number of instruction-fetch line accesses in the block.
+    pub fetches: u32,
+    /// Minimum modeled cache misses across reachable entry states.
+    pub misses_min: u32,
+    /// Maximum modeled cache misses across reachable entry states.
+    pub misses_max: u32,
+    /// Number of distinct cache states reaching the block.
+    pub entry_states: u32,
+    /// Analysis fell back to an all-miss bound for this block.
+    #[serde(skip_serializing_if = "is_false")]
+    pub fallback: bool,
+    /// Per-line hit ranges.
+    pub lines: Vec<CfgBlockCacheLine>,
+}
+
+/// Classification of one cache line within a basic block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgCacheLineClass {
+    /// Every modeled entry state hits this line on every access.
+    AlwaysHit,
+    /// No modeled entry state hits this line.
+    AlwaysMiss,
+    /// The line hits in some states and misses in others.
+    MayHit,
+}
+
+/// Per-line instruction-cache hit range for a basic block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockCacheLine {
+    /// Cache-line start address.
+    pub line: Addr,
+    /// Number of fetch accesses to this line.
+    pub accesses: u32,
+    /// Classification across modeled entry states.
+    pub classification: CfgCacheLineClass,
+    /// Minimum modeled hits across entry states.
+    pub hits_min: u32,
+    /// Maximum modeled hits across entry states.
+    pub hits_max: u32,
+    /// Minimum modeled misses across entry states.
+    pub misses_min: u32,
+    /// Maximum modeled misses across entry states.
+    pub misses_max: u32,
+}
+
+/// Program-level instruction-cache analysis metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgCacheInfo {
+    /// Model name.
+    pub model: String,
+    /// Total cache size in bytes.
+    pub size: u64,
+    /// Cache line size in bytes.
+    pub line_bytes: u32,
+    /// Associativity.
+    pub ways: u32,
+    /// Number of cache sets.
+    pub sets: u64,
+    /// Extra core cycles charged for each modeled miss.
+    pub miss_penalty: u32,
+    /// Assumed cache state at each function entry.
+    pub entry_state: String,
+    /// Whether call-return edges invalidate the modeled cache state.
+    pub invalidate_on_call: bool,
+    /// Per-block state-explosion limit.
+    pub max_states: usize,
+    /// Functions with complete cache analysis.
+    pub functions_analyzed: u32,
+    /// Functions that fell back to an all-miss bound.
+    pub functions_fallback: u32,
+    /// Blocks with complete cache state results.
+    pub blocks_analyzed: u32,
+    /// Blocks that fell back to an all-miss bound.
+    pub blocks_fallback: u32,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
 }
 
 /// A function CFG graph. Node IDs are internal petgraph indices; stable block
@@ -340,6 +425,7 @@ impl FunctionCfg {
                 instructions: block.instructions,
                 calls: block.calls,
                 cycles: block.cycles,
+                cache: None,
                 terminator: block.terminator,
             });
             blocks_by_address.insert(address, node);
@@ -721,6 +807,8 @@ pub struct ProgramCfg {
     pub image: Option<ImageInfo>,
     /// Timing model and frequency metadata.
     pub timing: Option<TimingInfo>,
+    /// Instruction-cache analysis metadata.
+    pub cache: Option<CfgCacheInfo>,
     /// Analysis diagnostics.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -1889,6 +1977,8 @@ struct CfgDocument<'a> {
     image: &'a ImageInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
     timing: Option<&'a TimingInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache: Option<&'a CfgCacheInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pointer_roots: Vec<Addr>,
     #[serde(skip_serializing_if = "is_empty_slice")]
@@ -1965,6 +2055,8 @@ struct CfgBlockView {
     instructions: Vec<CfgInstructionView>,
     calls: Vec<CfgCallView>,
     cycles: Option<CostRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache: Option<CfgBlockCache>,
     terminator: CfgTerminator,
 }
 
@@ -2108,6 +2200,7 @@ pub fn render_json_selected(
         cfg_schema_version: CFG_SCHEMA_VERSION,
         image,
         timing: program.timing.as_ref(),
+        cache: program.cache.as_ref(),
         pointer_roots: program
             .pointer_roots
             .iter()
@@ -2185,6 +2278,7 @@ fn function_view(
                 .map(|call| call_view(program, call))
                 .collect(),
             cycles: block.cycles,
+            cache: block.cache.clone(),
             terminator: block.terminator,
         });
     }

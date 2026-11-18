@@ -40,6 +40,14 @@ const fn default_occupancy() -> u32 {
     1
 }
 
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_max_cache_states() -> usize {
+    128
+}
+
 /// A versioned description of one board's timing-relevant configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +66,8 @@ pub struct BoardProfile {
     instruction_costs: Vec<InstructionCostOverride>,
     #[serde(default)]
     pipeline: Option<PipelineProfile>,
+    #[serde(default)]
+    instruction_cache: Option<InstructionCacheProfile>,
     #[serde(default)]
     caveats: Vec<String>,
     #[serde(default)]
@@ -166,6 +176,64 @@ impl InstructionCostOverride {
 
     fn cost_range(&self) -> CostRange {
         self.cycles.cost_range()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum CacheReplacement {
+    #[default]
+    Lru,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstructionCacheProfile {
+    size: u64,
+    line_bytes: u32,
+    ways: u32,
+    #[serde(default)]
+    replacement: CacheReplacement,
+    miss_penalty: u32,
+    #[serde(default = "default_true")]
+    invalidate_on_call: bool,
+    #[serde(default = "default_max_cache_states")]
+    max_states: usize,
+}
+
+impl InstructionCacheProfile {
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub(crate) fn line_bytes(&self) -> u32 {
+        self.line_bytes
+    }
+
+    pub(crate) fn ways(&self) -> u32 {
+        self.ways
+    }
+
+    pub(crate) fn replacement_name(&self) -> &'static str {
+        match self.replacement {
+            CacheReplacement::Lru => "lru",
+        }
+    }
+
+    pub(crate) fn miss_penalty(&self) -> u32 {
+        self.miss_penalty
+    }
+
+    pub(crate) fn invalidate_on_call(&self) -> bool {
+        self.invalidate_on_call
+    }
+
+    pub(crate) fn max_states(&self) -> usize {
+        self.max_states
+    }
+
+    pub(crate) fn sets(&self) -> u64 {
+        self.size / (u64::from(self.line_bytes) * u64::from(self.ways))
     }
 }
 
@@ -350,6 +418,7 @@ impl BoardProfile {
         self.validate_memory()?;
         self.validate_instruction_costs()?;
         self.validate_pipeline()?;
+        self.validate_instruction_cache()?;
         for caveat in &self.caveats {
             validate_text("caveats", caveat)?;
         }
@@ -540,6 +609,51 @@ impl BoardProfile {
         Ok(())
     }
 
+    fn validate_instruction_cache(&self) -> Result<()> {
+        let Some(cache) = &self.instruction_cache else {
+            return Ok(());
+        };
+        if self.schema_version < 2 {
+            return Err(Error::Config(
+                "board profile instruction_cache requires schema_version 2".to_owned(),
+            ));
+        }
+        if cache.size == 0 {
+            return Err(Error::Config(
+                "board profile instruction_cache.size must be positive".to_owned(),
+            ));
+        }
+        if cache.line_bytes == 0 || !cache.line_bytes.is_power_of_two() {
+            return Err(Error::Config(
+                "board profile instruction_cache.line_bytes must be a positive power of two"
+                    .to_owned(),
+            ));
+        }
+        if cache.ways == 0 {
+            return Err(Error::Config(
+                "board profile instruction_cache.ways must be positive".to_owned(),
+            ));
+        }
+        let line_total = u64::from(cache.line_bytes) * u64::from(cache.ways);
+        if cache.size % line_total != 0 {
+            return Err(Error::Config(
+                "board profile instruction_cache.size must be divisible by line_bytes * ways"
+                    .to_owned(),
+            ));
+        }
+        if cache.miss_penalty == 0 {
+            return Err(Error::Config(
+                "board profile instruction_cache.miss_penalty must be positive".to_owned(),
+            ));
+        }
+        if cache.max_states == 0 {
+            return Err(Error::Config(
+                "board profile instruction_cache.max_states must be positive".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_instruction_costs(&self) -> Result<()> {
         let mut selectors = BTreeSet::new();
         for (index, override_) in self.instruction_costs.iter().enumerate() {
@@ -667,6 +781,12 @@ impl BoardProfile {
     #[must_use]
     pub(crate) fn pipeline(&self) -> Option<&PipelineProfile> {
         self.pipeline.as_ref()
+    }
+
+    /// Optional instruction-cache model.
+    #[must_use]
+    pub(crate) fn instruction_cache(&self) -> Option<&InstructionCacheProfile> {
+        self.instruction_cache.as_ref()
     }
 
     /// Largest fetch wait-state count on an executable Flash region.
@@ -933,6 +1053,30 @@ occupancy = 1
 
         let no_resources = valid.replace("resources = [\"load_store\"]", "resources = []");
         assert!(BoardProfile::parse_toml(&no_resources).is_err());
+    }
+
+    #[test]
+    fn validates_instruction_cache_profiles() {
+        let valid = format!(
+            "{}\n[instruction_cache]\nsize = 4096\nline_bytes = 32\nways = 4\nmiss_penalty = 10\n",
+            VALID.replace("schema_version = 1", "schema_version = 2")
+        );
+        let profile = BoardProfile::parse_toml(&valid).expect("valid cache profile");
+        let cache = profile.instruction_cache().expect("cache profile");
+        assert_eq!(cache.sets(), 32);
+        assert!(
+            BoardProfile::parse_toml(&valid.replace("schema_version = 2", "schema_version = 1"))
+                .is_err()
+        );
+        assert_eq!(cache.replacement_name(), "lru");
+        assert!(cache.invalidate_on_call());
+
+        let bad_size = valid.replace("size = 4096", "size = 4097");
+        assert!(BoardProfile::parse_toml(&bad_size).is_err());
+        let zero_ways = valid.replace("ways = 4", "ways = 0");
+        assert!(BoardProfile::parse_toml(&zero_ways).is_err());
+        let zero_penalty = valid.replace("miss_penalty = 10", "miss_penalty = 0");
+        assert!(BoardProfile::parse_toml(&zero_penalty).is_err());
     }
 
     #[test]

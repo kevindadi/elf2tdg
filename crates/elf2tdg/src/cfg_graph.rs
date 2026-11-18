@@ -554,6 +554,7 @@ fn merge_one_fallthrough(cfg: &mut FunctionCfg, merged: &mut Vec<CfgBlockMerge>)
             source_block.calls.sort_by_key(|call| call.site);
             source_block.size = source_block.size.saturating_add(target_block.size);
             source_block.cycles = merge_cycles(source_block.cycles, target_block.cycles);
+            source_block.cache = None;
             source_block.terminator = target_block.terminator;
         }
         cfg.graph.remove_node(*target);

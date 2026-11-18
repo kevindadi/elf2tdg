@@ -691,6 +691,22 @@ impl TimingCostModel {
                     pipeline.instruction_override_count().to_string(),
                 );
             }
+            if let Some(cache) = profile.instruction_cache() {
+                params.extras.insert(
+                    "board_profile_instruction_cache".to_owned(),
+                    format!(
+                        "{}B/{}B/{}way/{}",
+                        cache.size(),
+                        cache.line_bytes(),
+                        cache.ways(),
+                        cache.replacement_name()
+                    ),
+                );
+                params.extras.insert(
+                    "board_profile_instruction_cache_miss_penalty".to_owned(),
+                    cache.miss_penalty().to_string(),
+                );
+            }
         }
         if !unknown_mnemonics.is_empty() {
             params.extras.insert(
@@ -802,6 +818,12 @@ impl TimingCostModel {
                             .to_owned(),
                     );
                 }
+            }
+            if profile.instruction_cache().is_some() {
+                caveats.push(
+                    "Instruction-cache miss costs assume a cold cache at each function entry and a local CFG simulation; inter-function cache state, prefetch and data caches are not modeled."
+                        .to_owned(),
+                );
             }
         }
         caveats
