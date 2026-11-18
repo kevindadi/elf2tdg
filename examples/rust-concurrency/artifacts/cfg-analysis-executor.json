@@ -1,5 +1,5 @@
 {
-  "cfg_schema_version": "2.0",
+  "cfg_schema_version": "2.1",
   "image": {
     "path": "artifacts/rust-concurrency-analysis.elf",
     "arch": "thumb",
@@ -466,6 +466,15 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "width": 4,
+                  "resolution": "unresolved",
+                  "base": "sp",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "src/platform/cortex_m.rs",
                 "line": 100
@@ -605,6 +614,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x20000040",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r5",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4399,
@@ -675,6 +694,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000040",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r5",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4399,
@@ -783,6 +812,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x2000004c",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r5",
+                  "disp": 12
+                }
+              ],
               "source": {
                 "file": "src/raw/util.rs",
                 "line": 48,
@@ -865,6 +904,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000048",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r5",
+                  "disp": 8
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4303,
@@ -884,6 +933,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4319,
@@ -916,6 +975,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000044",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r5",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "src/stack.rs",
                 "line": 135,
@@ -935,6 +1004,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4495,
@@ -1024,6 +1103,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4495,
@@ -1154,6 +1243,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000044",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r5",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "src/stack.rs",
                 "line": 135,
@@ -1173,6 +1272,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4495,
@@ -1262,6 +1371,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4495,
@@ -1392,6 +1511,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000044",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r5",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "src/stack.rs",
                 "line": 135,
@@ -1411,6 +1540,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4495,
@@ -1500,6 +1639,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4495,
@@ -1630,6 +1779,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000044",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r5",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "src/stack.rs",
                 "line": 135,
@@ -1649,6 +1808,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4495,
@@ -1738,6 +1907,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4495,
@@ -2439,6 +2618,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x4",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r0",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 977,
@@ -2458,6 +2647,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x4",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r0",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 978,
@@ -2528,6 +2727,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x65762067",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r6",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 977,
@@ -2547,6 +2756,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x65762067",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r6",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 978,
@@ -2617,6 +2836,15 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "width": 4,
+                  "resolution": "unresolved",
+                  "base": "r0",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 977,
@@ -2636,6 +2864,15 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "width": 4,
+                  "resolution": "unresolved",
+                  "base": "r0",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 978,
@@ -2693,6 +2930,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x4",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r1",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 977,
@@ -2712,6 +2959,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x4",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r1",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 978,
@@ -2846,6 +3103,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4339,
@@ -2865,6 +3132,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x20000030",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r4",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4339,
@@ -2986,6 +3263,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0x65762067",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r0",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 977,
@@ -3005,6 +3292,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x65762067",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r0",
+                  "disp": 4
+                }
+              ],
               "source": {
                 "file": "mod.rs",
                 "line": 978,
@@ -3169,6 +3466,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "address": "0x1",
+                  "width": 1,
+                  "resolution": "register",
+                  "base": "r0",
+                  "disp": 1
+                }
+              ],
               "source": {
                 "file": "atomic.rs",
                 "line": 4303,
@@ -3188,6 +3495,16 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "read",
+                  "address": "0xc",
+                  "width": 4,
+                  "resolution": "register",
+                  "base": "r0",
+                  "disp": 12
+                }
+              ],
               "source": {
                 "file": "src/raw/util.rs",
                 "line": 55,

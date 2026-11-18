@@ -1,5 +1,5 @@
 {
-  "cfg_schema_version": "2.0",
+  "cfg_schema_version": "2.1",
   "image": {
     "path": "artifacts/cortex-m0-isr.elf",
     "arch": "thumb",
@@ -124,6 +124,15 @@
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "width": 4,
+                  "resolution": "unresolved",
+                  "base": "sp",
+                  "disp": 0
+                }
+              ],
               "source": {
                 "file": "main.c",
                 "line": 38,
