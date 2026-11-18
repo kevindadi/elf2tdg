@@ -63,6 +63,22 @@ pub fn resolve_definition_value(
     resolve_effect(image, decoded, index, effect.source, 0)
 }
 
+/// Resolves the statically known value of `register` immediately before
+/// `before`.
+///
+/// This is the same bounded backward scan used for pointer recovery. It is
+/// evidence for memory-address resolution, not a proof of the value on every
+/// path through the function.
+#[must_use]
+pub(crate) fn resolve_register_value(
+    image: &Image,
+    decoded: &[DecodedInsn],
+    before: usize,
+    register: capstone::RegId,
+) -> Option<u64> {
+    resolve_register(image, decoded, before, register, 0)
+}
+
 fn resolve_register(
     image: &Image,
     decoded: &[DecodedInsn],

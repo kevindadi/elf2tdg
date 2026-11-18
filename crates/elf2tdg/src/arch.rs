@@ -5,7 +5,7 @@
 
 use capstone::arch::{ArchDetail, arm, arm64, riscv, x86};
 use capstone::prelude::*;
-use capstone::{Capstone, InsnGroupType, RegId};
+use capstone::{AccessType, Capstone, InsnGroupType, RegId};
 
 use crate::error::{Error, Result};
 use crate::loader::ArchKind;
@@ -172,6 +172,34 @@ pub struct MemoryWrite {
     pub source: MemoryWriteSource,
 }
 
+/// Kind of data-memory access performed by an instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryAccessKind {
+    /// Load/read access.
+    Read,
+    /// Store/write access.
+    Write,
+    /// Read-modify-write or atomic access.
+    ReadWrite,
+}
+
+/// One data-memory access decoded from an instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryAccess {
+    /// Whether the operand is read, written or both.
+    pub kind: MemoryAccessKind,
+    /// Access width in bytes; zero when it cannot be inferred.
+    pub width: u8,
+    /// Base register, or `None` for an absolute address.
+    pub base: Option<RegId>,
+    /// Index register for indexed addressing.
+    pub index: Option<RegId>,
+    /// Signed displacement from the base or absolute address.
+    pub disp: i64,
+    /// Absolute address when the operand encodes it directly.
+    pub absolute: Option<u64>,
+}
+
 /// A decoded instruction with normalized control-flow metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
@@ -198,6 +226,9 @@ pub struct DecodedInsn {
     pub value: Option<ValueEffect>,
     /// Register store effect, when modeled.
     pub memory_write: Option<MemoryWrite>,
+    /// Data-memory accesses decoded from the instruction, including implicit
+    /// stack traffic for `push`/`pop`.
+    pub memory_accesses: Vec<MemoryAccess>,
     /// Indirect branch/call target expression, when modeled.
     pub indirect: Option<IndirectTarget>,
     /// Registers read by this instruction, including implicit reads reported by
@@ -364,6 +395,7 @@ impl Decoder {
         };
         let value = value_effect(self.arch, &detail, address, size, &mnemonic);
         let memory_write = memory_write_effect(self.arch, &detail, &mnemonic);
+        let memory_accesses = memory_access_effects(self.arch, &detail, address, size, &mnemonic);
         let mut indirect = if (is_call || is_jump) && direct_target.is_none() {
             indirect_target(self.arch, &detail, &mnemonic, address, size)
         } else {
@@ -406,6 +438,7 @@ impl Decoder {
             direct_target,
             value,
             memory_write,
+            memory_accesses,
             indirect,
             regs_read: detail.regs_read().to_vec(),
             regs_write: detail.regs_write().to_vec(),
@@ -989,6 +1022,357 @@ fn indirect_target(
             }
         }
     }
+}
+
+fn memory_access_effects(
+    arch: ArchKind,
+    detail: &capstone::InsnDetail<'_>,
+    address: u64,
+    size: u8,
+    mnemonic: &str,
+) -> Vec<MemoryAccess> {
+    let mut accesses = match arch {
+        ArchKind::X86_64 => x86_memory_accesses(detail, address, size, mnemonic),
+        ArchKind::Aarch64 => aarch64_memory_accesses(detail, mnemonic),
+        ArchKind::Thumb | ArchKind::Arm => {
+            arm_memory_accesses(detail, address, size, mnemonic, arch == ArchKind::Thumb)
+        }
+        ArchKind::Riscv32 | ArchKind::Riscv64 => riscv_memory_accesses(detail, mnemonic),
+    };
+    if let Some(access) = implicit_stack_access(arch, mnemonic) {
+        accesses.push(access);
+    }
+    accesses
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn implicit_stack_access(arch: ArchKind, mnemonic: &str) -> Option<MemoryAccess> {
+    let mnemonic = normalize_arm_mnemonic(mnemonic);
+    let (base, width, kind) = match arch {
+        ArchKind::Thumb | ArchKind::Arm => (
+            RegId(arm::ArmReg::ARM_REG_SP as u16),
+            4,
+            match mnemonic {
+                "push" => MemoryAccessKind::Write,
+                "pop" => MemoryAccessKind::Read,
+                _ => return None,
+            },
+        ),
+        ArchKind::X86_64 => (
+            RegId(x86::X86Reg::X86_REG_RSP as u16),
+            8,
+            match mnemonic {
+                "push" | "pushq" | "pushw" | "pushf" | "pushfq" => MemoryAccessKind::Write,
+                "pop" | "popq" | "popw" | "popf" | "popfq" => MemoryAccessKind::Read,
+                _ => return None,
+            },
+        ),
+        ArchKind::Aarch64 | ArchKind::Riscv32 | ArchKind::Riscv64 => return None,
+    };
+    Some(MemoryAccess {
+        kind,
+        width,
+        base: Some(base),
+        index: None,
+        disp: 0,
+        absolute: None,
+    })
+}
+
+const fn access_kind(access: AccessType) -> MemoryAccessKind {
+    match access {
+        AccessType::ReadOnly => MemoryAccessKind::Read,
+        AccessType::WriteOnly => MemoryAccessKind::Write,
+        AccessType::ReadWrite => MemoryAccessKind::ReadWrite,
+    }
+}
+
+fn next_pc(arch: ArchKind, address: u64, size: u8) -> Option<u64> {
+    match arch {
+        ArchKind::Thumb => Some((address + 4) & !3),
+        ArchKind::Arm => Some((address + 8) & !3),
+        ArchKind::X86_64 => Some(address.wrapping_add(u64::from(size))),
+        ArchKind::Aarch64 | ArchKind::Riscv32 | ArchKind::Riscv64 => None,
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn x86_memory_accesses(
+    detail: &capstone::InsnDetail<'_>,
+    address: u64,
+    size: u8,
+    mnemonic: &str,
+) -> Vec<MemoryAccess> {
+    if matches!(mnemonic, "lea" | "nop") || mnemonic.starts_with("prefetch") {
+        return Vec::new();
+    }
+    let ArchDetail::X86Detail(detail) = detail.arch_detail() else {
+        return Vec::new();
+    };
+    let rip = RegId(x86::X86Reg::X86_REG_RIP as u16);
+    detail
+        .operands()
+        .filter_map(|operand| {
+            let x86::X86OperandType::Mem(memory) = operand.op_type else {
+                return None;
+            };
+            let base = (memory.base().0 != 0).then_some(memory.base());
+            let index = (memory.index().0 != 0).then_some(memory.index());
+            let absolute = if index.is_none() {
+                if base == Some(rip) {
+                    next_pc(ArchKind::X86_64, address, size)
+                        .map(|pc| pc.wrapping_add_signed(memory.disp()))
+                } else if base.is_none() {
+                    Some(memory.disp().cast_unsigned())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Some(MemoryAccess {
+                kind: operand
+                    .access
+                    .map_or(MemoryAccessKind::ReadWrite, access_kind),
+                width: operand.size,
+                base,
+                index,
+                disp: memory.disp(),
+                absolute,
+            })
+        })
+        .collect()
+}
+
+fn normalize_arm_mnemonic(mnemonic: &str) -> &str {
+    mnemonic
+        .strip_suffix(".w")
+        .or_else(|| mnemonic.strip_suffix(".n"))
+        .unwrap_or(mnemonic)
+}
+
+fn arm_memory_width(mnemonic: &str) -> u8 {
+    let mnemonic = normalize_arm_mnemonic(mnemonic);
+    if mnemonic.starts_with("ldm") || mnemonic.starts_with("stm") {
+        return 4;
+    }
+    if mnemonic.ends_with('d') {
+        return 8;
+    }
+    if mnemonic.ends_with('h') {
+        return 2;
+    }
+    if mnemonic.ends_with('b') {
+        return 1;
+    }
+    4
+}
+
+fn arm_memory_kind(mnemonic: &str) -> MemoryAccessKind {
+    let mnemonic = normalize_arm_mnemonic(mnemonic);
+    if mnemonic.starts_with("ldr") || mnemonic.starts_with("ldm") || mnemonic == "pop" {
+        MemoryAccessKind::Read
+    } else if mnemonic.starts_with("str") || mnemonic.starts_with("stm") || mnemonic == "push" {
+        MemoryAccessKind::Write
+    } else {
+        MemoryAccessKind::ReadWrite
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn arm_memory_accesses(
+    detail: &capstone::InsnDetail<'_>,
+    address: u64,
+    size: u8,
+    mnemonic: &str,
+    thumb: bool,
+) -> Vec<MemoryAccess> {
+    let normalized = normalize_arm_mnemonic(mnemonic);
+    if normalized.starts_with("pld") || normalized.starts_with("pli") {
+        return Vec::new();
+    }
+    let ArchDetail::ArmDetail(detail) = detail.arch_detail() else {
+        return Vec::new();
+    };
+    let width = arm_memory_width(mnemonic);
+    let default_kind = arm_memory_kind(mnemonic);
+    let pc = RegId(arm::ArmReg::ARM_REG_PC as u16);
+    let arch = if thumb {
+        ArchKind::Thumb
+    } else {
+        ArchKind::Arm
+    };
+    detail
+        .operands()
+        .filter_map(|operand| {
+            let arm::ArmOperandType::Mem(memory) = operand.op_type else {
+                return None;
+            };
+            let base = (memory.base().0 != 0).then_some(memory.base());
+            let index = (memory.index().0 != 0).then_some(memory.index());
+            let disp = i64::from(memory.disp());
+            let absolute = if index.is_none() {
+                if base == Some(pc) {
+                    next_pc(arch, address, size).map(|pc| pc.wrapping_add_signed(disp))
+                } else if base.is_none() {
+                    Some(disp.cast_unsigned())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Some(MemoryAccess {
+                kind: operand.access.map_or(default_kind, access_kind),
+                width,
+                base,
+                index,
+                disp,
+                absolute,
+            })
+        })
+        .collect()
+}
+
+fn aarch64_memory_width(mnemonic: &str, register_width: u8) -> u8 {
+    let mnemonic = mnemonic.strip_suffix(".w").unwrap_or(mnemonic);
+    if mnemonic.starts_with("ldpsw") || mnemonic.starts_with("stpsw") {
+        return 8;
+    }
+    if mnemonic.starts_with("ldp") || mnemonic.starts_with("stp") {
+        return register_width.saturating_mul(2);
+    }
+    if mnemonic.ends_with('b') {
+        return 1;
+    }
+    if mnemonic.ends_with('h') {
+        return 2;
+    }
+    if mnemonic.ends_with("sw") {
+        return 4;
+    }
+    register_width
+}
+
+fn aarch64_memory_kind(mnemonic: &str) -> MemoryAccessKind {
+    let mnemonic = mnemonic.strip_suffix(".w").unwrap_or(mnemonic);
+    if mnemonic.starts_with("ld") {
+        MemoryAccessKind::Read
+    } else if mnemonic.starts_with("st") {
+        MemoryAccessKind::Write
+    } else {
+        MemoryAccessKind::ReadWrite
+    }
+}
+
+fn aarch64_memory_accesses(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Vec<MemoryAccess> {
+    if mnemonic.starts_with("prfm") {
+        return Vec::new();
+    }
+    let ArchDetail::Arm64Detail(detail) = detail.arch_detail() else {
+        return Vec::new();
+    };
+    let operands: Vec<_> = detail.operands().collect();
+    let register_width = match operands.first().map(|operand| &operand.op_type) {
+        Some(arm64::Arm64OperandType::Reg(register))
+            if aarch64_register(*register) != *register =>
+        {
+            4
+        }
+        _ => 8,
+    };
+    let width = aarch64_memory_width(mnemonic, register_width);
+    let default_kind = aarch64_memory_kind(mnemonic);
+    let mut accesses: Vec<MemoryAccess> = operands
+        .iter()
+        .filter_map(|operand| {
+            let arm64::Arm64OperandType::Mem(memory) = &operand.op_type else {
+                return None;
+            };
+            let base = (memory.base().0 != 0).then_some(memory.base());
+            let index = (memory.index().0 != 0).then_some(memory.index());
+            Some(MemoryAccess {
+                kind: operand.access.map_or(default_kind, access_kind),
+                width,
+                base,
+                index,
+                disp: i64::from(memory.disp()),
+                absolute: None,
+            })
+        })
+        .collect();
+    // AArch64 literal loads encode a PC-relative data address as an immediate
+    // instead of a memory operand.
+    if matches!(default_kind, MemoryAccessKind::Read)
+        && let Some(arm64::Arm64OperandType::Imm(value)) =
+            operands.get(1).map(|operand| &operand.op_type)
+        && let Ok(address) = u64::try_from(*value)
+    {
+        accesses.push(MemoryAccess {
+            kind: MemoryAccessKind::Read,
+            width: width.min(8),
+            base: None,
+            index: None,
+            disp: 0,
+            absolute: Some(address),
+        });
+    }
+    accesses
+}
+
+fn riscv_memory_width(mnemonic: &str) -> u8 {
+    let mnemonic = mnemonic.strip_prefix("c.").unwrap_or(mnemonic);
+    match mnemonic {
+        "lb" | "lbu" | "sb" => 1,
+        "lh" | "lhu" | "sh" => 2,
+        "lw" | "lwu" | "sw" | "flw" | "fsw" | "lwsp" | "swsp" => 4,
+        "ld" | "sd" | "fld" | "fsd" | "ldsp" | "sdsp" => 8,
+        _ => match mnemonic.rsplit_once('.').map(|(_, suffix)| suffix) {
+            Some("b") => 1,
+            Some("h") => 2,
+            Some("d") => 8,
+            _ => 4,
+        },
+    }
+}
+
+fn riscv_memory_kind(mnemonic: &str) -> MemoryAccessKind {
+    let mnemonic = mnemonic.strip_prefix("c.").unwrap_or(mnemonic);
+    if mnemonic.starts_with('l') {
+        MemoryAccessKind::Read
+    } else if mnemonic.starts_with('s') {
+        MemoryAccessKind::Write
+    } else {
+        MemoryAccessKind::ReadWrite
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn riscv_memory_accesses(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Vec<MemoryAccess> {
+    let ArchDetail::RiscVDetail(detail) = detail.arch_detail() else {
+        return Vec::new();
+    };
+    let width = riscv_memory_width(mnemonic);
+    let kind = riscv_memory_kind(mnemonic);
+    let zero = RegId(riscv::RiscVReg::RISCV_REG_ZERO as u16);
+    detail
+        .operands()
+        .filter_map(|operand| {
+            let riscv::RiscVOperand::Mem(memory) = operand else {
+                return None;
+            };
+            let base = (memory.base() != zero).then_some(memory.base());
+            let disp = memory.disp();
+            Some(MemoryAccess {
+                kind,
+                width,
+                base,
+                index: None,
+                disp,
+                absolute: base.is_none().then(|| disp.cast_unsigned()),
+            })
+        })
+        .collect()
 }
 
 fn memory_write_effect(
@@ -1837,7 +2221,7 @@ fn parse_hex_target(operands: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Decoder, parse_hex_target};
+    use super::{Decoder, MemoryAccessKind, parse_hex_target};
     use crate::loader::ArchKind;
 
     #[test]
@@ -1884,6 +2268,113 @@ mod tests {
             .expect("bl must decode");
         assert!(insn.is_call);
         assert_eq!(insn.direct_target, Some(0x1008));
+    }
+
+    #[test]
+    fn x86_decodes_load_and_store_memory_accesses() {
+        let decoder = Decoder::new(ArchKind::X86_64).unwrap();
+        let load = decoder
+            .decode_one(&[0x8b, 0x43, 0x08], 0x1000)
+            .unwrap()
+            .expect("mov load must decode");
+        assert_eq!(load.memory_accesses.len(), 1);
+        let access = load.memory_accesses[0];
+        assert_eq!(access.kind, MemoryAccessKind::Read);
+        assert_eq!(access.width, 4);
+        assert_eq!(access.disp, 8);
+        assert_eq!(
+            decoder.register_name(access.base.expect("base register")),
+            Some("rbx".to_owned())
+        );
+
+        let store = decoder
+            .decode_one(&[0x89, 0x43, 0x08], 0x1000)
+            .unwrap()
+            .expect("mov store must decode");
+        assert_eq!(store.memory_accesses.len(), 1);
+        assert_eq!(store.memory_accesses[0].kind, MemoryAccessKind::Write);
+    }
+
+    #[test]
+    fn x86_rip_relative_load_has_an_absolute_address() {
+        let decoder = Decoder::new(ArchKind::X86_64).unwrap();
+        let insn = decoder
+            .decode_one(&[0x8b, 0x05, 0x00, 0x10, 0x00, 0x00], 0x1000)
+            .unwrap()
+            .expect("rip-relative load must decode");
+        assert_eq!(insn.memory_accesses.len(), 1);
+        assert_eq!(insn.memory_accesses[0].absolute, Some(0x2006));
+    }
+
+    #[test]
+    fn thumb_decodes_memory_access() {
+        let decoder = Decoder::new(ArchKind::Thumb).unwrap();
+        let insn = decoder
+            .decode_one(&[0x48, 0x68], 0x1000)
+            .unwrap()
+            .expect("ldr must decode");
+        assert_eq!(insn.memory_accesses.len(), 1);
+        let access = insn.memory_accesses[0];
+        assert_eq!(access.kind, MemoryAccessKind::Read);
+        assert_eq!(access.width, 4);
+        assert_eq!(access.disp, 4);
+        assert_eq!(
+            decoder.register_name(access.base.expect("base register")),
+            Some("r1".to_owned())
+        );
+    }
+
+    #[test]
+    fn aarch64_decodes_memory_access() {
+        let decoder = Decoder::new(ArchKind::Aarch64).unwrap();
+        let insn = decoder
+            .decode_one(&[0x20, 0x04, 0x40, 0xf9], 0x1000)
+            .unwrap()
+            .expect("ldr must decode");
+        assert_eq!(insn.memory_accesses.len(), 1);
+        let access = insn.memory_accesses[0];
+        assert_eq!(access.kind, MemoryAccessKind::Read);
+        assert_eq!(access.width, 8);
+        assert_eq!(access.disp, 8);
+        assert_eq!(
+            decoder.register_name(access.base.expect("base register")),
+            Some("x1".to_owned())
+        );
+    }
+
+    #[test]
+    fn riscv_decodes_memory_access() {
+        let decoder = Decoder::new(ArchKind::Riscv32).unwrap();
+        let insn = decoder
+            .decode_one(&[0x03, 0xa5, 0x45, 0x00], 0x1000)
+            .unwrap()
+            .expect("lw must decode");
+        assert_eq!(insn.memory_accesses.len(), 1);
+        let access = insn.memory_accesses[0];
+        assert_eq!(access.kind, MemoryAccessKind::Read);
+        assert_eq!(access.width, 4);
+        assert_eq!(access.disp, 4);
+        assert_eq!(
+            decoder.register_name(access.base.expect("base register")),
+            Some("a1".to_owned())
+        );
+    }
+
+    #[test]
+    fn thumb_push_reports_an_implicit_stack_write() {
+        let decoder = Decoder::new(ArchKind::Thumb).unwrap();
+        let insn = decoder
+            .decode_one(&[0x10, 0xb5], 0x1000)
+            .unwrap()
+            .expect("push must decode");
+        assert_eq!(insn.memory_accesses.len(), 1);
+        let access = insn.memory_accesses[0];
+        assert_eq!(access.kind, MemoryAccessKind::Write);
+        assert_eq!(access.width, 4);
+        assert_eq!(
+            decoder.register_name(access.base.expect("base register")),
+            Some("sp".to_owned())
+        );
     }
 
     #[test]

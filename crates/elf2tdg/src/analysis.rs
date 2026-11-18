@@ -1079,6 +1079,11 @@ impl<'a> Analyzer<'a> {
             }
         }
         let decoded_sorted: Vec<DecodedInsn> = decoded.values().cloned().collect();
+        let decoded_index: BTreeMap<u64, usize> = decoded_sorted
+            .iter()
+            .enumerate()
+            .map(|(index, instruction)| (instruction.address, index))
+            .collect();
         for (site, text) in &unresolved_indirect_jumps {
             if resolved_indirect_jumps.contains_key(site) {
                 continue;
@@ -1355,7 +1360,9 @@ impl<'a> Analyzer<'a> {
             }
             let cfg_instructions = instructions
                 .iter()
-                .map(|instruction| self.cfg_instruction(instruction))
+                .map(|instruction| {
+                    self.cfg_instruction(&decoded_sorted, decoded_index[&instruction.address])
+                })
                 .collect();
             let calls = call_sites
                 .range(*block_start..block_end)
@@ -1737,7 +1744,8 @@ impl<'a> Analyzer<'a> {
         cfg::CfgTerminator::Fallthrough
     }
 
-    fn cfg_instruction(&self, instruction: &DecodedInsn) -> cfg::CfgInstruction {
+    fn cfg_instruction(&self, decoded: &[DecodedInsn], index: usize) -> cfg::CfgInstruction {
+        let instruction = &decoded[index];
         let bytes = self
             .image
             .bytes_at(instruction.address, usize::from(instruction.size))
@@ -1755,6 +1763,7 @@ impl<'a> Analyzer<'a> {
             is_conditional: instruction.is_conditional,
             direct_target: instruction.direct_target,
             indirect: instruction.indirect.map(|target| self.cfg_indirect(target)),
+            memory_accesses: self.cfg_memory_accesses(decoded, index),
             cycles: self
                 .timing
                 .as_ref()
@@ -1770,6 +1779,74 @@ impl<'a> Analyzer<'a> {
                     column: source.column,
                 }),
         }
+    }
+
+    fn cfg_memory_accesses(
+        &self,
+        decoded: &[DecodedInsn],
+        index: usize,
+    ) -> Vec<cfg::CfgMemoryAccess> {
+        decoded[index]
+            .memory_accesses
+            .iter()
+            .map(|access| {
+                let (address, resolution) =
+                    self.resolve_memory_access_address(decoded, index, access);
+                cfg::CfgMemoryAccess {
+                    kind: match access.kind {
+                        crate::arch::MemoryAccessKind::Read => cfg::CfgMemoryAccessKind::Read,
+                        crate::arch::MemoryAccessKind::Write => cfg::CfgMemoryAccessKind::Write,
+                        crate::arch::MemoryAccessKind::ReadWrite => {
+                            cfg::CfgMemoryAccessKind::ReadWrite
+                        }
+                    },
+                    address: address.map(Addr::new),
+                    width: u32::from(access.width.max(1)),
+                    resolution,
+                    base: access
+                        .base
+                        .and_then(|register| self.decoder.register_name(register)),
+                    index: access
+                        .index
+                        .and_then(|register| self.decoder.register_name(register)),
+                    disp: access.disp,
+                }
+            })
+            .collect()
+    }
+
+    fn resolve_memory_access_address(
+        &self,
+        decoded: &[DecodedInsn],
+        index: usize,
+        access: &crate::arch::MemoryAccess,
+    ) -> (Option<u64>, cfg::CfgMemoryResolution) {
+        if let Some(address) = access.absolute {
+            return (Some(address), cfg::CfgMemoryResolution::Direct);
+        }
+        if access.index.is_some() {
+            return (None, cfg::CfgMemoryResolution::Unresolved);
+        }
+        let Some(base) = access.base else {
+            return (
+                Some(access.disp.cast_unsigned()),
+                cfg::CfgMemoryResolution::Direct,
+            );
+        };
+        if is_frame_register(self.image.arch, base)
+            || Some(base) == crate::arch::pc_register(self.image.arch)
+        {
+            return (None, cfg::CfgMemoryResolution::Unresolved);
+        }
+        origin::resolve_register_value(self.image, decoded, index, base).map_or(
+            (None, cfg::CfgMemoryResolution::Unresolved),
+            |value| {
+                (
+                    Some(value.wrapping_add_signed(access.disp)),
+                    cfg::CfgMemoryResolution::Register,
+                )
+            },
+        )
     }
 
     fn cfg_indirect(&self, target: crate::arch::IndirectTarget) -> cfg::CfgIndirectTarget {
@@ -2872,6 +2949,15 @@ impl<'a> Analyzer<'a> {
         {
             let info = crate::icache::analyze_program(&mut program_cfg, cache);
             program_cfg.cache = Some(info);
+        }
+        if let Some(cache) = self
+            .timing
+            .as_ref()
+            .and_then(TimingCostModel::profile)
+            .and_then(BoardProfile::data_cache)
+        {
+            let info = crate::dcache::analyze_program(&mut program_cfg, cache);
+            program_cfg.data_cache = Some(info);
         }
         let isr_vectors = std::mem::take(&mut self.isr_vectors);
         let startup_address = self.startup_address;

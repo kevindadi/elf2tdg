@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.0";
+pub const CFG_SCHEMA_VERSION: &str = "2.1";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -170,6 +170,8 @@ pub struct CfgInstruction {
     pub direct_target: Option<u64>,
     /// Indirect target expression, when modeled.
     pub indirect: Option<CfgIndirectTarget>,
+    /// Data-memory accesses decoded from this instruction.
+    pub memory_accesses: Vec<CfgMemoryAccess>,
     /// Static instruction cost from the selected timing model.
     pub cycles: Option<CostRange>,
     /// Source location for this instruction, when DWARF describes it.
@@ -254,6 +256,9 @@ pub struct CfgBlock {
     /// Instruction-cache analysis for this block, when a cache profile is
     /// active.
     pub cache: Option<CfgBlockCache>,
+    /// Data-cache analysis for this block, when a data-cache profile is
+    /// active.
+    pub data_cache: Option<CfgBlockDataCache>,
     /// Control-flow terminator classification.
     pub terminator: CfgTerminator,
 }
@@ -274,6 +279,52 @@ pub struct CfgBlockCache {
     pub fallback: bool,
     /// Per-line hit ranges.
     pub lines: Vec<CfgBlockCacheLine>,
+}
+
+/// Kind of data-memory access recorded on an instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgMemoryAccessKind {
+    /// Load/read access.
+    Read,
+    /// Store/write access.
+    Write,
+    /// Read-modify-write or atomic access.
+    ReadWrite,
+}
+
+/// How a data-memory address was resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgMemoryResolution {
+    /// The instruction encodes the absolute address directly.
+    Direct,
+    /// The base register was recovered by the bounded value analysis.
+    Register,
+    /// The address depends on an unknown register, index or stack value.
+    Unresolved,
+}
+
+/// One data-memory access attached to an instruction.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgMemoryAccess {
+    /// Read, write or read-modify-write.
+    pub kind: CfgMemoryAccessKind,
+    /// Statically resolved absolute address, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<Addr>,
+    /// Access width in bytes.
+    pub width: u32,
+    /// Address-resolution method.
+    pub resolution: CfgMemoryResolution,
+    /// Base register name, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Index register name, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<String>,
+    /// Signed displacement from the base or absolute address.
+    pub disp: i64,
 }
 
 /// Classification of one cache line within a basic block.
@@ -328,6 +379,95 @@ pub struct CfgCacheInfo {
     pub invalidate_on_call: bool,
     /// Per-block state-explosion limit.
     pub max_states: usize,
+    /// Functions with complete cache analysis.
+    pub functions_analyzed: u32,
+    /// Functions that fell back to an all-miss bound.
+    pub functions_fallback: u32,
+    /// Blocks with complete cache state results.
+    pub blocks_analyzed: u32,
+    /// Blocks that fell back to an all-miss bound.
+    pub blocks_fallback: u32,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
+/// Per-line data-cache hit range for a basic block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockDataCacheLine {
+    /// Cache-line start address.
+    pub line: Addr,
+    /// Number of modeled line accesses.
+    pub accesses: u32,
+    /// Number of read accesses.
+    pub reads: u32,
+    /// Number of write accesses.
+    pub writes: u32,
+    /// Classification across modeled entry states.
+    pub classification: CfgCacheLineClass,
+    /// Minimum modeled hits across entry states.
+    pub hits_min: u32,
+    /// Maximum modeled hits across entry states.
+    pub hits_max: u32,
+    /// Minimum modeled misses across entry states.
+    pub misses_min: u32,
+    /// Maximum modeled misses across entry states.
+    pub misses_max: u32,
+}
+
+/// Data-cache analysis for one basic block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockDataCache {
+    /// Decoded data-memory accesses in this block.
+    pub memory_accesses: u32,
+    /// Accesses with a statically resolved address.
+    pub resolved_memory_accesses: u32,
+    /// Accesses whose address could not be resolved.
+    pub unresolved_memory_accesses: u32,
+    /// Number of modeled cache-line accesses from resolved addresses.
+    pub line_accesses: u32,
+    /// Minimum modeled misses across entry states.
+    pub misses_min: u32,
+    /// Maximum modeled misses across entry states.
+    pub misses_max: u32,
+    /// Number of distinct cache states reaching the block.
+    pub entry_states: u32,
+    /// Whether the function fell back to an all-miss bound.
+    pub fallback: bool,
+    /// Per-line hit and miss ranges.
+    pub lines: Vec<CfgBlockDataCacheLine>,
+}
+
+/// Program-level data-cache analysis metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgDataCacheInfo {
+    /// Model name.
+    pub model: String,
+    /// Total cache size in bytes.
+    pub size: u64,
+    /// Cache line size in bytes.
+    pub line_bytes: u32,
+    /// Associativity.
+    pub ways: u32,
+    /// Number of cache sets.
+    pub sets: u64,
+    /// Extra core cycles charged for each modeled miss.
+    pub miss_penalty: u32,
+    /// Whether store misses allocate a cache line.
+    pub write_allocate: bool,
+    /// Assumed cache state at each function entry.
+    pub entry_state: String,
+    /// Whether call-return edges invalidate the modeled cache state.
+    pub invalidate_on_call: bool,
+    /// Per-block state-explosion limit.
+    pub max_states: usize,
+    /// Decoded data-memory accesses in analyzed blocks.
+    pub memory_accesses: u32,
+    /// Accesses with a statically resolved address.
+    pub resolved_memory_accesses: u32,
+    /// Accesses whose address could not be resolved.
+    pub unresolved_memory_accesses: u32,
+    /// Number of modeled cache-line accesses.
+    pub line_accesses: u32,
     /// Functions with complete cache analysis.
     pub functions_analyzed: u32,
     /// Functions that fell back to an all-miss bound.
@@ -426,6 +566,7 @@ impl FunctionCfg {
                 calls: block.calls,
                 cycles: block.cycles,
                 cache: None,
+                data_cache: None,
                 terminator: block.terminator,
             });
             blocks_by_address.insert(address, node);
@@ -809,6 +950,8 @@ pub struct ProgramCfg {
     pub timing: Option<TimingInfo>,
     /// Instruction-cache analysis metadata.
     pub cache: Option<CfgCacheInfo>,
+    /// Data-cache analysis metadata.
+    pub data_cache: Option<CfgDataCacheInfo>,
     /// Analysis diagnostics.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -1979,6 +2122,8 @@ struct CfgDocument<'a> {
     timing: Option<&'a TimingInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache: Option<&'a CfgCacheInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_cache: Option<&'a CfgDataCacheInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pointer_roots: Vec<Addr>,
     #[serde(skip_serializing_if = "is_empty_slice")]
@@ -2057,6 +2202,8 @@ struct CfgBlockView {
     cycles: Option<CostRange>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache: Option<CfgBlockCache>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_cache: Option<CfgBlockDataCache>,
     terminator: CfgTerminator,
 }
 
@@ -2075,6 +2222,8 @@ struct CfgInstructionView {
     is_conditional: bool,
     direct_target: Option<Addr>,
     indirect: Option<CfgIndirectView>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    memory_accesses: Vec<CfgMemoryAccess>,
     source: Option<SourceLoc>,
 }
 
@@ -2201,6 +2350,7 @@ pub fn render_json_selected(
         image,
         timing: program.timing.as_ref(),
         cache: program.cache.as_ref(),
+        data_cache: program.data_cache.as_ref(),
         pointer_roots: program
             .pointer_roots
             .iter()
@@ -2279,6 +2429,7 @@ fn function_view(
                 .collect(),
             cycles: block.cycles,
             cache: block.cache.clone(),
+            data_cache: block.data_cache.clone(),
             terminator: block.terminator,
         });
     }
@@ -2387,6 +2538,7 @@ fn instruction_view(instruction: &CfgInstruction) -> CfgInstructionView {
         is_return: instruction.is_return,
         is_conditional: instruction.is_conditional,
         direct_target: instruction.direct_target.map(Addr::new),
+        memory_accesses: instruction.memory_accesses.clone(),
         source: instruction.source.clone(),
         indirect: instruction.indirect.as_ref().map(|target| match target {
             CfgIndirectTarget::Register(register) => CfgIndirectView {
@@ -3826,6 +3978,7 @@ mod tests {
             is_conditional: false,
             direct_target: None,
             indirect: None,
+            memory_accesses: Vec::new(),
             cycles: None,
             source: None,
         }

@@ -6,6 +6,7 @@ pub mod board_profile;
 mod cache_state;
 pub mod cfg;
 pub mod cfg_graph;
+mod dcache;
 pub mod dwarf;
 pub mod elf_view;
 pub mod error;

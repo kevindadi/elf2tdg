@@ -1,0 +1,38 @@
+schema_version = 2
+id = "board:cortex-m7-dcache"
+name = "Cortex-M7 data-cache example"
+arch = "thumbv7em"
+cpu = "cortex-m7"
+confidence = "low"
+caveats = [
+  "Example data-cache profile only; replace size, associativity, write policy and miss penalty with target-board measurements.",
+]
+
+[clocks.core]
+hz = 168_000_000
+confidence = "high"
+
+[[memory]]
+name = "flash"
+start = 0x0800_0000
+size = 0x0001_0000
+kind = "flash"
+executable = true
+fetch_wait_states = 0
+fetch_width_bytes = 4
+
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0001_0000
+kind = "ram"
+
+[data_cache]
+size = 32_768
+line_bytes = 32
+ways = 4
+replacement = "lru"
+miss_penalty = 20
+write_allocate = true
+invalidate_on_call = true
+max_states = 128

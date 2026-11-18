@@ -707,6 +707,30 @@ impl TimingCostModel {
                     cache.miss_penalty().to_string(),
                 );
             }
+            if let Some(cache) = profile.data_cache() {
+                params.extras.insert(
+                    "board_profile_data_cache".to_owned(),
+                    format!(
+                        "{}B/{}B/{}way/{}",
+                        cache.size(),
+                        cache.line_bytes(),
+                        cache.ways(),
+                        cache.replacement_name()
+                    ),
+                );
+                params.extras.insert(
+                    "board_profile_data_cache_miss_penalty".to_owned(),
+                    cache.miss_penalty().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_data_cache_write_allocate".to_owned(),
+                    cache.write_allocate().to_string(),
+                );
+                caveats.push(
+                    "Data-cache miss penalties model only statically resolved addresses; unresolved stack, indexed and register-dependent accesses are counted but not charged."
+                        .to_owned(),
+                );
+            }
         }
         if !unknown_mnemonics.is_empty() {
             params.extras.insert(
@@ -1343,6 +1367,7 @@ mod tests {
             direct_target: Some(0x1004),
             value: None,
             memory_write: None,
+            memory_accesses: Vec::new(),
             indirect: None,
             regs_read: Vec::new(),
             regs_write: Vec::new(),
@@ -1370,6 +1395,7 @@ mod tests {
             direct_target: None,
             value: None,
             memory_write: None,
+            memory_accesses: Vec::new(),
             indirect: None,
             regs_read: Vec::new(),
             regs_write: Vec::new(),
@@ -1396,6 +1422,7 @@ mod tests {
             direct_target: None,
             value: None,
             memory_write: None,
+            memory_accesses: Vec::new(),
             indirect: None,
             regs_read: Vec::new(),
             regs_write: Vec::new(),
