@@ -504,7 +504,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `address`, `size` | linked virtual address and byte size |
 | `instructions` | full instruction list with raw bytes and control-flow flags |
 | `calls` | call sites owned by this block |
-| `cycles` | static instruction-cost sum for the block, including board-profile overrides and fetch wait states when a profile is active |
+| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states |
 | `terminator` | `fallthrough`, `call`, `noreturn-call`, `return`, `branch`, `jump`, `unresolved` |
 | `noreturn` | `api` or `control-flow` when the function cannot return; absent otherwise |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |

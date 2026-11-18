@@ -32,9 +32,11 @@ Implemented:
   per-block cycles and optional wall-clock time from `--freq`. M3 adds opt-in
   generic AArch64 and x86-64 statistical throughput models
   (`--cpu aarch64` / `--cpu x86-64`); they are never enabled silently.
-- Optional TOML/JSON board profiles (`--board-profile`) supply clock domains,
-  memory regions with fetch wait states, and class/mnemonic-specific cycle
-  overrides. The TDG records the profile ID, SHA-256 and source, and profile
+- Optional TOML/JSON board profiles (`--board-profile`, schema v2) supply clock
+  domains, memory regions with fetch wait states, and class/mnemonic-specific
+  cycle overrides. A Cortex-M4 resource/dependency pipeline model schedules
+  block instructions using register hazards, resource occupancy and branch
+  penalties. The TDG records the profile ID, SHA-256 and source, and profile
   files are strictly validated before analysis. See
   [docs/board-profile.md](docs/board-profile.md).
 - JSON output validated against the versioned schema, plus DOT and Mermaid
@@ -372,9 +374,11 @@ not bounds for a specific core.
 `--board-profile` is opt-in and never enabled by auto-detection. The profile's
 CPU model must match the ELF architecture and any explicit `--cpu`; `--freq`
 overrides its core clock while keeping its source visible in the TDG. Without a
-profile, timing output is unchanged. The example
+profile, timing output is unchanged. The examples
 [`examples/profiles/cortex-m0-isr.toml`](examples/profiles/cortex-m0-isr.toml)
-shows the format.
+and
+[`examples/profiles/cortex-m4-pipeline.toml`](examples/profiles/cortex-m4-pipeline.toml)
+show the board-cost and Cortex-M4 pipeline formats.
 
 `--instructions`, `--projection` and `--legend` apply to TDG output.
 `--function`, `--reachable-from`, `--no-prune-runtime`,

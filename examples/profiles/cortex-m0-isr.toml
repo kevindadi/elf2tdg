@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 id = "board:cortex-m0-isr"
 name = "Cortex-M0 ISR example board"
 arch = "thumb"

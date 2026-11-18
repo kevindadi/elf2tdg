@@ -15,10 +15,12 @@ elf2tdg firmware.elf \
   --output tdg.json
 ```
 
-The file is parsed as TOML unless its extension is `.json`. The profile is
-strictly validated before analysis: unknown fields, duplicate selectors,
+The file is parsed as TOML unless its extension is `.json`. Schema version 1
+profiles remain valid; version 2 adds the optional pipeline model. The profile
+is strictly validated before analysis: unknown fields, duplicate selectors,
 overlapping memory regions, zero frequencies and invalid cycle ranges are
-errors.
+errors. [`examples/profiles/cortex-m4-pipeline.toml`](../examples/profiles/cortex-m4-pipeline.toml)
+shows the Cortex-M4 pipeline model.
 
 ## Resolution order
 
@@ -37,7 +39,7 @@ the CPU model and the loaded ELF.
 ## File format
 
 ```toml
-schema_version = 1
+schema_version = 2
 id = "board:nucleo-f401re"
 name = "NUCLEO-F401RE at 84 MHz"
 arch = "thumb"
@@ -74,13 +76,23 @@ cycles = { min = 2, max = 3 }
 [[instruction_costs]]
 class = "divide"
 cycles = { min = 2, max = 12 }
+
+[pipeline]
+issue_width = 1
+branch_penalty = { min = 1, max = 3 }
+
+[[pipeline.instructions]]
+mnemonic = "ldr"
+resources = ["load_store"]
+latency = 2
+occupancy = 2
 ```
 
 ### Top-level fields
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | Must be `1`. |
+| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`. |
 | `id` | yes | Stable profile identifier recorded in the TDG. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
@@ -88,6 +100,7 @@ cycles = { min = 2, max = 12 }
 | `confidence` | no | Overrides block-timing confidence (`high`, `medium`, `low`, `unknown`); otherwise the base model's confidence is used. |
 | `unknown_instructions` | no | `warn` (default) emits a `timing-unknown-instruction` diagnostic; `ignore` suppresses it. The fallback cost still applies. |
 | `caveats` | no | Extra caveats copied into the TDG timing metadata and block timing. |
+| `[pipeline]` | no | Enables the Cortex-M4 in-order resource/dependency model; see below. |
 
 ### Clocks
 
@@ -135,6 +148,60 @@ or data accesses. The generated caveat says so in the TDG. Use a measured
 `fetch_wait_states`/`fetch_width_bytes` pair or leave fetch costing disabled
 when those effects dominate.
 
+### Pipeline / resource model
+
+The optional `[pipeline]` table switches block costing from independent
+instruction sums to an in-order resource/dependency schedule. It requires
+`schema_version = 2`. This phase supports `cpu = "cortex-m4"` and single issue
+only; other cores are rejected until their models exist.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `issue_width` | no | Must be `1` in the current implementation; defaults to `1`. |
+| `branch_penalty` | no | Extra cycles for the block's final branch/call/return, exact or `{ min, max }`; default `1..3`. |
+
+Each `[[pipeline.instructions]]` entry overrides the built-in Cortex-M4 class
+mapping:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `class` | one selector | Same class names as `[[instruction_costs]]`. |
+| `mnemonic` | one selector | Canonical, case-insensitive mnemonic. |
+| `resources` | yes | Resource names occupied while issuing, for example `load_store`, `alu`, `mul`, `div`, `branch` or `fpu`. |
+| `latency` | yes | Cycles from issue until a written register is ready; must be positive. |
+| `occupancy` | no | Cycles the resources stay busy; defaults to `1`. |
+
+Built-in defaults when no override matches:
+
+| Class | Resources | Latency | Occupancy |
+|---|---|---|---|
+| load | `load_store` | 2 | 1 |
+| store | `load_store` | 1 | 1 |
+| push/pop | `load_store` | 2 | 1 |
+| ldm/stm | `load_store` | 2 | 2 |
+| branch/call/return | `branch` | 1 | 1 |
+| multiply | `mul` | 1 | 1 |
+| divide | `div` | 12 | 1 |
+| alu/nop/barrier/other | `alu` | 1 | 1 |
+
+The scheduler consumes Capstone's explicit and implicit register read/write
+sets. It stalls an instruction until its source registers and resources are
+ready, then marks destination registers ready `latency` cycles after issue.
+`branch_penalty` is added when the block's last instruction is a branch, call
+or return; conditional transfers use the worst case.
+
+Register readiness is assumed at block entry. Memory dependencies,
+store-to-load forwarding, inter-block pipeline state, caches, branch
+prediction, exception entry and multi-issue are not modeled in this phase.
+Block costs are therefore local pipeline-aware costs, not WCET bounds. While
+the pipeline model is active the TDG marks the timing model `statistical`, and
+a generated caveat records the limitation.
+
+When `[pipeline]` is active, block `cycles` come from this schedule, including
+profile fetch wait states. `[[instruction_costs]]` remains the fallback for
+non-pipeline analysis and per-instruction detail; it is not added to the
+pipeline schedule.
+
 ### Instruction-cost overrides
 
 Each `[[instruction_costs]]` entry must select by `class`, `mnemonic`, or both.
@@ -168,6 +235,9 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_memory_regions`
 - `board_profile_max_fetch_wait_states`
 - `board_profile_instruction_cost_overrides`
+- `board_profile_pipeline`
+- `board_profile_pipeline_issue_width`
+- `board_profile_pipeline_instruction_overrides`
 - `unknown_instruction_mnemonics`, the count of distinct fallback mnemonics,
   when at least one fallback was used
 
@@ -178,12 +248,16 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
 
 ## Semantics and limits
 
-- A block's `cycles` remains the sum of static instruction costs. It is not an
-  execution path time, a loop cost or a WCET bound.
-- Cost values are issue/throughput estimates, not per-instruction latency.
+- Without `[pipeline]`, a block's `cycles` is the sum of static instruction
+  costs. With `[pipeline]`, it is the local in-order resource/dependency
+  schedule. Neither is an execution path time, a loop cost or a WCET bound.
+- Cost values are issue/resource estimates, not per-instruction wall-clock
+  latency.
 - Caches, branch prediction, dual issue and out-of-order behavior are not
   simulated. For such cores the profile can refine table values, but the result
   remains statistical.
+- Pipeline state is not propagated across basic blocks yet. The first
+  instruction in each block assumes all source registers are ready.
 - Interrupt entry, exception return, wait-for-interrupt and peripheral
   interaction are outside this model.
 - The same ELF can be analyzed repeatedly with different profiles; the TDG

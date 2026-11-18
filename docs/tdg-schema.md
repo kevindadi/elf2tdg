@@ -276,9 +276,12 @@ for aggregation; instruction detail is enabled per invocation for human
 inspection or fine-grained downstream analysis.
 
 When a board profile is active, block and instruction cycles include its
-selected overrides and modeled fetch wait states. The profile's ID, source and
-SHA-256 are recorded in `timing.models[].params.extras`, so the same TDG schema
-can describe results from different boards without embedding board constants.
+selected overrides and modeled fetch wait states. When the Cortex-M4 pipeline
+model is active, block cycles come from the resource/dependency schedule while
+per-instruction cycles remain standalone estimates; instruction cycles do not
+necessarily sum to the block cycle count. The profile's ID, source and SHA-256
+are recorded in `timing.models[].params.extras`, so the same TDG schema can
+describe results from different boards without embedding board constants.
 
 ### 6.2 Determinism
 
@@ -316,6 +319,15 @@ auto-detected. `--freq` overrides its core clock. The TDG records the profile
 ID, source and SHA-256 in `timing.models[].params.extras`, and profile clocks
 use `source: "board-profile"`. See
 [board-profile.md](board-profile.md) for the file format and exact precedence.
+
+A schema-v2 profile may also enable the Cortex-M4 in-order resource/dependency
+pipeline model. It schedules instructions using Capstone register read/write sets,
+resource occupancy, result latency and branch penalties, replacing the additive
+class-table block cost while the pipeline model is active. Registers are assumed
+ready at block entry; inter-block pipeline state, caches, branch prediction and
+multi-issue are not modeled yet. The result is a local pipeline-aware cost, not
+a WCET bound, so the TDG reports the model as `statistical` while this pipeline
+model is active.
 
 The current implementation ships Cortex-M, generic RV32/RV64, and generic
 AArch64/x86-64 tables. The latter two are statistical throughput tables and are
