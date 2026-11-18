@@ -38,7 +38,9 @@ Implemented:
   cycle overrides. A Cortex-M4 resource/dependency pipeline model schedules
   block instructions using register hazards, resource occupancy and branch
   penalties. The CFG timing metadata records the profile ID, SHA-256 and source, and
-  profile files are strictly validated before analysis. See
+  profile files are strictly validated before analysis. Optional LRU
+  instruction-cache profiles propagate concrete cache states over each CFG,
+  report per-block hit/miss ranges and add modeled miss penalties. See
   [docs/board-profile.md](docs/board-profile.md).
 - Versioned CFG JSON plus DOT and Mermaid renderers.
 - Runtime rule engine for spawn/join/scope/await:
@@ -359,7 +361,9 @@ profile, timing output is unchanged. The examples
 [`examples/profiles/cortex-m0-isr.toml`](examples/profiles/cortex-m0-isr.toml)
 and
 [`examples/profiles/cortex-m4-pipeline.toml`](examples/profiles/cortex-m4-pipeline.toml)
-show the board-cost and Cortex-M4 pipeline formats.
+and
+[`examples/profiles/cortex-m7-icache.toml`](examples/profiles/cortex-m7-icache.toml)
+show the board-cost, Cortex-M4 pipeline and instruction-cache formats.
 
 `--function`, `--reachable-from`, `--no-prune-runtime`,
 `--all-functions` and `--no-cfg-instructions` apply only to `--view cfg`.

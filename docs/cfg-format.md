@@ -362,9 +362,9 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `1.9`.
+`cfg_schema_version` is `2.0`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 1.9 adds runtime/API provenance to callback annotations. Version 1.8 makes the CFG document self-contained: it adds top-level
+functions. Version 2.0 adds instruction-cache analysis metadata. Version 1.9 added runtime/API provenance to callback annotations. Version 1.8 made the CFG document self-contained: it adds top-level
 `timing`, `roots`, `calls`, `concurrency` and `locks`, all sourced from
 `ProgramCfg`. `roots` records startup/main/ISR/task/callback/
 pointer entries, `calls` is the interprocedural call graph derived from block
@@ -385,7 +385,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "1.9",
+  "cfg_schema_version": "2.0",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "pointer_roots": ["0x8000120", "0x800013c"],
@@ -511,11 +511,20 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 |---|---|
 | `image` | architecture, entry, ELF type and available metadata |
 | `timing` | timing models and frequency domains used by block costs |
+| `cache` | instruction-cache model parameters, analysis counts and caveats |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
 | `concurrency` | spawn/join/await/callback-bind/scope annotations attached to call sites |
 | `locks` | lock acquire/try-acquire/release events with runtime API and primitive kind |
+
+When an instruction-cache profile is active, each block can carry a `cache`
+object with the number of fetch-line accesses, minimum/maximum modeled misses,
+the number of cache states reaching the block, and per-line hit/miss ranges.
+Each line also has a `classification`: `always-hit`, `always-miss` or `may-hit`
+across the modeled entry states. The model assumes a cold cache at each
+function entry and can conservatively invalidate state across call-return
+edges.
 
 These fields are CFG-native. They are populated from function CFGs and runtime
 analysis facts; serializing the CFG JSON is self-contained. `calls`,
@@ -530,11 +539,12 @@ analysis facts; serializing the CFG JSON is self-contained. `calls`,
 | `address`, `size` | linked virtual address and byte size |
 | `instructions` | full instruction list with raw bytes and control-flow flags |
 | `calls` | call sites owned by this block |
-| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states |
+| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states and instruction-cache miss penalties |
 | `terminator` | `fallthrough`, `call`, `noreturn-call`, `return`, `branch`, `jump`, `unresolved` |
 | `noreturn` | `api` or `control-flow` when the function cannot return; absent otherwise |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
 | `inline_frames` | unique `DW_TAG_inlined_subroutine` ranges inside the function |
+| `cache` | per-block fetch-line accesses, hit/miss ranges and classification, entry-state count and fallback flag |
 
 Functions that have no machine code in the image are still selectable and
 renderable. Their `blocks` array is empty and the function carries:

@@ -20,7 +20,9 @@ profiles remain valid; version 2 adds the optional pipeline model. The profile
 is strictly validated before analysis: unknown fields, duplicate selectors,
 overlapping memory regions, zero frequencies and invalid cycle ranges are
 errors. [`examples/profiles/cortex-m4-pipeline.toml`](../examples/profiles/cortex-m4-pipeline.toml)
-shows the Cortex-M4 pipeline model.
+shows the Cortex-M4 pipeline model, and
+[`examples/profiles/cortex-m7-icache.toml`](../examples/profiles/cortex-m7-icache.toml)
+shows an instruction-cache profile.
 
 ## Resolution order
 
@@ -92,7 +94,7 @@ occupancy = 2
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`. |
+| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]` or `[instruction_cache]`. |
 | `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
@@ -101,6 +103,7 @@ occupancy = 2
 | `unknown_instructions` | no | `warn` (default) emits a `timing-unknown-instruction` diagnostic; `ignore` suppresses it. The fallback cost still applies. |
 | `caveats` | no | Extra caveats copied into the CFG timing metadata and block timing. |
 | `[pipeline]` | no | Enables the Cortex-M4 in-order resource/dependency model; see below. |
+| `[instruction_cache]` | no | Enables LRU instruction-cache analysis; see below. |
 
 ### Clocks
 
@@ -143,8 +146,9 @@ fetch_cycles = ceil(instruction_size / fetch_width_bytes) * fetch_wait_states
 ```
 
 This is a deliberately simple first-order model. It does not model prefetch,
-instruction caches, bus contention, flash accelerator behavior, exception entry
-or data accesses. The generated caveat says so in the CFG metadata. Use a measured
+bus contention, flash accelerator behavior, exception entry or data accesses.
+Instruction-cache effects are modeled separately when `[instruction_cache]` is
+enabled below. The generated caveat says so in the CFG metadata. Use a measured
 `fetch_wait_states`/`fetch_width_bytes` pair or leave fetch costing disabled
 when those effects dominate.
 
@@ -202,6 +206,43 @@ profile fetch wait states. `[[instruction_costs]]` remains the fallback for
 non-pipeline analysis and per-instruction detail; it is not added to the
 pipeline schedule.
 
+### Instruction cache
+
+The optional `[instruction_cache]` table enables intra-function instruction-cache
+analysis. It requires `schema_version = 2`.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `size` | yes | Total cache size in bytes; must be divisible by `line_bytes * ways`. |
+| `line_bytes` | yes | Line size in bytes; must be a positive power of two. |
+| `ways` | yes | Associativity; must be positive. |
+| `replacement` | no | `lru` (the only supported policy). |
+| `miss_penalty` | yes | Extra core cycles charged for each modeled miss; must be positive. |
+| `invalidate_on_call` | no | Clear modeled state across call-return edges; defaults to `true`. |
+| `max_states` | no | Maximum concrete cache states per block; defaults to `128`. |
+
+```toml
+[instruction_cache]
+size = 16_384
+line_bytes = 32
+ways = 4
+replacement = "lru"
+miss_penalty = 20
+invalidate_on_call = true
+max_states = 128
+```
+
+Each function is analyzed from a **cold** cache at its entry. The analyzer
+propagates concrete LRU states along intra-function CFG edges, classifies line
+hits and misses, and adds `misses * miss_penalty` to block cycles. Multiple
+states reaching a block produce a min/max cost range; each line is classified
+as `always-hit`, `always-miss` or `may-hit` across those states. If a block
+exceeds `max_states`, the function falls back to an all-miss upper bound.
+
+The analysis is local: it does not model inter-function cache state, prefetch,
+data caches, bus contention or execution-count/loop bounds. With
+`invalidate_on_call = true`, call-return edges conservatively clear the state.
+
 ### Instruction-cost overrides
 
 Each `[[instruction_costs]]` entry must select by `class`, `mnemonic`, or both.
@@ -238,6 +279,8 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_pipeline`
 - `board_profile_pipeline_issue_width`
 - `board_profile_pipeline_instruction_overrides`
+- `board_profile_instruction_cache`
+- `board_profile_instruction_cache_miss_penalty`
 - `unknown_instruction_mnemonics`, the count of distinct fallback mnemonics,
   when at least one fallback was used
 
@@ -253,9 +296,10 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   schedule. Neither is an execution path time, a loop cost or a WCET bound.
 - Cost values are issue/resource estimates, not per-instruction wall-clock
   latency.
-- Caches, branch prediction, dual issue and out-of-order behavior are not
-  simulated. For such cores the profile can refine table values, but the result
-  remains statistical.
+- Instruction caches are simulated only when `[instruction_cache]` is present;
+  branch prediction, dual issue and out-of-order behavior are not modeled.
+  For such cores the profile can refine table values, but the result remains
+  statistical.
 - Pipeline state is not propagated across basic blocks yet. The first
   instruction in each block assumes all source registers are ready.
 - Interrupt entry, exception return, wait-for-interrupt and peripheral
