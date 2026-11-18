@@ -1,0 +1,38 @@
+schema_version = 2
+id = "board:cortex-m4-pipeline"
+name = "Cortex-M4 pipeline example board"
+arch = "thumbv7em"
+cpu = "cortex-m4"
+confidence = "medium"
+caveats = [
+  "Example pipeline profile only; resource latencies and branch penalties must be calibrated on the target board.",
+]
+
+[clocks.core]
+hz = 168_000_000
+confidence = "high"
+
+[[memory]]
+name = "flash"
+start = 0x0800_0000
+size = 0x0001_0000
+kind = "flash"
+executable = true
+fetch_wait_states = 2
+fetch_width_bytes = 4
+
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0001_0000
+kind = "ram"
+
+[pipeline]
+issue_width = 1
+branch_penalty = { min = 1, max = 3 }
+
+[[pipeline.instructions]]
+mnemonic = "ldr"
+resources = ["load_store"]
+latency = 2
+occupancy = 2
