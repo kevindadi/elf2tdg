@@ -1,5 +1,5 @@
 {
-  "cfg_schema_version": "1.7",
+  "cfg_schema_version": "1.8",
   "image": {
     "path": "artifacts/rust-concurrency-analysis.elf",
     "arch": "thumb",
@@ -10,6 +10,126 @@
     "has_debug_info": true,
     "has_relocations": false
   },
+  "timing": {
+    "models": [
+      {
+        "id": "cortex-m4",
+        "arch": "thumb",
+        "core": "Cortex-M4",
+        "determinism": "bounded",
+        "table_version": "0.2.0-m3",
+        "params": {},
+        "caveats": [
+          "Core-cycle estimate excludes flash wait states, bus contention, interrupts and caches.",
+          "Load/store and branch penalties are table-based; cache/TCM configuration is not modeled."
+        ]
+      }
+    ],
+    "frequency_domains": [
+      {
+        "id": "clk:core",
+        "name": "core",
+        "hz": 168000000,
+        "source": "cli",
+        "confidence": "high"
+      }
+    ],
+    "default_frequency_domain": "clk:core",
+    "caveats": [
+      "Static timing estimates are not WCET bounds; loop bounds and execution counts are not inferred."
+    ]
+  },
+  "roots": [
+    {
+      "function": "fn:0x8000400",
+      "kind": "startup",
+      "name": "startup",
+      "confidence": "high"
+    },
+    {
+      "function": "fn:0x800082a",
+      "kind": "task",
+      "name": "rust_concurrency::app_main",
+      "confidence": "medium"
+    },
+    {
+      "function": "fn:0x800085c",
+      "kind": "task",
+      "name": "rust_concurrency::sensor_task",
+      "confidence": "medium"
+    },
+    {
+      "function": "fn:0x800089a",
+      "kind": "task",
+      "name": "rust_concurrency::monitor_task",
+      "confidence": "medium"
+    },
+    {
+      "function": "fn:0x80008de",
+      "kind": "main",
+      "name": "main",
+      "confidence": "high"
+    },
+    {
+      "function": "fn:0x80008e6",
+      "kind": "isr",
+      "name": "HardFault",
+      "vector": 3,
+      "confidence": "high"
+    }
+  ],
+  "calls": [
+    {
+      "caller": "fn:0x80005ea",
+      "callee": "fn:0x8000472",
+      "site": "0x8000618",
+      "direct": true,
+      "tail": false,
+      "conditional": false,
+      "heuristic": false,
+      "unresolved": false,
+      "confidence": "high"
+    },
+    {
+      "caller": "fn:0x80005ea",
+      "callee": "fn:0x800048e",
+      "site": "0x80006e8",
+      "direct": true,
+      "tail": false,
+      "conditional": false,
+      "heuristic": false,
+      "unresolved": false,
+      "confidence": "high"
+    }
+  ],
+  "concurrency": [
+    {
+      "function": "fn:0x80005ea",
+      "site": "0x800061c",
+      "operation": {
+        "kind": "spawn",
+        "runtime": "rust-embassy",
+        "api": "embassy::Spawner::spawn",
+        "name": "rust_concurrency::sensor_task",
+        "entry": "fn:0x800085c",
+        "spawn_kind": "async-task"
+      },
+      "confidence": "medium"
+    },
+    {
+      "function": "fn:0x80005ea",
+      "site": "0x80006ec",
+      "operation": {
+        "kind": "spawn",
+        "runtime": "rust-embassy",
+        "api": "embassy::Spawner::spawn",
+        "name": "rust_concurrency::monitor_task",
+        "entry": "fn:0x800089a",
+        "spawn_kind": "async-task"
+      },
+      "confidence": "medium"
+    }
+  ],
   "functions": [
     {
       "id": "fn:0x80005ea",
