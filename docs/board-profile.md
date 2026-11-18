@@ -16,13 +16,16 @@ elf2tdg firmware.elf \
 ```
 
 The file is parsed as TOML unless its extension is `.json`. Schema version 1
-profiles remain valid; version 2 adds the optional pipeline model. The profile
-is strictly validated before analysis: unknown fields, duplicate selectors,
-overlapping memory regions, zero frequencies and invalid cycle ranges are
-errors. [`examples/profiles/cortex-m4-pipeline.toml`](../examples/profiles/cortex-m4-pipeline.toml)
-shows the Cortex-M4 pipeline model, and
+profiles remain valid; version 2 adds the optional pipeline and cache models.
+The profile is strictly validated before analysis: unknown fields, duplicate
+selectors, overlapping memory regions, zero frequencies and invalid cycle
+ranges are errors.
+[`examples/profiles/cortex-m4-pipeline.toml`](../examples/profiles/cortex-m4-pipeline.toml)
+shows the Cortex-M4 pipeline model,
 [`examples/profiles/cortex-m7-icache.toml`](../examples/profiles/cortex-m7-icache.toml)
-shows an instruction-cache profile.
+shows an instruction-cache profile, and
+[`examples/profiles/cortex-m7-dcache.toml`](../examples/profiles/cortex-m7-dcache.toml)
+shows a data-cache profile.
 
 ## Resolution order
 
@@ -94,7 +97,7 @@ occupancy = 2
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]` or `[instruction_cache]`. |
+| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]` or `[data_cache]`. |
 | `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
@@ -104,6 +107,7 @@ occupancy = 2
 | `caveats` | no | Extra caveats copied into the CFG timing metadata and block timing. |
 | `[pipeline]` | no | Enables the Cortex-M4 in-order resource/dependency model; see below. |
 | `[instruction_cache]` | no | Enables LRU instruction-cache analysis; see below. |
+| `[data_cache]` | no | Enables LRU data-cache analysis; see below. |
 
 ### Clocks
 
@@ -147,8 +151,9 @@ fetch_cycles = ceil(instruction_size / fetch_width_bytes) * fetch_wait_states
 
 This is a deliberately simple first-order model. It does not model prefetch,
 bus contention, flash accelerator behavior, exception entry or data accesses.
-Instruction-cache effects are modeled separately when `[instruction_cache]` is
-enabled below. The generated caveat says so in the CFG metadata. Use a measured
+Instruction-cache and data-cache effects are modeled separately when
+`[instruction_cache]` or `[data_cache]` is enabled below. The generated caveat
+says so in the CFG metadata. Use a measured
 `fetch_wait_states`/`fetch_width_bytes` pair or leave fetch costing disabled
 when those effects dominate.
 
@@ -240,7 +245,56 @@ as `always-hit`, `always-miss` or `may-hit` across those states. If a block
 exceeds `max_states`, the function falls back to an all-miss upper bound.
 
 The analysis is local: it does not model inter-function cache state, prefetch,
-data caches, bus contention or execution-count/loop bounds. With
+data-cache effects, bus contention or execution-count/loop bounds. With
+`invalidate_on_call = true`, call-return edges conservatively clear the state.
+
+### Data cache
+
+The optional `[data_cache]` table enables intra-function data-cache analysis.
+It requires `schema_version = 2`.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `size` | yes | Total cache size in bytes; must be divisible by `line_bytes * ways`. |
+| `line_bytes` | yes | Line size in bytes; must be a positive power of two. |
+| `ways` | yes | Associativity; must be positive. |
+| `replacement` | no | `lru` (the only supported policy). |
+| `miss_penalty` | yes | Extra core cycles charged for each modeled miss; must be positive. |
+| `write_allocate` | no | Allocate a line on a store miss; defaults to `true`. |
+| `invalidate_on_call` | no | Clear modeled state across call-return edges; defaults to `true`. |
+| `max_states` | no | Maximum concrete cache states per block; defaults to `128`. |
+
+```toml
+[data_cache]
+size = 32_768
+line_bytes = 32
+ways = 4
+replacement = "lru"
+miss_penalty = 20
+write_allocate = true
+invalidate_on_call = true
+max_states = 128
+```
+
+The analyzer consumes explicit data-memory operands decoded by Capstone plus
+implicit `push`/`pop` stack traffic. A PC-relative or absolute operand is used
+directly. A base register is resolved
+with the same bounded backward value recovery used for pointer roots; stack,
+indexed and otherwise unknown addresses are counted in the metadata but are
+not simulated. Each function starts from a **cold** cache. The analyzer
+propagates concrete LRU states along intra-function CFG edges, adds
+`misses * miss_penalty` to block cycles, and reports min/max ranges and
+per-line `always-hit`, `always-miss` or `may-hit` classifications. With
+`write_allocate = false`, a store miss does not install a line. If a block
+exceeds `max_states`, the function falls back to an all-miss bound for its
+resolved accesses.
+
+The data-cache model is local and partial: it treats every resolved address
+as cacheable, and does not model dirty-line writeback, store buffers, prefetch,
+stack addresses, inter-function cache state, execution counts or bus
+contention. Base-register recovery is not path-sensitive. Unresolved accesses are reported as
+`unresolved_memory_accesses`; they are excluded from miss penalties and cache
+state propagation, so modeled hits are optimistic. With
 `invalidate_on_call = true`, call-return edges conservatively clear the state.
 
 ### Instruction-cost overrides
@@ -281,6 +335,9 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_pipeline_instruction_overrides`
 - `board_profile_instruction_cache`
 - `board_profile_instruction_cache_miss_penalty`
+- `board_profile_data_cache`
+- `board_profile_data_cache_miss_penalty`
+- `board_profile_data_cache_write_allocate`
 - `unknown_instruction_mnemonics`, the count of distinct fallback mnemonics,
   when at least one fallback was used
 
@@ -297,9 +354,13 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
 - Cost values are issue/resource estimates, not per-instruction wall-clock
   latency.
 - Instruction caches are simulated only when `[instruction_cache]` is present;
-  branch prediction, dual issue and out-of-order behavior are not modeled.
-  For such cores the profile can refine table values, but the result remains
-  statistical.
+  data caches only when `[data_cache]` is present. Branch prediction, dual
+  issue and out-of-order behavior are not modeled. For such cores the profile
+  can refine table values, but the result remains statistical.
+- Data-cache results cover only statically resolved addresses. Stack, indexed
+  and unresolved accesses are counted but do not contribute miss penalties.
+  Dirty writeback, store buffers, prefetch and inter-function cache state are
+  not modeled.
 - Pipeline state is not propagated across basic blocks yet. The first
   instruction in each block assumes all source registers are ready.
 - Interrupt entry, exception return, wait-for-interrupt and peripheral

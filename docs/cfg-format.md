@@ -362,9 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.0`.
+`cfg_schema_version` is `2.1`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.0 adds instruction-cache analysis metadata. Version 1.9 added runtime/API provenance to callback annotations. Version 1.8 made the CFG document self-contained: it adds top-level
+functions. Version 2.1 adds data-cache analysis and decoded memory-access
+metadata. Version 2.0 adds instruction-cache analysis metadata. Version 1.9
+added runtime/API provenance to callback annotations. Version 1.8 made the
+CFG document self-contained: it adds top-level
 `timing`, `roots`, `calls`, `concurrency` and `locks`, all sourced from
 `ProgramCfg`. `roots` records startup/main/ISR/task/callback/
 pointer entries, `calls` is the interprocedural call graph derived from block
@@ -385,9 +388,18 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.0",
+  "cfg_schema_version": "2.1",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
+  "data_cache": {
+    "model": "data-lru", "size": 32768, "line_bytes": 32, "ways": 4, "sets": 256,
+    "miss_penalty": 20, "write_allocate": true,
+    "entry_state": "cold-per-function", "invalidate_on_call": true,
+    "max_states": 128, "memory_accesses": 97, "resolved_memory_accesses": 57,
+    "unresolved_memory_accesses": 40, "line_accesses": 57,
+    "functions_analyzed": 20, "functions_fallback": 0,
+    "blocks_analyzed": 158, "blocks_fallback": 0, "caveats": []
+  },
   "pointer_roots": ["0x8000120", "0x800013c"],
   "roots": [
     { "function": "fn:0x8000138", "kind": "main", "name": "main", "confidence": "high" }
@@ -424,6 +436,15 @@ global data.
               "is_conditional": false,
               "direct_target": null,
               "indirect": null,
+              "memory_accesses": [
+                {
+                  "kind": "write",
+                  "width": 4,
+                  "resolution": "unresolved",
+                  "base": "sp",
+                  "disp": 0
+                }
+              ],
               "source": { "file": "main.c", "line": 38 }
             },
             {
@@ -439,6 +460,7 @@ global data.
               "is_conditional": false,
               "direct_target": "0x8000120",
               "indirect": null,
+              "memory_accesses": [],
               "source": { "file": "main.c", "line": 39 }
             }
           ],
@@ -512,6 +534,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `image` | architecture, entry, ELF type and available metadata |
 | `timing` | timing models and frequency domains used by block costs |
 | `cache` | instruction-cache model parameters, analysis counts and caveats |
+| `data_cache` | data-cache model parameters, access coverage, analysis counts and caveats |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
@@ -526,6 +549,24 @@ across the modeled entry states. The model assumes a cold cache at each
 function entry and can conservatively invalidate state across call-return
 edges.
 
+When a data-cache profile is active, each block can carry a `data_cache`
+object with decoded, resolved and unresolved memory-access counts, modeled
+line accesses, minimum/maximum misses, the number of cache states reaching the
+block, and per-line read/write and hit/miss ranges. Every line has the same
+`always-hit`, `always-miss` or `may-hit` classification used by the
+instruction cache. The model assumes a cold cache at each function entry and
+can conservatively clear state across call-return edges.
+
+Every instruction with a decoded data-memory access carries a
+`memory_accesses` array, including implicit `push`/`pop` stack traffic. Each
+entry has a `kind` (`read`, `write` or
+`read-write`), an optional resolved `address`, a byte `width`, a `resolution`
+(`direct`, `register` or `unresolved`), and the original `base`, `index` and
+`disp`. Stack, indexed and register-dependent addresses remain
+`unresolved`; they are counted but excluded from data-cache miss penalties and
+state propagation, so modeled hits are optimistic. All resolved addresses are
+treated as cacheable; per-region cacheability attributes are not modeled.
+
 These fields are CFG-native. They are populated from function CFGs and runtime
 analysis facts; serializing the CFG JSON is self-contained. `calls`,
 `concurrency` and `locks` are scoped to the selected functions; `roots`,
@@ -539,12 +580,14 @@ analysis facts; serializing the CFG JSON is self-contained. `calls`,
 | `address`, `size` | linked virtual address and byte size |
 | `instructions` | full instruction list with raw bytes and control-flow flags |
 | `calls` | call sites owned by this block |
-| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states and instruction-cache miss penalties |
+| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states and instruction-/data-cache miss penalties |
 | `terminator` | `fallthrough`, `call`, `noreturn-call`, `return`, `branch`, `jump`, `unresolved` |
 | `noreturn` | `api` or `control-flow` when the function cannot return; absent otherwise |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
 | `inline_frames` | unique `DW_TAG_inlined_subroutine` ranges inside the function |
 | `cache` | per-block fetch-line accesses, hit/miss ranges and classification, entry-state count and fallback flag |
+| `data_cache` | per-block resolved/unresolved access counts, data-line hit/miss ranges, entry-state count and fallback flag |
+| `instructions[].memory_accesses` | explicit data-memory operands with kind, address resolution, width and addressing fields |
 
 Functions that have no machine code in the image are still selectable and
 renderable. Their `blocks` array is empty and the function carries:
