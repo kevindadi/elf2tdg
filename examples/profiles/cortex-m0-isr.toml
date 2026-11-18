@@ -1,0 +1,32 @@
+schema_version = 1
+id = "board:cortex-m0-isr"
+name = "Cortex-M0 ISR example board"
+arch = "thumb"
+cpu = "cortex-m0"
+confidence = "medium"
+caveats = [
+  "Example profile only; replace the clock, fetch wait states and instruction overrides with values measured on the target board.",
+]
+
+[clocks.core]
+hz = 48_000_000
+confidence = "high"
+
+[[memory]]
+name = "flash"
+start = 0x0800_0000
+size = 0x0000_2000
+kind = "flash"
+executable = true
+fetch_wait_states = 1
+fetch_width_bytes = 4
+
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0000_2000
+kind = "ram"
+
+[[instruction_costs]]
+mnemonic = "ldr"
+cycles = { min = 2, max = 3 }
