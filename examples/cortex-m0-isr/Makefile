@@ -19,17 +19,6 @@ $(ELF): main.c linker.ld | $(ARTIFACTS)
 	$(CC) $(CFLAGS) -T linker.ld -Wl,--emit-relocs -o $@ main.c
 
 analyze: $(ELF)
-	$(TOOL) $(ELF) --view tdg --cpu cortex-m0 --freq 48MHz --format json \
-		--output $(ARTIFACTS)/tdg.json --verbose
-	$(TOOL) $(ELF) --view tdg --cpu cortex-m0 --freq 48MHz --format dot --legend \
-		--output $(ARTIFACTS)/tdg-full.dot
-	dot -Tsvg $(ARTIFACTS)/tdg-full.dot -o $(ARTIFACTS)/tdg-full.svg
-	$(TOOL) $(ELF) --view tdg --cpu cortex-m0 --freq 48MHz --format dot \
-		--output $(ARTIFACTS)/tdg-full-compact.dot
-	dot -Tsvg $(ARTIFACTS)/tdg-full-compact.dot \
-		-o $(ARTIFACTS)/tdg-full-compact.svg
-	$(TOOL) $(ELF) --view tdg --cpu cortex-m0 --freq 48MHz --format mermaid --legend \
-		--output $(ARTIFACTS)/tdg-full.mmd
 	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format json \
 		--function main --output $(ARTIFACTS)/cfg-main.json
 	$(TOOL) $(ELF) --cpu cortex-m0 --freq 48MHz --view cfg --format dot \

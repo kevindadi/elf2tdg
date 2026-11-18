@@ -49,11 +49,6 @@ The analyzer is given an explicit Cortex-M4 timing model at 168 MHz.
 | File | Contents |
 |---|---|
 | [`artifacts/rust-concurrency-analysis.elf`](artifacts/rust-concurrency-analysis.elf) | `thumbv7em-none-eabi` no-std ELF with DWARF and symbols |
-| [`artifacts/tdg-analysis.json`](artifacts/tdg-analysis.json) | full TDG JSON, including Embassy task contexts |
-| [`artifacts/tdg-analysis-concurrency.dot`](artifacts/tdg-analysis-concurrency.dot) | Graphviz source, concurrency projection |
-| [`artifacts/tdg-analysis-concurrency.svg`](artifacts/tdg-analysis-concurrency.svg) | rendered concurrency TDG with legend |
-| [`artifacts/tdg-analysis-concurrency-compact.svg`](artifacts/tdg-analysis-concurrency-compact.svg) | same diagram without the embedded legend |
-| [`artifacts/tdg-analysis-concurrency.mmd`](artifacts/tdg-analysis-concurrency.mmd) | Mermaid source, concurrency projection |
 | [`artifacts/cfg-analysis-main.json`](artifacts/cfg-analysis-main.json) | lossless CFG JSON for `rust_concurrency::start_tasks`, including `inline_frames` |
 | [`artifacts/cfg-analysis-main.svg`](artifacts/cfg-analysis-main.svg) | function CFG diagram for the analysis build |
 | [`artifacts/cfg-analysis-main.mmd`](artifacts/cfg-analysis-main.mmd) | Mermaid source for the analysis CFG |
@@ -65,29 +60,18 @@ The analyzer is given an explicit Cortex-M4 timing model at 168 MHz.
 | [`artifacts/cfg-analysis-sensor.mmd`](artifacts/cfg-analysis-sensor.mmd) | Mermaid source for the sensor-task CFG |
 | [`artifacts/elf-layout-analysis.mmd`](artifacts/elf-layout-analysis.mmd) | loader-backed ELF layout for the analysis build |
 
-A browser walkthrough with the diagram and legend is
-[`../tdg-example.html`](../tdg-example.html). CFG output is documented in
-[`../../docs/cfg-format.md`](../../docs/cfg-format.md); the loader view is
-documented in [`../../docs/elf-view.md`](../../docs/elf-view.md).
+CFG output is documented in [`../../docs/cfg-format.md`](../../docs/cfg-format.md);
+the loader view is documented in [`../../docs/elf-view.md`](../../docs/elf-view.md).
 
 ## What the analyzer recovers
 
-![analysis-profile concurrency TDG](artifacts/tdg-analysis-concurrency.svg)
-
-The TDG contains six contexts:
+The program CFG contains six execution roots:
 
 - `startup` and `main` from the Cortex-M reset path;
-- an `async-task` context for `app_main`;
-- `async-task` contexts for `sensor_task` and `monitor_task`;
-- one `isr` context for the real `HardFault` vector.
+- task roots for `app_main`, `sensor_task` and `monitor_task`;
+- one ISR root for the real `HardFault` vector.
 
-The context parent chain is:
-
-```text
-startup -> main -> app_main -> sensor_task / monitor_task
-```
-
-Three `rust-embassy` spawn edges are recovered. The executor's bootstrap spawn
+Three `rust-embassy` spawn annotations are recovered. The executor's bootstrap spawn
 of `app_main` points at its `TaskStorage::poll` function. The two user spawns
 occur at inlined `Spawner::spawn` sites inside
 `rust_concurrency::start_tasks`, and resolve to the corresponding sensor/monitor
@@ -97,7 +81,7 @@ poll functions. Their DWARF inline ranges and `main.rs` source lines remain in
 Cortex-M vector tables alias every unused exception to `DefaultHandler` (often
 with a second weak name such as `PendSV`). The analyzer checks all symbol
 aliases at a vector address and skips these shared default stubs, so the example
-has one real ISR context instead of hundreds of false ones.
+has one real ISR root instead of hundreds of false ones.
 
 The executor's task-poll dispatch (`blx r1` at `0x80005da`) is no longer left
 unresolved. The analyzer recognizes the load from task-header field `+12`,
@@ -109,10 +93,10 @@ four bounded low-confidence call targets in one CFG call site:
 - `monitor_task` `TaskStorage::poll`
 - `embassy_executor::raw::poll_exited`
 
-The TDG keeps one informational `resolved-indirect-call-candidates` diagnostic
+The CFG keeps one informational `resolved-indirect-call-candidates` diagnostic
 for this site and no `unresolved-indirect-call` warning. CFG JSON has one call
-record with four `candidates`; TDG edges remain one alternative per candidate,
-and edge IDs include the target address. See
+record with four `candidates`, and the program call graph has one alternative
+per candidate. See
 [`cfg-analysis-executor.json`](artifacts/cfg-analysis-executor.json) /
 [`cfg-analysis-executor.svg`](artifacts/cfg-analysis-executor.svg) for the CFG
 view.
@@ -125,7 +109,7 @@ their other branches.
 
 ## Select a task CFG by source name
 
-Context names are first-class CFG selectors. Both forms select the real task
+Task aliases are first-class CFG selectors. Both forms select the real task
 poll body, not the future-initialization helper:
 
 ```sh

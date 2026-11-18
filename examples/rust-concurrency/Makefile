@@ -26,18 +26,6 @@ $(ELF_ANALYSIS): $(ANALYSIS_BIN) | $(ARTIFACTS)
 	cp $< $@
 
 analysis: $(ELF_ANALYSIS)
-	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view tdg --format json \
-		--output $(ARTIFACTS)/tdg-analysis.json --verbose
-	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view tdg --format dot --projection concurrency --legend \
-		--output $(ARTIFACTS)/tdg-analysis-concurrency.dot
-	dot -Tsvg $(ARTIFACTS)/tdg-analysis-concurrency.dot \
-		-o $(ARTIFACTS)/tdg-analysis-concurrency.svg
-	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view tdg --format dot --projection concurrency \
-		--output $(ARTIFACTS)/tdg-analysis-concurrency-compact.dot
-	dot -Tsvg $(ARTIFACTS)/tdg-analysis-concurrency-compact.dot \
-		-o $(ARTIFACTS)/tdg-analysis-concurrency-compact.svg
-	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view tdg --format mermaid --projection concurrency --legend \
-		--output $(ARTIFACTS)/tdg-analysis-concurrency.mmd
 	$(TOOL) $(ELF_ANALYSIS) $(TIMING) --view cfg --format json \
 		--function $(MAIN_ANALYSIS) \
 		--output $(ARTIFACTS)/cfg-analysis-main.json

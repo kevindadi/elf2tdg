@@ -8,7 +8,7 @@
 
 The ELF is linked with a tiny linker script and contains symbols, debug info,
 and the Cortex-M vector table, so the analyzer can recover both the call graph
-and the interrupt context.
+and the interrupt root.
 
 ## Build and analyze
 
@@ -25,11 +25,6 @@ Requirements: `arm-none-eabi-gcc`, `cargo`, and Graphviz `dot`.
 | File | Contents |
 |---|---|
 | [`artifacts/cortex-m0-isr.elf`](artifacts/cortex-m0-isr.elf) | linked Cortex-M0 ELF |
-| [`artifacts/tdg.json`](artifacts/tdg.json) | full TDG JSON, 48 MHz clock |
-| [`artifacts/tdg-full.dot`](artifacts/tdg-full.dot) | Graphviz source, full projection |
-| [`artifacts/tdg-full.svg`](artifacts/tdg-full.svg) | rendered full TDG with legend |
-| [`artifacts/tdg-full-compact.svg`](artifacts/tdg-full-compact.svg) | same diagram without the embedded legend |
-| [`artifacts/tdg-full.mmd`](artifacts/tdg-full.mmd) | Mermaid source |
 | [`artifacts/cfg-main.json`](artifacts/cfg-main.json) | lossless CFG JSON for `main` |
 | [`artifacts/cfg-main.dot`](artifacts/cfg-main.dot) | Graphviz source for the `main` CFG |
 | [`artifacts/cfg-main.svg`](artifacts/cfg-main.svg) | rendered `main` CFG |
@@ -40,23 +35,19 @@ Requirements: `arm-none-eabi-gcc`, `cargo`, and Graphviz `dot`.
 | [`artifacts/cfg-system.mmd`](artifacts/cfg-system.mmd) | Mermaid source for the system CFG |
 | [`artifacts/elf-layout.mmd`](artifacts/elf-layout.mmd) | loader-backed ELF layout with colored segments and disassembly |
 
-A browser walkthrough with both examples and the complete legend is
-[`../tdg-example.html`](../tdg-example.html). CFG output is documented in
-[`../../docs/cfg-format.md`](../../docs/cfg-format.md); the loader view is
-documented in [`../../docs/elf-view.md`](../../docs/elf-view.md).
+CFG output is documented in [`../../docs/cfg-format.md`](../../docs/cfg-format.md);
+the loader view is documented in [`../../docs/elf-view.md`](../../docs/elf-view.md).
 
 ## Diagram
 
-![Cortex-M0 full TDG](artifacts/tdg-full.svg)
+![Cortex-M0 system CFG](artifacts/cfg-system.svg)
 
 The analyzer reports:
 
-- `ctx:startup` with `Reset_Handler` as its entry;
-- `ctx:main` with `main` as its entry and `startup` as parent;
-- `ctx:isr:53` (vector 53 / IRQ 37) with `USART1_IRQHandler` as its entry;
+- execution roots for `Reset_Handler`, `main`, and `USART1_IRQHandler`;
+- the ISR root retains vector 53 and IRQ 37;
 - direct call edges `Reset_Handler -> SystemInit`, `Reset_Handler -> main`,
   `main -> sensor_task`, `main -> delay`, and `sensor_task -> delay`;
-- an `isr-activate` edge from vector 53 to the ISR context;
 - `main` and `Reset_Handler` classified `noreturn` from their CFGs: the reset
   handler's fallback loop after `main()` is pruned as unreachable, while
   `main`'s own infinite loop remains;
@@ -66,21 +57,3 @@ For example, the JSON contains a static block sum of 16–20 cycles for
 `USART1_IRQHandler`, i.e. about 333–417 ns at 48 MHz. That is a **static block
 sum**, not a path time or a WCET bound; loops and pipeline effects are not
 included.
-
-## Selecting the projection
-
-The full projection keeps call edges and is readable for this seven-function
-image. The Rust concurrency example uses the smaller projection:
-
-```sh
-elf2tdg firmware.elf --view tdg --format dot --projection concurrency --legend
-```
-
-- call edges are omitted;
-- contexts, scopes, spawn/join/await, ISR activation, and preemption relations
-  remain;
-- only functions participating in those relations (and context entries) are
-  drawn.
-
-The complete visual vocabulary is in
-[`../../docs/tdg-legend.md`](../../docs/tdg-legend.md).
