@@ -1,0 +1,74 @@
+schema_version = 2
+id = "board:cortex-m4-full-stack"
+name = "Cortex-M4 full-stack example"
+arch = "thumbv7em"
+cpu = "cortex-m4"
+confidence = "low"
+caveats = [
+  "Example combined profile only; replace pipeline, cache, memory and loop-bound values with target-board measurements.",
+  "Data-cache miss penalties and data-memory wait cycles are both applied, so memory latency can be double-counted.",
+]
+
+[clocks.core]
+hz = 168_000_000
+confidence = "high"
+
+[[memory]]
+name = "flash"
+start = 0x0800_0000
+size = 0x0001_0000
+kind = "flash"
+executable = true
+fetch_wait_states = 2
+fetch_width_bytes = 4
+data_width_bytes = 16
+data_read_wait_states = 2
+data_write_wait_states = 2
+
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0001_0000
+kind = "ram"
+data_width_bytes = 4
+data_read_wait_states = 1
+data_write_wait_states = 1
+
+[pipeline]
+issue_width = 1
+branch_penalty = { min = 1, max = 3 }
+
+[[pipeline.instructions]]
+mnemonic = "ldr"
+resources = ["load_store"]
+latency = 2
+occupancy = 2
+
+[instruction_cache]
+size = 16_384
+line_bytes = 32
+ways = 4
+replacement = "lru"
+miss_penalty = 20
+invalidate_on_call = true
+max_states = 128
+
+[data_cache]
+size = 32_768
+line_bytes = 32
+ways = 4
+replacement = "lru"
+miss_penalty = 20
+write_allocate = true
+invalidate_on_call = true
+max_states = 128
+
+[branch_prediction]
+model = "btfn"
+mispredict_penalty = 3
+max_states = 128
+
+[wcet]
+default_loop_bound = 4
+bound_nonterminating_loops = true
+max_states = 20_000
