@@ -1,17 +1,21 @@
 //! Function-level control-flow graphs.
 //!
-//! The analyzer keeps a `FunctionCfg` per function. Basic blocks are nodes in
-//! a `petgraph::StableDiGraph`; control-flow edges and call sites remain
-//! explicit so the CLI can export a complete, lossless CFG for a future
-//! IDA-style UI. TDG construction derives its function blocks and call edges
-//! from this representation rather than maintaining a second CFG.
+//! The analyzer keeps a `FunctionCfg` per function and a self-contained
+//! [`ProgramCfg`] at program level. Basic blocks are nodes in a
+//! `petgraph::StableDiGraph`; control-flow edges and call sites remain explicit
+//! so the CLI can export a complete, lossless CFG. `ProgramCfg` also owns
+//! execution roots, the interprocedural call graph, concurrency annotations,
+//! locks, diagnostics and timing metadata. TDG generation is a compatibility
+//! view built after the CFG and its runtime annotations.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 
 use elf2tdg_schema::{
-    Addr, AwaitTarget, BlockId, ContextId, ContextKind, CostRange, Diagnostic, Edge, Function,
-    FunctionId, FunctionKind, ImageInfo, JoinTarget, Language, SourceLoc, SpawnTarget, Tdg,
+    Addr, AwaitKind, AwaitTarget, BlockId, Confidence, Context, ContextId, ContextKind, CostRange,
+    Diagnostic, Edge, Function, FunctionId, FunctionKind, ImageInfo, JoinKind, JoinTarget,
+    Language, LockEvent, LockKind, LockOperation, RuntimeId, Scope, ScopeKind, SourceLoc,
+    SpawnKind, SpawnTarget, Tdg, TimingInfo,
 };
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
@@ -22,7 +26,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.7";
+pub const CFG_SCHEMA_VERSION: &str = "1.8";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -506,7 +510,191 @@ pub struct CfgFunction {
     pub cfg: FunctionCfg,
 }
 
-/// Program-wide CFG collection.
+/// Why a function is treated as a root of the program CFG.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgRootKind {
+    /// Reset/startup code.
+    Startup,
+    /// Language-level main entry.
+    Main,
+    /// Interrupt/exception handler.
+    Isr,
+    /// Task or thread entry.
+    Task,
+    /// Callback entry.
+    Callback,
+    /// Function address recovered from a pointer or function-pointer table.
+    Pointer,
+}
+
+/// A root function and the evidence that makes it a root.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgRoot {
+    /// Root function.
+    pub function: FunctionId,
+    /// Root category.
+    pub kind: CfgRootKind,
+    /// Human-readable context/task/handler name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Interrupt vector index, for ISR roots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector: Option<u32>,
+    /// Interrupt number, when derivable from the vector.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub irq: Option<u32>,
+    /// Resolution confidence.
+    pub confidence: Confidence,
+}
+
+/// A program-level call edge derived from call sites in function CFGs.
+#[derive(Clone, Debug, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct CfgCallEdge {
+    /// Function containing the call site.
+    pub caller: FunctionId,
+    /// Resolved callee, or `None` for an unresolved call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callee: Option<FunctionId>,
+    /// Bounded alternative callees for an unresolved or multi-target call.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<FunctionId>,
+    /// Call-site address.
+    pub site: Addr,
+    /// Statically direct target.
+    pub direct: bool,
+    /// Tail call.
+    pub tail: bool,
+    /// Conditional call.
+    pub conditional: bool,
+    /// Target was recovered by a heuristic.
+    pub heuristic: bool,
+    /// No callee could be resolved.
+    pub unresolved: bool,
+    /// Resolution confidence.
+    pub confidence: Confidence,
+}
+
+/// A concurrency-relevant operation attached to a function call site.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum CfgConcurrencyKind {
+    /// Creation of a task/thread/async task.
+    Spawn {
+        /// Runtime that defines the API.
+        runtime: RuntimeId,
+        /// API symbol/name.
+        api: String,
+        /// Recovered task label.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Resolved entry function.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        entry: Option<FunctionId>,
+        /// Bounded candidate entries when the target is opaque.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        candidates: Vec<FunctionId>,
+        /// Kind of execution unit created.
+        spawn_kind: SpawnKind,
+    },
+    /// Join/detach/abort of another execution context.
+    Join {
+        /// Join operation.
+        join_kind: JoinKind,
+        /// Resolved target entry function.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        entry: Option<FunctionId>,
+        /// Bounded target entries.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        candidates: Vec<FunctionId>,
+    },
+    /// Await of another task/future.
+    Await {
+        /// Await operation.
+        await_kind: AwaitKind,
+        /// Resolved target entry/future function.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<FunctionId>,
+        /// Bounded target functions.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        candidates: Vec<FunctionId>,
+    },
+    /// Registration of a callback.
+    CallbackBind {
+        /// Registered callback function.
+        callback: FunctionId,
+    },
+    /// Entry to a structured-concurrency scope.
+    ScopeEnter {
+        /// Scope flavor.
+        scope_kind: ScopeKind,
+        /// Whether scope exit implies a join.
+        implicit_join: bool,
+    },
+    /// Exit from a structured-concurrency scope.
+    ScopeExit {
+        /// Scope flavor.
+        scope_kind: ScopeKind,
+    },
+}
+
+/// A concurrency annotation at a function call site.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgConcurrencySite {
+    /// Function containing the operation.
+    pub function: FunctionId,
+    /// Call site address.
+    pub site: Addr,
+    /// Operation and resolved targets.
+    pub operation: CfgConcurrencyKind,
+    /// Resolution confidence.
+    pub confidence: Confidence,
+}
+
+/// A lock or synchronization event attached to the CFG.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgLockEvent {
+    /// Function containing the lock operation.
+    pub function: FunctionId,
+    /// Instruction address of a direct call, or inline-range low PC.
+    pub site: Addr,
+    /// Exclusive high PC for an inlined operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extent: Option<Addr>,
+    /// Source-level call site for an inlined operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_site: Option<SourceLoc>,
+    /// Runtime that defines the API.
+    pub runtime: RuntimeId,
+    /// API symbol/name.
+    pub api: String,
+    /// Lock/synchronization primitive kind.
+    pub lock_kind: LockKind,
+    /// Acquire/try-acquire/release.
+    pub operation: LockOperation,
+    /// Event came from a DWARF inline range.
+    #[serde(skip_serializing_if = "is_false")]
+    pub inlined: bool,
+    /// Inline nesting depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline_depth: Option<u32>,
+    /// Resolution confidence.
+    pub confidence: Confidence,
+}
+
+/// Alternative name for a function, such as a task-context name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CfgAlias {
+    /// Alias text.
+    pub name: String,
+    /// Target function.
+    pub function: FunctionId,
+    /// Whether this is a task/thread context alias.
+    pub task: bool,
+}
+
+/// Program-wide CFG collection and CFG-native analysis metadata.
 #[derive(Clone, Debug, Default)]
 pub struct ProgramCfg {
     /// Functions sorted by address.
@@ -515,6 +703,23 @@ pub struct ProgramCfg {
     /// data sections. These are additional system roots for functions that
     /// are only reachable through callback tables or global function pointers.
     pub pointer_roots: Vec<u64>,
+    /// Execution roots recovered from startup/main, vectors, tasks, callbacks
+    /// and pointer tables.
+    pub roots: Vec<CfgRoot>,
+    /// Interprocedural call edges derived from function CFG call sites.
+    pub calls: Vec<CfgCallEdge>,
+    /// Concurrency-relevant call-site annotations.
+    pub concurrency: Vec<CfgConcurrencySite>,
+    /// Lock acquire/release events.
+    pub locks: Vec<CfgLockEvent>,
+    /// Alternative function names used by selectors.
+    pub aliases: Vec<CfgAlias>,
+    /// Image metadata used by the CFG document.
+    pub image: Option<ImageInfo>,
+    /// Timing model and frequency metadata.
+    pub timing: Option<TimingInfo>,
+    /// Analysis diagnostics.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl CfgFunction {
@@ -557,8 +762,348 @@ impl ProgramCfg {
         functions.sort_by_key(|function| function.address);
         Self {
             functions,
-            pointer_roots: Vec::new(),
+            ..Self::default()
         }
+    }
+
+    /// Rebuilds CFG-native analysis metadata from the runtime facts produced
+    /// during analysis.
+    ///
+    /// This is the migration bridge for the runtime rule engine: rules still
+    /// emit TDG-shaped contexts and edges, but the resulting roots, call graph,
+    /// concurrency sites and locks are stored on the CFG. Later refactors can
+    /// make runtime rules emit these facts directly.
+    pub(crate) fn attach_analysis_metadata(
+        &mut self,
+        contexts: &[Context],
+        edges: &[Edge],
+        locks: &[LockEvent],
+        scopes: &[Scope],
+    ) {
+        self.rebuild_call_edges();
+        self.attach_roots(contexts, edges);
+        self.attach_aliases(contexts);
+        self.attach_concurrency(contexts, edges, scopes);
+        self.attach_locks(locks);
+    }
+
+    fn rebuild_call_edges(&mut self) {
+        let mut edges = Vec::new();
+        let mut seen = BTreeSet::new();
+        for function in &self.functions {
+            let calls = function
+                .cfg
+                .blocks_by_address
+                .values()
+                .flat_map(|node| function.cfg.graph[*node].calls.iter())
+                .chain(function.cfg.recovered_calls.iter());
+            for call in calls {
+                if call.null_target {
+                    continue;
+                }
+                let candidates: Vec<FunctionId> = call
+                    .candidates
+                    .iter()
+                    .filter_map(|candidate| candidate.target_function.clone())
+                    .collect();
+                if call.unresolved {
+                    push_call_edge(
+                        &mut edges, &mut seen, function, call, None, candidates, true,
+                    );
+                } else if call.candidates.is_empty() {
+                    push_call_edge(
+                        &mut edges,
+                        &mut seen,
+                        function,
+                        call,
+                        call.target_function.clone(),
+                        Vec::new(),
+                        call.target_function.is_none(),
+                    );
+                } else {
+                    for candidate in candidates {
+                        push_call_edge(
+                            &mut edges,
+                            &mut seen,
+                            function,
+                            call,
+                            Some(candidate),
+                            Vec::new(),
+                            false,
+                        );
+                    }
+                }
+            }
+        }
+        edges.sort_by(|left, right| {
+            (
+                left.caller.as_str(),
+                left.site.get(),
+                left.callee.as_ref().map(FunctionId::as_str),
+                left.unresolved,
+            )
+                .cmp(&(
+                    right.caller.as_str(),
+                    right.site.get(),
+                    right.callee.as_ref().map(FunctionId::as_str),
+                    right.unresolved,
+                ))
+        });
+        self.calls = edges;
+    }
+
+    fn attach_roots(&mut self, contexts: &[Context], edges: &[Edge]) {
+        let isr_metadata: BTreeMap<&ContextId, (u32, Option<u32>, Option<String>)> = edges
+            .iter()
+            .filter_map(|edge| match edge {
+                Edge::IsrActivate {
+                    to_context,
+                    vector,
+                    irq,
+                    name,
+                    ..
+                } => Some((to_context, (*vector, *irq, name.clone()))),
+                _ => None,
+            })
+            .collect();
+        let mut roots = Vec::new();
+        let mut seen = BTreeSet::new();
+        for context in contexts {
+            let Some(kind) = cfg_root_kind(context.kind) else {
+                continue;
+            };
+            if self.function(&context.entry).is_none() {
+                continue;
+            }
+            let (vector, irq, isr_name) = isr_metadata
+                .get(&context.id)
+                .map_or((None, None, None), |(vector, irq, name)| {
+                    (Some(*vector), *irq, name.clone())
+                });
+            let key = (context.entry.as_str().to_owned(), kind, vector, irq);
+            if !seen.insert(key) {
+                continue;
+            }
+            roots.push(CfgRoot {
+                function: context.entry.clone(),
+                kind,
+                name: isr_name.or_else(|| Some(context.name.clone())),
+                vector,
+                irq,
+                confidence: match kind {
+                    CfgRootKind::Startup | CfgRootKind::Main | CfgRootKind::Isr => Confidence::High,
+                    CfgRootKind::Task | CfgRootKind::Callback | CfgRootKind::Pointer => {
+                        Confidence::Medium
+                    }
+                },
+            });
+        }
+        for address in &self.pointer_roots {
+            let Some(function) = self.function_at(*address) else {
+                continue;
+            };
+            let key = (
+                function.id.as_str().to_owned(),
+                CfgRootKind::Pointer,
+                None,
+                None,
+            );
+            if seen.insert(key) {
+                roots.push(CfgRoot {
+                    function: function.id.clone(),
+                    kind: CfgRootKind::Pointer,
+                    name: Some(function.primary_name.clone()),
+                    vector: None,
+                    irq: None,
+                    confidence: Confidence::Medium,
+                });
+            }
+        }
+        roots.sort_by(|left, right| {
+            (left.function.as_str(), left.kind, left.vector, left.irq).cmp(&(
+                right.function.as_str(),
+                right.kind,
+                right.vector,
+                right.irq,
+            ))
+        });
+        self.roots = roots;
+    }
+
+    fn attach_aliases(&mut self, contexts: &[Context]) {
+        let mut aliases: Vec<CfgAlias> = contexts
+            .iter()
+            .filter(|context| !context.name.trim().is_empty())
+            .filter(|context| self.function(&context.entry).is_some())
+            .map(|context| CfgAlias {
+                name: context.name.clone(),
+                function: context.entry.clone(),
+                task: is_task_context(context.kind),
+            })
+            .collect();
+        aliases.sort_by(|left, right| {
+            (left.name.as_str(), left.function.as_str(), left.task).cmp(&(
+                right.name.as_str(),
+                right.function.as_str(),
+                right.task,
+            ))
+        });
+        aliases.dedup_by(|left, right| {
+            left.name == right.name && left.function == right.function && left.task == right.task
+        });
+        self.aliases = aliases;
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn attach_concurrency(&mut self, contexts: &[Context], edges: &[Edge], scopes: &[Scope]) {
+        let entries: BTreeMap<&ContextId, &FunctionId> = contexts
+            .iter()
+            .map(|context| (&context.id, &context.entry))
+            .collect();
+        let mut sites = Vec::new();
+        for edge in edges {
+            match edge {
+                Edge::Spawn {
+                    from_function,
+                    target,
+                    site,
+                    runtime,
+                    api,
+                    name,
+                    spawn_kind,
+                    confidence,
+                    ..
+                } => {
+                    let (entry, candidates) = spawn_target_entries(target, &entries);
+                    sites.push(CfgConcurrencySite {
+                        function: from_function.clone(),
+                        site: *site,
+                        operation: CfgConcurrencyKind::Spawn {
+                            runtime: runtime.clone(),
+                            api: api.clone(),
+                            name: name.clone(),
+                            entry,
+                            candidates,
+                            spawn_kind: *spawn_kind,
+                        },
+                        confidence: *confidence,
+                    });
+                }
+                Edge::Join {
+                    from_function,
+                    target,
+                    site,
+                    join_kind,
+                    confidence,
+                    ..
+                } => {
+                    let (entry, candidates) = join_target_entries(target, &entries);
+                    sites.push(CfgConcurrencySite {
+                        function: from_function.clone(),
+                        site: *site,
+                        operation: CfgConcurrencyKind::Join {
+                            join_kind: *join_kind,
+                            entry,
+                            candidates,
+                        },
+                        confidence: *confidence,
+                    });
+                }
+                Edge::Await {
+                    from_context,
+                    target,
+                    site,
+                    await_kind,
+                    confidence,
+                    ..
+                } => {
+                    let Some(function) = entries.get(from_context) else {
+                        continue;
+                    };
+                    let (target, candidates) = await_target_entries(target, &entries);
+                    sites.push(CfgConcurrencySite {
+                        function: (*function).clone(),
+                        site: *site,
+                        operation: CfgConcurrencyKind::Await {
+                            await_kind: *await_kind,
+                            target,
+                            candidates,
+                        },
+                        confidence: *confidence,
+                    });
+                }
+                Edge::CallbackBind {
+                    from_function,
+                    callback,
+                    site,
+                    confidence,
+                    ..
+                } => {
+                    sites.push(CfgConcurrencySite {
+                        function: from_function.clone(),
+                        site: *site,
+                        operation: CfgConcurrencyKind::CallbackBind {
+                            callback: callback.clone(),
+                        },
+                        confidence: *confidence,
+                    });
+                }
+                _ => {}
+            }
+        }
+        for scope in scopes {
+            let Some(function) = entries.get(&scope.entering_context) else {
+                continue;
+            };
+            sites.push(CfgConcurrencySite {
+                function: (*function).clone(),
+                site: scope.enter_site,
+                operation: CfgConcurrencyKind::ScopeEnter {
+                    scope_kind: scope.kind,
+                    implicit_join: scope.implicit_join,
+                },
+                confidence: scope.confidence,
+            });
+            if let Some(exit_site) = scope.exit_site {
+                sites.push(CfgConcurrencySite {
+                    function: (*function).clone(),
+                    site: exit_site,
+                    operation: CfgConcurrencyKind::ScopeExit {
+                        scope_kind: scope.kind,
+                    },
+                    confidence: scope.confidence,
+                });
+            }
+        }
+        sites.sort_by(|left, right| {
+            (left.function.as_str(), left.site.get())
+                .cmp(&(right.function.as_str(), right.site.get()))
+        });
+        self.concurrency = sites;
+    }
+
+    fn attach_locks(&mut self, locks: &[LockEvent]) {
+        let mut events: Vec<CfgLockEvent> = locks
+            .iter()
+            .map(|lock| CfgLockEvent {
+                function: lock.function.clone(),
+                site: lock.site,
+                extent: lock.extent,
+                call_site: lock.call_site.clone(),
+                runtime: lock.runtime.clone(),
+                api: lock.api.clone(),
+                lock_kind: lock.lock_kind,
+                operation: lock.operation,
+                inlined: lock.inlined,
+                inline_depth: lock.inline_depth,
+                confidence: lock.confidence,
+            })
+            .collect();
+        events.sort_by(|left, right| {
+            (left.function.as_str(), left.site.get())
+                .cmp(&(right.function.as_str(), right.site.get()))
+        });
+        self.locks = events;
     }
 
     /// Looks up a function by ID.
@@ -587,13 +1132,17 @@ impl ProgramCfg {
         self.select_impl(selector, None)
     }
 
-    /// Selects CFG functions with task-context aliases from `tdg`.
+    /// Selects CFG functions with task-context aliases.
     ///
     /// In addition to function names, symbols and addresses, a selector may
     /// name an execution context (for example `app::sensor_task`). The
     /// context's entry function is then selected, so an async task name maps
     /// to its real `TaskStorage<...>::poll` function instead of a helper that
     /// merely contains the task name.
+    ///
+    /// CFG-native aliases are preferred. The `tdg` fallback is retained only
+    /// while the compatibility view exists and is ignored once aliases have
+    /// been attached to the program CFG.
     ///
     /// # Errors
     ///
@@ -607,6 +1156,7 @@ impl ProgramCfg {
         self.select_impl(selector, Some(tdg))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn select_impl(
         &self,
         selector: Option<&str>,
@@ -633,7 +1183,24 @@ impl ProgramCfg {
         // Task/thread context names take precedence over helper functions
         // whose symbols merely contain the same text (for example Embassy
         // future initialization helpers).
-        if let Some(tdg) = tdg {
+        let task_aliases = unique_functions(
+            self.aliases
+                .iter()
+                .filter(|alias| alias.task && context_matches(&alias.name, selector))
+                .filter_map(|alias| self.function(&alias.function)),
+        );
+        if task_aliases.len() == 1 {
+            return Ok(task_aliases);
+        }
+        if task_aliases.len() > 1 {
+            return Err(format!(
+                "function selector {selector:?} matches multiple task contexts ({} matches)",
+                task_aliases.len()
+            ));
+        }
+        if self.aliases.is_empty()
+            && let Some(tdg) = tdg
+        {
             let aliases = unique_functions(
                 tdg.contexts
                     .iter()
@@ -690,7 +1257,15 @@ impl ProgramCfg {
                         .any(|name| normalize_crate_hashes(name).contains(selector))
             })
             .collect();
-        if let Some(tdg) = tdg {
+        partial.extend(
+            self.aliases
+                .iter()
+                .filter(|alias| normalize_crate_hashes(&alias.name).contains(selector))
+                .filter_map(|alias| self.function(&alias.function)),
+        );
+        if self.aliases.is_empty()
+            && let Some(tdg) = tdg
+        {
             partial.extend(
                 tdg.contexts
                     .iter()
@@ -1051,6 +1626,117 @@ impl ProgramCfg {
     }
 }
 
+fn push_call_edge(
+    edges: &mut Vec<CfgCallEdge>,
+    seen: &mut BTreeSet<(String, u64, Option<String>, bool)>,
+    function: &CfgFunction,
+    call: &CfgCallSite,
+    callee: Option<FunctionId>,
+    candidates: Vec<FunctionId>,
+    unresolved: bool,
+) {
+    let key = (
+        function.id.as_str().to_owned(),
+        call.site,
+        callee.as_ref().map(|callee| callee.as_str().to_owned()),
+        unresolved,
+    );
+    if !seen.insert(key) {
+        return;
+    }
+    let confidence = if unresolved {
+        Confidence::Unknown
+    } else if call.heuristic {
+        Confidence::Low
+    } else if call.direct {
+        Confidence::High
+    } else {
+        Confidence::Medium
+    };
+    edges.push(CfgCallEdge {
+        caller: function.id.clone(),
+        callee,
+        candidates,
+        site: Addr::new(call.site),
+        direct: call.direct,
+        tail: call.tail,
+        conditional: call.conditional,
+        heuristic: call.heuristic,
+        unresolved,
+        confidence,
+    });
+}
+
+fn cfg_root_kind(kind: ContextKind) -> Option<CfgRootKind> {
+    match kind {
+        ContextKind::Startup => Some(CfgRootKind::Startup),
+        ContextKind::Main => Some(CfgRootKind::Main),
+        ContextKind::Isr => Some(CfgRootKind::Isr),
+        ContextKind::TimerCallback => Some(CfgRootKind::Callback),
+        ContextKind::Thread
+        | ContextKind::ScopedThread
+        | ContextKind::AsyncTask
+        | ContextKind::Executor
+        | ContextKind::SystemWorkqueue
+        | ContextKind::KernelThread => Some(CfgRootKind::Task),
+        ContextKind::Unknown => None,
+    }
+}
+
+fn spawn_target_entries(
+    target: &SpawnTarget,
+    entries: &BTreeMap<&ContextId, &FunctionId>,
+) -> (Option<FunctionId>, Vec<FunctionId>) {
+    match target {
+        SpawnTarget::Context { entry, .. } => (Some(entry.clone()), Vec::new()),
+        SpawnTarget::Opaque { candidates } => (
+            None,
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    // Opaque spawn candidates are function IDs already, not
+                    // context IDs; keep only entries that exist in the CFG.
+                    entries.values().any(|entry| *entry == *candidate)
+                })
+                .cloned()
+                .collect(),
+        ),
+    }
+}
+
+fn join_target_entries(
+    target: &JoinTarget,
+    entries: &BTreeMap<&ContextId, &FunctionId>,
+) -> (Option<FunctionId>, Vec<FunctionId>) {
+    match target {
+        JoinTarget::Context { context } => (
+            entries.get(context).map(|entry| (*entry).clone()),
+            Vec::new(),
+        ),
+        JoinTarget::Opaque { candidates } => (
+            None,
+            candidates
+                .iter()
+                .filter_map(|context| entries.get(context).map(|entry| (*entry).clone()))
+                .collect(),
+        ),
+    }
+}
+
+fn await_target_entries(
+    target: &AwaitTarget,
+    entries: &BTreeMap<&ContextId, &FunctionId>,
+) -> (Option<FunctionId>, Vec<FunctionId>) {
+    match target {
+        AwaitTarget::Context { context } => (
+            entries.get(context).map(|entry| (*entry).clone()),
+            Vec::new(),
+        ),
+        AwaitTarget::Function { function } => (Some(function.clone()), Vec::new()),
+        AwaitTarget::Opaque { candidates } => (None, candidates.clone()),
+    }
+}
+
 fn is_task_context(kind: ContextKind) -> bool {
     matches!(
         kind,
@@ -1340,8 +2026,18 @@ fn tdg_reachability(tdg: &Tdg) -> BTreeMap<FunctionId, Vec<FunctionId>> {
 struct CfgDocument<'a> {
     cfg_schema_version: &'static str,
     image: &'a ImageInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timing: Option<&'a TimingInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pointer_roots: Vec<Addr>,
+    #[serde(skip_serializing_if = "is_empty_slice")]
+    roots: &'a [CfgRoot],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    calls: Vec<&'a CfgCallEdge>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    concurrency: Vec<&'a CfgConcurrencySite>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    locks: Vec<&'a CfgLockEvent>,
     functions: Vec<CfgFunctionView>,
     diagnostics: Vec<&'a Diagnostic>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -1351,6 +2047,10 @@ struct CfgDocument<'a> {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(value: &usize) -> bool {
     *value == 0
+}
+
+fn is_empty_slice<T>(value: &&[T]) -> bool {
+    value.is_empty()
 }
 
 #[derive(Serialize)]
@@ -1490,12 +2190,26 @@ struct CfgEdgeView {
 /// ambiguous, or when JSON serialization fails.
 pub fn render_json(
     program: &ProgramCfg,
-    tdg: &Tdg,
+    _tdg: &Tdg,
     selector: Option<&str>,
     include_instructions: bool,
 ) -> Result<String, String> {
-    let selected = program.select_with_tdg(tdg, selector)?;
-    render_json_selected(program, tdg, &selected, include_instructions)
+    render_json_program(program, selector, include_instructions)
+}
+
+/// Serializes the CFG document without requiring a TDG.
+///
+/// # Errors
+///
+/// Returns an error when the function selector matches nothing or is
+/// ambiguous, when program metadata is missing, or when serialization fails.
+pub fn render_json_program(
+    program: &ProgramCfg,
+    selector: Option<&str>,
+    include_instructions: bool,
+) -> Result<String, String> {
+    let selected = program.select(selector)?;
+    render_json_program_selected(program, &selected, include_instructions)
 }
 
 /// Serializes an explicitly selected set of CFGs for downstream tools.
@@ -1505,17 +2219,34 @@ pub fn render_json(
 /// Returns an error when JSON serialization fails.
 pub fn render_json_selected(
     program: &ProgramCfg,
-    tdg: &Tdg,
+    _tdg: &Tdg,
     selected: &[&CfgFunction],
     include_instructions: bool,
 ) -> Result<String, String> {
+    render_json_program_selected(program, selected, include_instructions)
+}
+
+/// Serializes explicitly selected CFGs using only program-CFG metadata.
+///
+/// # Errors
+///
+/// Returns an error when the image metadata is absent or serialization fails.
+pub fn render_json_program_selected(
+    program: &ProgramCfg,
+    selected: &[&CfgFunction],
+    include_instructions: bool,
+) -> Result<String, String> {
+    let image = program
+        .image
+        .as_ref()
+        .ok_or_else(|| "program CFG has no image metadata".to_owned())?;
     let functions = selected
         .iter()
         .map(|function| function_view(program, function, include_instructions))
         .collect();
     let selected_ids: BTreeSet<&FunctionId> =
         selected.iter().map(|function| &function.id).collect();
-    let diagnostics: Vec<&Diagnostic> = tdg
+    let diagnostics: Vec<&Diagnostic> = program
         .diagnostics
         .iter()
         .filter(|diagnostic| {
@@ -1525,16 +2256,36 @@ pub fn render_json_selected(
                 .is_none_or(|function| selected_ids.contains(function))
         })
         .collect();
-    let diagnostics_omitted = tdg.diagnostics.len().saturating_sub(diagnostics.len());
+    let diagnostics_omitted = program.diagnostics.len().saturating_sub(diagnostics.len());
+    let calls = program
+        .calls
+        .iter()
+        .filter(|call| selected_ids.contains(&call.caller))
+        .collect();
+    let concurrency = program
+        .concurrency
+        .iter()
+        .filter(|site| selected_ids.contains(&site.function))
+        .collect();
+    let locks = program
+        .locks
+        .iter()
+        .filter(|lock| selected_ids.contains(&lock.function))
+        .collect();
     let document = CfgDocument {
         cfg_schema_version: CFG_SCHEMA_VERSION,
-        image: &tdg.image,
+        image,
+        timing: program.timing.as_ref(),
         pointer_roots: program
             .pointer_roots
             .iter()
             .copied()
             .map(Addr::new)
             .collect(),
+        roots: &program.roots,
+        calls,
+        concurrency,
+        locks,
         functions,
         diagnostics,
         diagnostics_omitted,

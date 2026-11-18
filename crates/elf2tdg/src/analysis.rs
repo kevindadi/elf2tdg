@@ -3138,6 +3138,11 @@ impl<'a> Analyzer<'a> {
             load_segments: Vec::new(),
         };
 
+        program_cfg.attach_analysis_metadata(&contexts, &edges, &locks, &scopes);
+        program_cfg.image = Some(image.clone());
+        program_cfg.timing = Some(timing.clone());
+        program_cfg.diagnostics.clone_from(&self.diagnostics);
+
         let tdg = Tdg {
             schema_version: SCHEMA_VERSION.to_owned(),
             tool,
