@@ -6,12 +6,16 @@
 //! statistical throughput tables and must be selected explicitly with
 //! `--cpu aarch64` or `--cpu x86-64`.
 
+use std::collections::BTreeSet;
+
 use elf2tdg_schema::{
     BlockTiming, CacheParams, Confidence, CostRange, Determinism, FrequencyDomain,
     FrequencyDomainId, FrequencySource, TimingInfo, TimingModelId, TimingModelInfo, TimingParams,
 };
+use serde::Deserialize;
 
 use crate::arch::DecodedInsn;
+use crate::board_profile::{BoardProfile, UnknownInstructionPolicy};
 use crate::error::{Error, Result};
 use crate::loader::{ArchKind, Image};
 
@@ -282,7 +286,7 @@ impl TimingModel {
     /// Modeled cycle cost of one instruction.
     #[must_use]
     pub fn instruction_cost(self, insn: &DecodedInsn) -> CostRange {
-        let class = classify(insn);
+        let class = classify(insn).class;
         match self {
             Self::CortexM0 | Self::CortexM0Plus => cortex_m0_cost(class),
             Self::CortexM3 | Self::CortexM4 | Self::CortexM33 => cortex_m3_cost(class),
@@ -340,6 +344,312 @@ impl TimingModel {
     }
 }
 
+/// A selected base timing model plus an optional board profile.
+#[derive(Clone, Debug)]
+pub struct TimingCostModel {
+    model: TimingModel,
+    profile: Option<BoardProfile>,
+}
+
+/// Cost of one instruction after applying the base table, profile overrides and
+/// profile fetch wait states.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InstructionCost {
+    /// Modeled cycle range for the instruction.
+    pub cycles: CostRange,
+    /// Whether the mnemonic was not recognized by the base classifier and had
+    /// no profile override. The fallback class cost was used.
+    pub unknown: bool,
+}
+
+impl TimingCostModel {
+    /// Selects a timing model and applies an optional board profile.
+    ///
+    /// A profile pins the CPU model and architecture. An explicit CPU name must
+    /// agree with the profile. Without a profile this behaves exactly like
+    /// [`TimingModel::select`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] for an invalid profile, an unknown or
+    /// incompatible CPU, an architecture mismatch, or a profile/CLI CPU
+    /// conflict.
+    pub fn select(
+        explicit: Option<&str>,
+        profile: Option<&BoardProfile>,
+        image: &Image,
+    ) -> Result<Option<Self>> {
+        let Some(profile) = profile else {
+            return TimingModel::select(explicit, image).map(|selected| {
+                selected.map(|model| Self {
+                    model,
+                    profile: None,
+                })
+            });
+        };
+        profile.validate()?;
+        let Some(profile_model) = TimingModel::from_name(profile.cpu()) else {
+            return Err(Error::Config(format!(
+                "board profile {} has unknown CPU/timing model {:?}",
+                profile.id(),
+                profile.cpu()
+            )));
+        };
+        if !profile_model.matches_arch(image.arch) {
+            return Err(Error::Config(format!(
+                "board profile {} timing model {} is not compatible with ELF architecture {}",
+                profile.id(),
+                profile_model.id(),
+                image.arch.schema_name()
+            )));
+        }
+        if let Some(explicit) = explicit {
+            let Some(explicit_model) = TimingModel::from_name(explicit) else {
+                return Err(Error::Config(format!(
+                    "unknown CPU/timing model {explicit:?}; use cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m7, cortex-m33, riscv32, riscv64, aarch64 or x86-64"
+                )));
+            };
+            if explicit_model.id() != profile_model.id() {
+                return Err(Error::Config(format!(
+                    "CPU/timing model {} conflicts with board profile {} ({})",
+                    explicit_model.id(),
+                    profile.id(),
+                    profile_model.id()
+                )));
+            }
+            if !explicit_model.matches_arch(image.arch) {
+                return Err(Error::Config(format!(
+                    "timing model {} is not compatible with ELF architecture {}",
+                    explicit_model.id(),
+                    image.arch.schema_name()
+                )));
+            }
+        }
+        Ok(Some(Self {
+            model: profile_model,
+            profile: Some(profile.clone()),
+        }))
+    }
+
+    /// Base timing model.
+    #[must_use]
+    pub fn model(&self) -> TimingModel {
+        self.model
+    }
+
+    /// Board profile, when one was supplied.
+    #[must_use]
+    pub fn profile(&self) -> Option<&BoardProfile> {
+        self.profile.as_ref()
+    }
+
+    /// Stable timing-model ID.
+    #[must_use]
+    pub fn id(&self) -> &'static str {
+        self.model.id()
+    }
+
+    /// Human-readable core name.
+    #[must_use]
+    pub fn core(&self) -> &'static str {
+        self.model.core()
+    }
+
+    /// Unknown-instruction policy, defaulting to `warn` without a profile.
+    #[must_use]
+    pub fn unknown_instruction_policy(&self) -> UnknownInstructionPolicy {
+        self.profile.as_ref().map_or(
+            UnknownInstructionPolicy::Warn,
+            BoardProfile::unknown_instruction_policy,
+        )
+    }
+
+    /// Resolved core frequency: CLI value first, then the profile's core clock.
+    #[must_use]
+    pub fn core_frequency_hz(&self, cli_frequency_hz: Option<u64>) -> Option<u64> {
+        cli_frequency_hz.or_else(|| self.profile.as_ref().and_then(BoardProfile::core_clock_hz))
+    }
+
+    /// Costs one instruction using the base table, overrides and fetch model.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn instruction_cost(&self, insn: &DecodedInsn) -> InstructionCost {
+        let classification = classify(insn);
+        let mnemonic = canonical_mnemonic(&insn.mnemonic);
+        let override_ = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.override_for(classification.class, mnemonic));
+        let mut cycles = override_.as_ref().map_or_else(
+            || self.model.instruction_cost(insn),
+            |matched| matched.cycles,
+        );
+        let fetch_cycles = self.profile.as_ref().map_or(0, |profile| {
+            profile.fetch_wait_cycles(insn.address, insn.size)
+        });
+        if fetch_cycles > 0 {
+            cycles.min += f64::from(fetch_cycles);
+            cycles.max += f64::from(fetch_cycles);
+        }
+        InstructionCost {
+            cycles,
+            unknown: !classification.known && override_.is_none(),
+        }
+    }
+
+    /// Builds TDG timing metadata for the selected model and profile.
+    #[must_use]
+    pub fn timing_info(
+        &self,
+        cli_frequency_hz: Option<u64>,
+        unknown_mnemonics: &BTreeSet<String>,
+    ) -> TimingInfo {
+        let frequency_domains = self.frequency_domains(cli_frequency_hz);
+        let core_frequency = self.core_frequency_hz(cli_frequency_hz);
+        let default_frequency_domain = core_frequency.map(|_| FrequencyDomainId::new(CORE_DOMAIN));
+        let mut params = self.model.params();
+        let mut caveats = self.model_caveats();
+        if let Some(profile) = &self.profile {
+            if let Some(wait_states) = profile.max_flash_wait_states() {
+                params.flash_wait_states = Some(wait_states);
+            }
+            params
+                .extras
+                .insert("board_profile_id".to_owned(), profile.id().to_owned());
+            params.extras.insert(
+                "board_profile_sha256".to_owned(),
+                profile.sha256().unwrap_or("unknown").to_owned(),
+            );
+            params.extras.insert(
+                "board_profile_source".to_owned(),
+                profile
+                    .source()
+                    .map_or_else(|| "<inline>".to_owned(), |path| path.display().to_string()),
+            );
+            params.extras.insert(
+                "board_profile_schema_version".to_owned(),
+                profile.schema_version().to_string(),
+            );
+            params.extras.insert(
+                "board_profile_clocks".to_owned(),
+                profile.clock_count().to_string(),
+            );
+            params.extras.insert(
+                "board_profile_memory_regions".to_owned(),
+                profile.memory_region_count().to_string(),
+            );
+            if let Some(wait_states) = profile.max_fetch_wait_states() {
+                params.extras.insert(
+                    "board_profile_max_fetch_wait_states".to_owned(),
+                    wait_states.to_string(),
+                );
+            }
+            if let (Some(cli_hz), Some(profile_hz)) = (cli_frequency_hz, profile.core_clock_hz())
+                && cli_hz != profile_hz
+            {
+                caveats.push(
+                    "CLI --freq overrides the profile's core clock, but profile fetch wait states are used unchanged."
+                        .to_owned(),
+                );
+            }
+            params.extras.insert(
+                "board_profile_instruction_cost_overrides".to_owned(),
+                profile.instruction_cost_override_count().to_string(),
+            );
+        }
+        if !unknown_mnemonics.is_empty() {
+            params.extras.insert(
+                "unknown_instruction_mnemonics".to_owned(),
+                unknown_mnemonics.len().to_string(),
+            );
+            caveats.push(format!(
+                "{} unrecognized mnemonic(s) used fallback instruction costs; see timing-unknown-instruction diagnostics.",
+                unknown_mnemonics.len()
+            ));
+        }
+        TimingInfo {
+            models: vec![TimingModelInfo {
+                id: TimingModelId::new(self.model.id()),
+                arch: self.model.arch().to_owned(),
+                core: Some(self.model.core().to_owned()),
+                determinism: self.model.determinism(),
+                table_version: "0.2.0-m3".to_owned(),
+                params,
+                caveats,
+            }],
+            frequency_domains,
+            default_frequency_domain,
+            caveats: vec![
+                "Static timing estimates are not WCET bounds; loop bounds and execution counts are not inferred."
+                    .to_owned(),
+            ],
+        }
+    }
+
+    /// Builds a block timing record.
+    #[must_use]
+    pub fn block_timing(&self, cycles: CostRange, frequency_hz: Option<u64>) -> BlockTiming {
+        BlockTiming {
+            model: Some(TimingModelId::new(self.model.id())),
+            cycles,
+            time_ns: frequency_hz.and_then(|hz| cycles.time_ns(hz)),
+            frequency_domain: frequency_hz.map(|_| FrequencyDomainId::new(CORE_DOMAIN)),
+            confidence: self
+                .profile
+                .as_ref()
+                .and_then(BoardProfile::confidence)
+                .unwrap_or_else(|| self.model.confidence()),
+            caveats: self.model_caveats(),
+        }
+    }
+
+    fn frequency_domains(&self, cli_frequency_hz: Option<u64>) -> Vec<FrequencyDomain> {
+        let mut domains = self
+            .profile
+            .as_ref()
+            .map(BoardProfile::frequency_domains)
+            .unwrap_or_default();
+        if let Some(hz) = cli_frequency_hz {
+            if let Some(core) = domains
+                .iter_mut()
+                .find(|domain| domain.id.as_str() == CORE_DOMAIN)
+            {
+                core.hz = hz;
+                core.source = FrequencySource::Cli;
+                core.confidence = Confidence::High;
+            } else {
+                domains.push(FrequencyDomain {
+                    id: FrequencyDomainId::new(CORE_DOMAIN),
+                    name: "core".to_owned(),
+                    hz,
+                    source: FrequencySource::Cli,
+                    confidence: Confidence::High,
+                });
+            }
+        }
+        domains.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+        domains
+    }
+
+    fn model_caveats(&self) -> Vec<String> {
+        let mut caveats = self.model.caveats();
+        if let Some(profile) = &self.profile {
+            caveats.extend(profile.caveats().iter().cloned());
+            if profile
+                .max_fetch_wait_states()
+                .is_some_and(|states| states > 0)
+            {
+                caveats.retain(|caveat| !caveat.contains("excludes flash wait states"));
+                caveats.push(
+                    "Board-profile fetch wait states are applied per instruction fetch transaction; prefetch, caches, bus contention and exception entry are not modeled."
+                        .to_owned(),
+                );
+            }
+        }
+        caveats
+    }
+}
+
 /// Parses a frequency such as `168MHz`, `16_000_000`, or `1.2GHz`.
 ///
 /// # Errors
@@ -386,70 +696,182 @@ pub fn parse_frequency(input: &str) -> std::result::Result<u64, String> {
     Ok(hz)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum InsnClass {
+/// Coarse instruction class used by the built-in timing tables and by
+/// board-profile cost overrides.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstructionClass {
+    /// Load from memory.
     Load,
+    /// Store to memory.
     Store,
+    /// Push or pop multiple registers.
     PushPop,
+    /// Load/store multiple.
     LdmStm,
+    /// Branch or jump.
     Branch,
+    /// Call.
     Call,
+    /// Return or interrupt return.
     Return,
+    /// Integer multiply.
     Multiply,
+    /// Integer divide.
     Divide,
+    /// Memory barrier.
     Barrier,
+    /// No-operation.
     Nop,
+    /// Arithmetic, logic, move or comparison.
     Alu,
+    /// Other recognized instruction, or an unrecognized fallback.
     Other,
 }
 
-fn classify(insn: &DecodedInsn) -> InsnClass {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Classification {
+    class: InstructionClass,
+    known: bool,
+}
+
+/// Removes common architectural mnemonic suffixes and conditional prefixes.
+///
+/// This is the canonical form used both by the built-in classifier and by
+/// board-profile `mnemonic` selectors.
+#[must_use]
+pub fn canonical_mnemonic(mnemonic: &str) -> &str {
+    let mnemonic = mnemonic
+        .strip_suffix(".w")
+        .or_else(|| mnemonic.strip_suffix(".n"))
+        .unwrap_or(mnemonic);
+    mnemonic.strip_prefix("c.").unwrap_or(mnemonic)
+}
+
+fn classify(insn: &DecodedInsn) -> Classification {
     if insn.is_return {
-        return InsnClass::Return;
+        return Classification {
+            class: InstructionClass::Return,
+            known: true,
+        };
     }
     if insn.is_call {
-        return InsnClass::Call;
+        return Classification {
+            class: InstructionClass::Call,
+            known: true,
+        };
     }
     if insn.is_jump {
-        return InsnClass::Branch;
+        return Classification {
+            class: InstructionClass::Branch,
+            known: true,
+        };
     }
-    let mnemonic = insn
-        .mnemonic
-        .strip_suffix(".w")
-        .or_else(|| insn.mnemonic.strip_suffix(".n"))
-        .unwrap_or(insn.mnemonic.as_str());
-    let mnemonic = mnemonic.strip_prefix("c.").unwrap_or(mnemonic);
+    let mnemonic = canonical_mnemonic(&insn.mnemonic);
     if mnemonic == "nop" {
-        return InsnClass::Nop;
+        return known(InstructionClass::Nop);
     }
     if matches!(mnemonic, "push" | "pop") || mnemonic.starts_with("push.") {
-        return InsnClass::PushPop;
+        return known(InstructionClass::PushPop);
     }
     if mnemonic.starts_with("ldm") || mnemonic.starts_with("stm") {
-        return InsnClass::LdmStm;
+        return known(InstructionClass::LdmStm);
     }
     if is_load(mnemonic) {
-        return InsnClass::Load;
+        return known(InstructionClass::Load);
     }
     if is_store(mnemonic) {
-        return InsnClass::Store;
+        return known(InstructionClass::Store);
     }
     if is_multiply(mnemonic) {
-        return InsnClass::Multiply;
+        return known(InstructionClass::Multiply);
     }
     if is_divide(mnemonic) {
-        return InsnClass::Divide;
+        return known(InstructionClass::Divide);
     }
     if is_barrier(mnemonic) {
-        return InsnClass::Barrier;
+        return known(InstructionClass::Barrier);
     }
-    if matches!(
+    if is_system(mnemonic) {
+        return known(InstructionClass::Other);
+    }
+    if is_alu(mnemonic) {
+        return known(InstructionClass::Alu);
+    }
+    Classification {
+        class: InstructionClass::Other,
+        known: false,
+    }
+}
+
+const fn known(class: InstructionClass) -> Classification {
+    Classification { class, known: true }
+}
+
+fn is_system(mnemonic: &str) -> bool {
+    if mnemonic
+        .strip_prefix("it")
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|c| matches!(c, 't' | 'e')))
+    {
+        return true;
+    }
+    matches!(
         mnemonic,
-        "udf" | "bkpt" | "svc" | "syscall" | "ecall" | "ebreak"
-    ) {
-        return InsnClass::Other;
-    }
-    InsnClass::Alu
+        "udf"
+            | "ud2"
+            | "bkpt"
+            | "svc"
+            | "syscall"
+            | "ecall"
+            | "ebreak"
+            | "int3"
+            | "hlt"
+            | "mrs"
+            | "msr"
+            | "cps"
+            | "cpsid"
+            | "cpsie"
+            | "sev"
+            | "wfe"
+            | "wfi"
+            | "yield"
+            | "it"
+            | "pld"
+            | "pli"
+            | "clrex"
+            | "ssbb"
+            | "csdb"
+            | "esb"
+            | "dcps"
+            | "leave"
+            | "enter"
+            | "endbr64"
+            | "endbr32"
+            | "pause"
+            | "lfence"
+            | "sfence"
+            | "mfence"
+    )
+}
+
+fn is_alu(mnemonic: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "adc", "add", "adr", "and", "asr", "aut", "bfc", "bfi", "bfm", "bfx", "bic", "cbz", "cbnz",
+        "ccmp", "ccmn", "cinc", "cinv", "clz", "cls", "cmn", "cmp", "cmpxchg", "cneg", "crc32",
+        "csel", "cset", "csinc", "csinv", "csneg", "daa", "das", "dec", "eor", "ext", "extr",
+        "fabs", "fadd", "fccmp", "fcmp", "fcsel", "fcvt", "fdiv", "fmadd", "fmov", "fmsub", "fmul",
+        "fneg", "fnmadd", "fnmsub", "frint", "fsqrt", "fsub", "hint", "idiv", "imul", "inc", "lea",
+        "lsl", "lsr", "madd", "mla", "mls", "mneg", "mov", "movk", "movn", "movsx", "movz",
+        "movzx", "msub", "mul", "mvn", "neg", "not", "orn", "orr", "pac", "popcnt", "rbit", "rev",
+        "ror", "rrx", "rsb", "sadd", "sar", "sbb", "sbc", "sbf", "sbfm", "sbfx", "sel", "set",
+        "shadd", "shl", "shr", "shsub", "smmul", "smul", "smull", "ssat", "ssub", "sub", "sxt",
+        "teq", "test", "tst", "ubfm", "ubfx", "udiv", "umul", "umull", "usat", "usad", "uxt",
+        "vabs", "vadd", "vand", "vdiv", "veor", "vfma", "vfms", "vmov", "vmul", "vneg", "vorn",
+        "vorr", "vsub", "xadd", "xchg", "xsub", "lui", "auipc", "addi", "andi", "ori", "xori",
+        "slli", "srli", "srai", "slti", "sltiu", "slt", "sltu", "seqz", "snez", "sltz", "sgtz",
+        "csrr", "csrw", "csrs", "csrc", "li", "la", "mv",
+    ];
+    PREFIXES.iter().any(|prefix| mnemonic.starts_with(prefix))
 }
 
 fn is_load(mnemonic: &str) -> bool {
@@ -501,95 +923,114 @@ fn is_barrier(mnemonic: &str) -> bool {
         || mnemonic.starts_with("membar")
 }
 
-fn cortex_m0_cost(class: InsnClass) -> CostRange {
+fn cortex_m0_cost(class: InstructionClass) -> CostRange {
     match class {
-        InsnClass::Alu
-        | InsnClass::Multiply
-        | InsnClass::Nop
-        | InsnClass::Divide
-        | InsnClass::Barrier
-        | InsnClass::Other => CostRange::exact(1.0),
-        InsnClass::Load | InsnClass::Store => CostRange::exact(2.0),
-        InsnClass::PushPop | InsnClass::Call | InsnClass::Return => CostRange::new(2.0, 4.0),
-        InsnClass::LdmStm => CostRange::new(2.0, 6.0),
-        InsnClass::Branch => CostRange::new(1.0, 3.0),
+        InstructionClass::Alu
+        | InstructionClass::Multiply
+        | InstructionClass::Nop
+        | InstructionClass::Divide
+        | InstructionClass::Barrier
+        | InstructionClass::Other => CostRange::exact(1.0),
+        InstructionClass::Load | InstructionClass::Store => CostRange::exact(2.0),
+        InstructionClass::PushPop | InstructionClass::Call | InstructionClass::Return => {
+            CostRange::new(2.0, 4.0)
+        }
+        InstructionClass::LdmStm => CostRange::new(2.0, 6.0),
+        InstructionClass::Branch => CostRange::new(1.0, 3.0),
     }
 }
 
-fn cortex_m3_cost(class: InsnClass) -> CostRange {
+fn cortex_m3_cost(class: InstructionClass) -> CostRange {
     match class {
-        InsnClass::Alu
-        | InsnClass::Multiply
-        | InsnClass::Nop
-        | InsnClass::Store
-        | InsnClass::Barrier
-        | InsnClass::Other => CostRange::exact(1.0),
-        InsnClass::Load => CostRange::exact(2.0),
-        InsnClass::PushPop => CostRange::new(1.0, 4.0),
-        InsnClass::LdmStm => CostRange::new(1.0, 6.0),
-        InsnClass::Branch | InsnClass::Call | InsnClass::Return => CostRange::new(1.0, 3.0),
-        InsnClass::Divide => CostRange::new(2.0, 12.0),
+        InstructionClass::Alu
+        | InstructionClass::Multiply
+        | InstructionClass::Nop
+        | InstructionClass::Store
+        | InstructionClass::Barrier
+        | InstructionClass::Other => CostRange::exact(1.0),
+        InstructionClass::Load => CostRange::exact(2.0),
+        InstructionClass::PushPop => CostRange::new(1.0, 4.0),
+        InstructionClass::LdmStm => CostRange::new(1.0, 6.0),
+        InstructionClass::Branch | InstructionClass::Call | InstructionClass::Return => {
+            CostRange::new(1.0, 3.0)
+        }
+        InstructionClass::Divide => CostRange::new(2.0, 12.0),
     }
 }
 
-fn cortex_m7_cost(class: InsnClass) -> CostRange {
+fn cortex_m7_cost(class: InstructionClass) -> CostRange {
     match class {
-        InsnClass::Alu
-        | InsnClass::Multiply
-        | InsnClass::Nop
-        | InsnClass::Load
-        | InsnClass::Store
-        | InsnClass::Branch => CostRange::new(1.0, 2.0),
-        InsnClass::PushPop | InsnClass::LdmStm => CostRange::new(1.0, 5.0),
-        InsnClass::Call | InsnClass::Return => CostRange::new(2.0, 4.0),
-        InsnClass::Divide => CostRange::new(2.0, 12.0),
-        InsnClass::Barrier | InsnClass::Other => CostRange::exact(1.0),
+        InstructionClass::Alu
+        | InstructionClass::Multiply
+        | InstructionClass::Nop
+        | InstructionClass::Load
+        | InstructionClass::Store
+        | InstructionClass::Branch => CostRange::new(1.0, 2.0),
+        InstructionClass::PushPop | InstructionClass::LdmStm => CostRange::new(1.0, 5.0),
+        InstructionClass::Call | InstructionClass::Return => CostRange::new(2.0, 4.0),
+        InstructionClass::Divide => CostRange::new(2.0, 12.0),
+        InstructionClass::Barrier | InstructionClass::Other => CostRange::exact(1.0),
     }
 }
 
-fn riscv_cost(class: InsnClass) -> CostRange {
+fn riscv_cost(class: InstructionClass) -> CostRange {
     match class {
-        InsnClass::Alu
-        | InsnClass::Nop
-        | InsnClass::Store
-        | InsnClass::Barrier
-        | InsnClass::Other => CostRange::exact(1.0),
-        InsnClass::Load => CostRange::exact(2.0),
-        InsnClass::PushPop | InsnClass::LdmStm | InsnClass::Multiply => CostRange::new(1.0, 3.0),
-        InsnClass::Branch | InsnClass::Call | InsnClass::Return => CostRange::new(1.0, 2.0),
-        InsnClass::Divide => CostRange::new(2.0, 20.0),
+        InstructionClass::Alu
+        | InstructionClass::Nop
+        | InstructionClass::Store
+        | InstructionClass::Barrier
+        | InstructionClass::Other => CostRange::exact(1.0),
+        InstructionClass::Load => CostRange::exact(2.0),
+        InstructionClass::PushPop | InstructionClass::LdmStm | InstructionClass::Multiply => {
+            CostRange::new(1.0, 3.0)
+        }
+        InstructionClass::Branch | InstructionClass::Call | InstructionClass::Return => {
+            CostRange::new(1.0, 2.0)
+        }
+        InstructionClass::Divide => CostRange::new(2.0, 20.0),
     }
 }
 
-fn aarch64_cost(class: InsnClass) -> CostRange {
+fn aarch64_cost(class: InstructionClass) -> CostRange {
     match class {
-        InsnClass::Alu | InsnClass::Nop | InsnClass::Other => CostRange::new(1.0, 2.0),
-        InsnClass::Load | InsnClass::Store => CostRange::new(2.0, 5.0),
-        InsnClass::PushPop | InsnClass::LdmStm | InsnClass::Multiply => CostRange::new(2.0, 4.0),
-        InsnClass::Branch | InsnClass::Barrier => CostRange::new(1.0, 4.0),
-        InsnClass::Call | InsnClass::Return => CostRange::new(1.0, 5.0),
-        InsnClass::Divide => CostRange::new(8.0, 20.0),
+        InstructionClass::Alu | InstructionClass::Nop | InstructionClass::Other => {
+            CostRange::new(1.0, 2.0)
+        }
+        InstructionClass::Load | InstructionClass::Store => CostRange::new(2.0, 5.0),
+        InstructionClass::PushPop | InstructionClass::LdmStm | InstructionClass::Multiply => {
+            CostRange::new(2.0, 4.0)
+        }
+        InstructionClass::Branch | InstructionClass::Barrier => CostRange::new(1.0, 4.0),
+        InstructionClass::Call | InstructionClass::Return => CostRange::new(1.0, 5.0),
+        InstructionClass::Divide => CostRange::new(8.0, 20.0),
     }
 }
 
-fn x86_64_cost(class: InsnClass) -> CostRange {
+fn x86_64_cost(class: InstructionClass) -> CostRange {
     match class {
-        InsnClass::Alu | InsnClass::Nop | InsnClass::Store => CostRange::new(1.0, 2.0),
-        InsnClass::Load => CostRange::new(1.0, 5.0),
-        InsnClass::PushPop | InsnClass::LdmStm | InsnClass::Other => CostRange::new(1.0, 3.0),
-        InsnClass::Branch => CostRange::new(1.0, 20.0),
-        InsnClass::Call | InsnClass::Return => CostRange::new(2.0, 10.0),
-        InsnClass::Multiply => CostRange::new(3.0, 5.0),
-        InsnClass::Divide => CostRange::new(20.0, 40.0),
-        InsnClass::Barrier => CostRange::new(1.0, 10.0),
+        InstructionClass::Alu | InstructionClass::Nop | InstructionClass::Store => {
+            CostRange::new(1.0, 2.0)
+        }
+        InstructionClass::Load => CostRange::new(1.0, 5.0),
+        InstructionClass::PushPop | InstructionClass::LdmStm | InstructionClass::Other => {
+            CostRange::new(1.0, 3.0)
+        }
+        InstructionClass::Branch => CostRange::new(1.0, 20.0),
+        InstructionClass::Call | InstructionClass::Return => CostRange::new(2.0, 10.0),
+        InstructionClass::Multiply => CostRange::new(3.0, 5.0),
+        InstructionClass::Divide => CostRange::new(20.0, 40.0),
+        InstructionClass::Barrier => CostRange::new(1.0, 10.0),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TimingModel, parse_frequency};
+    use super::{TimingCostModel, TimingModel, parse_frequency};
     use crate::arch::DecodedInsn;
+    use crate::board_profile::BoardProfile;
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
+    use elf2tdg_schema::FrequencySource;
+    use std::collections::BTreeSet;
 
     fn image(arch: ArchKind) -> Image {
         Image {
@@ -739,5 +1180,150 @@ mod tests {
         assert!(timed.time_ns.is_some());
         let untimed = model.block_timing(cycles, None);
         assert!(untimed.time_ns.is_none());
+    }
+
+    fn insn(address: u64, size: u8, mnemonic: &str) -> DecodedInsn {
+        DecodedInsn {
+            address,
+            size,
+            mnemonic: mnemonic.to_owned(),
+            operands: String::new(),
+            is_call: false,
+            is_jump: false,
+            is_return: false,
+            is_conditional: false,
+            direct_target: None,
+            value: None,
+            memory_write: None,
+            indirect: None,
+            compare: None,
+            branch_registers: None,
+            compare_registers: None,
+        }
+    }
+
+    fn board_profile() -> BoardProfile {
+        BoardProfile::parse_toml(
+            r#"
+schema_version = 1
+id = "board:test"
+arch = "thumb"
+cpu = "cortex-m0"
+confidence = "high"
+
+[clocks.core]
+hz = 48_000_000
+confidence = "high"
+
+[[memory]]
+name = "flash"
+start = 0x1000
+size = 0x100
+kind = "flash"
+executable = true
+fetch_wait_states = 1
+fetch_width_bytes = 4
+
+[[instruction_costs]]
+mnemonic = "ldr"
+cycles = 10
+"#,
+        )
+        .expect("valid board profile")
+    }
+
+    #[test]
+    fn board_profile_applies_overrides_and_fetch_costs() {
+        let profile = board_profile();
+        let model = TimingCostModel::select(None, Some(&profile), &image(ArchKind::Thumb))
+            .expect("profile selects")
+            .expect("timing model");
+        let ldr = model.instruction_cost(&insn(0x1000, 2, "ldr"));
+        assert_eq!(ldr.cycles.min, 11.0);
+        assert_eq!(ldr.cycles.max, 11.0);
+        assert!(!ldr.unknown);
+
+        let add = model.instruction_cost(&insn(0x1002, 2, "add"));
+        assert_eq!(add.cycles.min, 2.0);
+        assert_eq!(add.cycles.max, 2.0);
+        assert!(!add.unknown);
+
+        let unknown = model.instruction_cost(&insn(0x1004, 2, "vxyz"));
+        assert!(unknown.unknown);
+        assert_eq!(unknown.cycles.min, 2.0);
+        assert_eq!(model.core_frequency_hz(None), Some(48_000_000));
+        assert_eq!(model.core_frequency_hz(Some(1_000_000)), Some(1_000_000));
+    }
+
+    #[test]
+    fn board_profile_metadata_is_recorded() {
+        let profile = board_profile();
+        let model = TimingCostModel::select(None, Some(&profile), &image(ArchKind::Thumb))
+            .expect("profile selects")
+            .expect("timing model");
+        let unknown = BTreeSet::new();
+        let info = model.timing_info(None, &unknown);
+        assert_eq!(info.models.len(), 1);
+        assert_eq!(
+            info.models[0].params.flash_wait_states,
+            Some(1),
+            "flash wait states are recorded"
+        );
+        assert_eq!(
+            info.models[0].params.extras.get("board_profile_id"),
+            Some(&"board:test".to_owned())
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_sha256")
+                .map(String::len),
+            Some(64)
+        );
+        assert_eq!(
+            info.frequency_domains[0].source,
+            FrequencySource::BoardProfile
+        );
+        assert_eq!(
+            info.default_frequency_domain
+                .as_ref()
+                .map(elf2tdg_schema::FrequencyDomainId::as_str),
+            Some("clk:core")
+        );
+
+        let overridden = model.timing_info(Some(1_000_000), &unknown);
+        let core = overridden
+            .frequency_domains
+            .iter()
+            .find(|domain| domain.id.as_str() == "clk:core")
+            .expect("core domain");
+        assert_eq!(core.hz, 1_000_000);
+        assert_eq!(core.source, FrequencySource::Cli);
+        assert_eq!(core.confidence, elf2tdg_schema::Confidence::High);
+        assert!(
+            overridden.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("used unchanged")),
+            "CLI frequency override must not imply rescaled wait states"
+        );
+
+        let block = model.block_timing(ldr_cost(), None);
+        assert_eq!(block.confidence, elf2tdg_schema::Confidence::High);
+    }
+
+    fn ldr_cost() -> elf2tdg_schema::CostRange {
+        elf2tdg_schema::CostRange::exact(2.0)
+    }
+
+    #[test]
+    fn explicit_cpu_must_agree_with_profile() {
+        let profile = board_profile();
+        assert!(
+            TimingCostModel::select(Some("cortex-m4"), Some(&profile), &image(ArchKind::Thumb))
+                .is_err()
+        );
+        assert!(TimingCostModel::select(None, Some(&profile), &image(ArchKind::Aarch64)).is_err());
     }
 }

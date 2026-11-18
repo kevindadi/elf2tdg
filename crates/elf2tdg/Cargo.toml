@@ -22,7 +22,9 @@ petgraph = { version = "0.8.3", default-features = false, features = ["std", "st
 rustc-demangle = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
 thiserror = "2"
+toml = "0.9"
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }

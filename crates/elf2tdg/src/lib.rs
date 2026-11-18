@@ -2,6 +2,7 @@
 
 pub mod analysis;
 pub mod arch;
+pub mod board_profile;
 pub mod cfg;
 pub mod cfg_graph;
 pub mod dwarf;
