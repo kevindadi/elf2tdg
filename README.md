@@ -45,8 +45,9 @@ Implemented:
   accesses. Optional branch-prediction profiles model static, BTFN or two-bit
   bimodal direction prediction with configurable misprediction penalties.
   Per-region data-memory timing models read/write bus widths and wait states and
-  reports access coverage plus per-region latency. See
-  [docs/board-profile.md](docs/board-profile.md).
+  reports access coverage plus per-region latency. Optional WCET profiles bound
+  loops and compute per-function/per-root longest-path estimates across the
+  call graph. See [docs/board-profile.md](docs/board-profile.md).
 - Versioned CFG JSON plus DOT and Mermaid renderers.
 - Runtime rule engine for spawn/join/scope/await:
   - Rust no-std: Embassy (`Spawner::spawn`, task poll) and RTIC;
@@ -374,8 +375,10 @@ and
 [`examples/profiles/cortex-m7-branch-prediction.toml`](examples/profiles/cortex-m7-branch-prediction.toml)
 and
 [`examples/profiles/cortex-m7-data-memory.toml`](examples/profiles/cortex-m7-data-memory.toml)
+and
+[`examples/profiles/cortex-m7-wcet.toml`](examples/profiles/cortex-m7-wcet.toml)
 show the board-cost, Cortex-M4 pipeline, instruction-cache, data-cache,
-branch-prediction and data-memory formats.
+branch-prediction, data-memory and WCET formats.
 
 `--function`, `--reachable-from`, `--no-prune-runtime`,
 `--all-functions` and `--no-cfg-instructions` apply only to `--view cfg`.

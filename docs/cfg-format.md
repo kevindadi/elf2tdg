@@ -362,14 +362,14 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.3`.
+`cfg_schema_version` is `2.4`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.3 adds region-based data-memory latency metadata. Version
-2.2 adds branch-prediction analysis metadata. Version 2.1 adds data-cache
-analysis and decoded memory-access metadata. Version 2.0 adds instruction-cache
-analysis metadata. Version 1.9 added runtime/API provenance to callback
-annotations. Version 1.8 made the CFG document self-contained: it adds
-top-level
+functions. Version 2.4 adds per-function and per-root WCET metadata. Version
+2.3 adds region-based data-memory latency metadata. Version 2.2 adds
+branch-prediction analysis metadata. Version 2.1 adds data-cache analysis and
+decoded memory-access metadata. Version 2.0 adds instruction-cache analysis
+metadata. Version 1.9 added runtime/API provenance to callback annotations.
+Version 1.8 made the CFG document self-contained: it adds top-level
 `timing`, `roots`, `calls`, `concurrency` and `locks`, all sourced from
 `ProgramCfg`. `roots` records startup/main/ISR/task/callback/
 pointer entries, `calls` is the interprocedural call graph derived from block
@@ -390,9 +390,21 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.3",
+  "cfg_schema_version": "2.4",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
+  "wcet": {
+    "model": "cfg-longest-path", "default_loop_bound": 4,
+    "max_states": 20000, "frequency_hz": 168000000,
+    "functions_analyzed": 8, "functions_partial": 8,
+    "functions_unbounded": 4, "functions_unknown": 0,
+    "roots": [
+      { "function": "fn:0x800085c", "kind": "task", "name": "sensor_task",
+        "status": "partial", "cycles": 87.0, "time_ns": 517.86,
+        "path": ["bb:0x800085c", "bb:0x800086a"] }
+    ],
+    "caveats": []
+  },
   "data_memory": {
     "model": "region-data-wait-states", "functions_analyzed": 20,
     "blocks_analyzed": 72, "accesses": 129, "resolved_accesses": 57,
@@ -551,6 +563,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `data_cache` | data-cache model parameters, access coverage, analysis counts and caveats |
 | `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
+| `wcet` | CFG longest-path WCET model, per-root results and caveats |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
@@ -599,6 +612,15 @@ with region name, kind, access count, bytes, and read/write wait cycles. An
 access spanning multiple regions is split at boundaries and can appear in more
 than one region. Wait cycles are included in block `cycles`.
 
+When a WCET profile is active, every analyzed function carries a `wcet`
+object with a `status` (`bounded`, `partial`, `unbounded` or `unknown`),
+optional `cycles` and `time_ns`, the worst-case local block `path`, an
+optional reason, and unresolved/external call counts. The top-level `wcet`
+object records the model configuration, aggregate function counts and one
+result per execution root. A partial result has a finite estimate but
+incomplete inputs; an unbounded result has no finite estimate. Paths contain
+local block IDs, including repeated blocks for loop iterations.
+
 These fields are CFG-native. They are populated from function CFGs and runtime
 analysis facts; serializing the CFG JSON is self-contained. `calls`,
 `concurrency` and `locks` are scoped to the selected functions; `roots`,
@@ -617,6 +639,7 @@ analysis facts; serializing the CFG JSON is self-contained. `calls`,
 | `noreturn` | `api` or `control-flow` when the function cannot return; absent otherwise |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
 | `inline_frames` | unique `DW_TAG_inlined_subroutine` ranges inside the function |
+| `wcet` | per-function status, cycles, time, worst-case local path and call coverage |
 | `cache` | per-block fetch-line accesses, hit/miss ranges and classification, entry-state count and fallback flag |
 | `data_cache` | per-block resolved/unresolved access counts, data-line hit/miss ranges, entry-state count and fallback flag |
 | `branch_prediction` | conditional-branch site, per-successor prediction outcomes, misprediction range, entry-state count and fallback flag |

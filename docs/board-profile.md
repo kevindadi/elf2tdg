@@ -17,7 +17,7 @@ elf2tdg firmware.elf \
 
 The file is parsed as TOML unless its extension is `.json`. Schema version 1
 profiles remain valid; version 2 adds the optional pipeline, cache,
-branch-prediction and data-memory timing models. The profile is strictly
+branch-prediction, data-memory timing and WCET models. The profile is strictly
 validated before analysis:
 unknown fields, duplicate selectors, overlapping memory regions, zero
 frequencies and invalid cycle ranges are errors.
@@ -30,7 +30,9 @@ shows a data-cache profile, and
 [`examples/profiles/cortex-m7-branch-prediction.toml`](../examples/profiles/cortex-m7-branch-prediction.toml)
 shows a branch-prediction profile, and
 [`examples/profiles/cortex-m7-data-memory.toml`](../examples/profiles/cortex-m7-data-memory.toml)
-shows per-region data-memory timing.
+shows per-region data-memory timing, and
+[`examples/profiles/cortex-m7-wcet.toml`](../examples/profiles/cortex-m7-wcet.toml)
+shows a WCET profile.
 
 ## Resolution order
 
@@ -102,7 +104,7 @@ occupancy = 2
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]` or per-region data-memory timing. |
+| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]`, `[wcet]` or per-region data-memory timing. |
 | `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
@@ -114,6 +116,7 @@ occupancy = 2
 | `[instruction_cache]` | no | Enables LRU instruction-cache analysis; see below. |
 | `[data_cache]` | no | Enables LRU data-cache analysis; see below. |
 | `[branch_prediction]` | no | Enables conditional-branch prediction analysis; see below. |
+| `[wcet]` | no | Enables CFG longest-path WCET analysis; see below. |
 
 ### Clocks
 
@@ -381,6 +384,44 @@ path-specific branch/predictor correlation is not modeled. If a block exceeds
 starts from the configured predictor state and call-return edges do not reset
 it, but callee branches remain outside the analysis.
 
+### WCET
+
+The optional `[wcet]` table enables CFG longest-path worst-case execution-time
+analysis. It requires `schema_version = 2`.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `default_loop_bound` | no | Maximum iterations for natural loops without a specific bound. If omitted, unbounded loops make the containing function unbounded. |
+| `bound_nonterminating_loops` | no | Apply loop bounds to natural loops with no static exit and mark the result `partial`; defaults to `false`. |
+| `max_states` | no | Maximum unrolled predictor-free CFG states per function; defaults to `100000`. |
+| `[[wcet.loop_bounds]]` | no | Per-loop overrides with `header` (block address) and `bound` (positive maximum iterations). |
+
+```toml
+[wcet]
+default_loop_bound = 4
+bound_nonterminating_loops = true
+max_states = 20_000
+
+[[wcet.loop_bounds]]
+header = 0x0800_0100
+bound = 100
+```
+
+The analyzer takes each block's upper cycle bound, computes the longest path
+through the function CFG, and adds callee WCET summaries at call sites. Loop
+visit counts are bounded; nested inner-loop counters reset when an outer
+backedge is taken. Functions in recursive call-graph SCCs are unbounded.
+Functions with unresolved calls, external calls, unresolved control flow or
+missing block timing are reported as `partial`; functions whose natural loop has
+no static exit are `unbounded` unless `bound_nonterminating_loops` is enabled.
+
+When a core frequency is known, per-function and per-root `time_ns` values are
+emitted. Results are per execution root from `ProgramCfg.roots`; they are not a
+system-level WCET across preempting interrupts or concurrent tasks. The model is
+a static estimate, not a hardware proof: cache/branch/data-memory results are
+local, loop bounds must be supplied, and interrupts, DMA, bus contention and
+concurrency are outside the analysis.
+
 ### Instruction-cost overrides
 
 Each `[[instruction_costs]]` entry must select by `class`, `mnemonic`, or both.
@@ -428,6 +469,11 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_branch_max_states`
 - `board_profile_data_memory`
 - `board_profile_data_memory_regions`
+- `board_profile_wcet`
+- `board_profile_wcet_default_loop_bound`
+- `board_profile_wcet_bound_nonterminating_loops`
+- `board_profile_wcet_max_states`
+- `board_profile_wcet_loop_bounds`
 - `unknown_instruction_mnemonics`, the count of distinct fallback mnemonics,
   when at least one fallback was used
 
@@ -454,6 +500,10 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
 - Data-memory latency is region-based. Only statically resolved accesses with
   addresses inside configured regions contribute wait cycles. If data-cache
   analysis is enabled too, its miss penalties and the wait cycles are additive.
+- WCET is a CFG longest-path estimate. Loops need configured bounds; recursive
+  calls are unbounded; unresolved calls and missing timing make results
+  partial. It is not a hardware proof or a system-level bound across
+  interrupts and concurrent roots.
 - Data-cache results cover only statically resolved addresses. Stack, indexed
   and unresolved accesses are counted but do not contribute miss penalties.
   Dirty writeback, store buffers, prefetch and inter-function cache state are
