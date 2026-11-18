@@ -275,6 +275,11 @@ only; consumers can apply the context's frequency themselves.
 for aggregation; instruction detail is enabled per invocation for human
 inspection or fine-grained downstream analysis.
 
+When a board profile is active, block and instruction cycles include its
+selected overrides and modeled fetch wait states. The profile's ID, source and
+SHA-256 are recorded in `timing.models[].params.extras`, so the same TDG schema
+can describe results from different boards without embedding board constants.
+
 ### 6.2 Determinism
 
 Every timing model declares `Determinism`:
@@ -300,9 +305,17 @@ out of scope for schema v1.
 | 2 | Cortex-M7, Cortex-A53/A55, dual-issue RV64 | bounded/statistical | pipeline, branch prediction, cache configuration |
 | 3 | x86-64, Cortex-A7x | statistical | throughput estimate only; never a bound |
 
-Instruction tables are data-driven (mnemonic + operand-class patterns) and
+Instruction tables are data-driven (instruction class + mnemonic selectors) and
 versioned. Per-core/per-board overrides are first-class so a vendor errata or a
 different flash configuration does not require a code change.
+
+An optional board profile (`--board-profile`) supplies the CPU model, clock
+domains, executable memory regions and fetch wait states, and class/mnemonic
+instruction-cost overrides. The profile is strictly validated, opt-in, and never
+auto-detected. `--freq` overrides its core clock. The TDG records the profile
+ID, source and SHA-256 in `timing.models[].params.extras`, and profile clocks
+use `source: "board-profile"`. See
+[board-profile.md](board-profile.md) for the file format and exact precedence.
 
 The current implementation ships Cortex-M, generic RV32/RV64, and generic
 AArch64/x86-64 tables. The latter two are statistical throughput tables and are

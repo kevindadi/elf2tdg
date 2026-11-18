@@ -32,6 +32,11 @@ Implemented:
   per-block cycles and optional wall-clock time from `--freq`. M3 adds opt-in
   generic AArch64 and x86-64 statistical throughput models
   (`--cpu aarch64` / `--cpu x86-64`); they are never enabled silently.
+- Optional TOML/JSON board profiles (`--board-profile`) supply clock domains,
+  memory regions with fetch wait states, and class/mnemonic-specific cycle
+  overrides. The TDG records the profile ID, SHA-256 and source, and profile
+  files are strictly validated before analysis. See
+  [docs/board-profile.md](docs/board-profile.md).
 - JSON output validated against the versioned schema, plus DOT and Mermaid
   renderers.
 - Runtime rule engine for spawn/join/scope/await:
@@ -341,7 +346,8 @@ Useful flags:
 | Flag | Meaning |
 |---|---|
 | `--cpu cortex-m4` | explicit timing model; Cortex-M/RISC-V are auto-detected when omitted. `aarch64` and `x86-64` select statistical generic models |
-| `--freq 168MHz` | core clock; enables `time_ns` in blocks |
+| `--board-profile PATH` | board timing profile in TOML (or JSON with a `.json` extension); supplies CPU, clocks, memory fetch costs and instruction-cost overrides |
+| `--freq 168MHz` | core clock; enables `time_ns` in blocks and overrides the profile's core clock |
 | `--instructions` | include per-instruction text and cycle costs (requires a timing model) |
 | `--format json|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
 | `--view tdg|cfg|elf` | final TDG (default), per-function CFG, or loader-backed ELF layout |
@@ -362,6 +368,13 @@ Cortex-M auto-detection maps ARM `Tag_CPU_arch` values (`6S-M`, `7-M`, `7E-M`,
 pass `--cpu cortex-m7` if it is actually an M7. Generic AArch64/x86-64 cycle
 tables are opt-in because their results are statistical throughput estimates,
 not bounds for a specific core.
+
+`--board-profile` is opt-in and never enabled by auto-detection. The profile's
+CPU model must match the ELF architecture and any explicit `--cpu`; `--freq`
+overrides its core clock while keeping its source visible in the TDG. Without a
+profile, timing output is unchanged. The example
+[`examples/profiles/cortex-m0-isr.toml`](examples/profiles/cortex-m0-isr.toml)
+shows the format.
 
 `--instructions`, `--projection` and `--legend` apply to TDG output.
 `--function`, `--reachable-from`, `--no-prune-runtime`,
@@ -433,6 +446,7 @@ crates/elf2tdg-schema/    TDG data model, validation, JSON Schema
 crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rules,
                           origin tracking, emitters, CLI
 docs/tdg-schema.md        graph and timing semantics
+docs/board-profile.md     board clocks, memory fetch costs and cycle overrides
 docs/cfg-format.md        function CFG JSON, call/return blocks and CLI view
 docs/analysis-profile.md  recommended firmware build flags and inline DWARF
 docs/elf-view.md          loader-backed ELF layout, colors and disassembly limits
