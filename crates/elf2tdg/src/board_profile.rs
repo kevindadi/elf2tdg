@@ -21,12 +21,23 @@ use crate::error::{Error, Result};
 use crate::timing::{InstructionClass, TimingModel};
 
 /// Current board-profile schema version.
-pub const BOARD_PROFILE_SCHEMA_VERSION: u32 = 1;
+pub const BOARD_PROFILE_SCHEMA_VERSION: u32 = 2;
+
+/// Oldest board-profile schema version still accepted.
+pub const MIN_BOARD_PROFILE_SCHEMA_VERSION: u32 = 1;
 
 const DEFAULT_FETCH_WIDTH_BYTES: u32 = 4;
 
 const fn default_fetch_width() -> u32 {
     DEFAULT_FETCH_WIDTH_BYTES
+}
+
+const fn default_issue_width() -> u32 {
+    1
+}
+
+const fn default_occupancy() -> u32 {
+    1
 }
 
 /// A versioned description of one board's timing-relevant configuration.
@@ -45,6 +56,8 @@ pub struct BoardProfile {
     memory: Vec<MemoryRegion>,
     #[serde(default)]
     instruction_costs: Vec<InstructionCostOverride>,
+    #[serde(default)]
+    pipeline: Option<PipelineProfile>,
     #[serde(default)]
     caveats: Vec<String>,
     #[serde(default)]
@@ -157,6 +170,90 @@ impl InstructionCostOverride {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PipelineProfile {
+    #[serde(default = "default_issue_width")]
+    issue_width: u32,
+    #[serde(default)]
+    branch_penalty: Option<CostSpec>,
+    #[serde(default)]
+    instructions: Vec<PipelineInstruction>,
+}
+
+impl PipelineProfile {
+    pub(crate) fn issue_width(&self) -> u32 {
+        self.issue_width
+    }
+
+    pub(crate) fn branch_penalty(&self) -> CostRange {
+        self.branch_penalty
+            .as_ref()
+            .map_or_else(|| CostRange::new(1.0, 3.0), CostSpec::cost_range)
+    }
+
+    pub(crate) fn instruction_for(
+        &self,
+        class: InstructionClass,
+        mnemonic: &str,
+    ) -> Option<&PipelineInstruction> {
+        let mut best: Option<(&PipelineInstruction, u8)> = None;
+        for instruction in &self.instructions {
+            if !instruction.matches(class, mnemonic) {
+                continue;
+            }
+            let specificity = instruction.specificity();
+            if best.is_none_or(|(_, current)| specificity > current) {
+                best = Some((instruction, specificity));
+            }
+        }
+        best.map(|(instruction, _)| instruction)
+    }
+
+    pub(crate) fn instruction_override_count(&self) -> usize {
+        self.instructions.len()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PipelineInstruction {
+    #[serde(default)]
+    class: Option<InstructionClass>,
+    #[serde(default)]
+    mnemonic: Option<String>,
+    resources: Vec<String>,
+    latency: u32,
+    #[serde(default = "default_occupancy")]
+    occupancy: u32,
+}
+
+impl PipelineInstruction {
+    fn matches(&self, class: InstructionClass, mnemonic: &str) -> bool {
+        let class_matches = self.class.is_none_or(|candidate| candidate == class);
+        let mnemonic_matches = self.mnemonic.as_deref().is_none_or(|candidate| {
+            crate::timing::canonical_mnemonic(candidate).eq_ignore_ascii_case(mnemonic)
+        });
+        class_matches && mnemonic_matches
+    }
+
+    fn specificity(&self) -> u8 {
+        2 * u8::from(self.mnemonic.is_some()) + u8::from(self.class.is_some())
+    }
+
+    pub(crate) fn latency(&self) -> u32 {
+        self.latency
+    }
+
+    pub(crate) fn occupancy(&self) -> u32 {
+        self.occupancy
+    }
+
+    pub(crate) fn resources(&self) -> &[String] {
+        &self.resources
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 enum CostSpec {
     Exact(f64),
@@ -252,6 +349,7 @@ impl BoardProfile {
         self.validate_clocks()?;
         self.validate_memory()?;
         self.validate_instruction_costs()?;
+        self.validate_pipeline()?;
         for caveat in &self.caveats {
             validate_text("caveats", caveat)?;
         }
@@ -259,10 +357,12 @@ impl BoardProfile {
     }
 
     fn validate_identity(&self) -> Result<()> {
-        if self.schema_version != BOARD_PROFILE_SCHEMA_VERSION {
+        if !(MIN_BOARD_PROFILE_SCHEMA_VERSION..=BOARD_PROFILE_SCHEMA_VERSION)
+            .contains(&self.schema_version)
+        {
             return Err(Error::Config(format!(
-                "unsupported board profile schema_version {}; expected {}",
-                self.schema_version, BOARD_PROFILE_SCHEMA_VERSION
+                "unsupported board profile schema_version {}; expected {}..={}",
+                self.schema_version, MIN_BOARD_PROFILE_SCHEMA_VERSION, BOARD_PROFILE_SCHEMA_VERSION
             )));
         }
         validate_text("id", &self.id)?;
@@ -343,6 +443,97 @@ impl BoardProfile {
                 return Err(Error::Config(format!(
                     "board profile memory regions {:?} and {:?} overlap",
                     left.name, right.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_pipeline(&self) -> Result<()> {
+        let Some(pipeline) = &self.pipeline else {
+            return Ok(());
+        };
+        if self.schema_version < 2 {
+            return Err(Error::Config(
+                "board profile pipeline requires schema_version 2".to_owned(),
+            ));
+        }
+        let Some(model) = TimingModel::from_name(&self.cpu) else {
+            return Err(Error::Config(format!(
+                "board profile CPU {:?} is not a known timing model",
+                self.cpu
+            )));
+        };
+        if model.id() != "cortex-m4" {
+            return Err(Error::Config(format!(
+                "board profile pipeline model currently supports only cortex-m4, not {}",
+                model.id()
+            )));
+        }
+        if pipeline.issue_width != 1 {
+            return Err(Error::Config(
+                "board profile pipeline.issue_width other than 1 is not supported yet".to_owned(),
+            ));
+        }
+        if let Some(branch_penalty) = &pipeline.branch_penalty
+            && !branch_penalty.cost_range().is_valid()
+        {
+            return Err(Error::Config(
+                "board profile pipeline.branch_penalty has an invalid cycle range".to_owned(),
+            ));
+        }
+        let mut selectors = BTreeSet::new();
+        for (index, instruction) in pipeline.instructions.iter().enumerate() {
+            if instruction.class.is_none() && instruction.mnemonic.is_none() {
+                return Err(Error::Config(format!(
+                    "board profile pipeline.instructions[{index}] needs class or mnemonic"
+                )));
+            }
+            let mnemonic = instruction.mnemonic.as_deref().map(|value| {
+                let canonical = crate::timing::canonical_mnemonic(value);
+                if canonical.is_empty()
+                    || canonical
+                        .chars()
+                        .any(|character| character.is_whitespace() || character.is_control())
+                {
+                    return Err(Error::Config(format!(
+                        "board profile pipeline.instructions[{index}] has invalid mnemonic {value:?}"
+                    )));
+                }
+                Ok(canonical.to_ascii_lowercase())
+            });
+            let mnemonic = mnemonic.transpose()?;
+            if instruction.resources.is_empty() {
+                return Err(Error::Config(format!(
+                    "board profile pipeline.instructions[{index}] needs at least one resource"
+                )));
+            }
+            let mut resources = BTreeSet::new();
+            for resource in &instruction.resources {
+                if resource.is_empty()
+                    || resource.len() > 64
+                    || resource
+                        .chars()
+                        .any(|character| character.is_whitespace() || character.is_control())
+                {
+                    return Err(Error::Config(format!(
+                        "board profile pipeline.instructions[{index}] has invalid resource {resource:?}"
+                    )));
+                }
+                if !resources.insert(resource.as_str()) {
+                    return Err(Error::Config(format!(
+                        "board profile pipeline.instructions[{index}] repeats resource {resource:?}"
+                    )));
+                }
+            }
+            if instruction.latency == 0 || instruction.occupancy == 0 {
+                return Err(Error::Config(format!(
+                    "board profile pipeline.instructions[{index}] latency and occupancy must be positive"
+                )));
+            }
+            if !selectors.insert((instruction.class, mnemonic)) {
+                return Err(Error::Config(format!(
+                    "board profile pipeline.instructions[{index}] duplicates an earlier selector"
                 )));
             }
         }
@@ -470,6 +661,12 @@ impl BoardProfile {
     #[must_use]
     pub fn instruction_cost_override_count(&self) -> usize {
         self.instruction_costs.len()
+    }
+
+    /// Optional in-order pipeline/resource model.
+    #[must_use]
+    pub(crate) fn pipeline(&self) -> Option<&PipelineProfile> {
+        self.pipeline.as_ref()
     }
 
     /// Largest fetch wait-state count on an executable Flash region.
@@ -704,6 +901,38 @@ note = "board errata"
         assert_eq!(profile.core_clock_hz(), Some(1_000_000));
         assert_eq!(profile.instruction_cost_override_count(), 1);
         assert!(profile.sha256().is_some());
+    }
+
+    #[test]
+    fn validates_pipeline_profiles() {
+        let valid = VALID
+            .replace("schema_version = 1", "schema_version = 2")
+            .replace("cpu = \"cortex-m0\"", "cpu = \"cortex-m4\"")
+            + r#"
+[pipeline]
+issue_width = 1
+branch_penalty = { min = 1, max = 3 }
+
+[[pipeline.instructions]]
+class = "load"
+resources = ["load_store"]
+latency = 2
+occupancy = 1
+"#;
+        let profile = BoardProfile::parse_toml(&valid).expect("valid pipeline profile");
+        assert!(profile.pipeline().is_some());
+
+        let legacy = valid.replace("schema_version = 2", "schema_version = 1");
+        assert!(BoardProfile::parse_toml(&legacy).is_err());
+
+        let m0 = valid.replace("cpu = \"cortex-m4\"", "cpu = \"cortex-m0\"");
+        assert!(BoardProfile::parse_toml(&m0).is_err());
+
+        let multi_issue = valid.replace("issue_width = 1", "issue_width = 2");
+        assert!(BoardProfile::parse_toml(&multi_issue).is_err());
+
+        let no_resources = valid.replace("resources = [\"load_store\"]", "resources = []");
+        assert!(BoardProfile::parse_toml(&no_resources).is_err());
     }
 
     #[test]

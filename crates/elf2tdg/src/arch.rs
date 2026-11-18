@@ -200,6 +200,11 @@ pub struct DecodedInsn {
     pub memory_write: Option<MemoryWrite>,
     /// Indirect branch/call target expression, when modeled.
     pub indirect: Option<IndirectTarget>,
+    /// Registers read by this instruction, including implicit reads reported by
+    /// Capstone. Used by the pipeline dependency model.
+    pub regs_read: Vec<RegId>,
+    /// Registers written by this instruction, including implicit writes.
+    pub regs_write: Vec<RegId>,
     /// Register/immediate comparison, used to bound jump tables.
     pub compare: Option<(RegId, u64)>,
     /// Two-register branch operands. RISC-V tables guard the index with
@@ -402,6 +407,8 @@ impl Decoder {
             value,
             memory_write,
             indirect,
+            regs_read: detail.regs_read().to_vec(),
+            regs_write: detail.regs_write().to_vec(),
             compare,
             branch_registers,
             compare_registers,

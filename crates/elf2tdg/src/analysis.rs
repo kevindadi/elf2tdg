@@ -1348,7 +1348,7 @@ impl<'a> Analyzer<'a> {
             let (cycles, unknown_costs) = self.timing.as_ref().map_or_else(
                 || (None, Vec::new()),
                 |model| {
-                    let (cycles, unknown) = sum_costs(model, &instructions);
+                    let (cycles, unknown) = model.block_cost(&instructions);
                     (Some(cycles), unknown)
                 },
             );
@@ -3776,25 +3776,6 @@ fn insn_text(insn: &DecodedInsn) -> String {
     } else {
         format!("{} {}", insn.mnemonic, insn.operands)
     }
-}
-
-#[allow(clippy::type_complexity)]
-fn sum_costs(
-    model: &TimingCostModel,
-    instructions: &[DecodedInsn],
-) -> (elf2tdg_schema::CostRange, Vec<(String, u64)>) {
-    let mut min = 0.0_f64;
-    let mut max = 0.0_f64;
-    let mut unknown = Vec::new();
-    for instruction in instructions {
-        let cost = model.instruction_cost(instruction);
-        min += cost.cycles.min;
-        max += cost.cycles.max;
-        if cost.unknown {
-            unknown.push((instruction.mnemonic.clone(), instruction.address));
-        }
-    }
-    (elf2tdg_schema::CostRange::new(min, max), unknown)
 }
 
 #[derive(Clone)]

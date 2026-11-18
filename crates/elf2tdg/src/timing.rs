@@ -6,7 +6,7 @@
 //! statistical throughput tables and must be selected explicitly with
 //! `--cpu aarch64` or `--cpu x86-64`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use elf2tdg_schema::{
     BlockTiming, CacheParams, Confidence, CostRange, Determinism, FrequencyDomain,
@@ -497,8 +497,129 @@ impl TimingCostModel {
         }
     }
 
+    /// Costs a basic block using the additive table or the profile pipeline
+    /// model.
+    ///
+    /// The pipeline model schedules instructions in order using per-class
+    /// resources, result latencies and register dependencies. It models local
+    /// hazards within one block; pipeline state at block entry is assumed
+    /// ready, so this is a local cost rather than a whole-program WCET bound.
+    #[must_use]
+    pub fn block_cost(&self, instructions: &[DecodedInsn]) -> (CostRange, Vec<(String, u64)>) {
+        if let Some(profile) = &self.profile
+            && let Some(pipeline) = profile.pipeline()
+        {
+            return Self::pipeline_block_cost(profile, pipeline, instructions);
+        }
+        let mut min = 0.0_f64;
+        let mut max = 0.0_f64;
+        let mut unknown = Vec::new();
+        for instruction in instructions {
+            let cost = self.instruction_cost(instruction);
+            min += cost.cycles.min;
+            max += cost.cycles.max;
+            if cost.unknown {
+                unknown.push((instruction.mnemonic.clone(), instruction.address));
+            }
+        }
+        (CostRange::new(min, max), unknown)
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn pipeline_block_cost(
+        profile: &BoardProfile,
+        pipeline: &crate::board_profile::PipelineProfile,
+        instructions: &[DecodedInsn],
+    ) -> (CostRange, Vec<(String, u64)>) {
+        let mut resource_free: BTreeMap<&str, u32> = BTreeMap::new();
+        let mut register_ready: BTreeMap<capstone::RegId, u32> = BTreeMap::new();
+        let mut issue_start = 0_u32;
+        let mut completion = 0_u32;
+        let mut fetch_cycles = 0_u32;
+        let mut unknown = Vec::new();
+        for instruction in instructions {
+            let classification = classify(instruction);
+            let mnemonic = canonical_mnemonic(&instruction.mnemonic);
+            let (resources, latency, occupancy, is_unknown) =
+                if let Some(spec) = pipeline.instruction_for(classification.class, mnemonic) {
+                    (
+                        spec.resources()
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>(),
+                        spec.latency(),
+                        spec.occupancy(),
+                        false,
+                    )
+                } else {
+                    let (resources, latency, occupancy) =
+                        cortex_m4_pipeline_default(classification.class);
+                    (
+                        resources.to_vec(),
+                        latency,
+                        occupancy,
+                        !classification.known,
+                    )
+                };
+            let operand_ready = instruction
+                .regs_read
+                .iter()
+                .filter_map(|register| register_ready.get(register))
+                .copied()
+                .max()
+                .unwrap_or(0);
+            let resource_ready = resources
+                .iter()
+                .filter_map(|resource| resource_free.get(resource))
+                .copied()
+                .max()
+                .unwrap_or(0);
+            let start = issue_start.max(operand_ready).max(resource_ready);
+            issue_start = start.saturating_add(1);
+            for resource in &resources {
+                let free = start.saturating_add(occupancy);
+                resource_free
+                    .entry(resource)
+                    .and_modify(|current| *current = (*current).max(free))
+                    .or_insert(free);
+            }
+            let ready = start.saturating_add(latency);
+            for register in &instruction.regs_write {
+                register_ready
+                    .entry(*register)
+                    .and_modify(|current| *current = (*current).max(ready))
+                    .or_insert(ready);
+            }
+            completion = completion.max(ready);
+            fetch_cycles = fetch_cycles
+                .saturating_add(profile.fetch_wait_cycles(instruction.address, instruction.size));
+            if is_unknown {
+                unknown.push((instruction.mnemonic.clone(), instruction.address));
+            }
+        }
+        let base = issue_start.max(completion).saturating_add(fetch_cycles);
+        let branch_penalty = pipeline.branch_penalty();
+        let ends_in_transfer = instructions
+            .last()
+            .is_some_and(|last| last.is_jump || last.is_call || last.is_return);
+        let min = f64::from(base)
+            + if ends_in_transfer {
+                branch_penalty.min
+            } else {
+                0.0
+            };
+        let max = f64::from(base)
+            + if ends_in_transfer {
+                branch_penalty.max
+            } else {
+                0.0
+            };
+        (CostRange::new(min, max), unknown)
+    }
+
     /// Builds TDG timing metadata for the selected model and profile.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn timing_info(
         &self,
         cli_frequency_hz: Option<u64>,
@@ -556,6 +677,20 @@ impl TimingCostModel {
                 "board_profile_instruction_cost_overrides".to_owned(),
                 profile.instruction_cost_override_count().to_string(),
             );
+            if let Some(pipeline) = profile.pipeline() {
+                params.extras.insert(
+                    "board_profile_pipeline".to_owned(),
+                    "cortex-m4-resource-dependency-model".to_owned(),
+                );
+                params.extras.insert(
+                    "board_profile_pipeline_issue_width".to_owned(),
+                    pipeline.issue_width().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_pipeline_instruction_overrides".to_owned(),
+                    pipeline.instruction_override_count().to_string(),
+                );
+            }
         }
         if !unknown_mnemonics.is_empty() {
             params.extras.insert(
@@ -572,7 +707,15 @@ impl TimingCostModel {
                 id: TimingModelId::new(self.model.id()),
                 arch: self.model.arch().to_owned(),
                 core: Some(self.model.core().to_owned()),
-                determinism: self.model.determinism(),
+                determinism: if self
+                    .profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.pipeline().is_some())
+                {
+                    Determinism::Statistical
+                } else {
+                    self.model.determinism()
+                },
                 table_version: "0.2.0-m3".to_owned(),
                 params,
                 caveats,
@@ -644,6 +787,21 @@ impl TimingCostModel {
                     "Board-profile fetch wait states are applied per instruction fetch transaction; prefetch, caches, bus contention and exception entry are not modeled."
                         .to_owned(),
                 );
+            }
+            if profile.pipeline().is_some() {
+                caveats.retain(|caveat| {
+                    !caveat.contains("Load/store and branch penalties are table-based")
+                });
+                caveats.push(
+                    "Board-profile pipeline costs use an in-order resource/dependency model. Registers are assumed ready at block entry; memory dependencies, inter-block pipeline state, caches, branch prediction and exception entry are not modeled."
+                        .to_owned(),
+                );
+                if profile.instruction_cost_override_count() > 0 {
+                    caveats.push(
+                        "instruction_costs overrides are not added to pipeline block costs; use pipeline.instructions to override latency, occupancy or resources."
+                            .to_owned(),
+                    );
+                }
             }
         }
         caveats
@@ -923,6 +1081,23 @@ fn is_barrier(mnemonic: &str) -> bool {
         || mnemonic.starts_with("membar")
 }
 
+fn cortex_m4_pipeline_default(class: InstructionClass) -> (&'static [&'static str], u32, u32) {
+    match class {
+        InstructionClass::Load | InstructionClass::PushPop => (&["load_store"], 2, 1),
+        InstructionClass::Store => (&["load_store"], 1, 1),
+        InstructionClass::LdmStm => (&["load_store"], 2, 2),
+        InstructionClass::Branch | InstructionClass::Call | InstructionClass::Return => {
+            (&["branch"], 1, 1)
+        }
+        InstructionClass::Multiply => (&["mul"], 1, 1),
+        InstructionClass::Divide => (&["div"], 12, 1),
+        InstructionClass::Alu
+        | InstructionClass::Nop
+        | InstructionClass::Barrier
+        | InstructionClass::Other => (&["alu"], 1, 1),
+    }
+}
+
 fn cortex_m0_cost(class: InstructionClass) -> CostRange {
     match class {
         InstructionClass::Alu
@@ -1147,6 +1322,8 @@ mod tests {
             value: None,
             memory_write: None,
             indirect: None,
+            regs_read: Vec::new(),
+            regs_write: Vec::new(),
             compare: None,
             branch_registers: None,
             compare_registers: None,
@@ -1172,6 +1349,8 @@ mod tests {
             value: None,
             memory_write: None,
             indirect: None,
+            regs_read: Vec::new(),
+            regs_write: Vec::new(),
             compare: None,
             branch_registers: None,
             compare_registers: None,
@@ -1196,10 +1375,25 @@ mod tests {
             value: None,
             memory_write: None,
             indirect: None,
+            regs_read: Vec::new(),
+            regs_write: Vec::new(),
             compare: None,
             branch_registers: None,
             compare_registers: None,
         }
+    }
+
+    fn insn_with_regs(
+        address: u64,
+        size: u8,
+        mnemonic: &str,
+        reads: &[u16],
+        writes: &[u16],
+    ) -> DecodedInsn {
+        let mut instruction = insn(address, size, mnemonic);
+        instruction.regs_read = reads.iter().copied().map(capstone::RegId).collect();
+        instruction.regs_write = writes.iter().copied().map(capstone::RegId).collect();
+        instruction
     }
 
     fn board_profile() -> BoardProfile {
@@ -1315,6 +1509,73 @@ cycles = 10
 
     fn ldr_cost() -> elf2tdg_schema::CostRange {
         elf2tdg_schema::CostRange::exact(2.0)
+    }
+
+    fn pipeline_profile() -> BoardProfile {
+        BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:pipeline"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 168_000_000
+
+[pipeline]
+issue_width = 1
+branch_penalty = { min = 2, max = 2 }
+
+[[pipeline.instructions]]
+mnemonic = "ldr"
+resources = ["load_store"]
+latency = 2
+occupancy = 2
+"#,
+        )
+        .expect("valid pipeline profile")
+    }
+
+    #[test]
+    fn pipeline_schedules_dependencies_resources_and_branch_penalty() {
+        let profile = pipeline_profile();
+        let model = TimingCostModel::select(None, Some(&profile), &image(ArchKind::Thumb))
+            .expect("profile selects")
+            .expect("timing model");
+
+        let independent_loads = [
+            insn_with_regs(0x1000, 2, "ldr", &[1], &[0]),
+            insn_with_regs(0x1002, 2, "ldr", &[3], &[2]),
+        ];
+        let (cost, unknown) = model.block_cost(&independent_loads);
+        assert_eq!(unknown, Vec::new());
+        assert_eq!(cost.min, 4.0);
+        assert_eq!(cost.max, 4.0);
+
+        let dependent = [
+            insn_with_regs(0x1000, 2, "ldr", &[1], &[0]),
+            insn_with_regs(0x1002, 2, "add", &[0], &[2]),
+        ];
+        let (cost, _) = model.block_cost(&dependent);
+        assert_eq!(cost.min, 3.0);
+        assert_eq!(cost.max, 3.0);
+
+        let mut branch = insn(0x1004, 2, "b");
+        branch.is_jump = true;
+        let branch_block = [insn_with_regs(0x1000, 2, "ldr", &[1], &[0]), branch];
+        let (cost, _) = model.block_cost(&branch_block);
+        assert_eq!(cost.min, 4.0);
+        assert_eq!(cost.max, 4.0);
+
+        let (cost, unknown) = model.block_cost(&[insn(0x1000, 2, "vxyz")]);
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(cost.min, 1.0);
+
+        let info = model.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0].determinism,
+            elf2tdg_schema::Determinism::Statistical
+        );
     }
 
     #[test]
