@@ -1,12 +1,11 @@
-# Function CFG format
+# Program CFG format
 
-The analyzer now has two layers:
+The analyzer has one primary analysis model:
 
 ```text
 ELF
   -> Image (sections, symbols, imports, DWARF)
-  -> ProgramCfg (one petgraph StableDiGraph per function)
-  -> TDG (contexts and spawn/join/scope edges)
+  -> ProgramCfg (one StableDiGraph per function plus program metadata)
 ```
 
 ## Why a function CFG layer
@@ -19,10 +18,9 @@ The CFG is the lossless intermediate representation. It keeps:
 - call sites inside the block that performs them;
 - timing cost, source file/line, function metadata and diagnostics.
 
-The TDG compatibility view is derived from this CFG; it is not a second,
-independently built control-flow graph. The CFG is the primary analysis IR and
-owns its own roots, call graph, concurrency annotations, locks, diagnostics and
-timing metadata.
+`ProgramCfg` is the primary analysis IR. It owns execution roots, the
+interprocedural call graph, concurrency annotations, locks, diagnostics, image
+and timing metadata.
 
 ## CLI
 
@@ -31,9 +29,6 @@ The CFG is the primary analysis and default view:
 ```sh
 elf2tdg firmware.elf --format json
 ```
-
-The TDG compatibility view remains available with `--view tdg`. Use
-`--view cfg` explicitly when scripting against the CFG schema:
 
 ```sh
 # Complete CFG JSON for one function
@@ -64,15 +59,13 @@ elf2tdg firmware.elf --view cfg --format json --function main \
 ```
 
 `--function` accepts an exact function name or symbol, a unique substring, a
-task/execution-context name, or a `0x` address. Task names map to the context
-entry function, so `--function sensor_task` or
+task alias, or a `0x` address. Task names map to the task entry function, so `--function sensor_task` or
 `--function app::sensor_task` selects the real `TaskStorage<...>::poll` body
 instead of an initialization helper whose symbol happens to contain the task
 name. `--reachable-from` accepts the same selectors. Without a selector, CFG
 output uses a multi-root system scope:
 functions reachable from main/startup, all valid vector-table ISRs, task/async
-contexts, callback registrations, function pointers recovered from global
-data, every named code symbol or DWARF subprogram entry, and code addresses
+roots, callback registrations, function pointers recovered from global data, every named code symbol or DWARF subprogram entry, and code addresses
 recovered from literal/function-pointer escapes. `--reachable-from ROOT`
 narrows this to one root, and `--all-functions` exports the complete image.
 
@@ -89,9 +82,9 @@ These symbol/DWARF entries are **discovery roots**, not **execution roots**.
 `ProgramCfg::system_roots` combines both for the lossless default export;
 `ProgramCfg::execution_roots` and `reachable_from_execution_roots` omit
 discovery-only functions and are the appropriate base for reachability or
-dead-code decisions. Graph passes must also preserve unresolved call sites: in
-the TDG they are explicit `unresolved-call` edges with `confidence: unknown`,
-not missing calls.
+dead-code decisions. Graph passes must also preserve unresolved call sites:
+`ProgramCfg.calls` retains them with `unresolved: true` and
+`confidence: unknown`, rather than pretending the caller has no outbound call.
 
 Vector-table roots are read from `.vector_table`/`.isr_vector`-style sections.
 The initial stack word is skipped, Thumb bits are cleared and unused vectors
@@ -106,10 +99,10 @@ is strong evidence (a resolved relocation, an init/fini array, a Thumb function
 pointer, or a plausible function prologue). They are listed as
 `pointer_roots` in CFG JSON and seed the default system export, so a callback
 table or global function-pointer variable can keep a function visible without
-a call edge. The TDG receives an informational `pointer-roots` diagnostic.
+a call edge. The analyzer emits an informational `pointer-roots` diagnostic.
 
-Reachability follows TDG call, spawn, callback, join and await edges, plus CFG
-code-reference edges. It also resolves pointer-sized dynamic relocations (for
+Reachability follows CFG call edges and spawn/callback/join/await annotations,
+plus CFG code-reference edges. It also resolves pointer-sized dynamic relocations (for
 example `R_X86_64_RELATIVE` GOT slots), so function pointers stored in
 `.got`/`.data.rel.ro` can become call or escape edges instead of remaining
 unresolved. When a function references a data address, the analyzer follows a
@@ -125,7 +118,7 @@ stop-at-boundary rule; use it when investigating panic formatting, allocation
 or destructor behavior.
 
 Filtering happens after analysis, so it reduces export size and layout time but
-does not change ELF decoding or TDG construction time.
+does not change ELF decoding or analysis time.
 
 ARM Cortex-M vector tables are the primary static-root source. Detection is
 not limited to one section name: the loader also recognizes the characteristic
@@ -145,8 +138,7 @@ CFG output includes concrete instructions by default: JSON carries the full
 `instructions` arrays with raw bytes, and DOT/Mermaid block labels print the
 first eight decoded instructions. `--no-cfg-instructions` omits the arrays and
 the label text while retaining addresses, sizes, cycle costs, terminators and
-call sites. The TDG-only flags `--instructions`, `--projection` and `--legend`
-do not change CFG output.
+call sites.
 
 ## Graph analysis and normalization
 
@@ -370,11 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `1.8` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.9`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 1.8 makes the CFG document self-contained: it adds top-level
+functions. Version 1.9 adds runtime/API provenance to callback annotations. Version 1.8 makes the CFG document self-contained: it adds top-level
 `timing`, `roots`, `calls`, `concurrency` and `locks`, all sourced from
-`ProgramCfg` rather than a TDG. `roots` records startup/main/ISR/task/callback/
+`ProgramCfg`. `roots` records startup/main/ISR/task/callback/
 pointer entries, `calls` is the interprocedural call graph derived from block
 call sites, and `concurrency` annotates spawn/join/await/callback/scope call
 sites. These arrays are omitted when empty. `pointer_roots` (version 1.7) lists
@@ -393,7 +385,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "1.8",
+  "cfg_schema_version": "1.9",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "pointer_roots": ["0x8000120", "0x800013c"],
@@ -526,7 +518,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `locks` | lock acquire/try-acquire/release events with runtime API and primitive kind |
 
 These fields are CFG-native. They are populated from function CFGs and runtime
-analysis facts; serializing the CFG JSON does not require a TDG. `calls`,
+analysis facts; serializing the CFG JSON is self-contained. `calls`,
 `concurrency` and `locks` are scoped to the selected functions; `roots`,
 `image`, `timing` and `pointer_roots` describe the program.
 
@@ -612,17 +604,10 @@ control flow. Once a call site is noreturn, blocks that were reachable only
 through its continuation are removed. A shared block that is also reachable
 from another branch remains.
 
-The TDG mirrors the classification in function extensions:
-
-```json
-"ext": {
-  "elf2tdg.noreturn": true,
-  "elf2tdg.noreturn_source": "control-flow"
-}
-```
-
-The TDG call edge itself is retained; only the intra-function continuation and
-its `call-return` edge are removed. This preserves call-graph reachability and
+The classification is exposed as `CfgFunction.noreturn`
+(`api` or `control-flow`). The program call edge is retained in
+`ProgramCfg.calls`; only the intra-function continuation and its `call-return`
+edge are removed. This preserves call-graph reachability and
 call-site cost attribution while preventing impossible post-call paths from
 being counted as executable.
 
@@ -630,7 +615,7 @@ being counted as executable.
 usually `direct: false`). `recovered_calls` carries call sites found by the
 bounded gap scan after an unresolved indirect jump. They have no proven
 containing basic block, so they are kept at function level with
-`heuristic: true`; they are not silently dropped from the TDG.
+`heuristic: true`; they are not silently dropped from `ProgramCfg.calls`.
 
 ## CFG validation
 
@@ -656,7 +641,7 @@ is reported as a fatal validation error rather than being exported.
 Deterministic malformed-ELF and CFG-invariant tests run in the normal test
 suite. A libFuzzer harness is provided under [`fuzz/`](../fuzz/); it loads
 arbitrary bytes through `loader::load_from_bytes`, runs a bounded analysis and
-asserts that both the TDG and CFG validate.
+asserts that the CFG validates.
 
 ## Current limits
 

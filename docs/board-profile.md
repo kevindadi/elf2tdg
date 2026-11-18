@@ -3,16 +3,16 @@
 A board profile is an optional, versioned description of the timing facts for a
 concrete board. It lets the same ELF be analyzed with board-specific clocks,
 memory fetch costs and instruction-cycle overrides without recompiling the
-analyzer or hard-coding board constants into the TDG schema.
+analyzer or hard-coding board constants into the CFG document.
 
 Profiles are disabled by default. Passing `--board-profile PATH` is the only way
-to enable one. Profiles apply to TDG and CFG analysis; `--view elf` reads only
+to enable one. Profiles apply to CFG analysis; `--view elf` reads only
 loader data and rejects the option.
 
 ```bash
 elf2tdg firmware.elf \
   --board-profile examples/profiles/cortex-m0-isr.toml \
-  --output tdg.json
+  --output cfg.json
 ```
 
 The file is parsed as TOML unless its extension is `.json`. Schema version 1
@@ -93,13 +93,13 @@ occupancy = 2
 | Field | Required | Meaning |
 |---|---|---|
 | `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`. |
-| `id` | yes | Stable profile identifier recorded in the TDG. |
+| `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
 | `cpu` | yes | Built-in timing-model name, for example `cortex-m0`, `cortex-m4`, `riscv32` or `aarch64`. |
 | `confidence` | no | Overrides block-timing confidence (`high`, `medium`, `low`, `unknown`); otherwise the base model's confidence is used. |
 | `unknown_instructions` | no | `warn` (default) emits a `timing-unknown-instruction` diagnostic; `ignore` suppresses it. The fallback cost still applies. |
-| `caveats` | no | Extra caveats copied into the TDG timing metadata and block timing. |
+| `caveats` | no | Extra caveats copied into the CFG timing metadata and block timing. |
 | `[pipeline]` | no | Enables the Cortex-M4 in-order resource/dependency model; see below. |
 
 ### Clocks
@@ -116,7 +116,7 @@ blocks currently reference only `clk:core`.
 
 When `--freq` is present it replaces the `clk:core` value and source with
 `cli`/`high`, while other profile clocks remain `board-profile`. Fetch wait
-states are not rescaled: the profile values remain unchanged, and the TDG adds a
+states are not rescaled: the profile values remain unchanged, and the CFG timing metadata adds a
 caveat when the CLI frequency differs from the profile core clock.
 
 ### Memory regions
@@ -144,7 +144,7 @@ fetch_cycles = ceil(instruction_size / fetch_width_bytes) * fetch_wait_states
 
 This is a deliberately simple first-order model. It does not model prefetch,
 instruction caches, bus contention, flash accelerator behavior, exception entry
-or data accesses. The generated caveat says so in the TDG. Use a measured
+or data accesses. The generated caveat says so in the CFG metadata. Use a measured
 `fetch_wait_states`/`fetch_width_bytes` pair or leave fetch costing disabled
 when those effects dominate.
 
@@ -194,7 +194,7 @@ Register readiness is assumed at block entry. Memory dependencies,
 store-to-load forwarding, inter-block pipeline state, caches, branch
 prediction, exception entry and multi-issue are not modeled in this phase.
 Block costs are therefore local pipeline-aware costs, not WCET bounds. While
-the pipeline model is active the TDG marks the timing model `statistical`, and
+the pipeline model is active the CFG marks the timing model `statistical`, and
 a generated caveat records the limitation.
 
 When `[pipeline]` is active, block `cycles` come from this schedule, including
@@ -223,7 +223,7 @@ fallback `other` class. With the default `warn` policy the analyzer emits one
 timing metadata. Built-in models use the same fallback and warning behavior;
 a profile only adds overrides and can set `ignore`.
 
-## What is recorded in the TDG
+## What is recorded in the CFG
 
 `timing.models[].params.extras` records:
 
@@ -260,5 +260,5 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   instruction in each block assumes all source registers are ready.
 - Interrupt entry, exception return, wait-for-interrupt and peripheral
   interaction are outside this model.
-- The same ELF can be analyzed repeatedly with different profiles; the TDG
+- The same ELF can be analyzed repeatedly with different profiles; the CFG
   names the profile hash used for each result.

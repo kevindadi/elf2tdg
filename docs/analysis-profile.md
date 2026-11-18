@@ -79,7 +79,7 @@ The Rust side of this project targets freestanding embedded images:
 
 C/C++/OpenMP and native RTOS APIs remain supported separately. A Rust image that
 does link `std` or Tokio is outside the supported profile; the analyzer will not
-synthesize thread/task contexts for those APIs.
+synthesize task roots for those APIs.
 
 ## Keep formatting and panic scaffolding out of the application
 
@@ -91,7 +91,7 @@ Build settings cannot remove code that the application actually calls. Avoid
   and allocation.
 - `expect`/`unwrap` pull in panic formatting and unwinding paths even when the
   fallible case is not expected to occur at runtime.
-- The TDG then contains runtime support code that is not part of the
+- The CFG then contains runtime support code that is not part of the
   application's real-time control flow, and unresolved indirect calls in
   `core::fmt` look like application uncertainty.
 
@@ -131,8 +131,8 @@ optimized Rust JSON manageable.
 It does not turn an inlined function into a fake machine-level `call`
 instruction. The CFG remains the real instruction graph; inline frames are
 metadata on the instruction ranges. The Embassy `Spawner::spawn` rule still
-creates async-task contexts and spawn edges described in
-[tdg-schema.md](tdg-schema.md), even when the call was inlined.
+creates async-task roots and spawn annotations described in
+[cfg-format.md](cfg-format.md), even when the call was inlined.
 
 The same DWARF pass extracts a compact type/variable view: aggregate member
 offsets and sizes, pointer/subroutine/array types, global addresses, and
@@ -144,7 +144,7 @@ vtable bases from static registries and nested fields. This is not a full type
 database: location lists, split-DWARF cross-unit references and flattened
 anonymous aggregates are outside the bounded extraction.
 
-The TDG also exposes typed `locks` events for acquire/try-acquire/release
+The CFG also exposes typed `locks` events for acquire/try-acquire/release
 operations. The supported rules cover pthread mutex/RW-lock/semaphores,
 FreeRTOS/Zephyr/ThreadX semaphores/mutexes, and C++
 `std::mutex`/`shared_mutex`. Lock identity and ordering are deliberately not

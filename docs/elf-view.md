@@ -1,7 +1,7 @@
 # ELF layout view
 
 `--view elf` exposes the loader model directly as a Mermaid flowchart. It runs
-after ELF loading and exits before CFG/TDG analysis, so it is useful for
+after ELF loading and exits before CFG analysis, so it is useful for
 checking what the loader actually saw and for explaining the memory layout of
 an embedded image.
 
@@ -91,4 +91,3 @@ byte count.
 
 - default (`--view cfg`): lossless program CFG with roots, call graph,
   concurrency annotations and optional instruction bytes.
-- `--view tdg`: compatibility task/concurrency graph derived from the CFG.
