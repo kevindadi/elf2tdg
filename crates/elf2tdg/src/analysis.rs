@@ -2959,6 +2959,15 @@ impl<'a> Analyzer<'a> {
             let info = crate::dcache::analyze_program(&mut program_cfg, cache);
             program_cfg.data_cache = Some(info);
         }
+        if let Some(prediction) = self
+            .timing
+            .as_ref()
+            .and_then(TimingCostModel::profile)
+            .and_then(BoardProfile::branch_prediction)
+        {
+            let info = crate::branch_prediction::analyze_program(&mut program_cfg, prediction);
+            program_cfg.branch_prediction = Some(info);
+        }
         let isr_vectors = std::mem::take(&mut self.isr_vectors);
         let startup_address = self.startup_address;
         let Some(startup_address) = startup_address else {

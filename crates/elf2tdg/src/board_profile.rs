@@ -48,6 +48,10 @@ const fn default_max_cache_states() -> usize {
     128
 }
 
+const fn default_max_branch_states() -> usize {
+    128
+}
+
 /// A versioned description of one board's timing-relevant configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +74,8 @@ pub struct BoardProfile {
     instruction_cache: Option<InstructionCacheProfile>,
     #[serde(default)]
     data_cache: Option<DataCacheProfile>,
+    #[serde(default)]
+    branch_prediction: Option<BranchPredictionProfile>,
     #[serde(default)]
     caveats: Vec<String>,
     #[serde(default)]
@@ -296,6 +302,105 @@ impl DataCacheProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BranchPredictionModel {
+    /// Predict every conditional branch as not taken.
+    #[default]
+    StaticNotTaken,
+    /// Predict every conditional branch as taken.
+    StaticTaken,
+    /// Predict backward branches taken and forward branches not taken.
+    #[serde(alias = "backward-taken-forward-not-taken")]
+    Btfn,
+    /// Two-bit local saturating counter per branch site.
+    #[serde(alias = "two-bit")]
+    Bimodal,
+}
+
+impl BranchPredictionModel {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::StaticNotTaken => "static-not-taken",
+            Self::StaticTaken => "static-taken",
+            Self::Btfn => "btfn",
+            Self::Bimodal => "bimodal",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum BranchPredictionState {
+    /// Two-bit counter value 0.
+    StronglyNotTaken,
+    /// Two-bit counter value 1.
+    #[default]
+    WeaklyNotTaken,
+    /// Two-bit counter value 2.
+    WeaklyTaken,
+    /// Two-bit counter value 3.
+    StronglyTaken,
+}
+
+impl BranchPredictionState {
+    pub(crate) const fn counter(self) -> u8 {
+        match self {
+            Self::StronglyNotTaken => 0,
+            Self::WeaklyNotTaken => 1,
+            Self::WeaklyTaken => 2,
+            Self::StronglyTaken => 3,
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::StronglyNotTaken => "strongly-not-taken",
+            Self::WeaklyNotTaken => "weakly-not-taken",
+            Self::WeaklyTaken => "weakly-taken",
+            Self::StronglyTaken => "strongly-taken",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BranchPredictionProfile {
+    model: BranchPredictionModel,
+    mispredict_penalty: u32,
+    #[serde(default)]
+    initial_state: BranchPredictionState,
+    #[serde(default = "default_max_branch_states")]
+    max_states: usize,
+}
+
+impl BranchPredictionProfile {
+    pub(crate) fn model(&self) -> BranchPredictionModel {
+        self.model
+    }
+
+    pub(crate) fn model_name(&self) -> &'static str {
+        self.model.name()
+    }
+
+    pub(crate) fn mispredict_penalty(&self) -> u32 {
+        self.mispredict_penalty
+    }
+
+    pub(crate) fn initial_state_name(&self) -> &'static str {
+        self.initial_state.name()
+    }
+
+    pub(crate) fn initial_counter(&self) -> u8 {
+        self.initial_state.counter()
+    }
+
+    pub(crate) fn max_states(&self) -> usize {
+        self.max_states
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PipelineProfile {
@@ -479,6 +584,7 @@ impl BoardProfile {
         self.validate_pipeline()?;
         self.validate_instruction_cache()?;
         self.validate_data_cache()?;
+        self.validate_branch_prediction()?;
         for caveat in &self.caveats {
             validate_text("caveats", caveat)?;
         }
@@ -757,6 +863,28 @@ impl BoardProfile {
         Ok(())
     }
 
+    fn validate_branch_prediction(&self) -> Result<()> {
+        let Some(prediction) = &self.branch_prediction else {
+            return Ok(());
+        };
+        if self.schema_version < 2 {
+            return Err(Error::Config(
+                "board profile branch_prediction requires schema_version 2".to_owned(),
+            ));
+        }
+        if prediction.mispredict_penalty == 0 {
+            return Err(Error::Config(
+                "board profile branch_prediction.mispredict_penalty must be positive".to_owned(),
+            ));
+        }
+        if prediction.max_states == 0 {
+            return Err(Error::Config(
+                "board profile branch_prediction.max_states must be positive".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_instruction_costs(&self) -> Result<()> {
         let mut selectors = BTreeSet::new();
         for (index, override_) in self.instruction_costs.iter().enumerate() {
@@ -896,6 +1024,12 @@ impl BoardProfile {
     #[must_use]
     pub(crate) fn data_cache(&self) -> Option<&DataCacheProfile> {
         self.data_cache.as_ref()
+    }
+
+    /// Optional branch-prediction model.
+    #[must_use]
+    pub(crate) fn branch_prediction(&self) -> Option<&BranchPredictionProfile> {
+        self.branch_prediction.as_ref()
     }
 
     /// Largest fetch wait-state count on an executable Flash region.
@@ -1210,6 +1344,39 @@ occupancy = 1
         assert!(BoardProfile::parse_toml(&zero_ways).is_err());
         let zero_penalty = valid.replace("miss_penalty = 12", "miss_penalty = 0");
         assert!(BoardProfile::parse_toml(&zero_penalty).is_err());
+    }
+
+    #[test]
+    fn validates_branch_prediction_profiles() {
+        let valid = format!(
+            r#"{}
+[branch_prediction]
+model = "bimodal"
+mispredict_penalty = 3
+initial_state = "weakly-taken"
+max_states = 32
+"#,
+            VALID.replace("schema_version = 1", "schema_version = 2")
+        );
+        let profile = BoardProfile::parse_toml(&valid).expect("valid branch-prediction profile");
+        let prediction = profile
+            .branch_prediction()
+            .expect("branch-prediction profile");
+        assert_eq!(prediction.model_name(), "bimodal");
+        assert_eq!(prediction.initial_state_name(), "weakly-taken");
+        assert_eq!(prediction.initial_counter(), 2);
+        assert_eq!(prediction.max_states(), 32);
+        assert!(
+            BoardProfile::parse_toml(&valid.replace("schema_version = 2", "schema_version = 1"))
+                .is_err()
+        );
+
+        let zero_penalty = valid.replace("mispredict_penalty = 3", "mispredict_penalty = 0");
+        assert!(BoardProfile::parse_toml(&zero_penalty).is_err());
+        let zero_states = valid.replace("max_states = 32", "max_states = 0");
+        assert!(BoardProfile::parse_toml(&zero_states).is_err());
+        let bad_model = valid.replace("model = \"bimodal\"", "model = \"unknown\"");
+        assert!(BoardProfile::parse_toml(&bad_model).is_err());
     }
 
     #[test]

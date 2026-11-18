@@ -15,7 +15,7 @@ use elf2tdg_schema::{
 use serde::Deserialize;
 
 use crate::arch::DecodedInsn;
-use crate::board_profile::{BoardProfile, UnknownInstructionPolicy};
+use crate::board_profile::{BoardProfile, BranchPredictionModel, UnknownInstructionPolicy};
 use crate::error::{Error, Result};
 use crate::loader::{ArchKind, Image};
 
@@ -728,6 +728,30 @@ impl TimingCostModel {
                 );
                 caveats.push(
                     "Data-cache miss penalties model only statically resolved addresses; unresolved stack, indexed and register-dependent accesses are counted but not charged."
+                        .to_owned(),
+                );
+            }
+            if let Some(prediction) = profile.branch_prediction() {
+                params.extras.insert(
+                    "board_profile_branch_prediction".to_owned(),
+                    prediction.model_name().to_owned(),
+                );
+                params.extras.insert(
+                    "board_profile_branch_mispredict_penalty".to_owned(),
+                    prediction.mispredict_penalty().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_branch_max_states".to_owned(),
+                    prediction.max_states().to_string(),
+                );
+                if prediction.model() == BranchPredictionModel::Bimodal {
+                    params.extras.insert(
+                        "board_profile_branch_initial_state".to_owned(),
+                        prediction.initial_state_name().to_owned(),
+                    );
+                }
+                caveats.push(
+                    "Branch prediction models conditional direction only; indirect/table target prediction, returns, branch-target buffers and global history are not modeled."
                         .to_owned(),
                 );
             }

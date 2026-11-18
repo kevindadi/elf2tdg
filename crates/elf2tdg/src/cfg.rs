@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.1";
+pub const CFG_SCHEMA_VERSION: &str = "2.2";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -259,6 +259,9 @@ pub struct CfgBlock {
     /// Data-cache analysis for this block, when a data-cache profile is
     /// active.
     pub data_cache: Option<CfgBlockDataCache>,
+    /// Branch-prediction analysis for this block, when a prediction profile is
+    /// active and this is a modeled conditional branch.
+    pub branch_prediction: Option<CfgBlockBranchPrediction>,
     /// Control-flow terminator classification.
     pub terminator: CfgTerminator,
 }
@@ -480,6 +483,85 @@ pub struct CfgDataCacheInfo {
     pub caveats: Vec<String>,
 }
 
+/// Actual or predicted direction of a conditional branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgBranchDirection {
+    /// Branch taken.
+    Taken,
+    /// Branch not taken (fallthrough).
+    NotTaken,
+}
+
+/// Prediction assigned to one conditional-branch outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CfgBranchPredictionOutcome {
+    /// Predicted taken.
+    Taken,
+    /// Predicted not taken.
+    NotTaken,
+    /// Different entry states predict different directions, or the function
+    /// fell back to an all-mispredict bound.
+    Mixed,
+}
+
+/// Prediction result for one outgoing edge of a conditional branch.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBranchOutcome {
+    /// Successor block reached by this outcome.
+    pub target: BlockId,
+    /// Actual direction represented by this edge.
+    pub actual: CfgBranchDirection,
+    /// Predicted direction across modeled entry states.
+    pub predicted: CfgBranchPredictionOutcome,
+    /// Minimum modeled mispredictions for this outcome.
+    pub mispredicts_min: u32,
+    /// Maximum modeled mispredictions for this outcome.
+    pub mispredicts_max: u32,
+}
+
+/// Branch-prediction analysis for one conditional-branch block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockBranchPrediction {
+    /// Branch instruction address.
+    pub site: Addr,
+    /// Minimum modeled mispredictions across outgoing outcomes.
+    pub mispredicts_min: u32,
+    /// Maximum modeled mispredictions across outgoing outcomes.
+    pub mispredicts_max: u32,
+    /// Number of distinct predictor states reaching the block.
+    pub entry_states: u32,
+    /// Whether the function fell back to an all-mispredict bound.
+    pub fallback: bool,
+    /// Per-successor prediction outcomes.
+    pub outcomes: Vec<CfgBranchOutcome>,
+}
+
+/// Program-level branch-prediction analysis metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBranchPredictionInfo {
+    /// Predictor model name.
+    pub model: String,
+    /// Extra cycles charged for each modeled misprediction.
+    pub mispredict_penalty: u32,
+    /// Initial two-bit counter state for the `bimodal` model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_state: Option<String>,
+    /// Per-block predictor-state limit.
+    pub max_states: usize,
+    /// Functions with complete prediction analysis.
+    pub functions_analyzed: u32,
+    /// Functions that fell back to an all-mispredict bound.
+    pub functions_fallback: u32,
+    /// Conditional branch blocks with complete analysis.
+    pub branches_analyzed: u32,
+    /// Conditional branch blocks that fell back to an all-mispredict bound.
+    pub branches_fallback: u32,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
 /// A function CFG graph. Node IDs are internal petgraph indices; stable block
 /// IDs are carried in [`CfgBlock`].
 #[derive(Clone, Debug, Default)]
@@ -567,6 +649,7 @@ impl FunctionCfg {
                 cycles: block.cycles,
                 cache: None,
                 data_cache: None,
+                branch_prediction: None,
                 terminator: block.terminator,
             });
             blocks_by_address.insert(address, node);
@@ -952,6 +1035,8 @@ pub struct ProgramCfg {
     pub cache: Option<CfgCacheInfo>,
     /// Data-cache analysis metadata.
     pub data_cache: Option<CfgDataCacheInfo>,
+    /// Branch-prediction analysis metadata.
+    pub branch_prediction: Option<CfgBranchPredictionInfo>,
     /// Analysis diagnostics.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -2124,6 +2209,8 @@ struct CfgDocument<'a> {
     cache: Option<&'a CfgCacheInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data_cache: Option<&'a CfgDataCacheInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_prediction: Option<&'a CfgBranchPredictionInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pointer_roots: Vec<Addr>,
     #[serde(skip_serializing_if = "is_empty_slice")]
@@ -2204,6 +2291,8 @@ struct CfgBlockView {
     cache: Option<CfgBlockCache>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data_cache: Option<CfgBlockDataCache>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_prediction: Option<CfgBlockBranchPrediction>,
     terminator: CfgTerminator,
 }
 
@@ -2351,6 +2440,7 @@ pub fn render_json_selected(
         timing: program.timing.as_ref(),
         cache: program.cache.as_ref(),
         data_cache: program.data_cache.as_ref(),
+        branch_prediction: program.branch_prediction.as_ref(),
         pointer_roots: program
             .pointer_roots
             .iter()
@@ -2430,6 +2520,7 @@ fn function_view(
             cycles: block.cycles,
             cache: block.cache.clone(),
             data_cache: block.data_cache.clone(),
+            branch_prediction: block.branch_prediction.clone(),
             terminator: block.terminator,
         });
     }

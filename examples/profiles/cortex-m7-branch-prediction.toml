@@ -1,0 +1,33 @@
+schema_version = 2
+id = "board:cortex-m7-branch-prediction"
+name = "Cortex-M7 branch-prediction example"
+arch = "thumbv7em"
+cpu = "cortex-m7"
+confidence = "low"
+caveats = [
+  "Example branch-prediction profile only; replace the model, initial counter state and mispredict penalty with target-board measurements.",
+]
+
+[clocks.core]
+hz = 168_000_000
+confidence = "high"
+
+[[memory]]
+name = "flash"
+start = 0x0800_0000
+size = 0x0001_0000
+kind = "flash"
+executable = true
+fetch_wait_states = 0
+fetch_width_bytes = 4
+
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0001_0000
+kind = "ram"
+
+[branch_prediction]
+model = "btfn"
+mispredict_penalty = 3
+max_states = 128
