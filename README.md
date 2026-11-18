@@ -191,6 +191,12 @@ Implemented:
   `ProgramCfg`, `CfgFunction` and `FunctionCfg` expose
   `validate`/`validate_with_limit`/`ensure_valid`; analysis refuses to publish
   an invalid CFG.
+- CFG graph analysis: `FunctionCfg::analyze_graph` reports reachable and
+  unreachable blocks, SCCs, natural loops, dominator/post-dominator sets and
+  immediate dominators. `FunctionCfg::normalize` removes proven-unreachable
+  blocks and merges contiguous fallthrough-only blocks. Unreachable removal is
+  skipped when a reachable unresolved control transfer could target unknown
+  code.
 - CFG CLI view: `--view cfg` exports lossless per-function JSON or
   DOT/Mermaid CFGs, with function selection (`--function`), typed control-flow
   edges, call/return blocks, noreturn continuation pruning, call targets,

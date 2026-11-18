@@ -146,6 +146,40 @@ the label text while retaining addresses, sizes, cycle costs, terminators and
 call sites. The TDG-only flags `--instructions`, `--projection` and `--legend`
 do not change CFG output.
 
+## Graph analysis and normalization
+
+`FunctionCfg::analyze_graph()` (also available as
+`cfg_graph::analyze`) is a non-destructive structural pass:
+
+- `reachable`/`unreachable` classify blocks from the function entry;
+- `sccs` contains strongly connected components and marks cyclic components;
+- `loops` contains natural loops derived from dominator backedges, with the
+  header, latches and backedges;
+- `dominators` and `post_dominators` contain full block sets, and
+  `immediate_dominators`/`immediate_post_dominators` contain the unique real
+  immediate block where one exists;
+- `blocked_by_unresolved` is true when a reachable block has an unresolved
+  control transfer.
+
+Results use stable `BlockId` values, so they can be correlated with CFG JSON
+and DOT/Mermaid output. Post-dominators use a virtual exit; when no real exit
+exists, the post-dominator maps are empty.
+
+`FunctionCfg::normalize()` (also `cfg_graph::normalize`) mutates a function CFG
+and returns a `CfgNormalization` report:
+
+- blocks unreachable from the entry are removed when the function has an entry
+  and no reachable unresolved control transfer;
+- contiguous blocks connected by a single fallthrough edge are merged,
+  including instructions, calls, block cost and outgoing edges;
+- `skip_reason` records `NoEntry` or `UnresolvedControlFlow` when unreachable
+  removal was intentionally skipped.
+
+Normalization is conservative: unresolved jumps are unknown frontiers, so
+unreachable blocks are retained when they could be a target. It is not applied
+automatically to the lossless default CFG export; callers opt in when building
+an optimized view.
+
 ## Unresolved call and jump sites
 
 A block has exactly one call record per call instruction. When a bounded
