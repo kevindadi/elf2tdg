@@ -89,6 +89,6 @@ byte count.
 
 ## Related views
 
-- `--view cfg`: lossless per-function control-flow graph with call/return
-  blocks and optional instruction bytes.
-- default (`--view tdg`): task/concurrency graph derived from the CFG.
+- default (`--view cfg`): lossless program CFG with roots, call graph,
+  concurrency annotations and optional instruction bytes.
+- `--view tdg`: compatibility task/concurrency graph derived from the CFG.

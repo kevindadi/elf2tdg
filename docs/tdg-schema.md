@@ -5,6 +5,12 @@ The Rust types in `crates/elf2tdg-schema` are the normative definition; the
 generated [JSON Schema](../schema/tdg.schema.json) is the machine-readable
 contract.
 
+> **Migration note:** the CFG is now the primary analysis IR. `ProgramCfg`
+> carries roots, the interprocedural call graph, concurrency call-site
+> annotations, locks, diagnostics and timing metadata; CFG JSON is
+> self-contained. The TDG remains available as a compatibility view via
+> `--view tdg` and will be removed after the CFG-first migration completes.
+
 ## 1. Why a typed graph, not only a call graph
 
 A call graph has function nodes and call edges. That is not enough for a
@@ -433,12 +439,16 @@ confidence encoding. It is supported for DOT and Mermaid only; JSON is
 unaffected.
 
 `--view cfg` switches the output from the TDG to the intermediate function
-CFG. CFG JSON uses its own `cfg_schema_version` (`1.7`), includes full
-instruction/raw-byte information by default, carries optional per-function
-inline-frame ranges from DWARF, scopes diagnostics to the selected functions
-with a `diagnostics_omitted` count, records a `no_code` reason for external or
-logical functions without machine code, and can omit instruction arrays with
-`--no-cfg-instructions`. Without a selector, the CFG is limited to
+CFG. CFG JSON uses its own `cfg_schema_version` (`1.8`), includes full
+instruction/raw-byte information by default, and is self-contained: it carries
+image and timing metadata, execution roots, the interprocedural call graph,
+concurrency call-site annotations and lock events directly on `ProgramCfg`.
+It also carries optional per-function inline-frame ranges from DWARF, scopes
+diagnostics to the selected functions with a `diagnostics_omitted` count,
+records a `no_code` reason for external or logical functions without machine
+code, and can omit instruction arrays with `--no-cfg-instructions`. TDG
+generation remains a compatibility path during the CFG-first migration.
+Without a selector, the CFG is limited to
 functions reachable from a multi-root system scope (main/startup, Cortex-M
 vector-table ISRs, ARM/AArch64 exception vectors, RISC-V trap vectors, ELF
 init/fini entry points, tasks, callback registrations and global

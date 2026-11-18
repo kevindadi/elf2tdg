@@ -1,7 +1,8 @@
 # TDG diagram legend
 
-This is the visual vocabulary used by `elf2tdg --format dot` and
-`--format mermaid`. The JSON output is canonical; diagrams are projections.
+This is the visual vocabulary used by `elf2tdg --view tdg --format dot` and
+`--view tdg --format mermaid`. The JSON output is canonical; diagrams are
+projections.
 Both renderers use the same relation labels, though Graphviz carries the full
 color styling and Mermaid is limited to shapes and line styles.
 

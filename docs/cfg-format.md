@@ -19,19 +19,21 @@ The CFG is the lossless intermediate representation. It keeps:
 - call sites inside the block that performs them;
 - timing cost, source file/line, function metadata and diagnostics.
 
-The TDG is derived from this CFG; it is not a second, independently built
-control-flow graph. The same representation is intended for a later IDA-style
-UI and other downstream consumers.
+The TDG compatibility view is derived from this CFG; it is not a second,
+independently built control-flow graph. The CFG is the primary analysis IR and
+owns its own roots, call graph, concurrency annotations, locks, diagnostics and
+timing metadata.
 
 ## CLI
 
-The default view remains the TDG:
+The CFG is the primary analysis and default view:
 
 ```sh
 elf2tdg firmware.elf --format json
 ```
 
-Use `--view cfg` for the intermediate CFG:
+The TDG compatibility view remains available with `--view tdg`. Use
+`--view cfg` explicitly when scripting against the CFG schema:
 
 ```sh
 # Complete CFG JSON for one function
@@ -368,10 +370,16 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `1.7` and is independent of the TDG schema version.
+`cfg_schema_version` is `1.8` and is independent of the TDG schema version.
 Every document contains image metadata, diagnostics, and the selected
-functions. `pointer_roots` (version 1.7) lists executable addresses recovered
-from global pointer-sized data and is omitted when empty. Version 1.1 adds an optional per-function `inline_frames` list
+functions. Version 1.8 makes the CFG document self-contained: it adds top-level
+`timing`, `roots`, `calls`, `concurrency` and `locks`, all sourced from
+`ProgramCfg` rather than a TDG. `roots` records startup/main/ISR/task/callback/
+pointer entries, `calls` is the interprocedural call graph derived from block
+call sites, and `concurrency` annotates spawn/join/await/callback/scope call
+sites. These arrays are omitted when empty. `pointer_roots` (version 1.7) lists
+executable addresses recovered from global pointer-sized data and is omitted
+when empty. Version 1.1 adds an optional per-function `inline_frames` list
 recovered from DWARF. Version 1.2 scopes diagnostics to the selected functions
 and adds `diagnostics_omitted` when other image diagnostics were filtered out.
 Version 1.3 adds an optional `no_code` descriptor for functions that have no
@@ -385,9 +393,18 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "1.7",
+  "cfg_schema_version": "1.8",
   "image": { "arch": "thumb", "...": "..." },
+  "timing": { "models": [], "frequency_domains": [] },
   "pointer_roots": ["0x8000120", "0x800013c"],
+  "roots": [
+    { "function": "fn:0x8000138", "kind": "main", "name": "main", "confidence": "high" }
+  ],
+  "calls": [
+    { "caller": "fn:0x8000138", "callee": "fn:0x800014c", "site": "0x800013a",
+      "direct": true, "tail": false, "conditional": false, "heuristic": false,
+      "unresolved": false, "confidence": "high" }
+  ],
   "functions": [
     {
       "id": "fn:0x8000138",
@@ -495,6 +512,23 @@ the source call that was inlined. An instruction belongs to a frame when its
 address lies in `[low, high)`, so the list stays compact even for heavily
 inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 [analysis-profile.md](analysis-profile.md) for the recommended build flags.
+
+### Program metadata
+
+| Field | Meaning |
+|---|---|
+| `image` | architecture, entry, ELF type and available metadata |
+| `timing` | timing models and frequency domains used by block costs |
+| `pointer_roots` | function-pointer addresses recovered from data |
+| `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
+| `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
+| `concurrency` | spawn/join/await/callback-bind/scope annotations attached to call sites |
+| `locks` | lock acquire/try-acquire/release events with runtime API and primitive kind |
+
+These fields are CFG-native. They are populated from function CFGs and runtime
+analysis facts; serializing the CFG JSON does not require a TDG. `calls`,
+`concurrency` and `locks` are scoped to the selected functions; `roots`,
+`image`, `timing` and `pointer_roots` describe the program.
 
 ### Node semantics
 

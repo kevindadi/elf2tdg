@@ -73,7 +73,7 @@ The full projection keeps call edges and is readable for this seven-function
 image. The Rust concurrency example uses the smaller projection:
 
 ```sh
-elf2tdg firmware.elf --format dot --projection concurrency --legend
+elf2tdg firmware.elf --view tdg --format dot --projection concurrency --legend
 ```
 
 - call edges are omitted;

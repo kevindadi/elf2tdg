@@ -24,6 +24,11 @@ Implemented:
   another allocated section; ARM/AArch64 exception vectors and RISC-V trap
   vectors provide roots even without calls. Typed intra-function edges, call sites, raw instruction
   bytes and terminators are retained for the CFG view and downstream consumers.
+- CFG-first analysis metadata: `ProgramCfg` owns execution roots, the
+  interprocedural call graph, concurrency call-site annotations
+  (spawn/join/await/callback/scope), lock events, diagnostics, image and timing
+  metadata. CFG JSON is self-contained; TDG generation remains a compatibility
+  view during the migration.
 - TDG function blocks and call edges are derived from the CFG instead of a
   second control-flow representation.
 - Startup/main/ISR contexts; Cortex-M vector activation edges
@@ -204,10 +209,12 @@ Implemented:
   blocks and merges contiguous fallthrough-only blocks. Unreachable removal is
   skipped when a reachable unresolved control transfer could target unknown
   code.
-- CFG CLI view: `--view cfg` exports lossless per-function JSON or
+- CFG CLI view: the default `--view cfg` exports lossless per-function JSON or
   DOT/Mermaid CFGs, with function selection (`--function`), typed control-flow
   edges, call/return blocks, noreturn continuation pruning, call targets,
-  indirect-target expressions, raw instruction bytes and source locations. Concrete instructions can be omitted
+  indirect-target expressions, raw instruction bytes and source locations. CFG
+  JSON also carries execution roots, the interprocedural call graph,
+  concurrency annotations and lock events. Concrete instructions can be omitted
   from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
   is a multi-root system slice: main/startup, every valid vector-table ISR,
   ARM/AArch64 exception vectors, RISC-V trap vectors, ELF init/fini entry
@@ -290,26 +297,26 @@ skip when the required toolchain is absent.
 
 ```sh
 # JSON for downstream analysis
-cargo run -p elf2tdg -- firmware.elf --cpu cortex-m4 --freq 168MHz \
+cargo run -p elf2tdg -- firmware.elf --view tdg --cpu cortex-m4 --freq 168MHz \
     --format json --output tdg.json
 
 # Graphviz
-cargo run -p elf2tdg -- firmware.elf --freq 168MHz --format dot --output tdg.dot
+cargo run -p elf2tdg -- firmware.elf --view tdg --freq 168MHz --format dot --output tdg.dot
 dot -Tsvg tdg.dot -o tdg.svg
 
 # Mermaid
-cargo run -p elf2tdg -- firmware.elf --format mermaid --output tdg.mmd
+cargo run -p elf2tdg -- firmware.elf --view tdg --format mermaid --output tdg.mmd
 
 # Loader-backed ELF layout: colored segments, sections and disassembly
 cargo run -p elf2tdg -- firmware.elf --view elf --output elf-layout.mmd
 
 # Readable concurrency-only view with a legend (recommended for large Rust binaries)
-cargo run -p elf2tdg -- firmware.elf --format dot \
+cargo run -p elf2tdg -- firmware.elf --view tdg --format dot \
     --projection concurrency --legend --output tdg-concurrency.dot
 dot -Tsvg tdg-concurrency.dot -o tdg-concurrency.svg
 
 # Dynamic C/C++/OpenMP host binary: PLT imports become named function nodes
-cargo run -p elf2tdg -- app.elf --cpu x86-64 --freq 3GHz \
+cargo run -p elf2tdg -- app.elf --view tdg --cpu x86-64 --freq 3GHz \
     --format json --output app-tdg.json
 
 # Lossless function CFG for one function
@@ -350,9 +357,9 @@ Useful flags:
 | `--cpu cortex-m4` | explicit timing model; Cortex-M/RISC-V are auto-detected when omitted. `aarch64` and `x86-64` select statistical generic models |
 | `--board-profile PATH` | board timing profile in TOML (or JSON with a `.json` extension); supplies CPU, clocks, memory fetch costs and instruction-cost overrides |
 | `--freq 168MHz` | core clock; enables `time_ns` in blocks and overrides the profile's core clock |
-| `--instructions` | include per-instruction text and cycle costs (requires a timing model) |
+| `--instructions` | include per-instruction text and cycle costs in `--view tdg` output (requires a timing model; CFG output includes instructions by default) |
 | `--format json|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
-| `--view tdg|cfg|elf` | final TDG (default), per-function CFG, or loader-backed ELF layout |
+| `--view cfg|tdg|elf` | program CFG (default), compatibility TDG, or loader-backed ELF layout |
 | `--elf-max-insns N` | maximum disassembly instructions per executable section in `--view elf` (default 256; 0 = unlimited) |
 | `--function NAME|CONTEXT|0xADDR` | select one function or task context for CFG output; task names map to their poll entry |
 | `--reachable-from NAME|CONTEXT|0xADDR` | narrow the CFG to one function or task-context root |
@@ -373,7 +380,8 @@ not bounds for a specific core.
 
 `--board-profile` is opt-in and never enabled by auto-detection. The profile's
 CPU model must match the ELF architecture and any explicit `--cpu`; `--freq`
-overrides its core clock while keeping its source visible in the TDG. Without a
+overrides its core clock while keeping its source visible in the CFG/TDG timing
+metadata. Without a
 profile, timing output is unchanged. The examples
 [`examples/profiles/cortex-m0-isr.toml`](examples/profiles/cortex-m0-isr.toml)
 and
