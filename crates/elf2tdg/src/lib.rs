@@ -3,6 +3,7 @@
 pub mod analysis;
 pub mod arch;
 pub mod cfg;
+pub mod cfg_graph;
 pub mod dwarf;
 pub mod elf_view;
 pub mod error;

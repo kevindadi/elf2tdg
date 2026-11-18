@@ -303,6 +303,20 @@ pub(crate) struct CfgEdgeDraft {
 }
 
 impl FunctionCfg {
+    /// Computes reachability, SCCs, natural loops, dominators and
+    /// post-dominators for this function.
+    #[must_use]
+    pub fn analyze_graph(&self) -> crate::cfg_graph::CfgGraphAnalysis {
+        crate::cfg_graph::analyze(self)
+    }
+
+    /// Removes proven-unreachable blocks and merges contiguous fallthrough
+    /// blocks. Returns a report describing removed and merged blocks.
+    #[must_use]
+    pub fn normalize(&mut self) -> crate::cfg_graph::CfgNormalization {
+        crate::cfg_graph::normalize(self)
+    }
+
     /// Builds a CFG from address-keyed blocks and edges.
     #[must_use]
     pub(crate) fn build(
