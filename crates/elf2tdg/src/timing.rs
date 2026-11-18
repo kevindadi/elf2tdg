@@ -755,6 +755,25 @@ impl TimingCostModel {
                         .to_owned(),
                 );
             }
+            if profile.data_memory_enabled() {
+                params.extras.insert(
+                    "board_profile_data_memory".to_owned(),
+                    "region-data-wait-states".to_owned(),
+                );
+                params.extras.insert(
+                    "board_profile_data_memory_regions".to_owned(),
+                    profile
+                        .data_memory_regions()
+                        .iter()
+                        .filter(|region| region.has_data_timing())
+                        .count()
+                        .to_string(),
+                );
+                caveats.push(
+                    "Data-memory wait cycles are region-based; when data-cache analysis is also enabled, cache miss penalties and memory wait cycles are additive."
+                        .to_owned(),
+                );
+            }
         }
         if !unknown_mnemonics.is_empty() {
             params.extras.insert(

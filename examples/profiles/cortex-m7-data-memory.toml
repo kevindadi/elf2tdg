@@ -1,0 +1,43 @@
+schema_version = 2
+id = "board:cortex-m7-data-memory"
+name = "Cortex-M7 data-memory latency example"
+arch = "thumbv7em"
+cpu = "cortex-m7"
+confidence = "low"
+caveats = [
+  "Example data-memory profile only; replace bus widths and read/write wait states with target-board measurements.",
+]
+
+[clocks.core]
+hz = 168_000_000
+confidence = "high"
+
+[[memory]]
+name = "flash"
+start = 0x0800_0000
+size = 0x0001_0000
+kind = "flash"
+executable = true
+fetch_wait_states = 0
+fetch_width_bytes = 4
+data_width_bytes = 16
+data_read_wait_states = 2
+data_write_wait_states = 2
+
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0001_0000
+kind = "ram"
+data_width_bytes = 4
+data_read_wait_states = 1
+data_write_wait_states = 1
+
+[[memory]]
+name = "peripheral"
+start = 0x4000_0000
+size = 0x0001_0000
+kind = "peripheral"
+data_width_bytes = 4
+data_read_wait_states = 8
+data_write_wait_states = 8

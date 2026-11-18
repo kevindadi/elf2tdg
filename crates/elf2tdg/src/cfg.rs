@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.2";
+pub const CFG_SCHEMA_VERSION: &str = "2.3";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -262,6 +262,9 @@ pub struct CfgBlock {
     /// Branch-prediction analysis for this block, when a prediction profile is
     /// active and this is a modeled conditional branch.
     pub branch_prediction: Option<CfgBlockBranchPrediction>,
+    /// Data-memory latency analysis for this block, when memory regions declare
+    /// data-access timing.
+    pub data_memory: Option<CfgBlockDataMemory>,
     /// Control-flow terminator classification.
     pub terminator: CfgTerminator,
 }
@@ -562,6 +565,75 @@ pub struct CfgBranchPredictionInfo {
     pub caveats: Vec<String>,
 }
 
+/// Data-memory wait cycles attributed to one memory region in a basic block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgDataMemoryRegion {
+    /// Region name from the board profile.
+    pub region: String,
+    /// Region kind (`flash`, `ram`, `peripheral` or `other`).
+    pub kind: String,
+    /// Number of accesses touching this region.
+    pub accesses: u32,
+    /// Number of accessed bytes in this region.
+    pub bytes: u64,
+    /// Read wait cycles attributed to this region.
+    pub read_wait_cycles: u32,
+    /// Write wait cycles attributed to this region.
+    pub write_wait_cycles: u32,
+}
+
+/// Data-memory latency analysis for one basic block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockDataMemory {
+    /// Decoded data-memory accesses in the block.
+    pub accesses: u32,
+    /// Accesses with a statically resolved address.
+    pub resolved_accesses: u32,
+    /// Accesses whose address could not be resolved.
+    pub unresolved_accesses: u32,
+    /// Resolved accesses touching at least one configured memory region.
+    pub mapped_accesses: u32,
+    /// Resolved accesses touching at least one address outside all regions.
+    pub unmapped_accesses: u32,
+    /// Read wait cycles added to the block cost.
+    pub read_wait_cycles: u32,
+    /// Write wait cycles added to the block cost.
+    pub write_wait_cycles: u32,
+    /// Total wait cycles added to the block cost.
+    pub wait_cycles: u32,
+    /// Per-region breakdown.
+    pub regions: Vec<CfgDataMemoryRegion>,
+}
+
+/// Program-level data-memory latency analysis metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgDataMemoryInfo {
+    /// Model name.
+    pub model: String,
+    /// Functions with at least one analyzed block.
+    pub functions_analyzed: u32,
+    /// Blocks with at least one data-memory access.
+    pub blocks_analyzed: u32,
+    /// Decoded data-memory accesses in analyzed blocks.
+    pub accesses: u32,
+    /// Accesses with a statically resolved address.
+    pub resolved_accesses: u32,
+    /// Accesses whose address could not be resolved.
+    pub unresolved_accesses: u32,
+    /// Resolved accesses touching configured regions.
+    pub mapped_accesses: u32,
+    /// Resolved accesses touching addresses outside all regions.
+    pub unmapped_accesses: u32,
+    /// Read wait cycles added to block costs.
+    pub read_wait_cycles: u32,
+    /// Write wait cycles added to block costs.
+    pub write_wait_cycles: u32,
+    /// Total wait cycles added to block costs.
+    pub wait_cycles: u32,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
 /// A function CFG graph. Node IDs are internal petgraph indices; stable block
 /// IDs are carried in [`CfgBlock`].
 #[derive(Clone, Debug, Default)]
@@ -650,6 +722,7 @@ impl FunctionCfg {
                 cache: None,
                 data_cache: None,
                 branch_prediction: None,
+                data_memory: None,
                 terminator: block.terminator,
             });
             blocks_by_address.insert(address, node);
@@ -1037,6 +1110,8 @@ pub struct ProgramCfg {
     pub data_cache: Option<CfgDataCacheInfo>,
     /// Branch-prediction analysis metadata.
     pub branch_prediction: Option<CfgBranchPredictionInfo>,
+    /// Data-memory latency analysis metadata.
+    pub data_memory: Option<CfgDataMemoryInfo>,
     /// Analysis diagnostics.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -2211,6 +2286,8 @@ struct CfgDocument<'a> {
     data_cache: Option<&'a CfgDataCacheInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     branch_prediction: Option<&'a CfgBranchPredictionInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_memory: Option<&'a CfgDataMemoryInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pointer_roots: Vec<Addr>,
     #[serde(skip_serializing_if = "is_empty_slice")]
@@ -2293,6 +2370,8 @@ struct CfgBlockView {
     data_cache: Option<CfgBlockDataCache>,
     #[serde(skip_serializing_if = "Option::is_none")]
     branch_prediction: Option<CfgBlockBranchPrediction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_memory: Option<CfgBlockDataMemory>,
     terminator: CfgTerminator,
 }
 
@@ -2441,6 +2520,7 @@ pub fn render_json_selected(
         cache: program.cache.as_ref(),
         data_cache: program.data_cache.as_ref(),
         branch_prediction: program.branch_prediction.as_ref(),
+        data_memory: program.data_memory.as_ref(),
         pointer_roots: program
             .pointer_roots
             .iter()
@@ -2521,6 +2601,7 @@ fn function_view(
             cache: block.cache.clone(),
             data_cache: block.data_cache.clone(),
             branch_prediction: block.branch_prediction.clone(),
+            data_memory: block.data_memory.clone(),
             terminator: block.terminator,
         });
     }

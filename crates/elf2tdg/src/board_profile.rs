@@ -117,9 +117,20 @@ enum MemoryKind {
     Other,
 }
 
+impl MemoryKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Flash => "flash",
+            Self::Ram => "ram",
+            Self::Peripheral => "peripheral",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MemoryRegion {
+pub(crate) struct MemoryRegion {
     name: String,
     start: u64,
     size: u64,
@@ -131,17 +142,51 @@ struct MemoryRegion {
     fetch_wait_states: u32,
     #[serde(default = "default_fetch_width")]
     fetch_width_bytes: u32,
+    #[serde(default)]
+    data_width_bytes: Option<u32>,
+    #[serde(default)]
+    data_read_wait_states: Option<u32>,
+    #[serde(default)]
+    data_write_wait_states: Option<u32>,
 }
 
 impl MemoryRegion {
-    fn end(&self) -> Option<u64> {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn kind_name(&self) -> &'static str {
+        self.kind.name()
+    }
+
+    pub(crate) fn end(&self) -> Option<u64> {
         self.start.checked_add(self.size)
     }
 
-    fn contains(&self, address: u64) -> bool {
+    pub(crate) fn contains(&self, address: u64) -> bool {
         address
             .checked_sub(self.start)
             .is_some_and(|offset| offset < self.size)
+    }
+
+    pub(crate) fn has_data_timing(&self) -> bool {
+        self.data_width_bytes.is_some()
+            || self.data_read_wait_states.is_some()
+            || self.data_write_wait_states.is_some()
+    }
+
+    pub(crate) fn data_width_bytes(&self) -> u32 {
+        self.data_width_bytes
+            .unwrap_or(DEFAULT_FETCH_WIDTH_BYTES)
+            .max(1)
+    }
+
+    pub(crate) fn data_read_wait_states(&self) -> u32 {
+        self.data_read_wait_states.unwrap_or(0)
+    }
+
+    pub(crate) fn data_write_wait_states(&self) -> u32 {
+        self.data_write_wait_states.unwrap_or(0)
     }
 
     fn fetch_cycles(&self, size: u8) -> u32 {
@@ -667,6 +712,17 @@ impl BoardProfile {
                     region.name
                 )));
             }
+            if region.data_width_bytes == Some(0) {
+                return Err(Error::Config(format!(
+                    "board profile memory region {:?} data_width_bytes must be positive",
+                    region.name
+                )));
+            }
+            if region.has_data_timing() && self.schema_version < 2 {
+                return Err(Error::Config(
+                    "board profile data-memory timing requires schema_version 2".to_owned(),
+                ));
+            }
         }
         let mut sorted: Vec<&MemoryRegion> = self.memory.iter().collect();
         sorted.sort_by_key(|region| region.start);
@@ -1002,6 +1058,18 @@ impl BoardProfile {
         self.memory.len()
     }
 
+    /// Memory regions used for data-memory latency analysis.
+    #[must_use]
+    pub(crate) fn data_memory_regions(&self) -> &[MemoryRegion] {
+        &self.memory
+    }
+
+    /// Whether any memory region declares data-access timing.
+    #[must_use]
+    pub(crate) fn data_memory_enabled(&self) -> bool {
+        self.memory.iter().any(MemoryRegion::has_data_timing)
+    }
+
     /// Number of instruction-cost overrides declared by the profile.
     #[must_use]
     pub fn instruction_cost_override_count(&self) -> usize {
@@ -1245,6 +1313,27 @@ note = "board errata"
             "cycles = { min = 3, max = 2 }",
         );
         assert!(BoardProfile::parse_toml(&negative).is_err());
+    }
+
+    #[test]
+    fn validates_data_memory_timing() {
+        let valid = VALID
+            .replace("schema_version = 1", "schema_version = 2")
+            .replace(
+                "fetch_width_bytes = 4",
+                "fetch_width_bytes = 4\ndata_width_bytes = 8\ndata_read_wait_states = 2\ndata_write_wait_states = 1",
+            );
+        let profile = BoardProfile::parse_toml(&valid).expect("valid data-memory profile");
+        assert!(profile.data_memory_enabled());
+        let region = &profile.data_memory_regions()[0];
+        assert_eq!(region.data_width_bytes(), 8);
+        assert_eq!(region.data_read_wait_states(), 2);
+        assert_eq!(region.data_write_wait_states(), 1);
+
+        let old_schema = valid.replace("schema_version = 2", "schema_version = 1");
+        assert!(BoardProfile::parse_toml(&old_schema).is_err());
+        let zero_width = valid.replace("data_width_bytes = 8", "data_width_bytes = 0");
+        assert!(BoardProfile::parse_toml(&zero_width).is_err());
     }
 
     #[test]

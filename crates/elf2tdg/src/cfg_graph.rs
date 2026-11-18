@@ -557,6 +557,7 @@ fn merge_one_fallthrough(cfg: &mut FunctionCfg, merged: &mut Vec<CfgBlockMerge>)
             source_block.cache = None;
             source_block.data_cache = None;
             source_block.branch_prediction = None;
+            source_block.data_memory = None;
             source_block.terminator = target_block.terminator;
         }
         cfg.graph.remove_node(*target);

@@ -7,6 +7,7 @@ mod branch_prediction;
 mod cache_state;
 pub mod cfg;
 pub mod cfg_graph;
+mod data_memory;
 mod dcache;
 pub mod dwarf;
 pub mod elf_view;
