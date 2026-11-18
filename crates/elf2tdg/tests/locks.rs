@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::loader;
 use elf2tdg_schema::{LockKind, LockOperation};
 
@@ -59,8 +59,18 @@ fn recovers_direct_pthread_lock_events() {
         return;
     };
     let image = loader::load(&binary).expect("fixture must load");
-    let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let analysis =
+        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    let tdg = &analysis.tdg;
     tdg.ensure_valid().expect("TDG must validate");
+    assert!(
+        analysis
+            .cfg
+            .locks
+            .iter()
+            .any(|event| event.api == "pthread_mutex_lock"),
+        "lock events must also live in the CFG"
+    );
 
     for (api, operation) in [
         ("pthread_mutex_lock", LockOperation::Acquire),
