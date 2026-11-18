@@ -1,7 +1,7 @@
 //! Mermaid visualization of the loaded ELF layout.
 //!
 //! This view deliberately runs directly on [`crate::loader::Image`], without
-//! building the call graph or TDG. It shows program segments, allocated
+//! building the program CFG. It shows program segments, allocated
 //! sections and a color-coded linear disassembly of executable sections.
 
 use crate::arch::{DecodedInsn, Decoder};

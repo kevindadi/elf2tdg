@@ -1,4 +1,4 @@
-//! Stable, typed identifiers used by the TDG.
+//! Stable, typed identifiers used by the analysis model.
 //!
 //! IDs are strings rather than integers so that they remain meaningful across
 //! serialization, merging and diffing. Every ID type has a fixed prefix; the

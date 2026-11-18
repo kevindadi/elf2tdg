@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::cfg;
 use elf2tdg::loader::{self, ArchKind};
-use elf2tdg::output;
-use elf2tdg_schema::{ContextKind, Edge, FunctionKind, Tdg};
+use elf2tdg_schema::FunctionKind;
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/cortex_m0")
@@ -51,20 +51,25 @@ fn analyzes_cortex_m0_fixture() {
         frequency_hz: Some(48_000_000),
         ..AnalysisOptions::default()
     };
-    let tdg = analyze(&image, &options).expect("fixture analysis must succeed");
-    tdg.ensure_valid().expect("fixture TDG must validate");
+    let program = analyze(&image, &options).expect("fixture analysis must succeed");
+    program.ensure_valid().expect("fixture CFG must validate");
 
     assert_eq!(
-        tdg.timing.models.first().map(|model| model.id.as_str()),
+        program
+            .timing
+            .as_ref()
+            .and_then(|timing| timing.models.first())
+            .map(|model| model.id.as_str()),
         Some("cortex-m0")
     );
     assert!(
-        tdg.diagnostics
+        program
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "timing-model-auto-detected")
     );
 
-    let function_names: Vec<&str> = tdg
+    let function_names: Vec<&str> = program
         .functions
         .iter()
         .map(|function| function.primary_name.as_str())
@@ -81,13 +86,13 @@ fn analyzes_cortex_m0_fixture() {
             "missing function {expected}; got {function_names:?}"
         );
     }
-    assert!(tdg.functions.iter().any(|function| {
+    assert!(program.functions.iter().any(|function| {
         function.primary_name == "Reset_Handler" && function.kind == FunctionKind::Entry
     }));
-    assert!(tdg.functions.iter().any(|function| {
+    assert!(program.functions.iter().any(|function| {
         function.primary_name == "USART1_IRQHandler" && function.kind == FunctionKind::Isr
     }));
-    let main_function = tdg
+    let main_function = program
         .functions
         .iter()
         .find(|function| function.primary_name == "main")
@@ -100,35 +105,36 @@ fn analyzes_cortex_m0_fixture() {
     assert!(source.line > 0);
 
     let by_name = |name: &str| {
-        tdg.functions
+        program
+            .functions
             .iter()
             .find(|function| function.primary_name == name)
             .unwrap_or_else(|| panic!("missing function {name}"))
             .id
             .clone()
     };
-    let main_context = tdg
-        .contexts
+    let main_root = program
+        .roots
         .iter()
-        .find(|context| context.kind == ContextKind::Main)
-        .expect("main context");
-    assert_eq!(main_context.entry, by_name("main"));
-    let isr_context = tdg
-        .contexts
+        .find(|root| root.kind == cfg::CfgRootKind::Main)
+        .expect("main root");
+    assert_eq!(main_root.function, by_name("main"));
+    let isr_root = program
+        .roots
         .iter()
-        .find(|context| context.kind == ContextKind::Isr)
-        .expect("ISR context");
-    assert_eq!(isr_context.name, "USART1_IRQHandler");
+        .find(|root| root.kind == cfg::CfgRootKind::Isr)
+        .expect("ISR root");
+    assert_eq!(isr_root.name.as_deref(), Some("USART1_IRQHandler"));
+    assert_eq!(isr_root.vector, Some(53));
+    assert_eq!(isr_root.irq, Some(37));
     assert!(
-        !tdg.contexts
+        !program
+            .roots
             .iter()
-            .any(|context| context.name.contains("Default_Handler"))
+            .filter_map(|root| root.name.as_deref())
+            .any(|name| name.contains("Default_Handler"))
     );
 
-    assert!(tdg.edges.iter().any(|edge| matches!(
-        edge,
-        Edge::IsrActivate { vector, irq: Some(37), .. } if *vector == 53
-    )));
     for (caller, callee) in [
         ("Reset_Handler", "main"),
         ("main", "sensor_task"),
@@ -137,30 +143,43 @@ fn analyzes_cortex_m0_fixture() {
     ] {
         let source_id = by_name(caller);
         let target_id = by_name(callee);
-        assert!(tdg.edges.iter().any(|edge| matches!(
-            edge,
-            Edge::Call { caller: from, callee: to, .. }
-                if from == &source_id && to == &target_id
-        )));
+        assert!(
+            program.calls.iter().any(|call| {
+                call.caller == source_id && call.callee.as_ref() == Some(&target_id)
+            })
+        );
     }
 
-    let timed_block = tdg
+    let timed_block = program
         .functions
         .iter()
-        .flat_map(|function| &function.blocks)
-        .find_map(|block| block.timing.as_ref())
+        .flat_map(|function| {
+            function
+                .cfg
+                .blocks_by_address
+                .values()
+                .map(move |node| &function.cfg.graph[*node])
+        })
+        .find(|block| block.cycles.is_some())
         .expect("Cortex-M0 timing");
-    assert!(timed_block.cycles.is_valid());
-    assert!(timed_block.time_ns.is_some());
+    assert!(
+        timed_block
+            .cycles
+            .is_some_and(elf2tdg_schema::CostRange::is_valid)
+    );
+    assert!(
+        program
+            .timing
+            .as_ref()
+            .is_some_and(|timing| !timing.frequency_domains.is_empty())
+    );
 
-    let json = output::render_json(&tdg).expect("JSON render");
-    let reparsed: Tdg = serde_json::from_str(&json).expect("rendered JSON must parse");
-    assert_eq!(tdg, reparsed);
+    let json = cfg::render_json(&program, None, true).expect("CFG JSON");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("rendered JSON must parse");
+    assert_eq!(value["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
 
-    let dot = output::render_dot(&tdg);
+    let dot = cfg::render_dot(&program, None, true).expect("CFG DOT");
     assert!(dot.contains("USART1_IRQHandler"));
-    assert!(dot.contains("IRQ 37"));
-    let mermaid = output::render_mermaid(&tdg);
+    let mermaid = cfg::render_mermaid(&program, None, true).expect("CFG Mermaid");
     assert!(mermaid.contains("USART1_IRQHandler"));
-    assert!(mermaid.contains("IRQ 37"));
 }

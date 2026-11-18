@@ -1,12 +1,12 @@
-//! Function discovery, CFG/call-graph recovery and TDG assembly for M0.
+//! Function discovery, CFG/call-graph recovery and program analysis for M0.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use elf2tdg_schema::{
     Addr, BasicBlock, BlockId, Confidence, Context, ContextId, ContextKind, Diagnostic, Edge,
     EdgeId, ElfType, Endianness, FrequencyDomain, FrequencyDomainId, FrequencySource, Function,
-    FunctionId, FunctionKind, FunctionTiming, ImageInfo, InstructionTiming, Language,
-    SCHEMA_VERSION, Scheduling, Severity, SourceLoc, Tdg, TimingInfo, ToolInfo,
+    FunctionId, FunctionKind, FunctionTiming, ImageInfo, InstructionTiming, Language, Scheduling,
+    Severity, SourceLoc, TimingInfo,
 };
 
 use petgraph::stable_graph::NodeIndex;
@@ -45,7 +45,7 @@ pub struct AnalysisOptions {
     pub max_functions: usize,
     /// Maximum decoded instructions per function.
     pub max_instructions_per_function: usize,
-    /// Maximum diagnostics retained in the TDG.
+    /// Maximum diagnostics retained in the CFG.
     pub max_diagnostics: usize,
 }
 
@@ -63,27 +63,25 @@ impl Default for AnalysisOptions {
     }
 }
 
-/// Result of an analysis run: the validated TDG and the intermediate CFGs.
+/// Result of an analysis run: the validated program CFG.
 #[derive(Clone, Debug)]
 pub struct AnalysisOutput {
-    /// Validated Task Dependency Graph.
-    pub tdg: Tdg,
-    /// Validated function-level control-flow graphs used to derive the TDG.
+    /// Validated program control-flow graph and analysis metadata.
     pub cfg: cfg::ProgramCfg,
 }
 
-/// Analyzes an image and returns a validated TDG.
+/// Analyzes an image and returns a validated program CFG.
 ///
 /// # Errors
 ///
 /// Returns an error for unsupported architectures, invalid configuration,
-/// resource limits, and TDG/CFG validation failures. Recoverable problems are
-/// represented as TDG diagnostics.
-pub fn analyze(image: &Image, options: &AnalysisOptions) -> Result<Tdg> {
-    analyze_with_cfg(image, options).map(|output| output.tdg)
+/// resource limits, and CFG validation failures. Recoverable problems are
+/// represented as CFG diagnostics.
+pub fn analyze(image: &Image, options: &AnalysisOptions) -> Result<cfg::ProgramCfg> {
+    analyze_with_cfg(image, options).map(|output| output.cfg)
 }
 
-/// Analyzes an image and returns both the TDG and the function CFGs.
+/// Analyzes an image and returns the program CFG plus its analysis metadata.
 ///
 /// # Errors
 ///
@@ -311,7 +309,7 @@ impl<'a> Analyzer<'a> {
         self.resolve_dwarf_typed_field_calls();
         self.resolve_calls();
         self.infer_noreturn_functions();
-        self.build_tdg()
+        self.build_output()
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2864,7 +2862,7 @@ impl<'a> Analyzer<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn build_tdg(mut self) -> Result<AnalysisOutput> {
+    fn build_output(mut self) -> Result<AnalysisOutput> {
         let mut program_cfg = self.build_program_cfg();
         let isr_vectors = std::mem::take(&mut self.isr_vectors);
         let startup_address = self.startup_address;
@@ -3094,28 +3092,17 @@ impl<'a> Analyzer<'a> {
             if program_cfg.function(&logical.id).is_none() {
                 program_cfg
                     .functions
-                    .push(cfg::CfgFunction::from_tdg_function(logical));
+                    .push(cfg::CfgFunction::from_function_record(logical));
             }
         }
         program_cfg.functions.sort_by(|left, right| {
             (left.address, left.id.as_str()).cmp(&(right.address, right.id.as_str()))
         });
-        functions.extend(logical_functions);
-        functions.sort_by(|left, right| {
-            (left.address, left.id.as_str()).cmp(&(right.address, right.id.as_str()))
-        });
-
         edges.sort_by(|left, right| left.id().as_str().cmp(right.id().as_str()));
         contexts.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         scopes.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         locks.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
 
-        let tool = ToolInfo {
-            name: "elf2tdg".to_owned(),
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-            rules_version: "m0".to_owned(),
-            timing_tables_version: "0.1.0-m0".to_owned(),
-        };
         let image = ImageInfo {
             path: Some(self.image.path.display().to_string()),
             sha256: None,
@@ -3143,35 +3130,13 @@ impl<'a> Analyzer<'a> {
         program_cfg.timing = Some(timing.clone());
         program_cfg.diagnostics.clone_from(&self.diagnostics);
 
-        let tdg = Tdg {
-            schema_version: SCHEMA_VERSION.to_owned(),
-            tool,
-            image,
-            timing,
-            functions,
-            contexts,
-            edges,
-            locks,
-            scopes,
-            diagnostics: self.diagnostics,
-            ext: BTreeMap::new(),
-        };
-        tdg.ensure_valid().map_err(|error| {
-            Error::Validation(format!(
-                "{error}; first issues: {:#?}",
-                error.issues.iter().take(8).collect::<Vec<_>>()
-            ))
-        })?;
         program_cfg.ensure_valid().map_err(|error| {
             Error::CfgValidation(format!(
                 "{error}; first issues: {:#?}",
                 error.issues.iter().take(8).collect::<Vec<_>>()
             ))
         })?;
-        Ok(AnalysisOutput {
-            tdg,
-            cfg: program_cfg,
-        })
+        Ok(AnalysisOutput { cfg: program_cfg })
     }
 
     fn build_program_cfg(&self) -> cfg::ProgramCfg {
@@ -3875,7 +3840,7 @@ fn choose_name(names: &[String]) -> NameChoice {
 mod tests {
     use super::{AnalysisOptions, analyze, analyze_with_cfg};
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, ImageSymbol, Section};
-    use elf2tdg_schema::FunctionKind;
+    use elf2tdg_schema::{FunctionId, FunctionKind};
     use object::SymbolKind;
 
     fn image_with_code(code: Vec<u8>, symbols: Vec<(&str, u64, u64)>) -> Image {
@@ -3939,24 +3904,22 @@ mod tests {
             ],
             vec![("main", 0x1000, 6), ("callee", 0x1010, 1)],
         );
-        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
-        assert_eq!(tdg.functions.len(), 2);
-        assert!(tdg.functions.iter().any(|function| {
+        let program = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        assert_eq!(program.functions.len(), 2);
+        assert!(program.functions.iter().any(|function| {
             function.primary_name == "main" && function.kind == FunctionKind::Entry
         }));
-        let call = tdg
-            .edges
+        let call = program
+            .calls
             .iter()
-            .find(|edge| matches!(edge, elf2tdg_schema::Edge::Call { .. }))
+            .find(|call| call.callee.is_some())
             .expect("call edge");
-        match call {
-            elf2tdg_schema::Edge::Call { caller, callee, .. } => {
-                assert_eq!(caller.as_str(), "fn:0x1000");
-                assert_eq!(callee.as_str(), "fn:0x1010");
-            }
-            _ => unreachable!(),
-        }
-        tdg.ensure_valid().expect("TDG must validate");
+        assert_eq!(call.caller.as_str(), "fn:0x1000");
+        assert_eq!(
+            call.callee.as_ref().map(FunctionId::as_str),
+            Some("fn:0x1010")
+        );
+        program.ensure_valid().expect("CFG must validate");
     }
 
     #[test]
@@ -3987,9 +3950,10 @@ mod tests {
     fn recovers_unresolved_indirect_call_as_diagnostic() {
         // call rax; ret
         let image = image_with_code(vec![0xff, 0xd0, 0xc3], vec![("main", 0x1000, 3)]);
-        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        let program = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
         assert!(
-            tdg.diagnostics
+            program
+                .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "unresolved-indirect-call")
         );
@@ -4006,14 +3970,14 @@ mod tests {
             ],
             vec![("main", 0x1000, 8), ("callee", 0x1008, 4)],
         );
-        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
-        assert!(tdg.edges.iter().any(|edge| matches!(
-            edge,
-            elf2tdg_schema::Edge::Call { caller, callee, .. }
-                if caller.as_str() == "fn:0x1000" && callee.as_str() == "fn:0x1008"
-        )));
+        let program = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        assert!(program.calls.iter().any(|call| {
+            call.caller.as_str() == "fn:0x1000"
+                && call.callee.as_ref().map(FunctionId::as_str) == Some("fn:0x1008")
+        }));
         assert!(
-            tdg.diagnostics
+            program
+                .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "timing-model-unavailable")
         );
@@ -4034,24 +3998,26 @@ mod tests {
             frequency_hz: Some(32_000_000),
             ..AnalysisOptions::default()
         };
-        let tdg = analyze(&image, &options).expect("analysis succeeds");
+        let program = analyze(&image, &options).expect("analysis succeeds");
         assert_eq!(
-            tdg.timing.models.first().map(|model| model.id.as_str()),
+            program
+                .timing
+                .as_ref()
+                .and_then(|timing| timing.models.first())
+                .map(|model| model.id.as_str()),
             Some("riscv32-generic")
         );
-        assert!(tdg.edges.iter().any(|edge| matches!(
-            edge,
-            elf2tdg_schema::Edge::Call { caller, callee, .. }
-                if caller.as_str() == "fn:0x1000" && callee.as_str() == "fn:0x1008"
-        )));
-        assert!(tdg.functions.iter().any(|function| {
+        assert!(program.calls.iter().any(|call| {
+            call.caller.as_str() == "fn:0x1000"
+                && call.callee.as_ref().map(FunctionId::as_str) == Some("fn:0x1008")
+        }));
+        assert!(program.functions.iter().any(|function| {
             function.id.as_str() == "fn:0x1000"
                 && function
-                    .blocks
-                    .first()
-                    .and_then(|block| block.timing.as_ref())
-                    .and_then(|timing| timing.time_ns)
-                    .is_some()
+                    .cfg
+                    .blocks_by_address
+                    .values()
+                    .any(|node| function.cfg.graph[*node].cycles.is_some())
         }));
     }
 
@@ -4078,14 +4044,14 @@ mod tests {
             ],
             vec![("main", 0x1000, 6), ("pthread_create", 0x1010, 1)],
         );
-        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
-        let spawn = tdg
-            .edges
+        let program = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        let spawn = program
+            .concurrency
             .iter()
-            .find_map(|edge| match edge {
-                elf2tdg_schema::Edge::Spawn {
+            .find_map(|site| match &site.operation {
+                crate::cfg::CfgConcurrencyKind::Spawn {
                     runtime,
-                    target: elf2tdg_schema::SpawnTarget::Opaque { .. },
+                    entry: None,
                     ..
                 } => Some(runtime),
                 _ => None,
@@ -4109,33 +4075,22 @@ mod tests {
         let analysis =
             analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis succeeds");
         let logical = analysis
-            .tdg
+            .cfg
             .functions
             .iter()
-            .find(|function| {
-                function.kind == FunctionKind::TaskEntry
-                    && function
-                        .ext
-                        .get("elf2tdg.logical_task")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(true)
-            })
+            .find(|function| function.kind == FunctionKind::TaskEntry)
             .expect("logical task entry");
-        let cfg_function = analysis
-            .cfg
-            .function(&logical.id)
-            .expect("logical CFG function");
-        assert!(cfg_function.cfg.blocks_by_address.is_empty());
-        assert_eq!(cfg_function.kind, FunctionKind::TaskEntry);
+        assert!(logical.cfg.blocks_by_address.is_empty());
+        assert_eq!(logical.kind, FunctionKind::TaskEntry);
 
         let selected = analysis
             .cfg
-            .select_with_tdg(&analysis.tdg, Some("app::task"))
+            .select(Some("app::task"))
             .expect("logical selector");
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].id, logical.id);
 
-        let json = crate::cfg::render_json(&analysis.cfg, &analysis.tdg, Some("app::task"), false)
+        let json = crate::cfg::render_json(&analysis.cfg, Some("app::task"), false)
             .expect("logical CFG JSON");
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(value["functions"][0]["kind"], "task-entry");
@@ -4170,28 +4125,26 @@ mod tests {
                 ("pthread_create", 0x1020, 1),
             ],
         );
-        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
-        tdg.ensure_valid().expect("TDG must validate");
-        let (context, entry) = tdg
-            .edges
+        let program = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        program.ensure_valid().expect("CFG must validate");
+        let entry = program
+            .concurrency
             .iter()
-            .find_map(|edge| match edge {
-                elf2tdg_schema::Edge::Spawn {
+            .find_map(|site| match &site.operation {
+                crate::cfg::CfgConcurrencyKind::Spawn {
                     runtime,
-                    target: elf2tdg_schema::SpawnTarget::Context { context, entry, .. },
+                    entry: Some(entry),
                     ..
-                } if runtime.as_str() == "pthread" => Some((context, entry)),
+                } if runtime.as_str() == "pthread" => Some(entry),
                 _ => None,
             })
             .expect("resolved pthread spawn");
         assert_eq!(entry.as_str(), "fn:0x1010");
-        let context = tdg
-            .contexts
-            .iter()
-            .find(|candidate| &candidate.id == context)
-            .expect("thread context");
-        assert_eq!(context.kind, elf2tdg_schema::ContextKind::Thread);
-        assert_eq!(context.entry.as_str(), "fn:0x1010");
+        assert!(
+            program.roots.iter().any(|root| {
+                root.kind == crate::cfg::CfgRootKind::Task && &root.function == entry
+            })
+        );
     }
 
     #[test]
@@ -4206,14 +4159,16 @@ mod tests {
             ],
             vec![("main", 0x1000, 6)],
         );
-        let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
+        let program = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
         assert!(
-            tdg.functions
+            program
+                .functions
                 .iter()
                 .any(|function| function.id.as_str() == "fn:0x1008")
         );
         assert!(
-            tdg.diagnostics
+            program
+                .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "synthetic-function")
         );

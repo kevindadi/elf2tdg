@@ -22,7 +22,7 @@ use crate::addr::Addr;
 use crate::id::{FrequencyDomainId, TimingModelId};
 use crate::model::Confidence;
 
-/// All timing information attached to a TDG.
+/// All timing information attached to a program CFG.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TimingInfo {
     /// Timing models used by at least one block.
@@ -163,8 +163,7 @@ pub struct CostRange {
 }
 
 impl CostRange {
-    /// Creates a range without validating it. Use [`Self::is_valid`] or
-    /// [`Tdg::validate`](crate::Tdg::validate).
+    /// Creates a range without validating it. Use [`Self::is_valid`].
     #[must_use]
     pub fn new(min: f64, max: f64) -> Self {
         Self { min, max }

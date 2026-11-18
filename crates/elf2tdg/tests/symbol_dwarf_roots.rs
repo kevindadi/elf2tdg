@@ -11,7 +11,7 @@ use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::loader;
-use elf2tdg_schema::{Edge, FunctionKind};
+use elf2tdg_schema::FunctionKind;
 
 const SOURCE: &str = r"
 __attribute__((noinline, used)) static int dwell_symbol_only(void) {
@@ -103,8 +103,7 @@ fn recovers_symbol_and_dwarf_function_roots() {
     let image = loader::load(&binary).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
 
     let symbol_function = cfg_function(&analysis.cfg, "dwell_symbol_only");
     let dwarf_function = cfg_function(&analysis.cfg, "dwell_dwarf_only");
@@ -148,10 +147,10 @@ fn recovers_symbol_and_dwarf_function_roots() {
 
     let stripped_analysis = analyze_with_cfg(&stripped_image, &AnalysisOptions::default())
         .expect("stripped analysis must succeed");
-    let stripped_tdg = &stripped_analysis.tdg;
-    stripped_tdg
+    stripped_analysis
+        .cfg
         .ensure_valid()
-        .expect("stripped TDG must validate");
+        .expect("stripped CFG must validate");
     let stripped_symbol = cfg_function(&stripped_analysis.cfg, "dwell_symbol_only");
     let stripped_dwarf = cfg_function(&stripped_analysis.cfg, "dwell_dwarf_only");
     assert_eq!(
@@ -173,18 +172,14 @@ fn recovers_symbol_and_dwarf_function_roots() {
             function.primary_name
         );
         assert!(
-            !stripped_tdg.edges.iter().any(|edge| matches!(
-                edge,
-                Edge::Call { callee, .. } | Edge::CallbackBind { callback: callee, .. }
-                    if callee == &function.id
-            )),
-            "{} must not be referenced by a call or callback edge",
+            !stripped_analysis.cfg.calls.iter().any(|call| {
+                call.callee.as_ref() == Some(&function.id) || call.candidates.contains(&function.id)
+            }),
+            "{} must not be referenced by a call edge",
             function.primary_name
         );
     }
-    let roots = stripped_analysis
-        .cfg
-        .system_roots(stripped_tdg, &stripped_image);
+    let roots = stripped_analysis.cfg.system_roots(&stripped_image);
     for function in [stripped_symbol, stripped_dwarf] {
         assert!(
             roots.contains(&function.id),
@@ -192,10 +187,9 @@ fn recovers_symbol_and_dwarf_function_roots() {
             function.primary_name
         );
     }
-    let reachable =
-        stripped_analysis
-            .cfg
-            .reachable_from_system(stripped_tdg, &stripped_image, false);
+    let reachable = stripped_analysis
+        .cfg
+        .reachable_from_system(&stripped_image, false);
     for function in [stripped_symbol, stripped_dwarf] {
         assert!(
             reachable
@@ -208,9 +202,7 @@ fn recovers_symbol_and_dwarf_function_roots() {
 
     // Discovery roots are deliberately not execution roots: pruning from
     // execution roots must not treat an uncalled symbol as live.
-    let execution_roots = stripped_analysis
-        .cfg
-        .execution_roots(stripped_tdg, &stripped_image);
+    let execution_roots = stripped_analysis.cfg.execution_roots(&stripped_image);
     let main = cfg_function(&stripped_analysis.cfg, "main");
     assert!(
         execution_roots.contains(&main.id),
@@ -223,10 +215,9 @@ fn recovers_symbol_and_dwarf_function_roots() {
             function.primary_name
         );
     }
-    let execution_reachable =
-        stripped_analysis
-            .cfg
-            .reachable_from_execution_roots(stripped_tdg, &stripped_image, false);
+    let execution_reachable = stripped_analysis
+        .cfg
+        .reachable_from_execution_roots(&stripped_image, false);
     assert!(
         execution_reachable
             .iter()

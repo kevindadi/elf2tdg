@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::cfg;
+use elf2tdg::cfg::CfgConcurrencyKind;
 use elf2tdg::loader;
-use elf2tdg_schema::{ContextKind, Edge};
 
 fn fixture_elf() -> Option<PathBuf> {
     let path =
@@ -22,7 +22,7 @@ fn exports_function_cfg_for_main() {
     let image = loader::load(&path).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    analysis.tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
 
     let main = analysis
         .cfg
@@ -52,8 +52,7 @@ fn exports_function_cfg_for_main() {
         );
     }
 
-    let json =
-        cfg::render_json(&analysis.cfg, &analysis.tdg, Some("main"), true).expect("CFG JSON");
+    let json = cfg::render_json(&analysis.cfg, Some("main"), true).expect("CFG JSON");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert_eq!(value["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
     assert_eq!(value["functions"].as_array().map(Vec::len), Some(1));
@@ -81,7 +80,7 @@ fn reachable_from_main_filters_runtime_and_keeps_embassy_tasks() {
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
     let reachable = analysis
         .cfg
-        .reachable_from(&analysis.tdg, "main")
+        .reachable_from("main")
         .expect("main reachability");
     assert!(
         reachable.len() < analysis.cfg.functions.len(),
@@ -93,26 +92,30 @@ fn reachable_from_main_filters_runtime_and_keeps_embassy_tasks() {
         "rust_concurrency::monitor_task",
     ] {
         assert!(
-            analysis.tdg.contexts.iter().any(|context| {
-                context.kind == ContextKind::AsyncTask && context.name.contains(task)
+            analysis.cfg.roots.iter().any(|root| {
+                root.kind == elf2tdg::cfg::CfgRootKind::Task
+                    && root.name.as_deref().is_some_and(|name| name.contains(task))
             }),
-            "spawned Embassy task {task} must remain visible in the TDG"
+            "spawned Embassy task {task} must remain a CFG root"
         );
     }
-    let embassy_spawns = analysis.tdg.edges.iter().filter(|edge| {
-        matches!(
-            edge,
-            Edge::Spawn { runtime, .. } if runtime.as_str() == "rust-embassy"
-        )
-    });
+    let embassy_spawns = analysis
+        .cfg
+        .concurrency
+        .iter()
+        .filter(|site| {
+            matches!(
+                &site.operation,
+                CfgConcurrencyKind::Spawn { runtime, .. } if runtime.as_str() == "rust-embassy"
+            )
+        })
+        .count();
     assert_eq!(
-        embassy_spawns.count(),
-        3,
+        embassy_spawns, 3,
         "main task plus sensor/monitor task spawns"
     );
 
-    let json = cfg::render_json_selected(&analysis.cfg, &analysis.tdg, &reachable, false)
-        .expect("reachable JSON");
+    let json = cfg::render_json_selected(&analysis.cfg, &reachable, false).expect("reachable JSON");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert_eq!(
         value["functions"].as_array().map(Vec::len),
@@ -121,7 +124,7 @@ fn reachable_from_main_filters_runtime_and_keeps_embassy_tasks() {
 }
 
 #[test]
-fn cfg_retains_gap_recovered_calls_and_tdg_parity() {
+fn cfg_call_graph_is_consistent() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf");
     if !path.exists() {
@@ -130,118 +133,15 @@ fn cfg_retains_gap_recovered_calls_and_tdg_parity() {
     let image = loader::load(&path).expect("example ELF must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let recovered: usize = analysis
-        .cfg
-        .functions
-        .iter()
-        .map(|function| function.cfg.recovered_calls.len())
-        .sum();
-    // Jump-table decoding can eliminate all gaps in this fixture; the unit
-    // test in analysis.rs covers the recovered-call path directly.
-    let _ = recovered;
-    for edge in &analysis.tdg.edges {
-        let Edge::Call {
-            caller,
-            callee,
-            site,
-            tail,
-            ..
-        } = edge
-        else {
-            continue;
-        };
-        let function = analysis.cfg.function(caller).expect("caller CFG");
-        let matches = |call: &&elf2tdg::cfg::CfgCallSite| {
-            call.site == site.get()
-                && call.tail == *tail
-                && if call.candidates.is_empty() {
-                    call.target_function.as_ref() == Some(callee)
-                } else {
-                    call.candidates
-                        .iter()
-                        .any(|candidate| candidate.target_function.as_ref() == Some(callee))
-                }
-        };
-        let in_blocks = function
-            .cfg
-            .blocks_by_address
-            .values()
-            .flat_map(|node| function.cfg.graph[*node].calls.iter())
-            .any(|call| matches(&call));
-        let in_recovered = function
-            .cfg
-            .recovered_calls
-            .iter()
-            .any(|call| matches(&call));
-        assert!(
-            in_blocks || in_recovered,
-            "TDG call at {} is missing from CFG",
-            site.get()
-        );
-    }
-}
-
-#[test]
-fn cfg_blocks_match_tdg_blocks() {
-    let Some(path) = fixture_elf() else {
-        return;
-    };
-    let image = loader::load(&path).expect("fixture must load");
-    let analysis =
-        analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    for function in analysis
-        .tdg
-        .functions
-        .iter()
-        .filter(|function| function.size > 0)
-    {
-        let cfg_function = analysis
-            .cfg
-            .function(&function.id)
-            .expect("CFG for every analyzed function");
-        assert_eq!(
-            cfg_function.cfg.blocks_by_address.len(),
-            function.blocks.len(),
-            "block count mismatch for {}",
-            function.primary_name
-        );
-    }
-    for edge in &analysis.tdg.edges {
-        let Edge::Call {
-            caller,
-            callee,
-            site,
-            tail,
-            ..
-        } = edge
-        else {
-            continue;
-        };
-        let cfg_function = analysis
-            .cfg
-            .function(caller)
-            .expect("CFG caller for call edge");
-        let found = cfg_function
-            .cfg
-            .blocks_by_address
-            .values()
-            .flat_map(|node| cfg_function.cfg.graph[*node].calls.iter())
-            .any(|call| {
-                call.site == site.get()
-                    && call.tail == *tail
-                    && if call.candidates.is_empty() {
-                        call.target_function.as_ref() == Some(callee)
-                    } else {
-                        call.candidates
-                            .iter()
-                            .any(|candidate| candidate.target_function.as_ref() == Some(callee))
-                    }
-            });
-        assert!(
-            found,
-            "TDG call edge at {} is not represented in the CFG",
-            site.get()
-        );
+    assert!(!analysis.cfg.calls.is_empty());
+    for call in &analysis.cfg.calls {
+        assert!(analysis.cfg.function(&call.caller).is_some());
+        if let Some(callee) = &call.callee {
+            assert!(analysis.cfg.function(callee).is_some());
+        }
+        for candidate in &call.candidates {
+            assert!(analysis.cfg.function(candidate).is_some());
+        }
     }
 }
 
@@ -253,11 +153,9 @@ fn system_roots_include_vector_isrs_but_skip_default_handlers() {
     let image = loader::load(&path).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let roots = analysis.cfg.system_roots(&analysis.tdg, &image);
+    let roots = analysis.cfg.system_roots(&image);
     assert_ne!(roots.len(), 0);
-    let reachable = analysis
-        .cfg
-        .reachable_from_system(&analysis.tdg, &image, false);
+    let reachable = analysis.cfg.reachable_from_system(&image, false);
     let names: Vec<&str> = reachable
         .iter()
         .map(|function| function.primary_name.as_str())
@@ -271,7 +169,7 @@ fn system_roots_include_vector_isrs_but_skip_default_handlers() {
     );
     let main_only = analysis
         .cfg
-        .reachable_from(&analysis.tdg, "main")
+        .reachable_from("main")
         .expect("main reachability");
     assert!(
         reachable.len() > main_only.len(),
@@ -289,12 +187,8 @@ fn system_reachability_covers_embassy_tasks() {
     let image = loader::load(&path).expect("example ELF must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let unpruned = analysis
-        .cfg
-        .reachable_from_system(&analysis.tdg, &image, false);
-    let pruned = analysis
-        .cfg
-        .reachable_from_system(&analysis.tdg, &image, true);
+    let unpruned = analysis.cfg.reachable_from_system(&image, false);
+    let pruned = analysis.cfg.reachable_from_system(&image, true);
     assert!(
         unpruned
             .iter()
@@ -324,12 +218,11 @@ fn cfg_json_limits_diagnostics_to_selected_functions() {
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
     let reachable = analysis
         .cfg
-        .reachable_from(&analysis.tdg, "rust_concurrency::start_tasks")
+        .reachable_from("rust_concurrency::start_tasks")
         .expect("start_tasks reachability");
     let selected: std::collections::BTreeSet<_> =
         reachable.iter().map(|function| &function.id).collect();
-    let json = cfg::render_json_selected(&analysis.cfg, &analysis.tdg, &reachable, false)
-        .expect("CFG JSON");
+    let json = cfg::render_json_selected(&analysis.cfg, &reachable, false).expect("CFG JSON");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert_eq!(value["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
     assert!(

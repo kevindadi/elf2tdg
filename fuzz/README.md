@@ -1,7 +1,7 @@
 # Fuzzing
 
 The harness parses arbitrary bytes as an ELF image, runs the bounded analyzer,
-and asserts that both the TDG and the intermediate CFG pass validation. Inputs
+and asserts that the program CFG passes validation. Inputs
 that are not valid ELF or exceed analysis limits are ignored.
 
 Install the nightly toolchain and `cargo-fuzz` once:

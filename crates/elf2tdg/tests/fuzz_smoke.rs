@@ -29,10 +29,9 @@ fn analyze_bounded(image: &elf2tdg::loader::Image) {
     };
     match analyze_with_cfg(image, &options) {
         Ok(analysis) => {
-            analysis.tdg.ensure_valid().expect("TDG must validate");
             analysis.cfg.ensure_valid().expect("CFG must validate");
         }
-        Err(Error::Validation(message) | Error::CfgValidation(message)) => {
+        Err(Error::CfgValidation(message)) => {
             panic!("analysis produced an invalid graph: {message}");
         }
         Err(_) => {}

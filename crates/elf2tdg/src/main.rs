@@ -10,16 +10,14 @@ use elf2tdg::board_profile::BoardProfile;
 use elf2tdg::cfg::{self, CfgFunction, ProgramCfg};
 use elf2tdg::elf_view;
 use elf2tdg::loader::{self, Image};
-use elf2tdg::output::{self, GraphOptions};
 use elf2tdg::timing::parse_frequency;
-use elf2tdg_schema::Tdg;
 
 #[derive(Debug, Parser)]
 #[allow(clippy::struct_excessive_bools)]
 #[command(
     name = "elf2tdg",
     version,
-    about = "Extract ELF layouts, per-function CFGs and Task Dependency Graphs from ELF images"
+    about = "Extract ELF layouts and program control-flow graphs from ELF images"
 )]
 struct Cli {
     /// Input ELF image (keep symbols in the analysis build).
@@ -45,13 +43,12 @@ struct Cli {
     #[arg(long, value_enum)]
     format: Option<OutputFormat>,
 
-    /// Graph view: the final TDG, the intermediate per-function CFG, or the
-    /// loaded ELF layout.
+    /// Graph view: the program CFG or the loaded ELF layout.
     #[arg(long, value_enum, default_value_t = View::Cfg)]
     view: View,
 
-    /// Select one function for CFG output by name, symbol, task context, or 0x
-    /// address. Task names map to their execution-context entry function.
+    /// Select one function for CFG output by name, symbol, task alias, or 0x
+    /// address. Task names map to their task entry function.
     #[arg(long, conflicts_with = "all_functions")]
     function: Option<String>,
 
@@ -60,8 +57,8 @@ struct Cli {
     #[arg(long, conflicts_with = "function")]
     all_functions: bool,
 
-    /// Export only functions reachable from ROOT through calls and task
-    /// creation. ROOT may be a function name, task context, symbol, or 0x
+    /// Export only functions reachable from ROOT through calls and spawn
+    /// annotations. ROOT may be a function name, task alias, symbol, or 0x
     /// address. Without this flag the CFG uses all asynchronous execution
     /// roots: main, startup, ISR vectors, tasks and callbacks.
     #[arg(
@@ -80,23 +77,11 @@ struct Cli {
     #[arg(long)]
     no_cfg_instructions: bool,
 
-    /// Graph projection for DOT/Mermaid output.
-    #[arg(long, value_enum, default_value_t = ProjectionArg::Full)]
-    projection: ProjectionArg,
-
-    /// Add a node/edge legend to DOT/Mermaid output.
-    #[arg(long)]
-    legend: bool,
-
     /// Output file. Use '-' or omit for stdout.
     #[arg(long, short)]
     output: Option<PathBuf>,
 
-    /// Include per-instruction disassembly and cycle costs (requires a timing model).
-    #[arg(long)]
-    instructions: bool,
-
-    /// Maximum diagnostics retained in the TDG (default 500).
+    /// Maximum diagnostics retained in the CFG (default 500).
     #[arg(long, default_value_t = 500)]
     max_diagnostics: usize,
 
@@ -122,42 +107,25 @@ enum OutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum ProjectionArg {
-    Full,
-    Concurrency,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum View {
-    Tdg,
     Cfg,
     #[value(alias = "loader")]
     Elf,
 }
 
-impl From<ProjectionArg> for output::Projection {
-    fn from(value: ProjectionArg) -> Self {
-        match value {
-            ProjectionArg::Full => Self::Full,
-            ProjectionArg::Concurrency => Self::Concurrency,
-        }
-    }
-}
-
 fn select_cfg_functions<'a>(
     cli: &Cli,
     program: &'a ProgramCfg,
-    tdg: &Tdg,
     image: &Image,
 ) -> std::result::Result<Vec<&'a CfgFunction>, String> {
     if let Some(selector) = cli.function.as_deref() {
-        program.select_with_tdg(tdg, Some(selector))
+        program.select(Some(selector))
     } else if cli.all_functions {
         Ok(program.functions.iter().collect())
     } else if let Some(root) = cli.reachable_from.as_deref() {
-        program.reachable_from_with_pruning(tdg, root, !cli.no_prune_runtime)
+        program.reachable_from_with_pruning(root, !cli.no_prune_runtime)
     } else {
-        Ok(program.reachable_from_system(tdg, image, !cli.no_prune_runtime))
+        Ok(program.reachable_from_system(image, !cli.no_prune_runtime))
     }
 }
 
@@ -167,25 +135,13 @@ fn render_view(
     cfg_functions: &[&CfgFunction],
     format: OutputFormat,
 ) -> Result<String> {
-    let tdg = &analysis.tdg;
-    let graph_options = GraphOptions {
-        projection: cli.projection.into(),
-        legend: cli.legend,
-    };
     let include_cfg_instructions = !cli.no_cfg_instructions;
     let rendered = match cli.view {
-        View::Tdg => match format {
-            OutputFormat::Json => output::render_json(tdg)?,
-            OutputFormat::Dot => output::render_dot_with(tdg, graph_options),
-            OutputFormat::Mermaid => output::render_mermaid_with(tdg, graph_options),
-        },
         View::Cfg => match format {
-            OutputFormat::Json => cfg::render_json_program_selected(
-                &analysis.cfg,
-                cfg_functions,
-                include_cfg_instructions,
-            )
-            .map_err(anyhow::Error::msg)?,
+            OutputFormat::Json => {
+                cfg::render_json_selected(&analysis.cfg, cfg_functions, include_cfg_instructions)
+                    .map_err(anyhow::Error::msg)?
+            }
             OutputFormat::Dot => {
                 cfg::render_dot_selected(&analysis.cfg, cfg_functions, include_cfg_instructions)
             }
@@ -230,7 +186,7 @@ fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)?;
     let format = cli.format.unwrap_or(match cli.view {
         View::Elf => OutputFormat::Mermaid,
-        View::Tdg | View::Cfg => OutputFormat::Json,
+        View::Cfg => OutputFormat::Json,
     });
     let image = loader::load(&cli.input)
         .with_context(|| format!("failed to load {}", cli.input.display()))?;
@@ -245,16 +201,9 @@ fn main() -> Result<()> {
             "--function, --all-functions, --reachable-from, --no-prune-runtime and --no-cfg-instructions are only supported with --view cfg"
         );
     }
-    if cli.view != View::Tdg
-        && (cli.projection != ProjectionArg::Full || cli.legend || cli.instructions)
-    {
-        anyhow::bail!(
-            "--projection, --legend and --instructions are only supported with --view tdg"
-        );
-    }
     if cli.view == View::Elf {
         if cli.board_profile.is_some() {
-            anyhow::bail!("--board-profile is only supported for TDG and CFG analysis");
+            anyhow::bail!("--board-profile is only supported for CFG analysis");
         }
         if format != OutputFormat::Mermaid {
             anyhow::bail!("--view elf currently supports only --format mermaid");
@@ -290,17 +239,12 @@ fn main() -> Result<()> {
         cpu: cli.cpu.clone(),
         board_profile,
         frequency_hz,
-        include_instructions: cli.instructions,
         max_diagnostics: cli.max_diagnostics,
         ..AnalysisOptions::default()
     };
     let analysis = analyze_with_cfg(&image, &options).context("analysis failed")?;
-    let tdg = &analysis.tdg;
-    let cfg_functions = if cli.view == View::Cfg {
-        select_cfg_functions(&cli, &analysis.cfg, tdg, &image).map_err(anyhow::Error::msg)?
-    } else {
-        Vec::new()
-    };
+    let cfg_functions =
+        select_cfg_functions(&cli, &analysis.cfg, &image).map_err(anyhow::Error::msg)?;
 
     let rendered = render_view(&cli, &analysis, &cfg_functions, format)?;
     write_rendered(&cli, &rendered)?;
@@ -310,40 +254,35 @@ fn main() -> Result<()> {
             .output
             .as_ref()
             .map_or_else(|| "stdout".to_owned(), |path| path.display().to_string());
-        if cli.view == View::Cfg {
-            let blocks: usize = cfg_functions
-                .iter()
-                .map(|function| function.cfg.blocks_by_address.len())
-                .sum();
-            let selected: std::collections::BTreeSet<_> =
-                cfg_functions.iter().map(|function| &function.id).collect();
-            let scoped_diagnostics = tdg
-                .diagnostics
-                .iter()
-                .filter(|diagnostic| {
-                    diagnostic
-                        .function
-                        .as_ref()
-                        .is_none_or(|function| selected.contains(function))
-                })
-                .count();
-            let omitted = tdg.diagnostics.len().saturating_sub(scoped_diagnostics);
-            eprintln!(
-                "{} functions, {} CFG blocks, {} diagnostics ({} image-wide diagnostics omitted) -> {destination}",
-                cfg_functions.len(),
-                blocks,
-                scoped_diagnostics,
-                omitted
-            );
-        } else {
-            eprintln!(
-                "{} functions, {} contexts, {} edges, {} diagnostics -> {destination}",
-                tdg.functions.len(),
-                tdg.contexts.len(),
-                tdg.edges.len(),
-                tdg.diagnostics.len()
-            );
-        }
+        let blocks: usize = cfg_functions
+            .iter()
+            .map(|function| function.cfg.blocks_by_address.len())
+            .sum();
+        let selected: std::collections::BTreeSet<_> =
+            cfg_functions.iter().map(|function| &function.id).collect();
+        let scoped_diagnostics = analysis
+            .cfg
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic
+                    .function
+                    .as_ref()
+                    .is_none_or(|function| selected.contains(function))
+            })
+            .count();
+        let omitted = analysis
+            .cfg
+            .diagnostics
+            .len()
+            .saturating_sub(scoped_diagnostics);
+        eprintln!(
+            "{} functions, {} CFG blocks, {} diagnostics ({} image-wide diagnostics omitted) -> {destination}",
+            cfg_functions.len(),
+            blocks,
+            scoped_diagnostics,
+            omitted
+        );
     }
     Ok(())
 }

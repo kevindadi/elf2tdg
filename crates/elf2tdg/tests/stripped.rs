@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::cfg::CfgConcurrencyKind;
 use elf2tdg::loader;
-use elf2tdg_schema::{Edge, SpawnTarget};
 
 const SOURCE: &str = r"
 #include <pthread.h>
@@ -101,47 +101,50 @@ fn recovers_prologues_and_wrapper_spawn_without_symbols() {
             .any(|symbol| { matches!(symbol.name.as_str(), "worker" | "main" | "start_worker") }),
         "fixture still has local function symbols"
     );
-    let tdg = analyze(&stripped_image, &AnalysisOptions::default())
+    let program = analyze(&stripped_image, &AnalysisOptions::default())
         .expect("stripped analysis must succeed");
-    tdg.ensure_valid().expect("TDG must validate");
+    program.ensure_valid().expect("CFG must validate");
 
     assert!(
-        tdg.functions
+        program
+            .functions
             .iter()
-            .any(|function| function.address.get() == worker_address),
+            .any(|function| function.address == worker_address),
         "worker prologue was not discovered"
     );
     assert!(
-        tdg.functions
+        program
+            .functions
             .iter()
-            .any(|function| function.address.get() == main_address),
+            .any(|function| function.address == main_address),
         "main prologue was not discovered"
     );
     assert!(
-        tdg.diagnostics
+        program
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "stripped-heuristic-seeds"),
         "missing stripped-image heuristic diagnostic"
     );
 
-    let spawn = tdg
-        .edges
+    let spawn = program
+        .concurrency
         .iter()
-        .find_map(|edge| match edge {
-            Edge::Spawn {
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::Spawn {
                 runtime,
-                target: SpawnTarget::Context { entry, .. },
+                entry: Some(entry),
                 ..
             } if runtime.as_str() == "pthread" => Some(entry),
             _ => None,
         })
         .expect("stripped pthread spawn");
-    let worker = tdg
+    let worker = program
         .functions
         .iter()
         .find(|function| &function.id == spawn)
         .expect("spawn entry function");
-    assert_eq!(worker.address.get(), worker_address);
+    assert_eq!(worker.address, worker_address);
 
     let _ = std::fs::remove_dir_all(stripped.parent().expect("fixture directory"));
 }

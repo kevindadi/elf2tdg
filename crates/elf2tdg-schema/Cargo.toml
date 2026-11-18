@@ -1,6 +1,6 @@
 [package]
 name = "elf2tdg-schema"
-description = "Versioned Task Dependency Graph (TDG) data model for elf2tdg"
+description = "Shared CFG and timing data model for elf2tdg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

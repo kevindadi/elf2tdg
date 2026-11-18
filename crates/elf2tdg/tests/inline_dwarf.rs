@@ -7,9 +7,8 @@
 use std::path::PathBuf;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
-use elf2tdg::cfg;
+use elf2tdg::cfg::{self, CfgConcurrencyKind};
 use elf2tdg::loader;
-use elf2tdg_schema::Edge;
 
 fn example_elf() -> Option<PathBuf> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -83,17 +82,16 @@ fn cfg_instructions_carry_inlined_embassy_spawn_ranges() {
 
     for task in ["sensor_task", "monitor_task"] {
         assert!(
-            analysis.tdg.edges.iter().any(|edge| matches!(
-                edge,
-                Edge::Spawn { runtime, name: Some(name), .. }
+            analysis.cfg.concurrency.iter().any(|site| matches!(
+                &site.operation,
+                CfgConcurrencyKind::Spawn { runtime, name: Some(name), .. }
                     if runtime.as_str() == "rust-embassy" && name.contains(task)
             )),
             "inlined Spawner::spawn should produce a {task} spawn edge"
         );
     }
 
-    let json = cfg::render_json_selected(&analysis.cfg, &analysis.tdg, &[start_tasks], true)
-        .expect("CFG JSON");
+    let json = cfg::render_json_selected(&analysis.cfg, &[start_tasks], true).expect("CFG JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("valid CFG JSON");
     assert_eq!(document["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
     let rendered_spawn = document["functions"][0]["inline_frames"]
@@ -112,8 +110,8 @@ fn cfg_instructions_carry_inlined_embassy_spawn_ranges() {
         "CFG JSON must expose inline-frame names, ranges, depth and call sites"
     );
 
-    let compact = cfg::render_json_selected(&analysis.cfg, &analysis.tdg, &[start_tasks], false)
-        .expect("compact CFG JSON");
+    let compact =
+        cfg::render_json_selected(&analysis.cfg, &[start_tasks], false).expect("compact CFG JSON");
     let compact: serde_json::Value = serde_json::from_str(&compact).expect("valid compact JSON");
     assert!(
         compact["functions"][0]["inline_frames"]

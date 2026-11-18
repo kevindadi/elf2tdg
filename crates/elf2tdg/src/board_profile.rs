@@ -6,7 +6,7 @@
 //! profile never changes the default analysis; the caller opts in explicitly.
 //!
 //! Profiles are written as TOML (the default) or JSON. Every profile records
-//! the SHA-256 of the loaded file so a TDG can name the exact timing input that
+//! the SHA-256 of the loaded file so the CFG can name the exact timing input that
 //! produced its cycle estimates.
 
 use std::collections::BTreeSet;
@@ -74,7 +74,7 @@ pub struct BoardProfile {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum UnknownInstructionPolicy {
-    /// Emit a TDG warning and use the fallback cost class.
+    /// Emit a CFG diagnostic and use the fallback cost class.
     #[default]
     Warn,
     /// Use the fallback cost class without a warning.

@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::cfg::{CfgConcurrencyKind, CfgRootKind};
 use elf2tdg::loader;
-use elf2tdg_schema::{ContextKind, Edge, JoinTarget, ScopeKind, SpawnTarget};
+use elf2tdg_schema::ScopeKind;
 
 fn tool_available(tool: &str) -> bool {
     Command::new(tool)
@@ -66,54 +67,53 @@ int main() {
         return;
     };
     let image = loader::load(&binary).expect("C++ fixture must load");
-    let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    tdg.ensure_valid().expect("TDG must validate");
+    let program = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    program.ensure_valid().expect("CFG must validate");
 
-    let spawn = tdg
-        .edges
+    let spawn = program
+        .concurrency
         .iter()
-        .find_map(|edge| match edge {
-            Edge::Spawn {
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::Spawn {
                 runtime,
                 api,
-                target,
+                entry: Some(entry),
                 ..
-            } if runtime.as_str() == "cpp-std" => Some((api.as_str(), target)),
+            } if runtime.as_str() == "cpp-std" => Some((api.as_str(), entry)),
             _ => None,
         })
         .expect("C++ std::thread spawn edge");
     assert_eq!(spawn.0, "std::thread::thread");
-    let SpawnTarget::Context { context, entry } = spawn.1 else {
-        panic!("expected C++ thread entry recovery, got {:?}", spawn.1);
-    };
-    let function = tdg
+    let function = program
         .functions
         .iter()
-        .find(|function| &function.id == entry)
+        .find(|function| &function.id == spawn.1)
         .expect("C++ thread entry function");
     assert!(
         function.primary_name.contains("_M_run"),
         "unexpected C++ thread entry: {}",
         function.primary_name
     );
-    let context = tdg
-        .contexts
+    assert!(
+        program
+            .roots
+            .iter()
+            .any(|root| { root.kind == CfgRootKind::Task && &root.function == spawn.1 })
+    );
+    let join = program
+        .concurrency
         .iter()
-        .find(|candidate| &candidate.id == context)
-        .expect("C++ thread context");
-    assert_eq!(context.entry, *entry);
-
-    let join = tdg
-        .edges
-        .iter()
-        .find_map(|edge| match edge {
-            Edge::Join { target, .. } => Some(target),
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::Join {
+                entry: Some(entry), ..
+            } => Some(entry),
             _ => None,
         })
         .expect("C++ std::thread join edge");
-    assert!(matches!(join, JoinTarget::Context { .. }));
+    assert_eq!(join, spawn.1);
     assert!(
-        tdg.diagnostics
+        program
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "cpp-callable-entry"),
         "missing C++ callable-entry diagnostic"
@@ -148,61 +148,55 @@ int main(void) {
         cpu: Some("x86-64".to_owned()),
         ..AnalysisOptions::default()
     };
-    let tdg = analyze(&image, &options).expect("analysis must succeed");
-    tdg.ensure_valid().expect("TDG must validate");
+    let program = analyze(&image, &options).expect("analysis must succeed");
+    program.ensure_valid().expect("CFG must validate");
 
-    let spawn = tdg
-        .edges
+    let spawn = program
+        .concurrency
         .iter()
-        .find_map(|edge| match edge {
-            Edge::Spawn {
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::Spawn {
                 runtime,
                 api,
-                target,
+                entry: Some(entry),
                 ..
-            } if runtime.as_str() == "openmp" => Some((api.as_str(), target)),
+            } if runtime.as_str() == "openmp" => Some((api.as_str(), entry)),
             _ => None,
         })
         .expect("OpenMP spawn edge");
     assert_eq!(spawn.0, "GOMP_parallel");
-    let SpawnTarget::Context { context, entry } = spawn.1 else {
-        panic!("expected resolved OpenMP entry, got {:?}", spawn.1);
-    };
-    let function = tdg
+    let function = program
         .functions
         .iter()
-        .find(|function| &function.id == entry)
+        .find(|function| &function.id == spawn.1)
         .expect("OpenMP entry function");
     assert!(
         function.primary_name.contains("_omp_fn"),
         "unexpected OpenMP entry: {}",
         function.primary_name
     );
-    let context_id = context.clone();
-    let context = tdg
-        .contexts
+    let scope = program
+        .concurrency
         .iter()
-        .find(|candidate| candidate.id == context_id)
-        .expect("OpenMP context");
-    assert_eq!(context.kind, ContextKind::Thread);
-    assert!(context.name.contains("_omp_fn"));
-    let scope = tdg
-        .scopes
-        .iter()
-        .find(|scope| scope.kind == ScopeKind::OpenMpParallel)
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::ScopeEnter {
+                scope_kind: ScopeKind::OpenMpParallel,
+                implicit_join,
+            } => Some(*implicit_join),
+            _ => None,
+        })
         .expect("OpenMP parallel scope");
-    assert_eq!(scope.members.len(), 1);
-    assert!(scope.implicit_join);
+    assert!(scope);
 
     assert!(
-        tdg.timing
+        program.timing.as_ref().is_some_and(|timing| timing
             .models
             .iter()
-            .any(|model| model.id.as_str() == "x86-64-generic"),
+            .any(|model| model.id.as_str() == "x86-64-generic")),
         "x86-64 statistical timing model should be present"
     );
     assert!(
-        !function.blocks.is_empty(),
+        !function.cfg.blocks_by_address.is_empty(),
         "OpenMP outlined function should have at least one block"
     );
 

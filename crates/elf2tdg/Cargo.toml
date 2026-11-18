@@ -1,6 +1,6 @@
 [package]
 name = "elf2tdg"
-description = "Static Task Dependency Graph extraction from embedded ELF images"
+description = "CFG-first static analysis for embedded ELF images"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

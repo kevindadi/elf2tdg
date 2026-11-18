@@ -5,6 +5,7 @@ use std::path::Path;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::board_profile::BoardProfile;
+use elf2tdg::cfg::ProgramCfg;
 use elf2tdg::loader;
 use elf2tdg_schema::{BlockId, FrequencySource};
 
@@ -36,13 +37,13 @@ fn applies_cortex_m4_pipeline_profile() {
         },
     )
     .expect("pipeline analysis must succeed");
-    base.tdg.ensure_valid().expect("default TDG must validate");
+    base.cfg.ensure_valid().expect("default CFG must validate");
     profiled
-        .tdg
+        .cfg
         .ensure_valid()
-        .expect("pipeline TDG must validate");
+        .expect("pipeline CFG must validate");
 
-    let timing = &profiled.tdg.timing;
+    let timing = profiled.cfg.timing.as_ref().expect("CFG timing metadata");
     let model = timing.models.first().expect("timing model");
     assert_eq!(
         model
@@ -85,28 +86,25 @@ fn applies_cortex_m4_pipeline_profile() {
 
     assert!(
         !profiled
-            .tdg
+            .cfg
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "timing-unknown-instruction"),
         "example instructions are all recognized"
     );
 
-    let base_costs = block_costs(&base.tdg);
+    let base_costs = block_costs(&base.cfg);
     let mut saw_changed_cost = false;
     let mut saw_time = false;
-    for function in &profiled.tdg.functions {
-        for block in &function.blocks {
-            let Some(timing) = &block.timing else {
+    for function in &profiled.cfg.functions {
+        for node in function.cfg.blocks_by_address.values() {
+            let block = &function.cfg.graph[*node];
+            let Some(cycles) = block.cycles else {
                 continue;
             };
-            if let Some(time_ns) = &timing.time_ns {
-                saw_time = true;
-                let expected = timing.cycles.min * 1_000_000_000.0 / 168_000_000.0;
-                assert!((time_ns.min - expected).abs() < 1e-6);
-            }
+            saw_time = true;
             if let Some(base_cycles) = base_costs.get(&block.id) {
-                saw_changed_cost |= (timing.cycles.min - *base_cycles).abs() > f64::EPSILON;
+                saw_changed_cost |= (cycles.min - *base_cycles).abs() > f64::EPSILON;
             }
         }
     }
@@ -117,12 +115,13 @@ fn applies_cortex_m4_pipeline_profile() {
     assert!(saw_time, "profile clock must produce wall-clock times");
 }
 
-fn block_costs(tdg: &elf2tdg_schema::Tdg) -> BTreeMap<BlockId, f64> {
+fn block_costs(program: &ProgramCfg) -> BTreeMap<BlockId, f64> {
     let mut costs = BTreeMap::new();
-    for function in &tdg.functions {
-        for block in &function.blocks {
-            if let Some(timing) = &block.timing {
-                costs.insert(block.id.clone(), timing.cycles.min);
+    for function in &program.functions {
+        for node in function.cfg.blocks_by_address.values() {
+            let block = &function.cfg.graph[*node];
+            if let Some(cycles) = block.cycles {
+                costs.insert(block.id.clone(), cycles.min);
             }
         }
     }

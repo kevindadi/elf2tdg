@@ -6,7 +6,7 @@ use std::process::Command;
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::cfg;
 use elf2tdg::loader;
-use elf2tdg_schema::{Edge, FunctionKind};
+use elf2tdg_schema::FunctionKind;
 
 fn compile_got_fixture() -> Option<PathBuf> {
     let available = Command::new("gcc")
@@ -69,37 +69,30 @@ fn resolves_got_imports_as_external_functions() {
 
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
-    let main = tdg
+    analysis.cfg.ensure_valid().expect("CFG must validate");
+    let main = analysis
+        .cfg
         .functions
         .iter()
         .find(|function| function.primary_name == "main")
         .expect("main function");
 
     for import in ["malloc", "realloc", "free"] {
-        let external = tdg
+        let external = analysis
+            .cfg
             .functions
             .iter()
             .find(|function| {
                 function.kind == FunctionKind::External && function.primary_name == import
             })
             .unwrap_or_else(|| panic!("missing external function for {import}"));
-        let call = tdg.edges.iter().any(|edge| {
-            matches!(
-                edge,
-                Edge::Call {
-                    caller,
-                    callee,
-                    direct: false,
-                    ..
-                } if caller == &main.id && callee == &external.id
-            )
+        let call = analysis.cfg.calls.iter().any(|call| {
+            call.caller == main.id && call.callee.as_ref() == Some(&external.id) && !call.direct
         });
         assert!(call, "main should call external {import}");
     }
     assert!(
-        !tdg.diagnostics.iter().any(|diagnostic| {
+        !analysis.cfg.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "unresolved-indirect-call"
                 && diagnostic.function.as_ref() == Some(&main.id)
         }),
@@ -114,8 +107,8 @@ fn resolves_got_imports_as_external_functions() {
         assert_eq!(selected.len(), 1, "{import}");
         assert_eq!(selected[0].kind, FunctionKind::External);
         assert!(selected[0].cfg.blocks_by_address.is_empty());
-        let json = cfg::render_json_selected(&analysis.cfg, tdg, &selected, false)
-            .expect("external CFG JSON");
+        let json =
+            cfg::render_json_selected(&analysis.cfg, &selected, false).expect("external CFG JSON");
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid CFG JSON");
         assert_eq!(value["functions"][0]["no_code"]["reason"], "external");
         assert_eq!(

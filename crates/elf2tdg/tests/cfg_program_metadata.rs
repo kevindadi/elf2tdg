@@ -29,9 +29,13 @@ fn cortex_cfg_carries_roots_calls_and_analysis_metadata() {
         analysis.cfg.timing.is_some(),
         "CFG must own timing metadata"
     );
-    assert_eq!(
-        analysis.cfg.diagnostics.len(),
-        analysis.tdg.diagnostics.len()
+    assert!(
+        analysis
+            .cfg
+            .timing
+            .as_ref()
+            .is_some_and(|timing| !timing.models.is_empty()),
+        "CFG timing metadata must describe the selected model"
     );
     assert!(
         analysis
@@ -64,10 +68,10 @@ fn cortex_cfg_carries_roots_calls_and_analysis_metadata() {
     let selected = analysis
         .cfg
         .select(Some("main"))
-        .expect("CFG selector must not require a TDG");
+        .expect("CFG selector must work without external graph data");
     assert_eq!(selected[0].primary_name, "main");
-    let json = cfg::render_json_program(&analysis.cfg, Some("main"), false)
-        .expect("self-contained CFG JSON");
+    let json =
+        cfg::render_json(&analysis.cfg, Some("main"), false).expect("self-contained CFG JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("parse CFG JSON");
     assert_eq!(document["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
     assert!(document["image"].is_object());
@@ -112,7 +116,7 @@ fn rust_cfg_carries_task_aliases_and_concurrency_annotations() {
     let selected = analysis
         .cfg
         .select(Some("sensor_task"))
-        .expect("task alias selection without TDG");
+        .expect("task alias selection");
     assert_eq!(selected.len(), 1);
     assert!(selected[0].primary_name.contains("sensor_task"));
     assert!(
@@ -124,8 +128,7 @@ fn rust_cfg_carries_task_aliases_and_concurrency_annotations() {
         "spawn annotations must live in the CFG"
     );
 
-    let json =
-        cfg::render_json_program(&analysis.cfg, None, false).expect("self-contained CFG JSON");
+    let json = cfg::render_json(&analysis.cfg, None, false).expect("self-contained CFG JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("parse CFG JSON");
     assert!(
         document["concurrency"]

@@ -1,5 +1,5 @@
-//! Core graph entities: image metadata, functions, basic blocks, execution
-//! contexts, typed edges, scopes and diagnostics.
+//! Shared analysis records: image metadata, functions, basic blocks,
+//! runtime contexts, typed relations, scopes and diagnostics.
 
 use std::collections::BTreeMap;
 
@@ -9,55 +9,7 @@ use serde_json::Value;
 
 use crate::addr::Addr;
 use crate::id::{BlockId, ContextId, EdgeId, FunctionId, LockEventId, RuntimeId, ScopeId};
-use crate::timing::{BlockTiming, FunctionTiming, InstructionTiming, TimingInfo};
-
-/// A complete Task Dependency Graph document.
-///
-/// Use [`Tdg::validate`] before consuming a document produced by another
-/// tool.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Tdg {
-    /// Schema version, for example `1.1`.
-    pub schema_version: String,
-    /// Producer metadata, for reproducibility.
-    pub tool: ToolInfo,
-    /// Source image metadata.
-    pub image: ImageInfo,
-    /// Timing models, frequency domains and global caveats.
-    #[serde(default)]
-    pub timing: TimingInfo,
-    /// Function nodes, including their basic blocks.
-    pub functions: Vec<Function>,
-    /// Execution-context nodes.
-    pub contexts: Vec<Context>,
-    /// Call-graph and concurrency-control edges.
-    pub edges: Vec<Edge>,
-    /// Lock/semaphore acquire and release events, including inlined sites.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub locks: Vec<LockEvent>,
-    /// Structured-concurrency scopes (for example OpenMP parallel regions).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub scopes: Vec<Scope>,
-    /// Analyzer diagnostics. A document may still be valid with diagnostics.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub diagnostics: Vec<Diagnostic>,
-    /// Extension point for downstream tools. Keys should be namespaced.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub ext: BTreeMap<String, Value>,
-}
-
-/// Identifies the producer and the data tables it used.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ToolInfo {
-    /// Tool name.
-    pub name: String,
-    /// Tool version.
-    pub version: String,
-    /// Version of the concurrency-detection rule database.
-    pub rules_version: String,
-    /// Version of the instruction-timing tables.
-    pub timing_tables_version: String,
-}
+use crate::timing::{BlockTiming, FunctionTiming, InstructionTiming};
 
 /// Metadata about the analyzed ELF image.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -256,7 +208,7 @@ pub struct BasicBlock {
     /// Block size in bytes. Zero means unknown.
     pub size: u64,
     /// Intra-function successors. Calls and cross-context edges are stored in
-    /// [`Tdg::edges`], not here.
+    /// `ProgramCfg::calls`, not here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub successors: Vec<BlockId>,
     /// Optional per-instruction detail.
@@ -302,7 +254,7 @@ pub struct InlineSite {
 
 /// An execution context.
 ///
-/// Contexts are what make the TDG more than a call graph: a function can be
+/// Contexts are runtime analysis records: a function can be
 /// reachable from several contexts, and edges such as `spawn` and `join`
 /// connect functions to contexts rather than to functions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

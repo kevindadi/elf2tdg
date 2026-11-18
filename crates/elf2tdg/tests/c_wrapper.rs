@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::cfg::{CfgConcurrencyKind, CfgRootKind};
 use elf2tdg::loader;
-use elf2tdg_schema::{ContextKind, Edge, JoinTarget, SpawnTarget};
 
 fn compile_fixture(name: &str, source_text: &str) -> Option<PathBuf> {
     let available = Command::new("gcc")
@@ -101,46 +101,46 @@ fn forwards_wrapper_entry_and_resolves_join() {
         return;
     };
     let image = loader::load(&binary).expect("fixture must load");
-    let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    tdg.ensure_valid().expect("TDG must validate");
+    let program = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    program.ensure_valid().expect("CFG must validate");
 
-    let worker = tdg
+    let worker = program
         .functions
         .iter()
         .find(|function| function.primary_name == "worker")
         .expect("worker function");
-    let spawn = tdg
-        .edges
+    let spawn = program
+        .concurrency
         .iter()
-        .find_map(|edge| match edge {
-            Edge::Spawn {
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::Spawn {
                 runtime,
-                target: SpawnTarget::Context { context, entry },
+                entry: Some(entry),
                 ..
-            } if runtime.as_str() == "pthread" => Some((context, entry)),
+            } if runtime.as_str() == "pthread" => Some(entry),
             _ => None,
         })
         .expect("forwarded pthread spawn");
-    assert_eq!(spawn.1, &worker.id);
-    let context = tdg
-        .contexts
-        .iter()
-        .find(|candidate| candidate.id == *spawn.0)
-        .expect("thread context");
-    assert_eq!(context.kind, ContextKind::Thread);
-    assert_eq!(context.entry, worker.id);
+    assert_eq!(spawn, &worker.id);
+    assert!(
+        program
+            .roots
+            .iter()
+            .any(|root| { root.kind == CfgRootKind::Task && root.function == worker.id })
+    );
 
-    let join = tdg
-        .edges
+    let join = program
+        .concurrency
         .iter()
-        .find_map(|edge| match edge {
-            Edge::Join { target, .. } => Some(target),
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::Join { entry, .. } => entry.as_ref(),
             _ => None,
         })
         .expect("join edge");
-    assert!(matches!(join, JoinTarget::Context { .. }));
+    assert_eq!(join, &worker.id);
     assert!(
-        tdg.diagnostics
+        program
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "forwarded-spawn-entry"),
         "missing wrapper-forwarding diagnostic"
@@ -155,25 +155,23 @@ fn resolves_indirect_call_through_global_pointer() {
         return;
     };
     let image = loader::load(&binary).expect("fixture must load");
-    let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    tdg.ensure_valid().expect("TDG must validate");
+    let program = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    program.ensure_valid().expect("CFG must validate");
 
-    let target = tdg
+    let target = program
         .functions
         .iter()
         .find(|function| function.primary_name == "target")
         .expect("target function");
-    let call = tdg
-        .edges
+    let call = program
+        .calls
         .iter()
-        .find_map(|edge| match edge {
-            Edge::Call { callee, direct, .. } if callee == &target.id => Some(*direct),
-            _ => None,
-        })
+        .find(|call| call.callee.as_ref() == Some(&target.id))
         .expect("resolved indirect call edge");
-    assert!(!call, "indirect call must not be marked direct");
+    assert!(!call.direct, "indirect call must not be marked direct");
     assert!(
-        tdg.diagnostics
+        program
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-indirect-call"),
         "missing resolved-indirect-call diagnostic"
@@ -188,21 +186,21 @@ fn resolves_entry_loaded_from_global_pointer() {
         return;
     };
     let image = loader::load(&binary).expect("fixture must load");
-    let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    tdg.ensure_valid().expect("TDG must validate");
+    let program = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    program.ensure_valid().expect("CFG must validate");
 
-    let worker = tdg
+    let worker = program
         .functions
         .iter()
         .find(|function| function.primary_name == "worker")
         .expect("worker function");
-    let spawn = tdg
-        .edges
+    let spawn = program
+        .concurrency
         .iter()
-        .find_map(|edge| match edge {
-            Edge::Spawn {
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::Spawn {
                 runtime,
-                target: SpawnTarget::Context { entry, .. },
+                entry: Some(entry),
                 ..
             } if runtime.as_str() == "pthread" => Some(entry),
             _ => None,

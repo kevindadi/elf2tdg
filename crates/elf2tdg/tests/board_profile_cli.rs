@@ -38,10 +38,10 @@ fn cli_applies_board_profile_and_rejects_cpu_conflict() {
         "profiled CLI failed: {}",
         String::from_utf8_lossy(&output_result.stderr)
     );
-    let tdg: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&output).expect("TDG JSON"))
-            .expect("parse TDG JSON");
-    let extras = &tdg["timing"]["models"][0]["params"]["extras"];
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).expect("CFG JSON"))
+            .expect("parse CFG JSON");
+    let extras = &document["timing"]["models"][0]["params"]["extras"];
     assert_eq!(extras["board_profile_id"], "board:cortex-m0-isr");
     assert!(
         extras["board_profile_sha256"]
@@ -49,7 +49,7 @@ fn cli_applies_board_profile_and_rejects_cpu_conflict() {
             .is_some_and(|h| h.len() == 64)
     );
     assert_eq!(
-        tdg["timing"]["frequency_domains"][0]["source"],
+        document["timing"]["frequency_domains"][0]["source"],
         "board-profile"
     );
 
@@ -76,8 +76,7 @@ fn cli_applies_board_profile_and_rejects_cpu_conflict() {
         .expect("run ELF view with profile");
     assert!(!elf_view.status.success());
     assert!(
-        String::from_utf8_lossy(&elf_view.stderr)
-            .contains("only supported for TDG and CFG analysis"),
+        String::from_utf8_lossy(&elf_view.stderr).contains("only supported for CFG analysis"),
         "ELF-view stderr: {}",
         String::from_utf8_lossy(&elf_view.stderr)
     );

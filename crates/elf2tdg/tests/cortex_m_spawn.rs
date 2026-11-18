@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze};
+use elf2tdg::cfg::{CfgConcurrencyKind, CfgRootKind};
 use elf2tdg::loader;
-use elf2tdg_schema::{ContextKind, Edge, SpawnTarget};
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/cortex_m_spawn")
@@ -39,10 +39,10 @@ fn recovers_freertos_task_entry_from_literal_pool() {
         return;
     };
     let image = loader::load(&path).expect("fixture must load");
-    let tdg = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    tdg.ensure_valid().expect("TDG must validate");
+    let program = analyze(&image, &AnalysisOptions::default()).expect("analysis must succeed");
+    program.ensure_valid().expect("CFG must validate");
 
-    let task_id = tdg
+    let task_id = program
         .functions
         .iter()
         .find(|function| function.primary_name == "my_task")
@@ -50,38 +50,26 @@ fn recovers_freertos_task_entry_from_literal_pool() {
         .id
         .clone();
 
-    let spawn = tdg
-        .edges
+    let spawn = program
+        .concurrency
         .iter()
-        .find_map(|edge| match edge {
-            Edge::Spawn {
+        .find_map(|site| match &site.operation {
+            CfgConcurrencyKind::Spawn {
                 runtime,
                 api,
-                target,
+                entry: Some(entry),
                 ..
-            } if runtime.as_str() == "freertos" => Some((api, target)),
+            } if runtime.as_str() == "freertos" => Some((api.as_str(), entry)),
             _ => None,
         })
         .expect("FreeRTOS spawn edge");
     assert_eq!(spawn.0, "xTaskCreate");
-    let SpawnTarget::Context { context, entry } = spawn.1 else {
-        panic!("expected resolved xTaskCreate entry, got {:?}", spawn.1);
-    };
-    assert_eq!(entry, &task_id);
+    assert_eq!(spawn.1, &task_id);
 
-    let context = tdg
-        .contexts
+    let root = program
+        .roots
         .iter()
-        .find(|candidate| &candidate.id == context)
-        .expect("task context");
-    assert_eq!(context.kind, ContextKind::Thread);
-    assert_eq!(context.name, "my_task");
-    assert_eq!(context.entry, task_id);
-    assert_eq!(
-        context
-            .parent
-            .as_ref()
-            .map(elf2tdg_schema::ContextId::as_str),
-        Some("ctx:startup")
-    );
+        .find(|root| root.kind == CfgRootKind::Task && root.function == task_id)
+        .expect("task context root");
+    assert_eq!(root.name.as_deref(), Some("my_task"));
 }

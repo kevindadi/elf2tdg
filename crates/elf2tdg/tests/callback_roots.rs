@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
-use elf2tdg::cfg;
+use elf2tdg::cfg::{self, CfgConcurrencyKind};
 use elf2tdg::loader;
-use elf2tdg_schema::{Edge, FunctionId};
+use elf2tdg_schema::FunctionId;
 
 const SOURCE: &str = r#"
 #include <stddef.h>
@@ -95,8 +95,9 @@ fn compile_fixture() -> Option<PathBuf> {
     }
 }
 
-fn function_id(tdg: &elf2tdg_schema::Tdg, name: &str) -> FunctionId {
-    tdg.functions
+fn function_id(program: &cfg::ProgramCfg, name: &str) -> FunctionId {
+    program
+        .functions
         .iter()
         .find(|function| function.primary_name == name)
         .unwrap_or_else(|| panic!("missing function {name}"))
@@ -113,30 +114,29 @@ fn recovers_callback_edges_and_pointer_roots() {
     let image = loader::load(&binary).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
 
-    let main_id = function_id(tdg, "main");
+    let main_id = function_id(&analysis.cfg, "main");
     for callback in ["compare_ints", "finalizer", "signal_handler"] {
-        let callback_id = function_id(tdg, callback);
+        let callback_id = function_id(&analysis.cfg, callback);
         assert!(
-            tdg.edges.iter().any(|edge| matches!(
-                edge,
-                Edge::CallbackBind {
-                    from_function,
-                    callback,
-                    target_context: None,
-                    runtime,
-                    ..
-                } if from_function == &main_id
-                    && callback == &callback_id
-                    && runtime.as_str() == "libc"
-            )),
-            "missing CallbackBind for {callback}"
+            analysis.cfg.concurrency.iter().any(|site| {
+                matches!(
+                    &site.operation,
+                    CfgConcurrencyKind::CallbackBind {
+                        callback,
+                        runtime,
+                        ..
+                    } if callback == &callback_id && runtime.as_str() == "libc"
+                ) && site.function == main_id
+            }),
+            "missing callback annotation for {callback}"
         );
     }
     assert!(
-        tdg.diagnostics
+        analysis
+            .cfg
+            .diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.code == "resolved-callback")
             .count()
@@ -144,7 +144,9 @@ fn recovers_callback_edges_and_pointer_roots() {
         "callback registrations should produce resolution diagnostics"
     );
     assert!(
-        tdg.diagnostics
+        analysis
+            .cfg
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "pointer-roots"),
         "global pointer roots should be reported"
@@ -153,26 +155,25 @@ fn recovers_callback_edges_and_pointer_roots() {
     // Pointer roots come from the callback table, not from a direct call.
     let table_entries = ["table_entry_a", "table_entry_b"];
     for entry in table_entries {
-        let function = tdg
+        let function = analysis
+            .cfg
             .functions
             .iter()
             .find(|function| function.primary_name == entry)
             .expect("table entry function");
         assert!(
-            analysis.cfg.pointer_roots.contains(&function.address.get()),
+            analysis.cfg.pointer_roots.contains(&function.address),
             "missing pointer root for {entry}"
         );
         assert!(
-            !tdg.edges.iter().any(|edge| matches!(
-                edge,
-                Edge::Call { callee, .. } | Edge::CallbackBind { callback: callee, .. }
-                    if callee == &function.id
-            )),
+            !analysis.cfg.calls.iter().any(|call| {
+                call.callee.as_ref() == Some(&function.id) || call.candidates.contains(&function.id)
+            }),
             "{entry} must only be reachable through the pointer table"
         );
     }
 
-    let roots = analysis.cfg.system_roots(tdg, &image);
+    let roots = analysis.cfg.system_roots(&image);
     for name in [
         "compare_ints",
         "finalizer",
@@ -180,10 +181,10 @@ fn recovers_callback_edges_and_pointer_roots() {
         "table_entry_a",
         "table_entry_b",
     ] {
-        let id = function_id(tdg, name);
+        let id = function_id(&analysis.cfg, name);
         assert!(roots.contains(&id), "missing system root for {name}");
     }
-    let reachable = analysis.cfg.reachable_from_system(tdg, &image, false);
+    let reachable = analysis.cfg.reachable_from_system(&image, false);
     for name in [
         "compare_ints",
         "finalizer",
@@ -211,19 +212,20 @@ fn recovers_callback_edges_and_pointer_roots() {
                 .expect("table entry CFG")
         })
         .collect();
-    let json = cfg::render_json_selected(&analysis.cfg, tdg, &selected, false).expect("CFG JSON");
+    let json = cfg::render_json_selected(&analysis.cfg, &selected, false).expect("CFG JSON");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert_eq!(value["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
     let pointer_roots = value["pointer_roots"]
         .as_array()
         .expect("pointer_roots array");
     for entry in table_entries {
-        let function = tdg
+        let function = analysis
+            .cfg
             .functions
             .iter()
             .find(|function| function.primary_name == entry)
             .expect("table entry function");
-        let address = format!("0x{:x}", function.address.get());
+        let address = format!("0x{:x}", function.address);
         assert!(
             pointer_roots.iter().any(|root| root == &address),
             "CFG JSON should list pointer root {address}"

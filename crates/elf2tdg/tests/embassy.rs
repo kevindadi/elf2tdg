@@ -7,9 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
-use elf2tdg::cfg::{self, CfgNoreturnReason};
+use elf2tdg::cfg::{self, CfgConcurrencyKind, CfgNoreturnReason, CfgRootKind};
 use elf2tdg::loader::{self, ArchKind};
-use elf2tdg_schema::{Confidence, ContextKind, Edge, FunctionKind, SpawnTarget};
+use elf2tdg_schema::{Confidence, FunctionKind};
 
 fn example_elf() -> Option<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -29,75 +29,48 @@ fn recovers_embassy_task_contexts_and_spawns() {
 
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
 
     assert!(
-        !tdg.functions
+        !analysis
+            .cfg
+            .functions
             .iter()
             .any(|function| function.primary_name.starts_with("std::")),
         "the fixture must not contain std runtime functions"
     );
     assert!(
-        !tdg.contexts
+        !analysis
+            .cfg
+            .aliases
             .iter()
-            .any(|context| context.name.contains("std::thread")),
+            .any(|alias| alias.name.contains("std::thread")),
         "std::thread is outside the supported no_std profile"
     );
     assert!(
-        tdg.locks.is_empty(),
+        analysis.cfg.locks.is_empty(),
         "the example has no locking dependency"
     );
 
-    let async_tasks: Vec<_> = tdg
-        .contexts
+    let async_tasks: Vec<_> = analysis
+        .cfg
+        .roots
         .iter()
-        .filter(|context| context.kind == ContextKind::AsyncTask)
+        .filter(|root| root.kind == CfgRootKind::Task)
         .collect();
     assert_eq!(async_tasks.len(), 3, "main plus sensor/monitor tasks");
     for task in ["app_main", "sensor_task", "monitor_task"] {
         assert!(
             async_tasks
                 .iter()
-                .any(|context| context.name.contains(task)),
-            "missing async task context for {task}"
+                .any(|root| { root.name.as_deref().is_some_and(|name| name.contains(task)) }),
+            "missing async task root for {task}"
         );
     }
-
-    let main = tdg
-        .contexts
-        .iter()
-        .find(|context| context.kind == ContextKind::Main)
-        .expect("main context");
-    let app_main = async_tasks
-        .iter()
-        .find(|context| context.name.contains("app_main"))
-        .expect("Embassy main task");
-    assert_eq!(
-        app_main
-            .parent
-            .as_ref()
-            .map(elf2tdg_schema::ContextId::as_str),
-        Some(main.id.as_str()),
-        "the Embassy main task should be rooted in the Cortex-M main context"
-    );
-    for task in ["sensor_task", "monitor_task"] {
-        let context = async_tasks
-            .iter()
-            .find(|context| context.name.contains(task))
-            .expect("task context");
-        assert_eq!(
-            context
-                .parent
-                .as_ref()
-                .map(elf2tdg_schema::ContextId::as_str),
-            Some(app_main.id.as_str()),
-            "{task} should be spawned from the Embassy main task"
-        );
-        let entry = tdg
-            .functions
-            .iter()
-            .find(|function| function.id == context.entry)
+    for root in &async_tasks {
+        let entry = analysis
+            .cfg
+            .function(&root.function)
             .expect("task entry function");
         assert!(entry.primary_name.contains("TaskStorage<"));
         assert!(entry.primary_name.ends_with("::poll"));
@@ -113,7 +86,7 @@ fn recovers_embassy_task_contexts_and_spawns() {
     ] {
         let selected = analysis
             .cfg
-            .select_with_tdg(&analysis.tdg, Some(selector))
+            .select(Some(selector))
             .unwrap_or_else(|error| panic!("{selector}: {error}"));
         assert_eq!(selected.len(), 1, "{selector}");
         assert!(
@@ -130,15 +103,15 @@ fn recovers_embassy_task_contexts_and_spawns() {
 
     let reachable = analysis
         .cfg
-        .reachable_from(&analysis.tdg, "sensor_task")
+        .reachable_from("sensor_task")
         .expect("task reachability");
     assert!(reachable.iter().any(|function| {
         function.primary_name.contains("TaskStorage<")
             && function.primary_name.contains("__sensor_task_task")
     }));
 
-    let rendered = cfg::render_json(&analysis.cfg, &analysis.tdg, Some("sensor_task"), false)
-        .expect("task selector JSON");
+    let rendered =
+        cfg::render_json(&analysis.cfg, Some("sensor_task"), false).expect("task selector JSON");
     let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("valid CFG JSON");
     assert!(
         rendered["functions"][0]["primary_name"]
@@ -148,80 +121,77 @@ fn recovers_embassy_task_contexts_and_spawns() {
             )
     );
 
-    let dot = cfg::render_dot_with_tdg(&analysis.cfg, &analysis.tdg, Some("sensor_task"), false)
-        .expect("task selector DOT");
+    let dot =
+        cfg::render_dot(&analysis.cfg, Some("sensor_task"), false).expect("task selector DOT");
     assert!(dot.contains("TaskStorage<"));
-    let mermaid =
-        cfg::render_mermaid_with_tdg(&analysis.cfg, &analysis.tdg, Some("sensor_task"), false)
-            .expect("task selector Mermaid");
+    let mermaid = cfg::render_mermaid(&analysis.cfg, Some("sensor_task"), false)
+        .expect("task selector Mermaid");
     assert!(mermaid.contains("TaskStorage<"));
 
-    let spawns: Vec<&Edge> = tdg
-        .edges
+    let spawns: Vec<_> = analysis
+        .cfg
+        .concurrency
         .iter()
-        .filter(|edge| matches!(edge, Edge::Spawn { .. }))
+        .filter(|site| matches!(&site.operation, CfgConcurrencyKind::Spawn { .. }))
         .collect();
     assert_eq!(spawns.len(), 3, "Embassy main, sensor and monitor spawns");
-    for edge in &spawns {
-        let Edge::Spawn {
+    for site in &spawns {
+        let CfgConcurrencyKind::Spawn {
             runtime,
             api,
             name,
-            target: SpawnTarget::Context { entry, .. },
+            entry: Some(entry),
             ..
-        } = edge
+        } = &site.operation
         else {
-            panic!("expected a resolved Embassy spawn, got {edge:?}");
+            panic!(
+                "expected a resolved Embassy spawn, got {:?}",
+                site.operation
+            );
         };
         assert_eq!(runtime.as_str(), "rust-embassy");
         assert_eq!(api.as_str(), "embassy::Spawner::spawn");
         assert!(name.as_deref().is_some_and(|name| !name.contains("std::")));
-        let entry = tdg
-            .functions
-            .iter()
-            .find(|function| &function.id == entry)
-            .expect("spawn entry function");
+        let entry = analysis.cfg.function(entry).expect("spawn entry function");
         assert_eq!(entry.kind, FunctionKind::Normal);
         assert!(entry.primary_name.contains("TaskStorage<"));
     }
 
-    let isr_contexts: Vec<_> = tdg
-        .contexts
+    let isr_roots: Vec<_> = analysis
+        .cfg
+        .roots
         .iter()
-        .filter(|context| context.kind == ContextKind::Isr)
+        .filter(|root| root.kind == CfgRootKind::Isr)
         .collect();
-    assert_eq!(isr_contexts.len(), 1, "only HardFault is a real vector");
-    assert_eq!(isr_contexts[0].name, "HardFault");
+    assert_eq!(isr_roots.len(), 1, "only HardFault is a real vector");
+    assert_eq!(isr_roots[0].name.as_deref(), Some("HardFault"));
 
     assert!(
-        !tdg.diagnostics
+        !analysis
+            .cfg
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "unresolved-indirect-call"),
         "the executor task poll dispatch should have bounded targets"
     );
-    let candidate_diagnostic = tdg
+    let candidate_diagnostic = analysis
+        .cfg
         .diagnostics
         .iter()
         .find(|diagnostic| diagnostic.code == "resolved-indirect-call-candidates")
         .expect("multi-target resolution diagnostic");
     let site = candidate_diagnostic.site.expect("candidate call site");
-    let candidate_edges: Vec<_> = tdg
-        .edges
+    let candidate_edges: Vec<_> = analysis
+        .cfg
+        .calls
         .iter()
-        .filter_map(|edge| match edge {
-            Edge::Call {
-                site: edge_site,
-                direct: false,
-                confidence: Confidence::Low,
-                callee,
-                ..
-            } if *edge_site == site => Some(callee),
-            _ => None,
-        })
+        .filter(|call| call.site == site && !call.direct && call.confidence == Confidence::Low)
+        .filter_map(|call| call.callee.as_ref())
         .collect();
     assert_eq!(candidate_edges.len(), 4, "three task polls + poll_exited");
     for callee in &candidate_edges {
-        let target = tdg
+        let target = analysis
+            .cfg
             .functions
             .iter()
             .find(|function| &function.id == *callee)

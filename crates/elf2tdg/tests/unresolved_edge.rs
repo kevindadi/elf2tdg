@@ -1,6 +1,6 @@
 //! Explicit unresolved-call edges.
 //!
-//! A call through a non-code data value cannot be resolved. The TDG must keep
+//! A call through a non-code data value cannot be resolved. The CFG must keep
 //! the call site as an explicit unknown edge so graph passes do not prune code
 //! as if the caller had no outbound calls.
 
@@ -8,9 +8,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
+use elf2tdg::cfg;
 use elf2tdg::loader;
-use elf2tdg::output;
-use elf2tdg_schema::{Confidence, Edge};
+use elf2tdg_schema::Confidence;
 
 const SOURCE: &str = r"
 #include <stdint.h>
@@ -61,10 +61,10 @@ fn emits_explicit_unresolved_call_edges() {
     let image = loader::load(&binary).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
 
-    let diagnostic = tdg
+    let diagnostic = analysis
+        .cfg
         .diagnostics
         .iter()
         .find(|diagnostic| diagnostic.code == "unresolved-indirect-call")
@@ -72,61 +72,31 @@ fn emits_explicit_unresolved_call_edges() {
     let site = diagnostic.site.expect("unresolved call site");
     let caller = diagnostic.function.clone().expect("unresolved caller");
 
-    let unresolved: Vec<&Edge> = tdg
-        .edges
+    let unresolved: Vec<_> = analysis
+        .cfg
+        .calls
         .iter()
-        .filter(|edge| {
-            matches!(
-                edge,
-                Edge::UnresolvedCall {
-                    caller: edge_caller,
-                    site: edge_site,
-                    ..
-                } if edge_caller == &caller && edge_site == &site
-            )
-        })
+        .filter(|call| call.caller == caller && call.site == site && call.unresolved)
         .collect();
     assert_eq!(unresolved.len(), 1, "exactly one unresolved edge");
-    match unresolved[0] {
-        Edge::UnresolvedCall {
-            caller: edge_caller,
-            site: edge_site,
-            tail,
-            candidates,
-            confidence,
-            ..
-        } => {
-            assert_eq!(edge_caller, &caller);
-            assert_eq!(edge_site, &site);
-            assert!(!tail);
-            assert_eq!(candidates.as_slice(), []);
-            assert_eq!(*confidence, Confidence::Unknown);
-        }
-        _ => unreachable!("filtered unresolved edge"),
-    }
+    let call = unresolved[0];
+    assert_eq!(call.caller, caller);
+    assert_eq!(call.site, site);
+    assert!(!call.tail);
+    assert_eq!(call.candidates.as_slice(), &[]);
+    assert_eq!(call.confidence, Confidence::Unknown);
+    assert_eq!(call.callee, None);
     assert!(
-        !tdg.edges.iter().any(|edge| matches!(
-            edge,
-            Edge::Call { site: edge_site, .. } if edge_site == &site
-        )),
+        !analysis
+            .cfg
+            .calls
+            .iter()
+            .any(|call| call.site == site && !call.unresolved),
         "unresolved site must not also have a resolved call edge"
     );
 
-    let json = serde_json::to_string(tdg).expect("TDG JSON");
-    assert!(json.contains("\"kind\":\"unresolved-call\""));
-    let dot = output::render_dot(tdg);
-    assert!(dot.contains("call?"));
-    assert!(dot.contains("opaque:"));
-    let mermaid = output::render_mermaid(tdg);
-    assert!(mermaid.contains("call?"));
-    let concurrency = output::render_dot_with(
-        tdg,
-        output::GraphOptions {
-            projection: output::Projection::Concurrency,
-            legend: false,
-        },
-    );
-    assert!(!concurrency.contains("call?"));
+    let json = cfg::render_json(&analysis.cfg, None, false).expect("CFG JSON");
+    assert!(json.contains("\"unresolved\": true"));
 
     let _ = std::fs::remove_dir_all(binary.parent().expect("fixture directory"));
 }

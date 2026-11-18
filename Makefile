@@ -6,10 +6,7 @@ SPAWN_FIXTURE_ELF := $(SPAWN_FIXTURE_DIR)/firmware.elf
 ALLOC_FIXTURE_DIR := tests/fixtures/rust_alloc_trait
 STATIC_TRAIT_FIXTURE_DIR := tests/fixtures/rust_static_trait
 
-.PHONY: schema test lint fuzz fuzz-seed fixture alloc-fixture static-trait-fixture examples analyze-fixture analyze-spawn-fixture analyze-cfg-fixture analyze-elf-fixture clean
-
-schema:
-	$(CARGO) run --quiet -p elf2tdg-schema --example dump_schema > schema/tdg.schema.json
+.PHONY: test lint fuzz fuzz-seed fixture alloc-fixture static-trait-fixture examples analyze-fixture analyze-spawn-fixture analyze-cfg-fixture analyze-elf-fixture clean
 
 test:
 	$(CARGO) test --workspace
@@ -48,11 +45,11 @@ examples:
 	$(MAKE) -C examples/cortex-m0-isr
 
 analyze-fixture: $(FIXTURE_ELF)
-	$(CARGO) run -p elf2tdg -- $(FIXTURE_ELF) --view tdg --freq 48MHz --format json \
+	$(CARGO) run -p elf2tdg -- $(FIXTURE_ELF) --freq 48MHz --format json \
 		--output /tmp/elf2tdg-cortex-m0.json --verbose
 
 analyze-spawn-fixture: $(SPAWN_FIXTURE_ELF)
-	$(CARGO) run -p elf2tdg -- $(SPAWN_FIXTURE_ELF) --view tdg --freq 48MHz --format json \
+	$(CARGO) run -p elf2tdg -- $(SPAWN_FIXTURE_ELF) --freq 48MHz --format json \
 		--output /tmp/elf2tdg-cortex-m-spawn.json --verbose
 
 analyze-cfg-fixture: $(FIXTURE_ELF)

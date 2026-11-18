@@ -61,23 +61,14 @@ fn recovers_direct_pthread_lock_events() {
     let image = loader::load(&binary).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
-    assert!(
-        analysis
-            .cfg
-            .locks
-            .iter()
-            .any(|event| event.api == "pthread_mutex_lock"),
-        "lock events must also live in the CFG"
-    );
-
+    analysis.cfg.ensure_valid().expect("CFG must validate");
     for (api, operation) in [
         ("pthread_mutex_lock", LockOperation::Acquire),
         ("pthread_mutex_trylock", LockOperation::TryAcquire),
         ("pthread_mutex_unlock", LockOperation::Release),
     ] {
-        let event = tdg
+        let event = analysis
+            .cfg
             .locks
             .iter()
             .find(|event| event.api == api)
@@ -85,17 +76,9 @@ fn recovers_direct_pthread_lock_events() {
         assert_eq!(event.operation, operation, "{api}");
         assert_eq!(event.lock_kind, LockKind::Mutex, "{api}");
         assert!(!event.inlined, "{api} is a direct call");
-        assert_eq!(
-            event
-                .context
-                .as_ref()
-                .map(elf2tdg_schema::ContextId::as_str),
-            Some("ctx:main"),
-            "{api}"
-        );
     }
 
-    let json = serde_json::to_string(&tdg).expect("TDG JSON");
+    let json = elf2tdg::cfg::render_json(&analysis.cfg, None, false).expect("CFG JSON");
     assert!(json.contains("\"locks\""));
     assert!(json.contains("pthread_mutex_lock"));
 

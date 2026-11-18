@@ -256,7 +256,7 @@ int main(void) { return dispatch(impl, 35) == 42 ? 0 : 1; }
     assert_eq!(target.primary_name, "impl");
     assert!(
         analysis
-            .tdg
+            .cfg
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-forwarded-indirect-call")
@@ -303,7 +303,7 @@ int main() { return dispatch(obj, 35) == 42 ? 0 : 1; }
     assert!(target.primary_name.contains('f'));
     assert!(
         analysis
-            .tdg
+            .cfg
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-forwarded-indirect-call")
@@ -346,7 +346,7 @@ int main(void) { return dispatch(impl, 35) == 42 ? 0 : 1; }
     assert_eq!(target.primary_name, "impl");
     assert!(
         analysis
-            .tdg
+            .cfg
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-forwarded-indirect-jump")
@@ -429,7 +429,7 @@ int main(void) { return dispatch(35) == 42 ? 0 : 1; }
     assert_eq!(target.primary_name, "impl");
     assert!(
         analysis
-            .tdg
+            .cfg
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-indirect-jump")
@@ -624,7 +624,7 @@ fn assert_jump_table_resolved(binary: &Path, minimum_edges: usize) -> usize {
         "expected at least {minimum_edges} switch-case jump edges, got {jump_edges}"
     );
     analysis
-        .tdg
+        .cfg
         .diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.code == "resolved-jump-table")
@@ -961,7 +961,7 @@ dispatch:
     let image = loader::load(&binary).expect("AArch64 vector fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let roots = analysis.cfg.system_roots(&analysis.tdg, &image);
+    let roots = analysis.cfg.system_roots(&image);
     let names: Vec<&str> = roots
         .iter()
         .filter_map(|id| analysis.cfg.function(id))
@@ -998,7 +998,7 @@ dispatch:
     let image = loader::load(&binary).expect("RISC-V trap fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let roots = analysis.cfg.system_roots(&analysis.tdg, &image);
+    let roots = analysis.cfg.system_roots(&image);
     let names: Vec<&str> = roots
         .iter()
         .filter_map(|id| analysis.cfg.function(id))

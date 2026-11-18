@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::cfg::CfgTerminator;
 use elf2tdg::loader;
-use elf2tdg_schema::{Confidence, Edge};
+use elf2tdg_schema::Confidence;
 use petgraph::visit::IntoEdgeReferences;
 
 fn fixture_elf() -> Option<PathBuf> {
@@ -28,48 +28,46 @@ fn resolves_allocator_and_trait_object_calls() {
     let image = loader::load(&path).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
 
-    let allocator = tdg
+    let allocator = analysis
+        .cfg
         .functions
         .iter()
         .find(|function| function.primary_name.contains("GlobalAlloc>::alloc"))
         .expect("global allocator function");
-    let allocator_call = tdg.edges.iter().any(|edge| {
-        matches!(
-            edge,
-            Edge::Call {
-                callee,
-                direct: true,
-                ..
-            } if callee == &allocator.id
-        )
-    });
+    let allocator_call = analysis
+        .cfg
+        .calls
+        .iter()
+        .any(|call| call.callee.as_ref() == Some(&allocator.id) && call.direct);
     assert!(allocator_call, "allocator call should be a direct edge");
 
     assert!(
-        !tdg.diagnostics.iter().any(|diagnostic| {
+        !analysis.cfg.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "unresolved-indirect-call"
                 || diagnostic.code == "unresolved-indirect-jump"
         }),
         "the fixture should have no unresolved indirect calls"
     );
     assert!(
-        tdg.diagnostics
+        analysis
+            .cfg
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "null-indirect-call-target"),
         "the null drop slot should be reported without creating an edge"
     );
 
-    let trait_call = tdg
+    let trait_call = analysis
+        .cfg
         .diagnostics
         .iter()
         .find(|diagnostic| diagnostic.code == "resolved-trait-object-candidates")
         .expect("trait-object candidate diagnostic");
     let site = trait_call.site.expect("trait call site");
     assert!(
-        !tdg.diagnostics.iter().any(|diagnostic| {
+        !analysis.cfg.diagnostics.iter().any(|diagnostic| {
             (diagnostic.code == "unresolved-indirect-call"
                 || diagnostic.code == "unresolved-indirect-jump")
                 && diagnostic.site == Some(site)
@@ -77,31 +75,26 @@ fn resolves_allocator_and_trait_object_calls() {
         "trait-object candidates should replace the unresolved diagnostic"
     );
 
-    let candidates: Vec<_> = tdg
-        .edges
+    let candidates: Vec<_> = analysis
+        .cfg
+        .calls
         .iter()
-        .filter_map(|edge| match edge {
-            Edge::Call {
-                site: edge_site,
-                callee,
-                direct: false,
-                tail: true,
-                confidence: Confidence::Low,
-                ..
-            } if *edge_site == site => Some(callee),
-            _ => None,
+        .filter(|call| {
+            call.site == site && !call.direct && call.tail && call.confidence == Confidence::Low
         })
+        .filter_map(|call| call.callee.as_ref())
         .collect();
     assert_eq!(candidates.len(), 2, "two trait implementations");
     let mut method_addresses = Vec::new();
     for callee in &candidates {
-        let target = tdg
+        let target = analysis
+            .cfg
             .functions
             .iter()
             .find(|function| &function.id == *callee)
             .expect("candidate method");
         assert!(target.primary_name.contains("::Sensor>::read"));
-        method_addresses.push(target.address.get());
+        method_addresses.push(target.address);
     }
     for address in method_addresses {
         assert!(

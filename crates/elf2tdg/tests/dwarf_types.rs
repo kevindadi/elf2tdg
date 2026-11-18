@@ -14,7 +14,6 @@ use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::cfg::{CfgCallSite, ProgramCfg};
 use elf2tdg::dwarf::DwarfInfo;
 use elf2tdg::loader;
-use elf2tdg_schema::Tdg;
 
 const SOURCE: &str = r"
 #include <stddef.h>
@@ -239,8 +238,7 @@ fn assert_typed_dispatch(binary: &Path) {
     let image = loader::load(binary).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg: &Tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
     assert_type_metadata(&image);
 
     let calls = indirect_calls(&analysis.cfg, "dispatch");
@@ -267,7 +265,9 @@ fn assert_typed_dispatch(binary: &Path) {
     );
 
     assert!(
-        tdg.diagnostics
+        analysis
+            .cfg
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-typed-field-candidates"),
         "missing typed-field diagnostic"
@@ -333,7 +333,7 @@ fn bounds_tables_with_dwarf_variables_after_symbol_strip() {
 
     let analysis = analyze_with_cfg(&stripped_image, &AnalysisOptions::default())
         .expect("analysis must succeed");
-    analysis.tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
     let table = indirect_calls(&analysis.cfg, "main")
         .into_iter()
         .find(|call| candidate_names(&analysis.cfg, call).contains("cmd_a"))

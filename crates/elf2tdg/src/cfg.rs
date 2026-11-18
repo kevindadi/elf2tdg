@@ -5,8 +5,7 @@
 //! `petgraph::StableDiGraph`; control-flow edges and call sites remain explicit
 //! so the CLI can export a complete, lossless CFG. `ProgramCfg` also owns
 //! execution roots, the interprocedural call graph, concurrency annotations,
-//! locks, diagnostics and timing metadata. TDG generation is a compatibility
-//! view built after the CFG and its runtime annotations.
+//! locks, diagnostics and timing metadata. The program CFG is the only exported graph.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
@@ -15,7 +14,7 @@ use elf2tdg_schema::{
     Addr, AwaitKind, AwaitTarget, BlockId, Confidence, Context, ContextId, ContextKind, CostRange,
     Diagnostic, Edge, Function, FunctionId, FunctionKind, ImageInfo, JoinKind, JoinTarget,
     Language, LockEvent, LockKind, LockOperation, RuntimeId, Scope, ScopeKind, SourceLoc,
-    SpawnKind, SpawnTarget, Tdg, TimingInfo,
+    SpawnKind, SpawnTarget, TimingInfo,
 };
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
@@ -26,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "1.8";
+pub const CFG_SCHEMA_VERSION: &str = "1.9";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -624,6 +623,10 @@ pub enum CfgConcurrencyKind {
     CallbackBind {
         /// Registered callback function.
         callback: FunctionId,
+        /// Runtime that defines the registration API.
+        runtime: RuntimeId,
+        /// API symbol/name.
+        api: String,
     },
     /// Entry to a structured-concurrency scope.
     ScopeEnter {
@@ -723,10 +726,11 @@ pub struct ProgramCfg {
 }
 
 impl CfgFunction {
-    /// Builds an empty CFG record from a TDG function that has no machine code
-    /// in this image, such as an external import or a logical task entry.
+    /// Builds an empty CFG record from a runtime function record that has no
+    /// machine code in this image, such as an external import or a logical
+    /// task entry.
     #[must_use]
-    pub fn from_tdg_function(function: &Function) -> Self {
+    pub fn from_function_record(function: &Function) -> Self {
         Self {
             id: function.id.clone(),
             primary_name: function.primary_name.clone(),
@@ -769,10 +773,9 @@ impl ProgramCfg {
     /// Rebuilds CFG-native analysis metadata from the runtime facts produced
     /// during analysis.
     ///
-    /// This is the migration bridge for the runtime rule engine: rules still
-    /// emit TDG-shaped contexts and edges, but the resulting roots, call graph,
-    /// concurrency sites and locks are stored on the CFG. Later refactors can
-    /// make runtime rules emit these facts directly.
+    /// This is the bridge for the runtime rule engine: rules emit shared
+    /// context/relation records, but the resulting roots, call graph,
+    /// concurrency sites and locks are stored on the CFG.
     pub(crate) fn attach_analysis_metadata(
         &mut self,
         contexts: &[Context],
@@ -1036,6 +1039,8 @@ impl ProgramCfg {
                     from_function,
                     callback,
                     site,
+                    runtime,
+                    api,
                     confidence,
                     ..
                 } => {
@@ -1044,6 +1049,8 @@ impl ProgramCfg {
                         site: *site,
                         operation: CfgConcurrencyKind::CallbackBind {
                             callback: callback.clone(),
+                            runtime: runtime.clone(),
+                            api: api.clone(),
                         },
                         confidence: *confidence,
                     });
@@ -1129,39 +1136,11 @@ impl ProgramCfg {
     /// Returns a human-readable error when the selector matches no function or
     /// is ambiguous.
     pub fn select(&self, selector: Option<&str>) -> Result<Vec<&CfgFunction>, String> {
-        self.select_impl(selector, None)
-    }
-
-    /// Selects CFG functions with task-context aliases.
-    ///
-    /// In addition to function names, symbols and addresses, a selector may
-    /// name an execution context (for example `app::sensor_task`). The
-    /// context's entry function is then selected, so an async task name maps
-    /// to its real `TaskStorage<...>::poll` function instead of a helper that
-    /// merely contains the task name.
-    ///
-    /// CFG-native aliases are preferred. The `tdg` fallback is retained only
-    /// while the compatibility view exists and is ignored once aliases have
-    /// been attached to the program CFG.
-    ///
-    /// # Errors
-    ///
-    /// Returns a human-readable error when the selector matches no function or
-    /// context, or when the match is ambiguous.
-    pub fn select_with_tdg(
-        &self,
-        tdg: &Tdg,
-        selector: Option<&str>,
-    ) -> Result<Vec<&CfgFunction>, String> {
-        self.select_impl(selector, Some(tdg))
+        self.select_impl(selector)
     }
 
     #[allow(clippy::too_many_lines)]
-    fn select_impl(
-        &self,
-        selector: Option<&str>,
-        tdg: Option<&Tdg>,
-    ) -> Result<Vec<&CfgFunction>, String> {
+    fn select_impl(&self, selector: Option<&str>) -> Result<Vec<&CfgFunction>, String> {
         let Some(selector) = selector else {
             return Ok(self.functions.iter().collect());
         };
@@ -1198,27 +1177,6 @@ impl ProgramCfg {
                 task_aliases.len()
             ));
         }
-        if self.aliases.is_empty()
-            && let Some(tdg) = tdg
-        {
-            let aliases = unique_functions(
-                tdg.contexts
-                    .iter()
-                    .filter(|context| is_task_context(context.kind))
-                    .filter(|context| context_matches(&context.name, selector))
-                    .filter_map(|context| self.cfg_function_for_tdg_id(tdg, &context.entry)),
-            );
-            if aliases.len() == 1 {
-                return Ok(aliases);
-            }
-            if aliases.len() > 1 {
-                return Err(format!(
-                    "function selector {selector:?} matches multiple task contexts ({} matches)",
-                    aliases.len()
-                ));
-            }
-        }
-
         let matches = |name: &str| {
             let normalized = normalize_crate_hashes(name);
             normalized == selector || name == selector
@@ -1263,16 +1221,6 @@ impl ProgramCfg {
                 .filter(|alias| normalize_crate_hashes(&alias.name).contains(selector))
                 .filter_map(|alias| self.function(&alias.function)),
         );
-        if self.aliases.is_empty()
-            && let Some(tdg) = tdg
-        {
-            partial.extend(
-                tdg.contexts
-                    .iter()
-                    .filter(|context| normalize_crate_hashes(&context.name).contains(selector))
-                    .filter_map(|context| self.cfg_function_for_tdg_id(tdg, &context.entry)),
-            );
-        }
         let partial = unique_functions(partial);
         match partial.len() {
             0 => Err(format!("no function matches {selector:?}")),
@@ -1287,17 +1235,17 @@ impl ProgramCfg {
     /// Selects all functions reachable from `root` through calls and task
     /// creation.
     ///
-    /// Traversal follows ordinary call edges plus spawn, callback-binding,
-    /// join and await edges from the TDG. The special root `main` prefers the
-    /// entry of the TDG main context, which is the language-level `main` (for
-    /// example Rust's `main::main`) rather than the C runtime wrapper.
+    /// Traversal follows CFG call edges plus spawn, callback-binding, join,
+    /// await and code-reference annotations. The special root `main` prefers a
+    /// CFG main root, which is the language-level `main` (for example Rust's
+    /// `main::main`) rather than the C runtime wrapper.
     ///
     /// # Errors
     ///
     /// Returns a human-readable error when the root selector matches no
     /// function or is ambiguous.
-    pub fn reachable_from(&self, tdg: &Tdg, root: &str) -> Result<Vec<&CfgFunction>, String> {
-        self.reachable_from_with_pruning(tdg, root, false)
+    pub fn reachable_from(&self, root: &str) -> Result<Vec<&CfgFunction>, String> {
+        self.reachable_from_with_pruning(root, false)
     }
 
     /// Single-root reachability with optional runtime-boundary pruning.
@@ -1308,13 +1256,12 @@ impl ProgramCfg {
     /// function or is ambiguous.
     pub fn reachable_from_with_pruning(
         &self,
-        tdg: &Tdg,
         root: &str,
         prune_runtime: bool,
     ) -> Result<Vec<&CfgFunction>, String> {
-        let (seed_ids, selected_ids) = self.reachable_seeds(tdg, root)?;
-        let reachable = self.reachable_ids(tdg, seed_ids, prune_runtime);
-        Ok(self.selected_from_reachable(tdg, &reachable, selected_ids))
+        let (seed_ids, selected_ids) = self.reachable_seeds(root)?;
+        let reachable = self.reachable_ids(seed_ids, prune_runtime);
+        Ok(self.selected_from_reachable(&reachable, selected_ids))
     }
 
     /// Resolves an address to a non-special function suitable for a general
@@ -1342,10 +1289,10 @@ impl ProgramCfg {
     /// roots for lossless export, not proof that the image executes the
     /// function. Dead-code and reachability passes should start here.
     #[must_use]
-    pub fn execution_roots(&self, tdg: &Tdg, image: &Image) -> Vec<FunctionId> {
+    pub fn execution_roots(&self, image: &Image) -> Vec<FunctionId> {
         let mut roots = BTreeSet::new();
         let default_handlers = default_handler_addresses(image);
-        self.collect_execution_roots(tdg, image, &default_handlers, &mut roots);
+        self.collect_execution_roots(image, &default_handlers, &mut roots);
         roots.into_iter().collect()
     }
 
@@ -1357,10 +1304,10 @@ impl ProgramCfg {
     ///
     /// Default handler stubs repeated across unused vectors are excluded.
     #[must_use]
-    pub fn system_roots(&self, tdg: &Tdg, image: &Image) -> Vec<FunctionId> {
+    pub fn system_roots(&self, image: &Image) -> Vec<FunctionId> {
         let mut roots = BTreeSet::new();
         let default_handlers = default_handler_addresses(image);
-        self.collect_execution_roots(tdg, image, &default_handlers, &mut roots);
+        self.collect_execution_roots(image, &default_handlers, &mut roots);
         for symbol in &image.symbols {
             if let Some(function) =
                 self.function_root_at(&default_handlers, symbol.canonical_address)
@@ -1385,21 +1332,19 @@ impl ProgramCfg {
 
     fn collect_execution_roots(
         &self,
-        tdg: &Tdg,
         image: &Image,
         default_handlers: &BTreeSet<u64>,
         roots: &mut BTreeSet<FunctionId>,
     ) {
-        for context in &tdg.contexts {
-            let function = self.cfg_function_for_tdg_id(tdg, &context.entry);
-            let default = function.is_some_and(is_default_handler)
-                || tdg
-                    .functions
-                    .iter()
-                    .find(|function| function.id == context.entry)
+        for root in &self.roots {
+            let default = self
+                .function(&root.function)
+                .is_some_and(is_default_handler)
+                || self
+                    .function(&root.function)
                     .is_some_and(|function| is_default_handler_name(&function.primary_name));
             if !default {
-                roots.insert(context.entry.clone());
+                roots.insert(root.function.clone());
             }
         }
         for target in architecture_root_addresses(image) {
@@ -1412,8 +1357,8 @@ impl ProgramCfg {
                 roots.insert(function.id.clone());
             }
         }
-        for edge in &tdg.edges {
-            if let Edge::CallbackBind { callback, .. } = edge {
+        for site in &self.concurrency {
+            if let CfgConcurrencyKind::CallbackBind { callback, .. } = &site.operation {
                 roots.insert(callback.clone());
             }
         }
@@ -1445,14 +1390,9 @@ impl ProgramCfg {
     /// drop-glue functions are retained as nodes but their callees are not
     /// expanded.
     #[must_use]
-    pub fn reachable_from_system(
-        &self,
-        tdg: &Tdg,
-        image: &Image,
-        prune_runtime: bool,
-    ) -> Vec<&CfgFunction> {
-        let roots = self.system_roots(tdg, image);
-        self.reachable_from_roots(tdg, &roots, prune_runtime)
+    pub fn reachable_from_system(&self, image: &Image, prune_runtime: bool) -> Vec<&CfgFunction> {
+        let roots = self.system_roots(image);
+        self.reachable_from_roots(&roots, prune_runtime)
     }
 
     /// Runs reachability from execution roots only.
@@ -1464,19 +1404,17 @@ impl ProgramCfg {
     #[must_use]
     pub fn reachable_from_execution_roots(
         &self,
-        tdg: &Tdg,
         image: &Image,
         prune_runtime: bool,
     ) -> Vec<&CfgFunction> {
-        let roots = self.execution_roots(tdg, image);
-        self.reachable_from_roots(tdg, &roots, prune_runtime)
+        let roots = self.execution_roots(image);
+        self.reachable_from_roots(&roots, prune_runtime)
     }
 
     /// Runs multi-root worklist reachability from an explicit root set.
     #[must_use]
     pub fn reachable_from_roots(
         &self,
-        tdg: &Tdg,
         roots: &[FunctionId],
         prune_runtime: bool,
     ) -> Vec<&CfgFunction> {
@@ -1484,21 +1422,20 @@ impl ProgramCfg {
         let mut selected_ids = BTreeSet::new();
         for root in roots {
             seed_ids.push(root.clone());
-            if let Some(function) = self.cfg_function_for_tdg_id(tdg, root) {
-                selected_ids.insert(function.id.clone());
+            if self.function(root).is_some() {
+                selected_ids.insert(root.clone());
             }
         }
-        let reachable = self.reachable_ids(tdg, seed_ids, prune_runtime);
-        self.selected_from_reachable(tdg, &reachable, selected_ids)
+        let reachable = self.reachable_ids(seed_ids, prune_runtime);
+        self.selected_from_reachable(&reachable, selected_ids)
     }
 
     fn reachable_ids(
         &self,
-        tdg: &Tdg,
         seed_ids: Vec<FunctionId>,
         prune_runtime: bool,
     ) -> BTreeSet<FunctionId> {
-        let mut adjacency = tdg_reachability(tdg);
+        let mut adjacency = self.program_reachability();
         self.add_code_reference_edges(&mut adjacency);
         let mut reachable: BTreeSet<FunctionId> = BTreeSet::new();
         let mut pending: Vec<FunctionId> = Vec::new();
@@ -1511,11 +1448,7 @@ impl ProgramCfg {
         while cursor < pending.len() {
             let current = pending[cursor].clone();
             cursor += 1;
-            if prune_runtime
-                && self
-                    .cfg_function_for_tdg_id(tdg, &current)
-                    .is_some_and(is_runtime_boundary)
-            {
+            if prune_runtime && self.function(&current).is_some_and(is_runtime_boundary) {
                 continue;
             }
             if let Some(next) = adjacency.get(&current) {
@@ -1527,6 +1460,64 @@ impl ProgramCfg {
             }
         }
         reachable
+    }
+
+    fn program_reachability(&self) -> BTreeMap<FunctionId, Vec<FunctionId>> {
+        let mut adjacency: BTreeMap<FunctionId, Vec<FunctionId>> = BTreeMap::new();
+        let mut add = |from: &FunctionId, to: &FunctionId| {
+            adjacency.entry(from.clone()).or_default().push(to.clone());
+        };
+        for call in &self.calls {
+            if let Some(callee) = &call.callee {
+                add(&call.caller, callee);
+            }
+            for candidate in &call.candidates {
+                add(&call.caller, candidate);
+            }
+        }
+        for site in &self.concurrency {
+            match &site.operation {
+                CfgConcurrencyKind::Spawn {
+                    entry, candidates, ..
+                } => {
+                    if let Some(entry) = entry {
+                        add(&site.function, entry);
+                        // A task's spawner remains part of the executable
+                        // slice leading to the task when the spawn call itself
+                        // was indirect.
+                        add(entry, &site.function);
+                    }
+                    for candidate in candidates {
+                        add(&site.function, candidate);
+                    }
+                }
+                CfgConcurrencyKind::Join {
+                    entry, candidates, ..
+                } => {
+                    if let Some(entry) = entry {
+                        add(&site.function, entry);
+                    }
+                    for candidate in candidates {
+                        add(&site.function, candidate);
+                    }
+                }
+                CfgConcurrencyKind::Await {
+                    target, candidates, ..
+                } => {
+                    if let Some(target) = target {
+                        add(&site.function, target);
+                    }
+                    for candidate in candidates {
+                        add(&site.function, candidate);
+                    }
+                }
+                CfgConcurrencyKind::CallbackBind { callback, .. } => {
+                    add(&site.function, callback);
+                }
+                CfgConcurrencyKind::ScopeEnter { .. } | CfgConcurrencyKind::ScopeExit { .. } => {}
+            }
+        }
+        adjacency
     }
 
     fn add_code_reference_edges(&self, adjacency: &mut BTreeMap<FunctionId, Vec<FunctionId>>) {
@@ -1546,22 +1537,12 @@ impl ProgramCfg {
 
     fn selected_from_reachable(
         &self,
-        tdg: &Tdg,
         reachable: &BTreeSet<FunctionId>,
         mut selected_ids: BTreeSet<FunctionId>,
     ) -> Vec<&CfgFunction> {
-        // Logical task entries in optimized images can be synthetic IDs such
-        // as `fn:task:0x...` whose address lies inside a real CFG function.
         for id in reachable {
             if self.function(id).is_some() {
                 selected_ids.insert(id.clone());
-                continue;
-            }
-            let Some(function) = tdg.functions.iter().find(|function| &function.id == id) else {
-                continue;
-            };
-            if let Some(cfg_function) = self.function_covering(function.address.get()) {
-                selected_ids.insert(cfg_function.id.clone());
             }
         }
         self.functions
@@ -1572,47 +1553,28 @@ impl ProgramCfg {
 
     fn reachable_seeds(
         &self,
-        tdg: &Tdg,
         root: &str,
     ) -> Result<(Vec<FunctionId>, BTreeSet<FunctionId>), String> {
         if root == "main" {
-            let mut entries: Vec<FunctionId> = tdg
-                .contexts
+            let entries: Vec<FunctionId> = self
+                .roots
                 .iter()
-                .filter(|context| context.kind == ContextKind::Main)
-                .map(|context| context.entry.clone())
+                .filter(|root| root.kind == CfgRootKind::Main)
+                .filter(|root| self.function(&root.function).is_some())
+                .map(|root| root.function.clone())
                 .collect();
-            let mut selected = BTreeSet::new();
-            for entry in entries.clone() {
-                if let Some(function) = self.cfg_function_for_tdg_id(tdg, &entry) {
-                    selected.insert(function.id.clone());
-                    // Synthetic task IDs can point inside a real function;
-                    // seed the real ID too so its outgoing calls are followed.
-                    entries.push(function.id.clone());
-                }
-            }
-            if !selected.is_empty() {
+            if !entries.is_empty() {
+                let selected = entries.iter().cloned().collect();
                 return Ok((entries, selected));
             }
         }
-        let functions = self.select_with_tdg(tdg, Some(root))?;
+        let functions = self.select(Some(root))?;
         let ids: Vec<FunctionId> = functions
             .iter()
             .map(|function| function.id.clone())
             .collect();
         let selected = ids.iter().cloned().collect();
         Ok((ids, selected))
-    }
-
-    fn cfg_function_for_tdg_id<'a>(
-        &'a self,
-        tdg: &Tdg,
-        id: &FunctionId,
-    ) -> Option<&'a CfgFunction> {
-        self.function(id).or_else(|| {
-            let function = tdg.functions.iter().find(|function| &function.id == id)?;
-            self.function_covering(function.address.get())
-        })
     }
 
     fn function_covering(&self, address: u64) -> Option<&CfgFunction> {
@@ -1921,107 +1883,6 @@ fn is_runtime_boundary(function: &CfgFunction) -> bool {
     .any(|prefix| name.contains(prefix))
 }
 
-fn tdg_reachability(tdg: &Tdg) -> BTreeMap<FunctionId, Vec<FunctionId>> {
-    let context_entries: BTreeMap<&ContextId, &FunctionId> = tdg
-        .contexts
-        .iter()
-        .map(|context| (&context.id, &context.entry))
-        .collect();
-    let mut adjacency: BTreeMap<FunctionId, Vec<FunctionId>> = BTreeMap::new();
-    let mut add = |from: &FunctionId, to: &FunctionId| {
-        adjacency.entry(from.clone()).or_default().push(to.clone());
-    };
-    for context in &tdg.contexts {
-        let Some(parent) = &context.parent else {
-            continue;
-        };
-        let (Some(parent_entry), Some(entry)) = (
-            context_entries.get(parent),
-            context_entries.get(&context.id),
-        ) else {
-            continue;
-        };
-        add(parent_entry, entry);
-    }
-    for edge in &tdg.edges {
-        match edge {
-            Edge::Call { caller, callee, .. } => add(caller, callee),
-            Edge::UnresolvedCall {
-                caller, candidates, ..
-            } => {
-                for candidate in candidates {
-                    add(caller, candidate);
-                }
-            }
-            Edge::Spawn {
-                from_function,
-                target,
-                ..
-            } => match target {
-                SpawnTarget::Context { entry, .. } => {
-                    add(from_function, entry);
-                    // A task's spawner is part of the executable slice that
-                    // leads to the task even when the call into the spawner
-                    // itself was indirect.
-                    add(entry, from_function);
-                }
-                SpawnTarget::Opaque { candidates } => {
-                    for candidate in candidates {
-                        add(from_function, candidate);
-                    }
-                }
-            },
-            Edge::CallbackBind {
-                from_function,
-                callback,
-                ..
-            } => add(from_function, callback),
-            Edge::Join {
-                from_function,
-                target,
-                ..
-            } => match target {
-                JoinTarget::Context { context } => {
-                    if let Some(entry) = context_entries.get(context) {
-                        add(from_function, entry);
-                    }
-                }
-                JoinTarget::Opaque { candidates } => {
-                    for context in candidates {
-                        if let Some(entry) = context_entries.get(context) {
-                            add(from_function, entry);
-                        }
-                    }
-                }
-            },
-            Edge::Await {
-                from_context,
-                target,
-                ..
-            } => {
-                let Some(from) = context_entries.get(from_context) else {
-                    continue;
-                };
-                match target {
-                    AwaitTarget::Context { context } => {
-                        if let Some(entry) = context_entries.get(context) {
-                            add(from, entry);
-                        }
-                    }
-                    AwaitTarget::Function { function } => add(from, function),
-                    AwaitTarget::Opaque { candidates } => {
-                        for candidate in candidates {
-                            add(from, candidate);
-                        }
-                    }
-                }
-            }
-            Edge::IsrActivate { .. } | Edge::Preempts { .. } => {}
-        }
-    }
-    adjacency
-}
-
 #[derive(Serialize)]
 struct CfgDocument<'a> {
     cfg_schema_version: &'static str,
@@ -2187,51 +2048,22 @@ struct CfgEdgeView {
 /// # Errors
 ///
 /// Returns an error when the function selector matches nothing or is
-/// ambiguous, or when JSON serialization fails.
-pub fn render_json(
-    program: &ProgramCfg,
-    _tdg: &Tdg,
-    selector: Option<&str>,
-    include_instructions: bool,
-) -> Result<String, String> {
-    render_json_program(program, selector, include_instructions)
-}
-
-/// Serializes the CFG document without requiring a TDG.
-///
-/// # Errors
-///
-/// Returns an error when the function selector matches nothing or is
 /// ambiguous, when program metadata is missing, or when serialization fails.
-pub fn render_json_program(
+pub fn render_json(
     program: &ProgramCfg,
     selector: Option<&str>,
     include_instructions: bool,
 ) -> Result<String, String> {
     let selected = program.select(selector)?;
-    render_json_program_selected(program, &selected, include_instructions)
+    render_json_selected(program, &selected, include_instructions)
 }
 
-/// Serializes an explicitly selected set of CFGs for downstream tools.
-///
-/// # Errors
-///
-/// Returns an error when JSON serialization fails.
-pub fn render_json_selected(
-    program: &ProgramCfg,
-    _tdg: &Tdg,
-    selected: &[&CfgFunction],
-    include_instructions: bool,
-) -> Result<String, String> {
-    render_json_program_selected(program, selected, include_instructions)
-}
-
-/// Serializes explicitly selected CFGs using only program-CFG metadata.
+/// Serializes explicitly selected CFGs using program-CFG metadata.
 ///
 /// # Errors
 ///
 /// Returns an error when the image metadata is absent or serialization fails.
-pub fn render_json_program_selected(
+pub fn render_json_selected(
     program: &ProgramCfg,
     selected: &[&CfgFunction],
     include_instructions: bool,
@@ -2597,26 +2429,6 @@ pub fn render_dot(
     ))
 }
 
-/// Renders a CFG as Graphviz DOT with task-context selector aliases from
-/// `tdg`.
-///
-/// # Errors
-///
-/// Returns an error when the selector matches nothing or is ambiguous.
-pub fn render_dot_with_tdg(
-    program: &ProgramCfg,
-    tdg: &Tdg,
-    selector: Option<&str>,
-    include_instructions: bool,
-) -> Result<String, String> {
-    let selected = program.select_with_tdg(tdg, selector)?;
-    Ok(render_dot_selected(
-        program,
-        &selected,
-        include_instructions,
-    ))
-}
-
 /// Renders an explicitly selected set of function CFGs as Graphviz DOT.
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -2757,26 +2569,6 @@ pub fn render_mermaid(
     include_instructions: bool,
 ) -> Result<String, String> {
     let selected = program.select(selector)?;
-    Ok(render_mermaid_selected(
-        program,
-        &selected,
-        include_instructions,
-    ))
-}
-
-/// Renders a CFG as a Mermaid flowchart with task-context selector aliases
-/// from `tdg`.
-///
-/// # Errors
-///
-/// Returns an error when the selector matches nothing or is ambiguous.
-pub fn render_mermaid_with_tdg(
-    program: &ProgramCfg,
-    tdg: &Tdg,
-    selector: Option<&str>,
-    include_instructions: bool,
-) -> Result<String, String> {
-    let selected = program.select_with_tdg(tdg, selector)?;
     Ok(render_mermaid_selected(
         program,
         &selected,

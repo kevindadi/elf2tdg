@@ -266,7 +266,7 @@ impl TimingModel {
         caveats
     }
 
-    /// Model parameters recorded in the TDG.
+    /// Model parameters recorded in the CFG timing metadata.
     #[must_use]
     pub fn params(self) -> TimingParams {
         match self {
@@ -297,7 +297,7 @@ impl TimingModel {
         }
     }
 
-    /// Builds the TDG timing metadata.
+    /// Builds CFG timing metadata.
     #[must_use]
     pub fn timing_info(self, frequency_hz: Option<u64>) -> TimingInfo {
         let frequency_domains = frequency_hz
@@ -617,7 +617,7 @@ impl TimingCostModel {
         (CostRange::new(min, max), unknown)
     }
 
-    /// Builds TDG timing metadata for the selected model and profile.
+    /// Builds CFG timing metadata for the selected model and profile.
     #[must_use]
     #[allow(clippy::too_many_lines)]
     pub fn timing_info(

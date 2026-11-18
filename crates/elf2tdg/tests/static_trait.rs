@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::loader;
-use elf2tdg_schema::{Confidence, Edge};
+use elf2tdg_schema::Confidence;
 
 fn fixture_elf() -> Option<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -32,8 +32,7 @@ fn resolves_static_trait_object_registry() {
     let image = loader::load(&path).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
 
     let dwarf = image.dwarf.as_ref().expect("fixture must retain DWARF");
     let layout = dwarf
@@ -95,29 +94,28 @@ fn resolves_static_trait_object_registry() {
     assert!(names.iter().any(|name| name.contains("::A as")));
     assert!(names.iter().any(|name| name.contains("::B as")));
 
-    let call_edges: Vec<_> = tdg
-        .edges
+    let call_edges: Vec<_> = analysis
+        .cfg
+        .calls
         .iter()
-        .filter_map(|edge| match edge {
-            Edge::Call {
-                caller,
-                callee,
-                direct: false,
-                tail: true,
-                confidence: Confidence::Low,
-                ..
-            } if caller == &dispatch.id => Some(callee),
-            _ => None,
+        .filter(|call| {
+            call.caller == dispatch.id
+                && !call.direct
+                && call.tail
+                && call.confidence == Confidence::Low
         })
+        .filter_map(|call| call.callee.as_ref())
         .collect();
     assert_eq!(call_edges.len(), 2);
     assert!(
-        tdg.diagnostics
+        analysis
+            .cfg
+            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "resolved-trait-object-candidates")
     );
     assert!(
-        !tdg.diagnostics.iter().any(|diagnostic| {
+        !analysis.cfg.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "unresolved-indirect-call"
                 || diagnostic.code == "unresolved-indirect-jump"
         }),

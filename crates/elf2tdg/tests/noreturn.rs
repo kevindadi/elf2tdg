@@ -12,7 +12,7 @@ use std::process::Command;
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::cfg::{self, CfgEdgeKind, CfgNoreturnReason, CfgTerminator, FunctionCfg};
 use elf2tdg::loader;
-use elf2tdg_schema::{Edge, FunctionKind};
+use elf2tdg_schema::FunctionKind;
 use petgraph::visit::IntoEdgeReferences;
 
 const SOURCE: &str = r#"
@@ -134,8 +134,7 @@ fn suppresses_noreturn_continuations_and_keeps_shared_returns() {
     let image = loader::load(&binary).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
 
     let halt = function(&analysis.cfg, "halt_forever");
     assert_eq!(halt.noreturn, Some(CfgNoreturnReason::ControlFlow));
@@ -203,55 +202,39 @@ fn suppresses_noreturn_continuations_and_keeps_shared_returns() {
     );
     assert_eq!(halt_if.cfg.blocks_by_address.len(), 3);
 
-    // The TDG keeps call edges to noreturn targets, marks the function
-    // metadata, and exposes empty successor sets for the removed continuations.
-    let exit = tdg
-        .functions
-        .iter()
-        .find(|function| function.primary_name == "_exit")
-        .expect("external _exit function");
+    // The CFG keeps call edges to noreturn targets and marks the function
+    // metadata.
+    let exit = function(&analysis.cfg, "_exit");
     assert_eq!(exit.kind, FunctionKind::Plt);
-    assert_eq!(
-        exit.ext
-            .get("elf2tdg.noreturn")
-            .and_then(serde_json::Value::as_bool),
-        Some(true)
-    );
+    assert!(exit.noreturn.is_some());
+    let indirect = function(&analysis.cfg, "call_through_pointer");
     assert!(
-        tdg.edges.iter().any(|edge| matches!(
-            edge,
-            Edge::Call { caller, callee, site, direct: false, .. }
-                if caller == &indirect_id(tdg) && callee == &exit.id && site.get() == indirect_site
-        )),
-        "noreturn call edge must remain in the TDG"
+        analysis.cfg.calls.iter().any(|call| {
+            call.caller == indirect.id
+                && call.callee.as_ref() == Some(&exit.id)
+                && call.site.get() == indirect_site
+                && !call.direct
+        }),
+        "indirect noreturn call edge must remain in the CFG"
     );
+    let direct_function = function(&analysis.cfg, "direct_exit");
     assert!(
-        tdg.edges.iter().any(|edge| matches!(
-            edge,
-            Edge::Call { caller, callee, site, direct: true, .. }
-                if caller == &direct_id(tdg) && callee == &exit.id && site.get() == direct_site
-        )),
-        "direct noreturn call edge must remain in the TDG"
+        analysis.cfg.calls.iter().any(|call| {
+            call.caller == direct_function.id
+                && call.callee.as_ref() == Some(&exit.id)
+                && call.site.get() == direct_site
+                && call.direct
+        }),
+        "direct noreturn call edge must remain in the CFG"
     );
-    let halt_if_schema = tdg
-        .functions
-        .iter()
-        .find(|function| function.primary_name == "halt_if")
-        .expect("halt_if TDG function");
-    assert_eq!(halt_if_schema.ext.get("elf2tdg.noreturn"), None);
-    assert!(
-        halt_if_schema
-            .blocks
-            .iter()
-            .find(|block| block.id == conditional_block.id)
-            .is_some_and(|block| block.successors.is_empty())
-    );
+    let halt_if_cfg = function(&analysis.cfg, "halt_if");
+    assert_eq!(halt_if_cfg.noreturn, None);
 
     let selected: Vec<&cfg::CfgFunction> = ["call_through_pointer", "halt_if"]
         .iter()
         .map(|name| function(&analysis.cfg, name))
         .collect();
-    let json = cfg::render_json_selected(&analysis.cfg, tdg, &selected, false).expect("CFG JSON");
+    let json = cfg::render_json_selected(&analysis.cfg, &selected, false).expect("CFG JSON");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert_eq!(value["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
     assert_eq!(value["functions"][0]["noreturn"], "control-flow");
@@ -266,22 +249,4 @@ fn suppresses_noreturn_continuations_and_keeps_shared_returns() {
     );
 
     let _ = std::fs::remove_dir_all(binary.parent().expect("fixture directory"));
-}
-
-fn indirect_id(tdg: &elf2tdg_schema::Tdg) -> elf2tdg_schema::FunctionId {
-    tdg.functions
-        .iter()
-        .find(|function| function.primary_name == "call_through_pointer")
-        .expect("call_through_pointer TDG function")
-        .id
-        .clone()
-}
-
-fn direct_id(tdg: &elf2tdg_schema::Tdg) -> elf2tdg_schema::FunctionId {
-    tdg.functions
-        .iter()
-        .find(|function| function.primary_name == "direct_exit")
-        .expect("direct_exit TDG function")
-        .id
-        .clone()
 }

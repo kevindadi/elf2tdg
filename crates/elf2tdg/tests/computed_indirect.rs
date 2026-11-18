@@ -12,7 +12,7 @@ use std::process::Command;
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::cfg::{CfgCallSite, ProgramCfg};
 use elf2tdg::loader;
-use elf2tdg_schema::{FunctionId, Tdg};
+use elf2tdg_schema::FunctionId;
 
 const SOURCE: &str = r"
 #include <stddef.h>
@@ -202,8 +202,7 @@ fn assert_computed_calls(binary: &Path) {
     let image = loader::load(binary).expect("fixture must load");
     let analysis =
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
-    let tdg: &Tdg = &analysis.tdg;
-    tdg.ensure_valid().expect("TDG must validate");
+    analysis.cfg.ensure_valid().expect("CFG must validate");
     let calls = indirect_calls(&analysis.cfg, "main");
 
     let table: BTreeSet<String> = ["cmd_a", "cmd_b", "cmd_c", "cmd_d"]
@@ -259,7 +258,9 @@ fn assert_computed_calls(binary: &Path) {
     );
     for code in ["resolved-call-table", "resolved-returned-indirect-call"] {
         assert!(
-            tdg.diagnostics
+            analysis
+                .cfg
+                .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == code),
             "missing {code} diagnostic"

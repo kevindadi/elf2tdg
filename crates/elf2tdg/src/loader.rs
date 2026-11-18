@@ -32,7 +32,7 @@ pub enum ArchKind {
 }
 
 impl ArchKind {
-    /// Architecture string used in the TDG schema.
+    /// Architecture string used in the analysis model.
     #[must_use]
     pub fn schema_name(self) -> &'static str {
         match self {

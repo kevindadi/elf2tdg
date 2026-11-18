@@ -5,6 +5,7 @@ use std::path::Path;
 
 use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::board_profile::BoardProfile;
+use elf2tdg::cfg::ProgramCfg;
 use elf2tdg::loader;
 use elf2tdg_schema::{BlockId, FrequencySource};
 
@@ -30,12 +31,12 @@ fn applies_board_profile_timing_and_provenance() {
     )
     .expect("profiled analysis must succeed");
     profiled
-        .tdg
+        .cfg
         .ensure_valid()
-        .expect("profiled TDG must validate");
-    base.tdg.ensure_valid().expect("default TDG must validate");
+        .expect("profiled CFG must validate");
+    base.cfg.ensure_valid().expect("default CFG must validate");
 
-    let timing = &profiled.tdg.timing;
+    let timing = profiled.cfg.timing.as_ref().expect("CFG timing metadata");
     let model = timing.models.first().expect("timing model");
     assert_eq!(
         model
@@ -80,7 +81,7 @@ fn applies_board_profile_timing_and_provenance() {
 
     assert!(
         profiled
-            .tdg
+            .cfg
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "timing-board-profile"),
@@ -88,7 +89,7 @@ fn applies_board_profile_timing_and_provenance() {
     );
     assert!(
         profiled
-            .tdg
+            .cfg
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "frequency-from-board-profile"),
@@ -96,34 +97,30 @@ fn applies_board_profile_timing_and_provenance() {
     );
     assert!(
         !profiled
-            .tdg
+            .cfg
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "timing-unknown-instruction"),
         "example instructions are all recognized"
     );
 
-    let base_costs = block_costs(&base.tdg);
+    let base_costs = block_costs(&base.cfg);
     let mut saw_higher_cost = false;
-    let mut saw_time = false;
-    for function in &profiled.tdg.functions {
-        for block in &function.blocks {
-            let Some(timing) = &block.timing else {
+    let mut saw_cycles = false;
+    for function in &profiled.cfg.functions {
+        for node in function.cfg.blocks_by_address.values() {
+            let block = &function.cfg.graph[*node];
+            let Some(cycles) = block.cycles else {
                 continue;
             };
-            saw_time |= timing.time_ns.is_some();
-            if let Some(time_ns) = &timing.time_ns {
-                let hz = 48_000_000.0;
-                let expected_min = timing.cycles.min * 1_000_000_000.0 / hz;
-                assert!((time_ns.min - expected_min).abs() < 1e-6);
-            }
+            saw_cycles = true;
             if let Some(base_cycles) = base_costs.get(&block.id) {
                 assert!(
-                    timing.cycles.min >= *base_cycles,
+                    cycles.min >= *base_cycles,
                     "profile fetch costs must not lower block {}",
                     block.id
                 );
-                saw_higher_cost |= timing.cycles.min > *base_cycles;
+                saw_higher_cost |= cycles.min > *base_cycles;
             }
         }
     }
@@ -131,15 +128,22 @@ fn applies_board_profile_timing_and_provenance() {
         saw_higher_cost,
         "profile fetch costs must change at least one block"
     );
-    assert!(saw_time, "profile clock must produce wall-clock times");
+    assert!(saw_cycles, "profile clock must produce block cycle costs");
+    let core = timing
+        .frequency_domains
+        .iter()
+        .find(|domain| domain.id.as_str() == "clk:core")
+        .expect("core frequency domain");
+    assert_eq!(core.hz, 48_000_000);
 }
 
-fn block_costs(tdg: &elf2tdg_schema::Tdg) -> BTreeMap<BlockId, f64> {
+fn block_costs(program: &ProgramCfg) -> BTreeMap<BlockId, f64> {
     let mut costs = BTreeMap::new();
-    for function in &tdg.functions {
-        for block in &function.blocks {
-            if let Some(timing) = &block.timing {
-                costs.insert(block.id.clone(), timing.cycles.min);
+    for function in &program.functions {
+        for node in function.cfg.blocks_by_address.values() {
+            let block = &function.cfg.graph[*node];
+            if let Some(cycles) = block.cycles {
+                costs.insert(block.id.clone(), cycles.min);
             }
         }
     }
