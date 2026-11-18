@@ -32,7 +32,10 @@ shows a branch-prediction profile, and
 [`examples/profiles/cortex-m7-data-memory.toml`](../examples/profiles/cortex-m7-data-memory.toml)
 shows per-region data-memory timing, and
 [`examples/profiles/cortex-m7-wcet.toml`](../examples/profiles/cortex-m7-wcet.toml)
-shows a WCET profile.
+shows a WCET profile, and
+[`examples/profiles/cortex-m4-full-stack.toml`](../examples/profiles/cortex-m4-full-stack.toml)
+combines the Cortex-M4 pipeline with fetch/data memory timing, both caches,
+branch prediction and WCET.
 
 ## Resolution order
 

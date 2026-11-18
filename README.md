@@ -377,8 +377,11 @@ and
 [`examples/profiles/cortex-m7-data-memory.toml`](examples/profiles/cortex-m7-data-memory.toml)
 and
 [`examples/profiles/cortex-m7-wcet.toml`](examples/profiles/cortex-m7-wcet.toml)
+and
+[`examples/profiles/cortex-m4-full-stack.toml`](examples/profiles/cortex-m4-full-stack.toml)
 show the board-cost, Cortex-M4 pipeline, instruction-cache, data-cache,
-branch-prediction, data-memory and WCET formats.
+branch-prediction, data-memory and WCET formats, including a full combined
+pipeline/cache/memory/WCET example.
 
 `--function`, `--reachable-from`, `--no-prune-runtime`,
 `--all-functions` and `--no-cfg-instructions` apply only to `--view cfg`.
