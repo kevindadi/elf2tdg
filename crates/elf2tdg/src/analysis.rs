@@ -15,13 +15,14 @@ use crate::arch::{
     DecodedInsn, Decoder, IndirectTarget, ValueSource, is_frame_register, pointer_size,
     return_register,
 };
+use crate::board_profile::{BoardProfile, UnknownInstructionPolicy};
 use crate::cfg;
 use crate::dwarf::DwarfInfo;
 use crate::error::{Error, Result};
 use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section, VectorEntry};
 use crate::origin;
 use crate::rules;
-use crate::timing::{CORE_DOMAIN, TimingModel};
+use crate::timing::{CORE_DOMAIN, TimingCostModel};
 
 const DEFAULT_MAX_FUNCTIONS: usize = 20_000;
 const DEFAULT_MAX_INSTRUCTIONS_PER_FUNCTION: usize = 200_000;
@@ -33,7 +34,10 @@ const MAX_COMPUTED_CALL_CANDIDATES: usize = 32;
 pub struct AnalysisOptions {
     /// Explicit CPU/timing model name. `None` auto-detects.
     pub cpu: Option<String>,
-    /// Core frequency in Hz.
+    /// Optional board profile with clocks, memory regions and instruction
+    /// cost overrides. Its CPU model must agree with `cpu` when both are set.
+    pub board_profile: Option<BoardProfile>,
+    /// Core frequency in Hz. Overrides the board profile's core clock.
     pub frequency_hz: Option<u64>,
     /// Include per-instruction disassembly and timing.
     pub include_instructions: bool,
@@ -49,6 +53,7 @@ impl Default for AnalysisOptions {
     fn default() -> Self {
         Self {
             cpu: None,
+            board_profile: None,
             frequency_hz: None,
             include_instructions: false,
             max_functions: DEFAULT_MAX_FUNCTIONS,
@@ -91,7 +96,9 @@ struct Analyzer<'a> {
     image: &'a Image,
     options: &'a AnalysisOptions,
     decoder: Decoder,
-    timing: Option<TimingModel>,
+    timing: Option<TimingCostModel>,
+    frequency_hz: Option<u64>,
+    unknown_timing_mnemonics: BTreeMap<String, (u64, u64)>,
     functions: BTreeMap<u64, FunctionDraft>,
     queue: VecDeque<u64>,
     calls: Vec<CallDraft>,
@@ -156,12 +163,21 @@ impl<'a> Analyzer<'a> {
             ));
         }
         let decoder = Decoder::new(image.arch)?;
-        let timing = TimingModel::select(options.cpu.as_deref(), image)?;
+        let timing = TimingCostModel::select(
+            options.cpu.as_deref(),
+            options.board_profile.as_ref(),
+            image,
+        )?;
+        let frequency_hz = timing.as_ref().map_or(options.frequency_hz, |model| {
+            model.core_frequency_hz(options.frequency_hz)
+        });
         let mut analyzer = Self {
             image,
             options,
             decoder,
             timing,
+            frequency_hz,
+            unknown_timing_mnemonics: BTreeMap::new(),
             functions: BTreeMap::new(),
             queue: VecDeque::new(),
             calls: Vec::new(),
@@ -184,6 +200,7 @@ impl<'a> Analyzer<'a> {
         Ok(analyzer)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn run(mut self) -> Result<AnalysisOutput> {
         if let Some(error) = &self.image.dwarf_error {
             self.diag(
@@ -226,7 +243,8 @@ impl<'a> Analyzer<'a> {
             );
         } else {
             if self.options.cpu.is_none()
-                && let Some(model) = self.timing
+                && self.options.board_profile.is_none()
+                && let Some(model) = self.timing.as_ref()
             {
                 self.diag(
                     Severity::Info,
@@ -240,7 +258,38 @@ impl<'a> Analyzer<'a> {
                     None,
                 );
             }
-            if self.options.frequency_hz.is_none() {
+            if let Some(profile) = self.options.board_profile.as_ref() {
+                self.diag(
+                    Severity::Info,
+                    "timing-board-profile",
+                    format!(
+                        "using board profile {} ({}) with SHA-256 {}",
+                        profile.id(),
+                        profile.name().unwrap_or("unnamed"),
+                        profile.sha256().unwrap_or("unknown")
+                    ),
+                    None,
+                    None,
+                );
+                if self.options.frequency_hz.is_none() && profile.core_clock_hz().is_some() {
+                    self.diag(
+                        Severity::Info,
+                        "frequency-from-board-profile",
+                        "core frequency comes from the board profile; pass --freq to override",
+                        None,
+                        None,
+                    );
+                } else if self.options.frequency_hz.is_some() && profile.core_clock_hz().is_some() {
+                    self.diag(
+                        Severity::Info,
+                        "frequency-overrides-board-profile",
+                        "--freq overrides the board profile's core clock; profile fetch wait states remain unchanged",
+                        None,
+                        None,
+                    );
+                }
+            }
+            if self.frequency_hz.is_none() {
                 self.diag(
                     Severity::Info,
                     "frequency-unknown",
@@ -1296,7 +1345,16 @@ impl<'a> Analyzer<'a> {
                     conditional: last.is_conditional,
                 });
             }
-            let cycles = self.timing.map(|model| sum_costs(model, &instructions));
+            let (cycles, unknown_costs) = self.timing.as_ref().map_or_else(
+                || (None, Vec::new()),
+                |model| {
+                    let (cycles, unknown) = sum_costs(model, &instructions);
+                    (Some(cycles), unknown)
+                },
+            );
+            for (mnemonic, address) in unknown_costs {
+                self.note_unknown_timing(start, &mnemonic, address);
+            }
             let cfg_instructions = instructions
                 .iter()
                 .map(|instruction| self.cfg_instruction(instruction))
@@ -1699,7 +1757,10 @@ impl<'a> Analyzer<'a> {
             is_conditional: instruction.is_conditional,
             direct_target: instruction.direct_target,
             indirect: instruction.indirect.map(|target| self.cfg_indirect(target)),
-            cycles: self.timing.map(|model| model.instruction_cost(instruction)),
+            cycles: self
+                .timing
+                .as_ref()
+                .map(|model| model.instruction_cost(instruction).cycles),
             source: self
                 .image
                 .dwarf
@@ -2815,10 +2876,14 @@ impl<'a> Analyzer<'a> {
         let main_address = self
             .find_main_address()
             .filter(|main| *main != startup_address);
-        let frequency = self.options.frequency_hz;
+        let frequency = self.frequency_hz;
         let frequency_domain = frequency.map(|_| FrequencyDomainId::new(CORE_DOMAIN));
-        let timing = match self.timing {
-            Some(model) => model.timing_info(frequency),
+        let timing = match self.timing.as_ref() {
+            Some(model) => {
+                let unknown_mnemonics: BTreeSet<String> =
+                    self.unknown_timing_mnemonics.keys().cloned().collect();
+                model.timing_info(self.options.frequency_hz, &unknown_mnemonics)
+            }
             None => frequency_only_timing_info(frequency),
         };
 
@@ -3177,14 +3242,14 @@ impl<'a> Analyzer<'a> {
         let mut blocks = Vec::new();
         for node in draft.cfg.blocks_by_address.values() {
             let block = &draft.cfg.graph[*node];
-            let timing = match (self.timing, block.cycles, self.options.frequency_hz) {
+            let timing = match (self.timing.as_ref(), block.cycles, self.frequency_hz) {
                 (Some(model), Some(cycles), frequency) => {
                     Some(model.block_timing(cycles, frequency))
                 }
                 _ => None,
             };
             let instructions = if self.options.include_instructions {
-                match self.timing {
+                match self.timing.as_ref() {
                     Some(_model) => block
                         .instructions
                         .iter()
@@ -3225,7 +3290,7 @@ impl<'a> Analyzer<'a> {
             });
         }
 
-        let timing = self.timing.and_then(|_model| {
+        let timing = self.timing.as_ref().and_then(|_model| {
             if draft.cfg.blocks_by_address.is_empty() {
                 return None;
             }
@@ -3325,6 +3390,29 @@ impl<'a> Analyzer<'a> {
                     None
                 }
             })
+    }
+
+    fn note_unknown_timing(&mut self, function: u64, mnemonic: &str, site: u64) {
+        if self.unknown_timing_mnemonics.contains_key(mnemonic) {
+            return;
+        }
+        self.unknown_timing_mnemonics
+            .insert(mnemonic.to_owned(), (function, site));
+        let policy = self.timing.as_ref().map_or(
+            UnknownInstructionPolicy::Warn,
+            TimingCostModel::unknown_instruction_policy,
+        );
+        if policy == UnknownInstructionPolicy::Warn {
+            self.diag(
+                Severity::Warning,
+                "timing-unknown-instruction",
+                format!(
+                    "no timing class or board-profile override for instruction {mnemonic:?}; using fallback class `other`, so the cycle estimate may be inaccurate"
+                ),
+                Some(function),
+                Some(site),
+            );
+        }
     }
 
     fn diag(
@@ -3690,15 +3778,23 @@ fn insn_text(insn: &DecodedInsn) -> String {
     }
 }
 
-fn sum_costs(model: TimingModel, instructions: &[DecodedInsn]) -> elf2tdg_schema::CostRange {
+#[allow(clippy::type_complexity)]
+fn sum_costs(
+    model: &TimingCostModel,
+    instructions: &[DecodedInsn],
+) -> (elf2tdg_schema::CostRange, Vec<(String, u64)>) {
     let mut min = 0.0_f64;
     let mut max = 0.0_f64;
+    let mut unknown = Vec::new();
     for instruction in instructions {
         let cost = model.instruction_cost(instruction);
-        min += cost.min;
-        max += cost.max;
+        min += cost.cycles.min;
+        max += cost.cycles.max;
+        if cost.unknown {
+            unknown.push((instruction.mnemonic.clone(), instruction.address));
+        }
     }
-    elf2tdg_schema::CostRange::new(min, max)
+    (elf2tdg_schema::CostRange::new(min, max), unknown)
 }
 
 #[derive(Clone)]

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use elf2tdg::analysis::{AnalysisOptions, AnalysisOutput, analyze_with_cfg};
+use elf2tdg::board_profile::BoardProfile;
 use elf2tdg::cfg::{self, CfgFunction, ProgramCfg};
 use elf2tdg::elf_view;
 use elf2tdg::loader::{self, Image};
@@ -30,7 +31,13 @@ struct Cli {
     #[arg(long)]
     cpu: Option<String>,
 
-    /// Core frequency, e.g. 168MHz or 168000000. Enables wall-clock times.
+    /// Board timing profile (TOML or JSON). Supplies the CPU model, clocks,
+    /// memory fetch costs and instruction-cost overrides.
+    #[arg(long, value_name = "PATH")]
+    board_profile: Option<PathBuf>,
+
+    /// Core frequency, e.g. 168MHz or 168000000. Enables wall-clock times and
+    /// overrides the board profile's core clock.
     #[arg(long)]
     freq: Option<String>,
 
@@ -222,7 +229,6 @@ fn main() -> Result<()> {
         .map(parse_frequency)
         .transpose()
         .map_err(anyhow::Error::msg)?;
-
     let format = cli.format.unwrap_or(match cli.view {
         View::Elf => OutputFormat::Mermaid,
         View::Tdg | View::Cfg => OutputFormat::Json,
@@ -241,6 +247,9 @@ fn main() -> Result<()> {
         );
     }
     if cli.view == View::Elf {
+        if cli.board_profile.is_some() {
+            anyhow::bail!("--board-profile is only supported for TDG and CFG analysis");
+        }
         if format != OutputFormat::Mermaid {
             anyhow::bail!("--view elf currently supports only --format mermaid");
         }
@@ -265,8 +274,15 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    let board_profile = cli
+        .board_profile
+        .as_deref()
+        .map(BoardProfile::load)
+        .transpose()
+        .context("failed to load board profile")?;
     let options = AnalysisOptions {
         cpu: cli.cpu.clone(),
+        board_profile,
         frequency_hz,
         include_instructions: cli.instructions,
         max_diagnostics: cli.max_diagnostics,
