@@ -362,12 +362,13 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.1`.
+`cfg_schema_version` is `2.2`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.1 adds data-cache analysis and decoded memory-access
-metadata. Version 2.0 adds instruction-cache analysis metadata. Version 1.9
-added runtime/API provenance to callback annotations. Version 1.8 made the
-CFG document self-contained: it adds top-level
+functions. Version 2.2 adds branch-prediction analysis metadata. Version 2.1
+adds data-cache analysis and decoded memory-access metadata. Version 2.0 adds
+instruction-cache analysis metadata. Version 1.9 added runtime/API provenance
+to callback annotations. Version 1.8 made the CFG document self-contained: it
+adds top-level
 `timing`, `roots`, `calls`, `concurrency` and `locks`, all sourced from
 `ProgramCfg`. `roots` records startup/main/ISR/task/callback/
 pointer entries, `calls` is the interprocedural call graph derived from block
@@ -388,9 +389,14 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.1",
+  "cfg_schema_version": "2.2",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
+  "branch_prediction": {
+    "model": "btfn", "mispredict_penalty": 3, "max_states": 128,
+    "functions_analyzed": 7, "functions_fallback": 0,
+    "branches_analyzed": 59, "branches_fallback": 0, "caveats": []
+  },
   "data_cache": {
     "model": "data-lru", "size": 32768, "line_bytes": 32, "ways": 4, "sets": 256,
     "miss_penalty": 20, "write_allocate": true,
@@ -535,6 +541,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `timing` | timing models and frequency domains used by block costs |
 | `cache` | instruction-cache model parameters, analysis counts and caveats |
 | `data_cache` | data-cache model parameters, access coverage, analysis counts and caveats |
+| `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
@@ -567,6 +574,15 @@ entry has a `kind` (`read`, `write` or
 state propagation, so modeled hits are optimistic. All resolved addresses are
 treated as cacheable; per-region cacheability attributes are not modeled.
 
+When a branch-prediction profile is active, each modeled conditional-branch
+block carries a `branch_prediction` object with the branch `site`, minimum and
+maximum mispredictions, the number of predictor states reaching the block, a
+fallback flag, and one outcome per successor. Each outcome records its actual
+direction (`taken` or `not-taken`), the branch-level predicted direction
+(`taken`, `not-taken` or `mixed`), and its own misprediction range. An outcome's
+`predicted` value is the direction the predictor chose, not whether that
+particular successor was selected.
+
 These fields are CFG-native. They are populated from function CFGs and runtime
 analysis facts; serializing the CFG JSON is self-contained. `calls`,
 `concurrency` and `locks` are scoped to the selected functions; `roots`,
@@ -580,13 +596,14 @@ analysis facts; serializing the CFG JSON is self-contained. `calls`,
 | `address`, `size` | linked virtual address and byte size |
 | `instructions` | full instruction list with raw bytes and control-flow flags |
 | `calls` | call sites owned by this block |
-| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states and instruction-/data-cache miss penalties |
+| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states, instruction-/data-cache miss penalties and branch misprediction penalties |
 | `terminator` | `fallthrough`, `call`, `noreturn-call`, `return`, `branch`, `jump`, `unresolved` |
 | `noreturn` | `api` or `control-flow` when the function cannot return; absent otherwise |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
 | `inline_frames` | unique `DW_TAG_inlined_subroutine` ranges inside the function |
 | `cache` | per-block fetch-line accesses, hit/miss ranges and classification, entry-state count and fallback flag |
 | `data_cache` | per-block resolved/unresolved access counts, data-line hit/miss ranges, entry-state count and fallback flag |
+| `branch_prediction` | conditional-branch site, per-successor prediction outcomes, misprediction range, entry-state count and fallback flag |
 | `instructions[].memory_accesses` | explicit data-memory operands with kind, address resolution, width and addressing fields |
 
 Functions that have no machine code in the image are still selectable and

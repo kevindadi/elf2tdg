@@ -16,16 +16,18 @@ elf2tdg firmware.elf \
 ```
 
 The file is parsed as TOML unless its extension is `.json`. Schema version 1
-profiles remain valid; version 2 adds the optional pipeline and cache models.
-The profile is strictly validated before analysis: unknown fields, duplicate
-selectors, overlapping memory regions, zero frequencies and invalid cycle
-ranges are errors.
+profiles remain valid; version 2 adds the optional pipeline, cache and
+branch-prediction models. The profile is strictly validated before analysis:
+unknown fields, duplicate selectors, overlapping memory regions, zero
+frequencies and invalid cycle ranges are errors.
 [`examples/profiles/cortex-m4-pipeline.toml`](../examples/profiles/cortex-m4-pipeline.toml)
 shows the Cortex-M4 pipeline model,
 [`examples/profiles/cortex-m7-icache.toml`](../examples/profiles/cortex-m7-icache.toml)
-shows an instruction-cache profile, and
+shows an instruction-cache profile,
 [`examples/profiles/cortex-m7-dcache.toml`](../examples/profiles/cortex-m7-dcache.toml)
-shows a data-cache profile.
+shows a data-cache profile, and
+[`examples/profiles/cortex-m7-branch-prediction.toml`](../examples/profiles/cortex-m7-branch-prediction.toml)
+shows a branch-prediction profile.
 
 ## Resolution order
 
@@ -97,7 +99,7 @@ occupancy = 2
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]` or `[data_cache]`. |
+| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]` or `[branch_prediction]`. |
 | `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
@@ -108,6 +110,7 @@ occupancy = 2
 | `[pipeline]` | no | Enables the Cortex-M4 in-order resource/dependency model; see below. |
 | `[instruction_cache]` | no | Enables LRU instruction-cache analysis; see below. |
 | `[data_cache]` | no | Enables LRU data-cache analysis; see below. |
+| `[branch_prediction]` | no | Enables conditional-branch prediction analysis; see below. |
 
 ### Clocks
 
@@ -200,8 +203,9 @@ ready, then marks destination registers ready `latency` cycles after issue.
 or return; conditional transfers use the worst case.
 
 Register readiness is assumed at block entry. Memory dependencies,
-store-to-load forwarding, inter-block pipeline state, caches, branch
-prediction, exception entry and multi-issue are not modeled in this phase.
+store-to-load forwarding, inter-block pipeline state, exception entry and
+multi-issue are not modeled in this phase; caches and branch prediction are
+modeled separately when their profile sections are enabled.
 Block costs are therefore local pipeline-aware costs, not WCET bounds. While
 the pipeline model is active the CFG marks the timing model `statistical`, and
 a generated caveat records the limitation.
@@ -297,6 +301,43 @@ contention. Base-register recovery is not path-sensitive. Unresolved accesses ar
 state propagation, so modeled hits are optimistic. With
 `invalidate_on_call = true`, call-return edges conservatively clear the state.
 
+### Branch prediction
+
+The optional `[branch_prediction]` table enables conditional-branch direction
+analysis. It requires `schema_version = 2`.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `model` | yes | `static-not-taken`, `static-taken`, `btfn` (backward-taken/forward-not-taken) or `bimodal`. |
+| `mispredict_penalty` | yes | Extra core cycles charged for each modeled misprediction; must be positive. |
+| `initial_state` | no | Initial two-bit counter for `bimodal`: `strongly-not-taken`, `weakly-not-taken` (default), `weakly-taken` or `strongly-taken`. Used only by `bimodal`. |
+| `max_states` | no | Maximum concrete predictor states per block; defaults to `128`. |
+
+```toml
+[branch_prediction]
+model = "btfn"
+mispredict_penalty = 3
+max_states = 128
+```
+
+Static policies predict every conditional branch in one direction. `btfn`
+predicts taken when the taken target lies below the branch instruction, and
+not-taken when it lies forward. `bimodal` keeps a two-bit local
+saturating counter per branch site, starts each function from `initial_state`,
+and updates the counter with each modeled taken/not-taken outcome. Only
+conditional branches with exactly one taken edge and one fallthrough edge are
+modeled. Indirect/table target prediction, return-address stacks,
+branch-target buffers and global history are not modeled.
+
+The analyzer propagates concrete predictor states over each function CFG and
+adds `mispredicts * mispredict_penalty` to block cycle ranges. Because a block
+can branch to either successor, its cost range includes the minimum and
+maximum misprediction count across both outcomes and all modeled entry states;
+path-specific branch/predictor correlation is not modeled. If a block exceeds
+`max_states`, the function falls back to an all-mispredict bound. Each function
+starts from the configured predictor state and call-return edges do not reset
+it, but callee branches remain outside the analysis.
+
 ### Instruction-cost overrides
 
 Each `[[instruction_costs]]` entry must select by `class`, `mnemonic`, or both.
@@ -338,6 +379,10 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_data_cache`
 - `board_profile_data_cache_miss_penalty`
 - `board_profile_data_cache_write_allocate`
+- `board_profile_branch_prediction`
+- `board_profile_branch_mispredict_penalty`
+- `board_profile_branch_initial_state` (bimodal only)
+- `board_profile_branch_max_states`
 - `unknown_instruction_mnemonics`, the count of distinct fallback mnemonics,
   when at least one fallback was used
 
@@ -354,9 +399,13 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
 - Cost values are issue/resource estimates, not per-instruction wall-clock
   latency.
 - Instruction caches are simulated only when `[instruction_cache]` is present;
-  data caches only when `[data_cache]` is present. Branch prediction, dual
-  issue and out-of-order behavior are not modeled. For such cores the profile
-  can refine table values, but the result remains statistical.
+  data caches only when `[data_cache]` is present, and branch prediction only
+  when `[branch_prediction]` is present. Dual issue and out-of-order behavior
+  are not modeled. For such cores the profile can refine table values, but the
+  result remains statistical.
+- Branch prediction covers conditional direction only. Indirect/table target
+  prediction, return prediction, branch-target buffers and global history are
+  not modeled.
 - Data-cache results cover only statically resolved addresses. Stack, indexed
   and unresolved accesses are counted but do not contribute miss penalties.
   Dirty writeback, store buffers, prefetch and inter-function cache state are

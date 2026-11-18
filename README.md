@@ -42,7 +42,9 @@ Implemented:
   instruction-cache and data-cache profiles propagate concrete cache states
   over each CFG, report per-block hit/miss ranges and add modeled miss
   penalties; data-cache analysis also records decoded read/write memory
-  accesses. See [docs/board-profile.md](docs/board-profile.md).
+  accesses. Optional branch-prediction profiles model static, BTFN or two-bit
+  bimodal direction prediction with configurable misprediction penalties. See
+  [docs/board-profile.md](docs/board-profile.md).
 - Versioned CFG JSON plus DOT and Mermaid renderers.
 - Runtime rule engine for spawn/join/scope/await:
   - Rust no-std: Embassy (`Spawner::spawn`, task poll) and RTIC;
@@ -366,8 +368,10 @@ and
 [`examples/profiles/cortex-m7-icache.toml`](examples/profiles/cortex-m7-icache.toml)
 and
 [`examples/profiles/cortex-m7-dcache.toml`](examples/profiles/cortex-m7-dcache.toml)
-show the board-cost, Cortex-M4 pipeline, instruction-cache and data-cache
-formats.
+and
+[`examples/profiles/cortex-m7-branch-prediction.toml`](examples/profiles/cortex-m7-branch-prediction.toml)
+show the board-cost, Cortex-M4 pipeline, instruction-cache, data-cache and
+branch-prediction formats.
 
 `--function`, `--reachable-from`, `--no-prune-runtime`,
 `--all-functions` and `--no-cfg-instructions` apply only to `--view cfg`.
