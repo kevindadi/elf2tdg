@@ -43,7 +43,9 @@ Implemented:
   over each CFG, report per-block hit/miss ranges and add modeled miss
   penalties; data-cache analysis also records decoded read/write memory
   accesses. Optional branch-prediction profiles model static, BTFN or two-bit
-  bimodal direction prediction with configurable misprediction penalties. See
+  bimodal direction prediction with configurable misprediction penalties.
+  Per-region data-memory timing models read/write bus widths and wait states and
+  reports access coverage plus per-region latency. See
   [docs/board-profile.md](docs/board-profile.md).
 - Versioned CFG JSON plus DOT and Mermaid renderers.
 - Runtime rule engine for spawn/join/scope/await:
@@ -370,8 +372,10 @@ and
 [`examples/profiles/cortex-m7-dcache.toml`](examples/profiles/cortex-m7-dcache.toml)
 and
 [`examples/profiles/cortex-m7-branch-prediction.toml`](examples/profiles/cortex-m7-branch-prediction.toml)
-show the board-cost, Cortex-M4 pipeline, instruction-cache, data-cache and
-branch-prediction formats.
+and
+[`examples/profiles/cortex-m7-data-memory.toml`](examples/profiles/cortex-m7-data-memory.toml)
+show the board-cost, Cortex-M4 pipeline, instruction-cache, data-cache,
+branch-prediction and data-memory formats.
 
 `--function`, `--reachable-from`, `--no-prune-runtime`,
 `--all-functions` and `--no-cfg-instructions` apply only to `--view cfg`.

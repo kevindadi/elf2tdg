@@ -16,8 +16,9 @@ elf2tdg firmware.elf \
 ```
 
 The file is parsed as TOML unless its extension is `.json`. Schema version 1
-profiles remain valid; version 2 adds the optional pipeline, cache and
-branch-prediction models. The profile is strictly validated before analysis:
+profiles remain valid; version 2 adds the optional pipeline, cache,
+branch-prediction and data-memory timing models. The profile is strictly
+validated before analysis:
 unknown fields, duplicate selectors, overlapping memory regions, zero
 frequencies and invalid cycle ranges are errors.
 [`examples/profiles/cortex-m4-pipeline.toml`](../examples/profiles/cortex-m4-pipeline.toml)
@@ -27,7 +28,9 @@ shows an instruction-cache profile,
 [`examples/profiles/cortex-m7-dcache.toml`](../examples/profiles/cortex-m7-dcache.toml)
 shows a data-cache profile, and
 [`examples/profiles/cortex-m7-branch-prediction.toml`](../examples/profiles/cortex-m7-branch-prediction.toml)
-shows a branch-prediction profile.
+shows a branch-prediction profile, and
+[`examples/profiles/cortex-m7-data-memory.toml`](../examples/profiles/cortex-m7-data-memory.toml)
+shows per-region data-memory timing.
 
 ## Resolution order
 
@@ -99,7 +102,7 @@ occupancy = 2
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]` or `[branch_prediction]`. |
+| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]` or per-region data-memory timing. |
 | `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
@@ -131,9 +134,9 @@ caveat when the CLI frequency differs from the profile core clock.
 
 ### Memory regions
 
-Memory regions must not overlap and must fit in the 64-bit address space. The
-current model uses them for **instruction fetch** costs only; data-access
-region latency is not yet modeled.
+Memory regions must not overlap and must fit in the 64-bit address space.
+Executable regions contribute instruction-fetch costs; regions with `data_*`
+fields also contribute data-memory wait cycles.
 
 | Field | Required | Meaning |
 |---|---|---|
@@ -144,6 +147,9 @@ region latency is not yet modeled.
 | `executable` | no | Enables fetch costing for instructions in this region; defaults to `false`. |
 | `fetch_wait_states` | no | Wait states added per fetch transaction; defaults to `0`. |
 | `fetch_width_bytes` | no | Bytes per instruction-fetch transaction; defaults to `4`. |
+| `data_width_bytes` | no | Bytes per data transaction; defaults to `4`; must be positive. |
+| `data_read_wait_states` | no | Extra core cycles per data-read transaction; defaults to `0`. |
+| `data_write_wait_states` | no | Extra core cycles per data-write transaction; defaults to `0`. |
 
 For each instruction whose address is inside an executable region, the profile
 adds:
@@ -153,12 +159,49 @@ fetch_cycles = ceil(instruction_size / fetch_width_bytes) * fetch_wait_states
 ```
 
 This is a deliberately simple first-order model. It does not model prefetch,
-bus contention, flash accelerator behavior, exception entry or data accesses.
-Instruction-cache and data-cache effects are modeled separately when
-`[instruction_cache]` or `[data_cache]` is enabled below. The generated caveat
-says so in the CFG metadata. Use a measured
+bus contention, flash accelerator behavior or exception entry. Data-access
+timing, instruction-cache effects and data-cache effects are modeled separately
+when the corresponding region fields or profile sections are enabled below.
+The generated caveat says so in the CFG metadata. Use a measured
 `fetch_wait_states`/`fetch_width_bytes` pair or leave fetch costing disabled
 when those effects dominate.
+
+### Data-memory latency
+
+Data-access timing is declared per memory region. The analysis is enabled when
+any region declares at least one `data_*` field; it requires
+`schema_version = 2`.
+
+```toml
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0001_0000
+kind = "ram"
+data_width_bytes = 4
+data_read_wait_states = 1
+data_write_wait_states = 1
+```
+
+For each statically resolved data access, the analyzer splits the address range
+at region boundaries and charges:
+
+```text
+wait_cycles = ceil(fragment_bytes / data_width_bytes) * wait_states
+```
+
+Reads use `data_read_wait_states`; writes use `data_write_wait_states`; a
+read-modify-write access charges both. Wait cycles are added to block `cycles`.
+Per-block metadata records resolved, unresolved, mapped and unmapped access
+counts, total read/write wait cycles, and a per-region breakdown. Unresolved
+stack/indexed accesses and addresses outside every configured region are
+counted but add no cycles. Register-derived addresses use the same bounded
+backward recovery as data-cache analysis and are not path-sensitive.
+
+This is a standalone bus-timing model. When `[data_cache]` is also enabled,
+data-cache miss penalties and data-memory wait cycles are both added, which can
+double-count memory latency. Bus contention, arbitration, outstanding requests,
+write buffers, prefetch and per-region cacheability are not modeled.
 
 ### Pipeline / resource model
 
@@ -383,6 +426,8 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_branch_mispredict_penalty`
 - `board_profile_branch_initial_state` (bimodal only)
 - `board_profile_branch_max_states`
+- `board_profile_data_memory`
+- `board_profile_data_memory_regions`
 - `unknown_instruction_mnemonics`, the count of distinct fallback mnemonics,
   when at least one fallback was used
 
@@ -406,6 +451,9 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
 - Branch prediction covers conditional direction only. Indirect/table target
   prediction, return prediction, branch-target buffers and global history are
   not modeled.
+- Data-memory latency is region-based. Only statically resolved accesses with
+  addresses inside configured regions contribute wait cycles. If data-cache
+  analysis is enabled too, its miss penalties and the wait cycles are additive.
 - Data-cache results cover only statically resolved addresses. Stack, indexed
   and unresolved accesses are counted but do not contribute miss penalties.
   Dirty writeback, store buffers, prefetch and inter-function cache state are
