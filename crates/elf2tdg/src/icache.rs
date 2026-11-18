@@ -22,32 +22,7 @@ use crate::cfg::{
     CfgBlockCache, CfgBlockCacheLine, CfgCacheInfo, CfgEdgeKind, FunctionCfg, ProgramCfg,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct CacheState {
-    sets: Vec<Vec<u64>>,
-}
-
-impl CacheState {
-    fn cold(set_count: usize) -> Self {
-        Self {
-            sets: vec![Vec::new(); set_count],
-        }
-    }
-
-    fn access(&mut self, line: u64, ways: usize, set_count: u64) -> bool {
-        let set = usize::try_from(line % set_count).unwrap_or(0);
-        let lines = &mut self.sets[set];
-        if let Some(position) = lines.iter().position(|cached| *cached == line) {
-            lines.remove(position);
-            lines.insert(0, line);
-            true
-        } else {
-            lines.insert(0, line);
-            lines.truncate(ways);
-            false
-        }
-    }
-}
+use crate::cache_state::CacheState;
 
 struct CacheModel {
     sets: u64,
@@ -373,8 +348,9 @@ fn add_penalty(
 
 #[cfg(test)]
 mod tests {
-    use super::{CacheModel, CacheState, analyze_function};
+    use super::{CacheModel, analyze_function};
     use crate::board_profile::BoardProfile;
+    use crate::cache_state::CacheState;
     use crate::cfg::{
         CfgBlockDraft, CfgEdgeDraft, CfgEdgeKind, CfgInstruction, CfgTerminator, FunctionCfg,
     };
@@ -425,6 +401,7 @@ max_states = 16
             is_conditional: false,
             direct_target: None,
             indirect: None,
+            memory_accesses: Vec::new(),
             cycles: Some(CostRange::exact(1.0)),
             source: None,
         }

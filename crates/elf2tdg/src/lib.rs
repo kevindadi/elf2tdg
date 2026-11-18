@@ -3,6 +3,7 @@
 pub mod analysis;
 pub mod arch;
 pub mod board_profile;
+mod cache_state;
 pub mod cfg;
 pub mod cfg_graph;
 pub mod dwarf;
