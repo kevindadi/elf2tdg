@@ -257,8 +257,12 @@ Still deferred:
 - Wrapper forwarding through multiple user levels and through values that are
   transformed before the runtime call.
 
-The milestones are intentionally a foundation, not a WCET tool. Static cycle
-counts are explicitly **not** execution-time or WCET bounds.
+The analyzer produces an optional CFG longest-path WCET estimate when a board
+profile enables `[wcet]`. It is a static estimate, not a hardware proof: loop
+bounds must be supplied, recursive call cycles are unbounded, cache/branch/
+data-memory results are not call-path context-sensitive, and interrupts, DMA,
+bus contention and concurrency are not modeled. Without `[wcet]`, static cycle
+counts remain per-block costs, not execution-time bounds.
 
 ## Build and test
 
