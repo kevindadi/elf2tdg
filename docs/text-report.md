@@ -83,7 +83,8 @@ The `wcet` section reports the selected backend:
 - `cfg-longest-path` (default): CFG longest path with bounded loop visits.
 - `cfg-ipet` (`--path-analysis ipet`): IPET integer-linear program solved with
   the pure-Rust `microlp` backend. The report prints the solver status, objective
-  and positive block execution counts for each function.
+  and positive block execution counts for each function. The flow-facts section
+  lists each explicit loop bound with its source (board profile or F4/FFX file).
 
 Both are static estimates, not hardware proofs: loop bounds must be configured,
 recursive call-graph SCCs are unbounded, cache/branch/data-memory results are

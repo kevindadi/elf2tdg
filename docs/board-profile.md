@@ -397,7 +397,10 @@ requires `schema_version = 2`. The backend is selected on the command line:
 - `--path-analysis ipet`: IPET integer-linear program over block and edge
   execution counts, solved with the pure-Rust `microlp` backend.
 
-Both backends consume the same loop bounds.
+Both backends consume the same loop bounds. Bounds can also be imported from
+F4 `.ff` or FFX files with `--flowfacts`; imported explicit bounds merge with
+profile bounds conservatively (larger wins), and an imported bound overrides
+the profile's default bound. See [flow-facts.md](flow-facts.md).
 
 | Field | Required | Meaning |
 |---|---|---|

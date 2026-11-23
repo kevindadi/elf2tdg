@@ -362,11 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.5`.
+`cfg_schema_version` is `2.6`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.5 adds IPET solver results, the backend name and the flow
-facts used by the model. Version 2.4 adds per-function and per-root WCET
-metadata. Version 2.3 adds region-based data-memory latency metadata. Version
+functions. Version 2.6 records the source of each explicit loop bound, including
+bounds imported from F4/FFX files. Version 2.5 adds IPET solver results, the
+backend name and the flow facts used by the model. Version 2.4 adds per-function
+and per-root WCET metadata. Version 2.3 adds region-based data-memory latency metadata. Version
 2.2 adds branch-prediction analysis metadata. Version 2.1 adds data-cache
 analysis and decoded memory-access metadata. Version 2.0 adds instruction-cache
 analysis metadata. Version 1.9 added runtime/API provenance to callback
@@ -392,17 +393,19 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.5",
+  "cfg_schema_version": "2.6",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
     "model": "cfg-ipet", "solver": "microlp", "max_states": 0,
     "default_loop_bound": 4, "frequency_hz": 168000000,
     "flow_facts": {
-      "source": "board-profile [wcet]",
+      "source": "board-profile [wcet] + loops.ff",
       "default_loop_bound": 4,
       "bound_nonterminating_loops": true,
-      "loops": []
+      "loops": [
+        { "header": "0x800013e", "bound": 7, "source": "loops.ff" }
+      ]
     },
     "functions_analyzed": 8, "functions_partial": 8,
     "functions_unbounded": 4, "functions_unknown": 0,
@@ -562,10 +565,12 @@ block address:
 
 A `partial` IPET objective is an estimate over the resolved inputs, not a safe
 upper bound. The top-level `wcet.flow_facts` object records the loop bounds and
-defaults used by the model. Irreducible cycles that are not covered by natural
-loop bounds are reported as `unbounded` instead of producing an unsound model.
-`blocks` is one optimal solution; alternate optima may distribute execution
-counts differently while producing the same objective.
+defaults used by the model, including bounds imported from F4/FFX files; each
+explicit loop bound carries a `source`. Irreducible cycles that are not covered
+by natural loop bounds are reported as `unbounded` instead of producing an
+unsound model. `blocks` is one optimal solution; alternate optima may distribute
+execution counts differently while producing the same objective. See
+[flow-facts.md](flow-facts.md) for F4/FFX resolution and merge rules.
 
 When full debug information is present, each function can also carry the unique
 inlined subroutine ranges found inside it:
@@ -815,8 +820,8 @@ asserts that the CFG validates.
 - Function selection by name requires symbols, unless DWARF provided the name;
   stripped images can still be selected by address.
 - IPET is per-function and context-insensitive: callee summaries are reused
-  across call sites. Flow facts currently come from `[wcet]` loop bounds; F4
-  `.ff`/FFX import and automatic inference are not implemented. Irreducible
-  cycles are unbounded, non-terminating bounded loops are `partial`, and a
-  `partial` objective is not a safe upper bound. Interrupts, DMA, multicore
-  interference and concurrency are not modeled.
+  across call sites. Flow facts come from `[wcet]` and imported F4/FFX files;
+  automatic loop-bound inference is not implemented. Irreducible cycles are
+  unbounded, non-terminating bounded loops are `partial`, and a `partial`
+  objective is not a safe upper bound. Interrupts, DMA, multicore interference
+  and concurrency are not modeled.

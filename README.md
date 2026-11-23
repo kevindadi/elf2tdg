@@ -45,9 +45,12 @@ Implemented:
   - static, BTFN or two-bit bimodal branch prediction;
   - per-region data-memory bus widths and read/write wait states;
   - loop-bounded per-function and per-root WCET estimates, from either a CFG
-    longest-path backend or an IPET/ILP backend solved with pure-Rust `microlp`.
+    longest-path backend or an IPET/ILP backend solved with pure-Rust `microlp`;
+  - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add
+    or override loop bounds by address, function + offset, or source line.
   Profiles are strictly validated, and timing metadata records the profile ID,
-  SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md).
+  SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
+  [docs/flow-facts.md](docs/flow-facts.md).
 - Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
 - Compile-time analysis pass plan (`--list-passes`) with explicit pass
   dependencies and soundness labels; no runtime dynamic-library ABI.
@@ -265,8 +268,11 @@ Still deferred:
 
 The analyzer produces WCET estimates when a board profile enables `[wcet]`.
 `--path-analysis longest-path` is the default; `--path-analysis ipet` builds a
-per-function integer linear program with flow conservation, profile loop bounds
-and bottom-up callee summaries, solved by the pure-Rust `microlp` backend.
+per-function integer linear program with flow conservation, loop bounds and
+bottom-up callee summaries, solved by the pure-Rust `microlp` backend. Loop
+bounds come from the profile and/or imported F4/FFX files; conflicting bounds
+keep the larger value and context-specific facts are applied context-insensitively
+with a warning.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved
 calls/control flow or non-terminating loops bounded by assumption mark a result
 `partial`; a partial objective is not a safe upper bound. Results are static
@@ -334,6 +340,11 @@ cargo run -p elf2tdg -- firmware.elf --view cfg --format text \
     --board-profile board.toml --path-analysis ipet \
     --function sensor_task --output sensor-task-ipet.txt
 
+# External F4 or FFX flow facts (repeat --flowfacts for multiple files)
+cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
+    --board-profile board.toml --flowfacts loops.ff --flowfacts extra.ffx \
+    --path-analysis ipet --output wcet.json
+
 # Readable graph and compact CFG JSON
 cargo run -p elf2tdg -- firmware.elf --view cfg --format dot \
     --function main --output main.dot
@@ -374,6 +385,7 @@ Useful flags:
 | `--cpu cortex-m4` | explicit timing model; Cortex-M/RISC-V are auto-detected when omitted. `aarch64` and `x86-64` select statistical generic models |
 | `--board-profile PATH` | board timing profile in TOML (or JSON with a `.json` extension); supplies CPU, clocks, memory timing, pipeline/cache/branch models and WCET bounds |
 | `--path-analysis longest-path|ipet` | WCET backend when `[wcet]` is enabled; `ipet` uses the pure-Rust `microlp` solver |
+| `--flowfacts PATH` | external F4 `.ff` or FFX flow-fact file; may be repeated and requires a `[wcet]` profile |
 | `--require-safe` | certification gate: requires the IPET backend, a deterministic/bounded timing model, complete cache/memory address coverage and bounded results for every execution root |
 | `--freq 168MHz` | core clock; enables `time_ns` in blocks and overrides the profile's core clock |
 | `--format json|text|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
@@ -480,6 +492,7 @@ crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rule
                           origin tracking, emitters, CLI
 docs/cfg-format.md        program CFG, roots, calls, concurrency and timing
 docs/text-report.md       readable CFG/WCET report sections and semantics
+docs/flow-facts.md        F4/FFX import, resolution and merge rules
 docs/analysis-architecture.md  pass model, soundness contract and precision roadmap
 docs/board-profile.md     board clocks, memory fetch costs and cycle overrides
 docs/analysis-profile.md  recommended firmware build flags and inline DWARF
@@ -491,6 +504,7 @@ fuzz/                     cargo-fuzz ELF/CFG validation harness
 
 See [docs/cfg-format.md](docs/cfg-format.md) for the CFG model,
 [docs/text-report.md](docs/text-report.md) for the readable report,
+[docs/flow-facts.md](docs/flow-facts.md) for F4/FFX import,
 [docs/analysis-architecture.md](docs/analysis-architecture.md) for the pass
 model and precision roadmap, [docs/analysis-profile.md](docs/analysis-profile.md)
 for the recommended firmware build profile, and

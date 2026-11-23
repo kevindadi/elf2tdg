@@ -1,8 +1,8 @@
 # Analysis architecture and precision roadmap
 
 This document records the intended analysis architecture. It separates what is
-implemented today from the planned IPET and multicore work; `--list-passes`
-is the authoritative status report for a build/profile.
+implemented today from the planned multicore and precision work;
+`--list-passes` is the authoritative status report for a build/profile.
 
 ## Goals
 
@@ -49,7 +49,7 @@ Rust `dylib` interface.
 | Level | Capability | Status |
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
-| P1 | Flow facts and IPET/ILP backend | first version implemented: profile loop bounds, per-function IPET, pure-Rust `microlp`; F4/FFX and non-loop flow facts are next |
+| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, per-function IPET, pure-Rust `microlp`; automatic inference and non-loop facts are next |
 | P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
 | P3 | Context-sensitive summaries, recursion, SMT infeasible paths | planned |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | planned |
@@ -66,8 +66,8 @@ It builds a per-function integer program with flow conservation, natural-loop
 bounds and callee summaries, solves it with `microlp`, and records the positive
 block execution counts. The remaining P1 work is:
 
-1. F4 `.ff` and FFX importers for loop, branch and call facts.
-2. A convenience API for programmatic flow facts beyond `[wcet]`.
+1. Automatic loop-bound inference and non-loop flow facts (branch/call counts).
+2. A convenience API for programmatic flow facts beyond files and `[wcet]`.
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
 4. Making IPET the default only after the bounded-results contract is validated.
 
@@ -112,8 +112,8 @@ from summed local estimates.
 
 ## Current limits
 
-- IPET is implemented but still context-insensitive and uses only profile loop
-  bounds; F4/FFX import and automatic loop-bound inference are not implemented.
+- IPET is implemented but still context-insensitive; loop bounds come from the
+  profile or imported F4/FFX files, and automatic inference is not implemented.
 - Cache/branch/data-memory analyses are per-function and not path-sensitive.
 - Interrupts, DMA, multicore interference and concurrency are not modeled.
 - The Cortex-M7 and generic AArch64/RISC-V timing models are marked
