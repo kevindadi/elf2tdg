@@ -1,9 +1,9 @@
 //! C helper-wrapper parameter forwarding.
 //!
-//! GCC at `-O0` spills `pthread_create`'s function-pointer argument to the
-//! stack before reloading it into the ABI register. This test checks that the
-//! analyzer follows the spill/reload pair, resolves the caller's argument, and
-//! links the join back to the forwarded thread context.
+//! GCC at `-O0` spills the task entry passed to a `FreeRTOS` `xTaskCreate`
+//! wrapper to the stack before reloading it into the ABI register. This test
+//! checks that the analyzer follows the spill/reload pair and resolves the
+//! caller's argument.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,7 +28,7 @@ fn compile_fixture(name: &str, source_text: &str) -> Option<PathBuf> {
     std::fs::write(&source, source_text).ok()?;
     let binary = directory.join(name);
     let status = Command::new("gcc")
-        .args(["-O0", "-g", "-pthread", "-o"])
+        .args(["-O0", "-g", "-fno-pie", "-no-pie", "-o"])
         .arg(&binary)
         .arg(&source)
         .status()
@@ -41,26 +41,34 @@ fn compile_fixture(name: &str, source_text: &str) -> Option<PathBuf> {
     }
 }
 
-const WRAPPER_SOURCE: &str = r"
-#include <pthread.h>
+const WRAPPER_SOURCE: &str = r#"
+typedef void (*task_fn)(void *);
 
-void *worker(void *arg) {
+__attribute__((noinline)) int xTaskCreate(task_fn entry, const char *name,
+                                             unsigned long stack, void *arg,
+                                             unsigned long priority, void *handle) {
+    (void)entry;
+    (void)name;
+    (void)stack;
     (void)arg;
+    (void)priority;
+    (void)handle;
     return 0;
 }
 
-__attribute__((noinline)) static void start_worker(
-    pthread_t *thread, void *(*entry)(void *), void *arg) {
-    pthread_create(thread, 0, entry, arg);
+void worker(void *arg) {
+    (void)arg;
+}
+
+__attribute__((noinline)) static void start_worker(task_fn entry, void *arg) {
+    xTaskCreate(entry, "worker", 128, arg, 1, 0);
 }
 
 int main(void) {
-    pthread_t thread;
-    start_worker(&thread, worker, (void *)0);
-    pthread_join(thread, 0);
+    start_worker(worker, (void *)0);
     return 0;
 }
-";
+"#;
 
 const INDIRECT_CALL_SOURCE: &str = r"
 volatile int ticks;
@@ -77,26 +85,35 @@ int main(void) {
 }
 ";
 
-const STORED_POINTER_SOURCE: &str = r"
-#include <pthread.h>
+const STORED_POINTER_SOURCE: &str = r#"
+typedef void (*task_fn)(void *);
 
-void *worker(void *arg) {
+__attribute__((noinline)) int xTaskCreate(task_fn entry, const char *name,
+                                             unsigned long stack, void *arg,
+                                             unsigned long priority, void *handle) {
+    (void)entry;
+    (void)name;
+    (void)stack;
     (void)arg;
+    (void)priority;
+    (void)handle;
     return 0;
 }
 
-void *(*stored_entry)(void *) = worker;
+void worker(void *arg) {
+    (void)arg;
+}
+
+task_fn stored_entry = worker;
 
 int main(void) {
-    pthread_t thread;
-    pthread_create(&thread, 0, stored_entry, 0);
-    pthread_join(thread, 0);
+    xTaskCreate(stored_entry, "worker", 128, 0, 1, 0);
     return 0;
 }
-";
+"#;
 
 #[test]
-fn forwards_wrapper_entry_and_resolves_join() {
+fn forwards_wrapper_entry() {
     let Some(binary) = compile_fixture("wrapper", WRAPPER_SOURCE) else {
         return;
     };
@@ -117,10 +134,10 @@ fn forwards_wrapper_entry_and_resolves_join() {
                 runtime,
                 entry: Some(entry),
                 ..
-            } if runtime.as_str() == "pthread" => Some(entry),
+            } if runtime.as_str() == "freertos" => Some(entry),
             _ => None,
         })
-        .expect("forwarded pthread spawn");
+        .expect("forwarded FreeRTOS spawn");
     assert_eq!(spawn, &worker.id);
     assert!(
         program
@@ -129,15 +146,6 @@ fn forwards_wrapper_entry_and_resolves_join() {
             .any(|root| { root.kind == CfgRootKind::Task && root.function == worker.id })
     );
 
-    let join = program
-        .concurrency
-        .iter()
-        .find_map(|site| match &site.operation {
-            CfgConcurrencyKind::Join { entry, .. } => entry.as_ref(),
-            _ => None,
-        })
-        .expect("join edge");
-    assert_eq!(join, &worker.id);
     assert!(
         program
             .diagnostics
@@ -202,10 +210,10 @@ fn resolves_entry_loaded_from_global_pointer() {
                 runtime,
                 entry: Some(entry),
                 ..
-            } if runtime.as_str() == "pthread" => Some(entry),
+            } if runtime.as_str() == "freertos" => Some(entry),
             _ => None,
         })
-        .expect("pthread spawn from stored pointer");
+        .expect("FreeRTOS spawn from stored pointer");
     assert_eq!(spawn, &worker.id);
 
     let _ = std::fs::remove_dir_all(binary.parent().expect("fixture directory"));

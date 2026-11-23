@@ -4330,8 +4330,8 @@ mod tests {
 
     #[test]
     fn detects_c_runtime_spawn_as_opaque_edge() {
-        // main: call pthread_create; ret
-        // pthread_create: ret
+        // main: call xTaskCreate; ret
+        // xTaskCreate: ret
         let image = image_with_code(
             vec![
                 0xe8, 0x0b, 0x00, 0x00, 0x00, // call 0x1010
@@ -4339,7 +4339,7 @@ mod tests {
                 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
                 0xc3, // ret at 0x1010
             ],
-            vec![("main", 0x1000, 6), ("pthread_create", 0x1010, 1)],
+            vec![("main", 0x1000, 6), ("xTaskCreate", 0x1010, 1)],
         );
         let program = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
         let spawn = program
@@ -4353,8 +4353,8 @@ mod tests {
                 } => Some(runtime),
                 _ => None,
             })
-            .expect("pthread spawn edge");
-        assert_eq!(spawn.as_str(), "pthread");
+            .expect("FreeRTOS spawn edge");
+        assert_eq!(spawn.as_str(), "freertos");
     }
 
     #[test]
@@ -4399,27 +4399,27 @@ mod tests {
     }
 
     #[test]
-    fn resolves_pthread_create_entry_argument() {
-        // 0x1000: lea rdx, [rip + 9]  -> 0x1010
-        // 0x1007: call 0x1020          (pthread_create)
+    fn resolves_x_task_create_entry_argument() {
+        // 0x1000: lea rdi, [rip + 9]  -> 0x1010
+        // 0x1007: call 0x1020          (xTaskCreate)
         // 0x100c: ret
         // 0x1010: ret                  (task)
-        // 0x1020: ret                  (pthread_create)
+        // 0x1020: ret                  (xTaskCreate)
         let mut code = vec![
-            0x48, 0x8d, 0x15, 0x09, 0x00, 0x00, 0x00, // lea rdx, [rip + 9]
+            0x48, 0x8d, 0x3d, 0x09, 0x00, 0x00, 0x00, // lea rdi, [rip + 9]
             0xe8, 0x14, 0x00, 0x00, 0x00, // call 0x1020
             0xc3, // ret
         ];
         code.resize(0x10, 0x90);
         code.push(0xc3); // task at 0x1010
         code.resize(0x20, 0x90);
-        code.push(0xc3); // pthread_create at 0x1020
+        code.push(0xc3); // xTaskCreate at 0x1020
         let image = image_with_code(
             code,
             vec![
                 ("main", 0x1000, 13),
                 ("task", 0x1010, 1),
-                ("pthread_create", 0x1020, 1),
+                ("xTaskCreate", 0x1020, 1),
             ],
         );
         let program = analyze(&image, &AnalysisOptions::default()).expect("analysis succeeds");
@@ -4432,10 +4432,10 @@ mod tests {
                     runtime,
                     entry: Some(entry),
                     ..
-                } if runtime.as_str() == "pthread" => Some(entry),
+                } if runtime.as_str() == "freertos" => Some(entry),
                 _ => None,
             })
-            .expect("resolved pthread spawn");
+            .expect("resolved FreeRTOS spawn");
         assert_eq!(entry.as_str(), "fn:0x1010");
         assert!(
             program.roots.iter().any(|root| {

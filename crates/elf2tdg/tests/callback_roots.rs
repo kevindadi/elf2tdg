@@ -1,9 +1,9 @@
 //! Callback registration edges and global function-pointer roots.
 //!
-//! The fixture registers qsort/atexit/signal callbacks from `main` and stores
-//! two more functions only in a read-only callback table. The analyzer must
-//! create `CallbackBind` edges for the registrations and treat the table
-//! entries as system roots even though no code calls them directly.
+//! The fixture registers `FreeRTOS` timer callbacks from `main` and stores two
+//! more functions only in a read-only callback table. The analyzer must create
+//! `CallbackBind` edges for the registrations and treat the table entries as
+//! system roots even though no code calls them directly.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -16,15 +16,16 @@ use elf2tdg_schema::FunctionId;
 const SOURCE: &str = r#"
 #include <stddef.h>
 
-static int compare_ints(const void *left, const void *right) {
-    return *(const int *)left - *(const int *)right;
+static void timer_a(void *argument) {
+    (void)argument;
 }
 
-static void finalizer(void) {
+static void timer_b(void *argument) {
+    (void)argument;
 }
 
-static void signal_handler(int signal_number) {
-    (void)signal_number;
+static void timer_c(void *argument) {
+    (void)argument;
 }
 
 __attribute__((noinline, used)) static void table_entry_a(void) {
@@ -44,17 +45,23 @@ __attribute__((noinline)) static void touch_callback_table(void) {
     __asm__ volatile("" : : "r"(table) : "memory");
 }
 
-extern void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
-extern int atexit(void (*)(void));
-extern void (*signal(int, void (*)(int)))(int);
+__attribute__((noinline)) void *xTimerCreate(const char *name, long period,
+                                                long reload, void *id,
+                                                void (*callback)(void *)) {
+    (void)name;
+    (void)period;
+    (void)reload;
+    (void)id;
+    (void)callback;
+    return 0;
+}
 
 int main(void) {
-    int values[2] = {2, 1};
     touch_callback_table();
-    qsort(values, 2, sizeof(int), compare_ints);
-    atexit(finalizer);
-    signal(2, signal_handler);
-    return values[0];
+    xTimerCreate("a", 1, 1, 0, timer_a);
+    xTimerCreate("b", 1, 1, 0, timer_b);
+    xTimerCreate("c", 1, 1, 0, timer_c);
+    return 0;
 }
 "#;
 
@@ -117,7 +124,7 @@ fn recovers_callback_edges_and_pointer_roots() {
     analysis.cfg.ensure_valid().expect("CFG must validate");
 
     let main_id = function_id(&analysis.cfg, "main");
-    for callback in ["compare_ints", "finalizer", "signal_handler"] {
+    for callback in ["timer_a", "timer_b", "timer_c"] {
         let callback_id = function_id(&analysis.cfg, callback);
         assert!(
             analysis.cfg.concurrency.iter().any(|site| {
@@ -127,7 +134,7 @@ fn recovers_callback_edges_and_pointer_roots() {
                         callback,
                         runtime,
                         ..
-                    } if callback == &callback_id && runtime.as_str() == "libc"
+                    } if callback == &callback_id && runtime.as_str() == "freertos"
                 ) && site.function == main_id
             }),
             "missing callback annotation for {callback}"
@@ -175,9 +182,9 @@ fn recovers_callback_edges_and_pointer_roots() {
 
     let roots = analysis.cfg.system_roots(&image);
     for name in [
-        "compare_ints",
-        "finalizer",
-        "signal_handler",
+        "timer_a",
+        "timer_b",
+        "timer_c",
         "table_entry_a",
         "table_entry_b",
     ] {
@@ -186,9 +193,9 @@ fn recovers_callback_edges_and_pointer_roots() {
     }
     let reachable = analysis.cfg.reachable_from_system(&image, false);
     for name in [
-        "compare_ints",
-        "finalizer",
-        "signal_handler",
+        "timer_a",
+        "timer_b",
+        "timer_c",
         "table_entry_a",
         "table_entry_b",
     ] {

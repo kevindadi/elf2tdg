@@ -11,26 +11,25 @@ use elf2tdg::analysis::{AnalysisOptions, analyze};
 use elf2tdg::cfg::CfgConcurrencyKind;
 use elf2tdg::loader;
 
-const SOURCE: &str = r"
-#include <pthread.h>
+const SOURCE: &str = r#"
+typedef void (*task_fn)(void *);
 
-void *worker(void *arg) {
+extern int xTaskCreate(task_fn entry, const char *name, unsigned long stack,
+                       void *arg, unsigned long priority, void *handle);
+
+void worker(void *arg) {
     (void)arg;
-    return 0;
 }
 
-__attribute__((noinline)) static void start_worker(
-    pthread_t *thread, void *(*entry)(void *), void *arg) {
-    pthread_create(thread, 0, entry, arg);
+__attribute__((noinline)) static void start_worker(task_fn entry, void *arg) {
+    xTaskCreate(entry, "worker", 128, arg, 1, 0);
 }
 
 int main(void) {
-    pthread_t thread;
-    start_worker(&thread, worker, (void *)0);
-    pthread_join(thread, 0);
+    start_worker(worker, (void *)0);
     return 0;
 }
-";
+"#;
 
 fn tool_available(tool: &str) -> bool {
     Command::new(tool)
@@ -47,11 +46,45 @@ fn build_fixture() -> Option<(PathBuf, PathBuf)> {
     let directory = std::env::temp_dir().join(format!("elf2tdg-stripped-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).ok()?;
+    let stub_source = directory.join("stub.c");
+    std::fs::write(
+        &stub_source,
+        r"
+typedef void (*task_fn)(void *);
+
+__attribute__((noinline)) int xTaskCreate(task_fn entry, const char *name,
+                                          unsigned long stack, void *arg,
+                                          unsigned long priority, void *handle) {
+    (void)entry;
+    (void)name;
+    (void)stack;
+    (void)arg;
+    (void)priority;
+    (void)handle;
+    return 0;
+}
+",
+    )
+    .ok()?;
+    let stub_library = directory.join("libfreertosstub.so");
+    let status = Command::new("gcc")
+        .args(["-shared", "-fPIC", "-o"])
+        .arg(&stub_library)
+        .arg(&stub_source)
+        .status()
+        .ok()?;
+    if !status.success() || !stub_library.exists() {
+        eprintln!("skipping stripped fixture: stub library failed");
+        return None;
+    }
     let source = directory.join("stripped.c");
     std::fs::write(&source, SOURCE).ok()?;
     let full = directory.join("full");
     let status = Command::new("gcc")
-        .args(["-O0", "-g", "-pthread", "-o"])
+        .args(["-O0", "-g", "-fno-pie", "-no-pie", "-L"])
+        .arg(&directory)
+        .arg(format!("-Wl,-rpath,{}", directory.display()))
+        .args(["-lfreertosstub", "-o"])
         .arg(&full)
         .arg(&source)
         .status()
@@ -135,10 +168,10 @@ fn recovers_prologues_and_wrapper_spawn_without_symbols() {
                 runtime,
                 entry: Some(entry),
                 ..
-            } if runtime.as_str() == "pthread" => Some(entry),
+            } if runtime.as_str() == "freertos" => Some(entry),
             _ => None,
         })
-        .expect("stripped pthread spawn");
+        .expect("stripped FreeRTOS spawn");
     let worker = program
         .functions
         .iter()

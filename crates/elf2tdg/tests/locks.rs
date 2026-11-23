@@ -1,4 +1,4 @@
-//! Direct and inlined lock/semaphore event recovery.
+//! Direct lock/semaphore event recovery from embedded RTOS APIs.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -7,7 +7,7 @@ use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
 use elf2tdg::loader;
 use elf2tdg_schema::{LockKind, LockOperation};
 
-fn compile_pthread_fixture() -> Option<PathBuf> {
+fn compile_freertos_fixture() -> Option<PathBuf> {
     let available = Command::new("gcc")
         .arg("--version")
         .output()
@@ -15,7 +15,7 @@ fn compile_pthread_fixture() -> Option<PathBuf> {
         .status
         .success();
     if !available {
-        eprintln!("skipping pthread lock fixture: gcc is not available");
+        eprintln!("skipping FreeRTOS lock fixture: gcc is not available");
         return None;
     }
     let directory = std::env::temp_dir().join(format!("elf2tdg-locks-{}", std::process::id()));
@@ -25,14 +25,22 @@ fn compile_pthread_fixture() -> Option<PathBuf> {
     std::fs::write(
         &source,
         r"
-#include <pthread.h>
+static long semaphore;
 
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+__attribute__((noinline)) long xSemaphoreTake(void *semaphore, unsigned long ticks) {
+    (void)semaphore;
+    (void)ticks;
+    return 1;
+}
+
+__attribute__((noinline)) long xSemaphoreGive(void *semaphore) {
+    (void)semaphore;
+    return 1;
+}
 
 int main(void) {
-    pthread_mutex_lock(&mutex);
-    pthread_mutex_trylock(&mutex);
-    pthread_mutex_unlock(&mutex);
+    xSemaphoreTake(&semaphore, 1);
+    xSemaphoreGive(&semaphore);
     return 0;
 }
 ",
@@ -40,7 +48,7 @@ int main(void) {
     .ok()?;
     let binary = directory.join("locks");
     let status = Command::new("gcc")
-        .args(["-O1", "-g", "-pthread", "-o"])
+        .args(["-O0", "-g", "-fno-pie", "-no-pie", "-o"])
         .arg(&binary)
         .arg(source)
         .status()
@@ -48,14 +56,14 @@ int main(void) {
     if status.success() && binary.exists() {
         Some(binary)
     } else {
-        eprintln!("skipping pthread lock fixture: compilation failed");
+        eprintln!("skipping FreeRTOS lock fixture: compilation failed");
         None
     }
 }
 
 #[test]
-fn recovers_direct_pthread_lock_events() {
-    let Some(binary) = compile_pthread_fixture() else {
+fn recovers_direct_freertos_lock_events() {
+    let Some(binary) = compile_freertos_fixture() else {
         return;
     };
     let image = loader::load(&binary).expect("fixture must load");
@@ -63,9 +71,8 @@ fn recovers_direct_pthread_lock_events() {
         analyze_with_cfg(&image, &AnalysisOptions::default()).expect("analysis must succeed");
     analysis.cfg.ensure_valid().expect("CFG must validate");
     for (api, operation) in [
-        ("pthread_mutex_lock", LockOperation::Acquire),
-        ("pthread_mutex_trylock", LockOperation::TryAcquire),
-        ("pthread_mutex_unlock", LockOperation::Release),
+        ("xSemaphoreTake", LockOperation::Acquire),
+        ("xSemaphoreGive", LockOperation::Release),
     ] {
         let event = analysis
             .cfg
@@ -74,13 +81,13 @@ fn recovers_direct_pthread_lock_events() {
             .find(|event| event.api == api)
             .unwrap_or_else(|| panic!("missing lock event for {api}"));
         assert_eq!(event.operation, operation, "{api}");
-        assert_eq!(event.lock_kind, LockKind::Mutex, "{api}");
+        assert_eq!(event.lock_kind, LockKind::Semaphore, "{api}");
         assert!(!event.inlined, "{api} is a direct call");
     }
 
     let json = elf2tdg::cfg::render_json(&analysis.cfg, None, false).expect("CFG JSON");
     assert!(json.contains("\"locks\""));
-    assert!(json.contains("pthread_mutex_lock"));
+    assert!(json.contains("xSemaphoreTake"));
 
     let _ = std::fs::remove_dir_all(binary.parent().expect("fixture directory"));
 }
