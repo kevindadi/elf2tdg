@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use elf2tdg::analysis::{AnalysisOptions, AnalysisOutput, analyze_with_cfg};
+use elf2tdg::analysis::{AnalysisOptions, AnalysisOutput, PathAnalysis, analyze_with_cfg};
 use elf2tdg::board_profile::BoardProfile;
 use elf2tdg::cfg::{self, CfgFunction, ProgramCfg};
 use elf2tdg::elf_view;
 use elf2tdg::loader::{self, Image};
+use elf2tdg::passes;
+use elf2tdg::text_report;
 use elf2tdg::timing::parse_frequency;
 
 #[derive(Debug, Parser)]
@@ -20,8 +22,9 @@ use elf2tdg::timing::parse_frequency;
     about = "Extract ELF layouts and program control-flow graphs from ELF images"
 )]
 struct Cli {
-    /// Input ELF image (keep symbols in the analysis build).
-    input: PathBuf,
+    /// Input ELF image (keep symbols in the analysis build). Required unless
+    /// --list-passes is used.
+    input: Option<PathBuf>,
 
     /// CPU/timing model, e.g. cortex-m4, riscv32, aarch64 or x86-64.
     /// Cortex-M/RISC-V are auto-detected; generic AArch64/x86-64 are statistical
@@ -34,10 +37,24 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     board_profile: Option<PathBuf>,
 
+    /// List the compile-time analysis pass plan and exit. If --board-profile is
+    /// supplied, optional passes enabled by that profile are marked as such.
+    #[arg(long)]
+    list_passes: bool,
+
     /// Core frequency, e.g. 168MHz or 168000000. Enables wall-clock times and
     /// overrides the board profile's core clock.
     #[arg(long)]
     freq: Option<String>,
+
+    /// WCET path-analysis backend when the board profile enables [wcet].
+    #[arg(long, value_enum, default_value = "longest-path")]
+    path_analysis: PathAnalysisArg,
+
+    /// Fail unless every execution root has a bounded WCET result. Use this
+    /// for certification-style runs; partial and unbounded results are rejected.
+    #[arg(long)]
+    require_safe: bool,
 
     /// Output format. Defaults to json; --view elf defaults to mermaid.
     #[arg(long, value_enum)]
@@ -73,7 +90,7 @@ struct Cli {
     #[arg(long)]
     no_prune_runtime: bool,
 
-    /// Omit concrete instructions from CFG JSON and DOT/Mermaid labels.
+    /// Omit concrete instructions from CFG JSON, text and DOT/Mermaid labels.
     #[arg(long)]
     no_cfg_instructions: bool,
 
@@ -102,8 +119,24 @@ struct Cli {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     Json,
+    Text,
     Dot,
     Mermaid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum PathAnalysisArg {
+    LongestPath,
+    Ipet,
+}
+
+impl From<PathAnalysisArg> for PathAnalysis {
+    fn from(value: PathAnalysisArg) -> Self {
+        match value {
+            PathAnalysisArg::LongestPath => Self::LongestPath,
+            PathAnalysisArg::Ipet => Self::Ipet,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -142,6 +175,11 @@ fn render_view(
                 cfg::render_json_selected(&analysis.cfg, cfg_functions, include_cfg_instructions)
                     .map_err(anyhow::Error::msg)?
             }
+            OutputFormat::Text => text_report::render_text_selected(
+                &analysis.cfg,
+                cfg_functions,
+                include_cfg_instructions,
+            ),
             OutputFormat::Dot => {
                 cfg::render_dot_selected(&analysis.cfg, cfg_functions, include_cfg_instructions)
             }
@@ -178,6 +216,23 @@ fn write_rendered(cli: &Cli, rendered: &str) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let board_profile = cli
+        .board_profile
+        .as_deref()
+        .map(BoardProfile::load)
+        .transpose()
+        .context("failed to load board profile")?;
+
+    let path_analysis: PathAnalysis = cli.path_analysis.into();
+    if cli.list_passes {
+        let rendered = passes::render_plan(&passes::plan(board_profile.as_ref(), path_analysis));
+        write_rendered(&cli, &rendered)?;
+        return Ok(());
+    }
+
+    let Some(input) = cli.input.as_deref() else {
+        anyhow::bail!("an input ELF is required unless --list-passes is used");
+    };
     let frequency_hz = cli
         .freq
         .as_deref()
@@ -188,21 +243,22 @@ fn main() -> Result<()> {
         View::Elf => OutputFormat::Mermaid,
         View::Cfg => OutputFormat::Json,
     });
-    let image = loader::load(&cli.input)
-        .with_context(|| format!("failed to load {}", cli.input.display()))?;
+    let image =
+        loader::load(input).with_context(|| format!("failed to load {}", input.display()))?;
     if cli.view != View::Cfg
         && (cli.function.is_some()
             || cli.all_functions
             || cli.reachable_from.is_some()
             || cli.no_prune_runtime
-            || cli.no_cfg_instructions)
+            || cli.no_cfg_instructions
+            || cli.require_safe)
     {
         anyhow::bail!(
-            "--function, --all-functions, --reachable-from, --no-prune-runtime and --no-cfg-instructions are only supported with --view cfg"
+            "--function, --all-functions, --reachable-from, --no-prune-runtime, --no-cfg-instructions and --require-safe are only supported with --view cfg"
         );
     }
     if cli.view == View::Elf {
-        if cli.board_profile.is_some() {
+        if board_profile.is_some() {
             anyhow::bail!("--board-profile is only supported for CFG analysis");
         }
         if format != OutputFormat::Mermaid {
@@ -229,17 +285,13 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let board_profile = cli
-        .board_profile
-        .as_deref()
-        .map(BoardProfile::load)
-        .transpose()
-        .context("failed to load board profile")?;
     let options = AnalysisOptions {
         cpu: cli.cpu.clone(),
         board_profile,
         frequency_hz,
         max_diagnostics: cli.max_diagnostics,
+        path_analysis,
+        require_safe: cli.require_safe,
         ..AnalysisOptions::default()
     };
     let analysis = analyze_with_cfg(&image, &options).context("analysis failed")?;

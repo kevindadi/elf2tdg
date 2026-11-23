@@ -775,10 +775,9 @@ impl TimingCostModel {
                 );
             }
             if let Some(wcet) = profile.wcet() {
-                params.extras.insert(
-                    "board_profile_wcet".to_owned(),
-                    "cfg-longest-path".to_owned(),
-                );
+                params
+                    .extras
+                    .insert("board_profile_wcet".to_owned(), "configured".to_owned());
                 params.extras.insert(
                     "board_profile_wcet_max_states".to_owned(),
                     wcet.max_states().to_string(),
@@ -798,7 +797,7 @@ impl TimingCostModel {
                     wcet.bound_nonterminating_loops().to_string(),
                 );
                 caveats.push(
-                    "WCET results are CFG longest-path estimates over modeled block bounds; they are not a hardware proof."
+                    "WCET analysis is configured by [wcet]; the selected path-analysis backend and its caveats are recorded in the CFG wcet section."
                         .to_owned(),
                 );
             }

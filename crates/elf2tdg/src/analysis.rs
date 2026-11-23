@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use elf2tdg_schema::{
-    Addr, BasicBlock, BlockId, Confidence, Context, ContextId, ContextKind, Diagnostic, Edge,
-    EdgeId, ElfType, Endianness, FrequencyDomain, FrequencyDomainId, FrequencySource, Function,
-    FunctionId, FunctionKind, FunctionTiming, ImageInfo, InstructionTiming, Language, Scheduling,
-    Severity, SourceLoc, TimingInfo,
+    Addr, BasicBlock, BlockId, Confidence, Context, ContextId, ContextKind, Determinism,
+    Diagnostic, Edge, EdgeId, ElfType, Endianness, FrequencyDomain, FrequencyDomainId,
+    FrequencySource, Function, FunctionId, FunctionKind, FunctionTiming, ImageInfo,
+    InstructionTiming, Language, Scheduling, Severity, SourceLoc, TimingInfo,
 };
 
 use petgraph::stable_graph::NodeIndex;
@@ -29,6 +29,16 @@ const DEFAULT_MAX_INSTRUCTIONS_PER_FUNCTION: usize = 200_000;
 const DEFAULT_MAX_DIAGNOSTICS: usize = 500;
 const MAX_COMPUTED_CALL_CANDIDATES: usize = 32;
 
+/// Path-analysis backend used for WCET results.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PathAnalysis {
+    /// Existing CFG longest-path analysis with per-function summaries.
+    #[default]
+    LongestPath,
+    /// IPET integer-linear-program analysis with profile flow facts.
+    Ipet,
+}
+
 /// Analysis configuration.
 #[derive(Clone, Debug)]
 pub struct AnalysisOptions {
@@ -47,6 +57,11 @@ pub struct AnalysisOptions {
     pub max_instructions_per_function: usize,
     /// Maximum diagnostics retained in the CFG.
     pub max_diagnostics: usize,
+    /// Path-analysis backend for WCET when a `[wcet]` profile is enabled.
+    pub path_analysis: PathAnalysis,
+    /// Reject the analysis when any execution root's WCET result is not a
+    /// bounded safe result.
+    pub require_safe: bool,
 }
 
 impl Default for AnalysisOptions {
@@ -59,6 +74,8 @@ impl Default for AnalysisOptions {
             max_functions: DEFAULT_MAX_FUNCTIONS,
             max_instructions_per_function: DEFAULT_MAX_INSTRUCTIONS_PER_FUNCTION,
             max_diagnostics: DEFAULT_MAX_DIAGNOSTICS,
+            path_analysis: PathAnalysis::LongestPath,
+            require_safe: false,
         }
     }
 }
@@ -3248,8 +3265,19 @@ impl<'a> Analyzer<'a> {
             .and_then(TimingCostModel::profile)
             .and_then(BoardProfile::wcet)
         {
-            let info = crate::wcet::analyze_program(&mut program_cfg, profile);
+            let info = match self.options.path_analysis {
+                PathAnalysis::LongestPath => {
+                    crate::wcet::analyze_program(&mut program_cfg, profile)
+                }
+                PathAnalysis::Ipet => {
+                    let facts = crate::flow_facts::FlowFacts::from_wcet_profile(profile);
+                    crate::ipet::analyze_program(&mut program_cfg, &facts)
+                }
+            };
             program_cfg.wcet = Some(info);
+        }
+        if self.options.require_safe {
+            enforce_safe_wcet(&program_cfg)?;
         }
 
         program_cfg.ensure_valid().map_err(|error| {
@@ -3852,6 +3880,98 @@ fn frequency_only_timing_info(frequency_hz: Option<u64>) -> TimingInfo {
         caveats: vec![
             "No instruction timing model is available for this architecture in M0.".to_owned(),
         ],
+    }
+}
+
+fn enforce_safe_wcet(program: &cfg::ProgramCfg) -> Result<()> {
+    let Some(wcet) = program.wcet.as_ref() else {
+        return Err(Error::UnsafeWcet(
+            "no [wcet] section was enabled".to_owned(),
+        ));
+    };
+    if wcet.model != crate::ipet::MODEL_NAME {
+        return Err(Error::UnsafeWcet(format!(
+            "path-analysis backend {:?} is not a certifiable backend; use --path-analysis ipet",
+            wcet.model
+        )));
+    }
+    let Some(timing) = program.timing.as_ref() else {
+        return Err(Error::UnsafeWcet(
+            "no timing metadata is available".to_owned(),
+        ));
+    };
+    if timing.models.is_empty() {
+        return Err(Error::UnsafeWcet(
+            "no instruction timing model is available".to_owned(),
+        ));
+    }
+    let unsafe_models: Vec<&str> = timing
+        .models
+        .iter()
+        .filter(|model| {
+            matches!(
+                model.determinism,
+                Determinism::Statistical | Determinism::Unknown
+            )
+        })
+        .map(|model| model.id.as_str())
+        .collect();
+    if !unsafe_models.is_empty() {
+        return Err(Error::UnsafeWcet(format!(
+            "timing model(s) are not suitable for a safe bound: {}",
+            unsafe_models.join(", ")
+        )));
+    }
+    if let Some(cache) = program.data_cache.as_ref()
+        && cache.unresolved_memory_accesses > 0
+    {
+        return Err(Error::UnsafeWcet(format!(
+            "data-cache analysis excludes {} unresolved memory access(es); block costs are optimistic",
+            cache.unresolved_memory_accesses
+        )));
+    }
+    if let Some(memory) = program.data_memory.as_ref()
+        && (memory.unresolved_accesses > 0 || memory.unmapped_accesses > 0)
+    {
+        return Err(Error::UnsafeWcet(format!(
+            "data-memory analysis has {} unresolved and {} unmapped access(es); wait cycles are incomplete",
+            memory.unresolved_accesses, memory.unmapped_accesses
+        )));
+    }
+    if wcet.roots.is_empty() {
+        return Err(Error::UnsafeWcet(
+            "no execution roots were analyzed".to_owned(),
+        ));
+    }
+    let unsafe_roots: Vec<String> = wcet
+        .roots
+        .iter()
+        .filter(|root| root.status != cfg::CfgWcetStatus::Bounded)
+        .map(|root| {
+            let name = root
+                .name
+                .as_deref()
+                .unwrap_or_else(|| root.function.as_str());
+            format!("{name} ({})", wcet_status_name(root.status))
+        })
+        .collect();
+    if unsafe_roots.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::UnsafeWcet(format!(
+            "{} execution root(s) are not bounded: {}",
+            unsafe_roots.len(),
+            unsafe_roots.join(", ")
+        )))
+    }
+}
+
+fn wcet_status_name(status: cfg::CfgWcetStatus) -> &'static str {
+    match status {
+        cfg::CfgWcetStatus::Bounded => "bounded",
+        cfg::CfgWcetStatus::Partial => "partial",
+        cfg::CfgWcetStatus::Unbounded => "unbounded",
+        cfg::CfgWcetStatus::Unknown => "unknown",
     }
 }
 

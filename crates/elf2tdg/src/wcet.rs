@@ -93,6 +93,8 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, profile: &WcetProfile) -
         default_loop_bound: profile.default_loop_bound(),
         max_states: profile.max_states(),
         frequency_hz,
+        solver: None,
+        flow_facts: None,
         functions_analyzed: 0,
         functions_partial: 0,
         functions_unbounded: 0,
@@ -138,13 +140,13 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, profile: &WcetProfile) -
     info
 }
 
-fn frequency_hz(program: &ProgramCfg) -> Option<u64> {
+pub(crate) fn frequency_hz(program: &ProgramCfg) -> Option<u64> {
     let timing = program.timing.as_ref()?;
     let domain = timing.default_frequency_domain.as_ref()?;
     timing.frequency_domain(domain).map(|domain| domain.hz)
 }
 
-fn function_call_targets(cfg: &FunctionCfg) -> BTreeSet<FunctionId> {
+pub(crate) fn function_call_targets(cfg: &FunctionCfg) -> BTreeSet<FunctionId> {
     let analysis = crate::cfg_graph::analyze(cfg);
     let reachable: BTreeSet<BlockId> = analysis.reachable.into_iter().collect();
     let mut targets = BTreeSet::new();
@@ -250,11 +252,12 @@ fn analyze_function(
         reason: partial.then(|| partial_reason.to_owned()),
         unresolved_calls: call_info.unresolved_calls,
         external_calls: call_info.external_calls,
+        ipet: None,
     }
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn time_ns(cycles: f64, frequency_hz: Option<u64>) -> Option<f64> {
+pub(crate) fn time_ns(cycles: f64, frequency_hz: Option<u64>) -> Option<f64> {
     frequency_hz
         .filter(|hz| *hz > 0)
         .map(|hz| cycles * 1_000_000_000.0 / hz as f64)
@@ -452,14 +455,14 @@ impl PathContext<'_> {
     }
 }
 
-struct CallInfo {
-    block_cycles: BTreeMap<NodeIndex, f64>,
-    partial: bool,
-    unresolved_calls: u32,
-    external_calls: u32,
+pub(crate) struct CallInfo {
+    pub(crate) block_cycles: BTreeMap<NodeIndex, f64>,
+    pub(crate) partial: bool,
+    pub(crate) unresolved_calls: u32,
+    pub(crate) external_calls: u32,
 }
 
-fn build_call_info(
+pub(crate) fn build_call_info(
     cfg: &FunctionCfg,
     reachable_nodes: &BTreeSet<NodeIndex>,
     index_by_id: &BTreeMap<FunctionId, usize>,
@@ -537,7 +540,11 @@ fn build_call_info(
     })
 }
 
-fn unbounded_summary(reason: &str, unresolved_calls: u32, external_calls: u32) -> CfgFunctionWcet {
+pub(crate) fn unbounded_summary(
+    reason: &str,
+    unresolved_calls: u32,
+    external_calls: u32,
+) -> CfgFunctionWcet {
     CfgFunctionWcet {
         status: CfgWcetStatus::Unbounded,
         cycles: None,
@@ -546,10 +553,15 @@ fn unbounded_summary(reason: &str, unresolved_calls: u32, external_calls: u32) -
         reason: Some(reason.to_owned()),
         unresolved_calls,
         external_calls,
+        ipet: None,
     }
 }
 
-fn unknown_summary(reason: &str, unresolved_calls: u32, external_calls: u32) -> CfgFunctionWcet {
+pub(crate) fn unknown_summary(
+    reason: &str,
+    unresolved_calls: u32,
+    external_calls: u32,
+) -> CfgFunctionWcet {
     CfgFunctionWcet {
         status: CfgWcetStatus::Unknown,
         cycles: None,
@@ -558,10 +570,11 @@ fn unknown_summary(reason: &str, unresolved_calls: u32, external_calls: u32) -> 
         reason: Some(reason.to_owned()),
         unresolved_calls,
         external_calls,
+        ipet: None,
     }
 }
 
-fn root_results(
+pub(crate) fn root_results(
     roots: &[CfgRoot],
     index_by_id: &BTreeMap<FunctionId, usize>,
     summaries: &[Option<CfgFunctionWcet>],

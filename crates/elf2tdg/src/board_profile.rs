@@ -481,6 +481,12 @@ impl WcetProfile {
             .map(|entry| entry.bound)
     }
 
+    pub(crate) fn loop_bounds(&self) -> impl Iterator<Item = (u64, u32)> + '_ {
+        self.loop_bounds
+            .iter()
+            .map(|entry| (entry.header, entry.bound))
+    }
+
     pub(crate) fn loop_bound_count(&self) -> usize {
         self.loop_bounds.len()
     }

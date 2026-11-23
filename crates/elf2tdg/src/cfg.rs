@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.4";
+pub const CFG_SCHEMA_VERSION: &str = "2.5";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -669,6 +669,31 @@ pub struct CfgFunctionWcet {
     pub unresolved_calls: u32,
     /// Calls to functions without a local WCET summary.
     pub external_calls: u32,
+    /// IPET solver result, when the IPET path analysis was used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipet: Option<CfgIpetSolution>,
+}
+
+/// Solver result for one IPET function model.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgIpetSolution {
+    /// Solver backend name.
+    pub solver: String,
+    /// Solver termination status (`optimal`, `time-limit` or `gap-limit`).
+    pub status: String,
+    /// Maximal objective value in cycles.
+    pub objective: f64,
+    /// Positive block execution counts from the solution.
+    pub blocks: Vec<CfgIpetBlockCount>,
+}
+
+/// One block execution count from an IPET solution.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgIpetBlockCount {
+    /// Basic block.
+    pub block: BlockId,
+    /// Number of executions in the maximal solution.
+    pub executions: u64,
 }
 
 /// WCET result for one execution root.
@@ -702,11 +727,17 @@ pub struct CfgWcetInfo {
     /// Default loop bound, when configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_loop_bound: Option<u32>,
-    /// Per-block unrolling state limit.
+    /// Per-block unrolling state limit for the longest-path model.
     pub max_states: usize,
     /// Core frequency used for `time_ns`, when available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_hz: Option<u64>,
+    /// Solver backend, when the IPET model was used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver: Option<String>,
+    /// Flow facts supplied to IPET, when the IPET model was used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flow_facts: Option<CfgFlowFactsInfo>,
     /// Functions with a bounded result.
     pub functions_analyzed: u32,
     /// Functions with a partial result.
@@ -719,6 +750,30 @@ pub struct CfgWcetInfo {
     pub roots: Vec<CfgWcetRoot>,
     /// Analysis caveats.
     pub caveats: Vec<String>,
+}
+
+/// Flow facts used by IPET, recorded for reproducibility.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgFlowFactsInfo {
+    /// Where the facts came from.
+    pub source: String,
+    /// Default loop bound, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_loop_bound: Option<u32>,
+    /// Whether loops without a static exit were explicitly bounded.
+    pub bound_nonterminating_loops: bool,
+    /// Explicit loop bounds keyed by header block address.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<CfgLoopBoundInfo>,
+}
+
+/// One explicit loop bound from the flow facts.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgLoopBoundInfo {
+    /// Loop header block address.
+    pub header: Addr,
+    /// Maximum loop header iterations per external entry.
+    pub bound: u32,
 }
 
 /// A function CFG graph. Node IDs are internal petgraph indices; stable block

@@ -48,6 +48,9 @@ pub enum Error {
     /// The intermediate CFG failed structural validation.
     #[error("CFG validation failed: {0}")]
     CfgValidation(String),
+    /// WCET results did not satisfy the requested safety contract.
+    #[error("WCET safety check failed: {0}")]
+    UnsafeWcet(String),
     /// Serialization failed.
     #[error("failed to serialize output: {0}")]
     Serialize(String),
