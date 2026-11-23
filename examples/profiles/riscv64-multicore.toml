@@ -1,0 +1,37 @@
+schema_version = 2
+id = "board:riscv64-multicore-example"
+name = "RISC-V multicore example"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+confidence = "low"
+caveats = [
+  "Example profile only; replace the interference budgets with values justified for the target bus and arbiters.",
+]
+
+[clocks.core]
+hz = 1_000_000_000
+confidence = "high"
+
+[[memory]]
+name = "sram"
+start = 0x0040_0000
+size = 0x0010_0000
+kind = "ram"
+executable = true
+
+[multicore]
+model = "access-budget"
+cores = 4
+core_id = 0
+data_read_interference_cycles = 6
+data_write_interference_cycles = 6
+instruction_fetch_interference_cycles = 2
+confidence = "low"
+caveats = [
+  "Budgets are per event from all other cores, including arbitration blocking and memory-controller queueing.",
+]
+
+[wcet]
+default_loop_bound = 4
+bound_nonterminating_loops = true
+max_states = 20_000

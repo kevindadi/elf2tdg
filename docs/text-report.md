@@ -29,8 +29,8 @@ The report is deterministic and uses plain text only.
    including vector/IRQ numbers and confidence.
 4. **Timing** — the instruction timing model, determinism, cost-table version,
    frequency domains and model caveats.
-5. **Analysis models** — instruction/data cache, branch prediction and
-   data-memory latency summaries when enabled.
+5. **Analysis models** — instruction/data cache, branch prediction,
+   data-memory latency and multicore interference summaries when enabled.
 6. **WCET** — model name, loop-bound configuration, result counts, per-root
    cycles/nanoseconds and the analysis caveats.
 7. **Interprocedural call graph** — caller, callee, call site, flags and

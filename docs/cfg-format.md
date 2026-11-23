@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.6`.
+`cfg_schema_version` is `2.7`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.6 records the source of each explicit loop bound, including
-bounds imported from F4/FFX files. Version 2.5 adds IPET solver results, the
+functions. Version 2.7 adds multicore access-budget interference metadata at
+program and block level. Version 2.6 records the source of each explicit loop
+bound, including bounds imported from F4/FFX files. Version 2.5 adds IPET solver results, the
 backend name and the flow facts used by the model. Version 2.4 adds per-function
 and per-root WCET metadata. Version 2.3 adds region-based data-memory latency metadata. Version
 2.2 adds branch-prediction analysis metadata. Version 2.1 adds data-cache
@@ -393,7 +394,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.6",
+  "cfg_schema_version": "2.7",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -426,6 +427,16 @@ global data.
     "model": "btfn", "mispredict_penalty": 3, "max_states": 128,
     "functions_analyzed": 7, "functions_fallback": 0,
     "branches_analyzed": 59, "branches_fallback": 0, "caveats": []
+  },
+  "multicore": {
+    "model": "access-budget", "cores": 4, "core_id": 0,
+    "data_read_interference_cycles": 6,
+    "data_write_interference_cycles": 6,
+    "instruction_fetch_interference_cycles": 2,
+    "functions_analyzed": 19, "blocks_analyzed": 156,
+    "data_read_accesses": 129, "data_write_accesses": 80,
+    "instruction_fetches": 812, "interference_cycles": 3256,
+    "caveats": []
   },
   "data_cache": {
     "model": "data-lru", "size": 32768, "line_bytes": 32, "ways": 4, "sets": 256,
@@ -606,6 +617,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `data_cache` | data-cache model parameters, access coverage, analysis counts and caveats |
 | `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
+| `multicore` | access-budget interference model, core topology, charged events, total cycles and caveats |
 | `wcet` | WCET model (`cfg-longest-path` or `cfg-ipet`), backend/solver, flow facts, per-root results and caveats |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
@@ -677,7 +689,7 @@ analysis facts; serializing the CFG JSON is self-contained. `calls`,
 | `address`, `size` | linked virtual address and byte size |
 | `instructions` | full instruction list with raw bytes and control-flow flags |
 | `calls` | call sites owned by this block |
-| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states, instruction-/data-cache miss penalties, data-memory wait cycles and branch misprediction penalties |
+| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states, instruction-/data-cache miss penalties, data-memory wait cycles, branch misprediction penalties and multicore interference budgets |
 | `terminator` | `fallthrough`, `call`, `noreturn-call`, `return`, `branch`, `jump`, `unresolved` |
 | `noreturn` | `api` or `control-flow` when the function cannot return; absent otherwise |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
@@ -687,6 +699,7 @@ analysis facts; serializing the CFG JSON is self-contained. `calls`,
 | `data_cache` | per-block resolved/unresolved access counts, data-line hit/miss ranges, entry-state count and fallback flag |
 | `branch_prediction` | conditional-branch site, per-successor prediction outcomes, misprediction range, entry-state count and fallback flag |
 | `data_memory` | per-block access coverage, read/write wait cycles and per-region breakdown |
+| `multicore` | per-block charged reads/writes/fetches and added interference cycles |
 | `instructions[].memory_accesses` | explicit data-memory operands with kind, address resolution, width and addressing fields |
 
 Functions that have no machine code in the image are still selectable and
@@ -823,5 +836,6 @@ asserts that the CFG validates.
   across call sites. Flow facts come from `[wcet]` and imported F4/FFX files;
   automatic loop-bound inference is not implemented. Irreducible cycles are
   unbounded, non-terminating bounded loops are `partial`, and a `partial`
-  objective is not a safe upper bound. Interrupts, DMA, multicore interference
-  and concurrency are not modeled.
+  objective is not a safe upper bound. Multicore interference uses an explicit
+  access budget; arbitration schedules, shared caches, DMA and concurrency are
+  not modeled.

@@ -59,6 +59,10 @@ mnemonic used fallback costs. Define the actual instruction/data memory
 geometry and wait states in the profile; otherwise the single-cycle base
 assumption is not tied to a board.
 
+Multicore interference is configured separately by `[multicore]`; see
+[board-profile.md](board-profile.md#multicore-interference). It is an explicit
+per-access budget, not part of the base timing table.
+
 ## What "bounded" means
 
 `determinism = bounded` means the reported range is an upper bound **for the

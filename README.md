@@ -47,6 +47,8 @@ Implemented:
   - LRU instruction and data caches with per-block hit/miss ranges;
   - static, BTFN or two-bit bimodal branch prediction;
   - per-region data-memory bus widths and read/write wait states;
+  - explicit multicore access-budget interference (`[multicore]`) with
+    per-block read/write/fetch attribution;
   - loop-bounded per-function and per-root WCET estimates, from either a CFG
     longest-path backend or an IPET/ILP backend solved with pure-Rust `microlp`;
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add
@@ -281,8 +283,10 @@ calls/control flow or non-terminating loops bounded by assumption mark a result
 `partial`; a partial objective is not a safe upper bound. Results are static
 estimates, not hardware proofs: loop bounds must be supplied, cache/branch/
 data-memory results are not call-path context-sensitive, and interrupts, DMA,
-bus contention and concurrency are not modeled. Without `[wcet]`, static cycle
-counts remain per-block costs, not execution-time bounds.
+bus contention and concurrency are not modeled. Multicore interference is an
+explicit per-access/per-fetch budget, not a reconstructed arbitration schedule.
+Without `[wcet]`, static cycle counts remain per-block costs, not execution-time
+bounds.
 
 ## Build and test
 
@@ -421,8 +425,9 @@ Example profiles:
 [D-cache](examples/profiles/cortex-m7-dcache.toml),
 [branch prediction](examples/profiles/cortex-m7-branch-prediction.toml),
 [data memory](examples/profiles/cortex-m7-data-memory.toml),
-[WCET](examples/profiles/cortex-m7-wcet.toml) and the combined
-[full-stack profile](examples/profiles/cortex-m4-full-stack.toml).
+[WCET](examples/profiles/cortex-m7-wcet.toml),
+[full-stack](examples/profiles/cortex-m4-full-stack.toml) and
+[RISC-V multicore](examples/profiles/riscv64-multicore.toml) examples.
 `tests/full_stack_profile.rs` verifies that the combined model costs compose
 block by block.
 

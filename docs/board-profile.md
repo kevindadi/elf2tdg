@@ -108,11 +108,11 @@ occupancy = 2
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]`, `[wcet]` or per-region data-memory timing. |
+| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]`, `[multicore]`, `[wcet]` or per-region data-memory timing. |
 | `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
-| `cpu` | yes | Built-in timing-model name, for example `cortex-m0`, `cortex-m4`, `riscv32` or `aarch64`. |
+| `cpu` | yes | Built-in timing-model name, for example `cortex-m0`, `cortex-m4`, `riscv32`, `riscv64-bounded` or `aarch64-bounded`. |
 | `confidence` | no | Overrides block-timing confidence (`high`, `medium`, `low`, `unknown`); otherwise the base model's confidence is used. |
 | `unknown_instructions` | no | `warn` (default) emits a `timing-unknown-instruction` diagnostic; `ignore` suppresses it. The fallback cost still applies. |
 | `caveats` | no | Extra caveats copied into the CFG timing metadata and block timing. |
@@ -120,7 +120,8 @@ occupancy = 2
 | `[instruction_cache]` | no | Enables LRU instruction-cache analysis; see below. |
 | `[data_cache]` | no | Enables LRU data-cache analysis; see below. |
 | `[branch_prediction]` | no | Enables conditional-branch prediction analysis; see below. |
-| `[wcet]` | no | Enables CFG longest-path WCET analysis; see below. |
+| `[multicore]` | no | Enables access-budget multicore interference; see below. |
+| `[wcet]` | no | Enables WCET analysis and selects its flow-bound configuration; see below. |
 
 ### Clocks
 
@@ -388,6 +389,51 @@ path-specific branch/predictor correlation is not modeled. If a block exceeds
 starts from the configured predictor state and call-return edges do not reset
 it, but callee branches remain outside the analysis.
 
+### Multicore interference
+
+The optional `[multicore]` table enables an explicit **access-budget**
+interference model for one core in a multicore system. It requires
+`schema_version = 2`.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `model` | no | Only `access-budget` is supported; defaults to `access-budget`. |
+| `cores` | yes | Total cores in the system; must be at least 2. |
+| `core_id` | no | Core analyzed by this run, zero-based; defaults to `0` and must be `< cores`. |
+| `data_read_interference_cycles` | no | Worst-case interference cycles charged per decoded data read; defaults to `0`. |
+| `data_write_interference_cycles` | no | Worst-case interference cycles charged per decoded data write; defaults to `0`. |
+| `instruction_fetch_interference_cycles` | no | Worst-case interference cycles charged per decoded instruction fetch; defaults to `0`. |
+| `confidence` | no | Confidence in the budget. |
+| `caveats` | no | Profile-specific caveats copied into the CFG. |
+
+```toml
+[multicore]
+model = "access-budget"
+cores = 4
+core_id = 0
+data_read_interference_cycles = 6
+data_write_interference_cycles = 6
+instruction_fetch_interference_cycles = 2
+confidence = "low"
+
+caveats = [
+  "Budget derived from the shared-bus worst-case request analysis.",
+]
+```
+
+The analysis charges every decoded data access, including unresolved
+stack/register accesses, and one fetch per decoded instruction. A read-modify-write
+access is charged both the read and write budget. The total is added to each
+block's cycle range before WCET/IPET analysis, so the resulting bound includes the
+interference budget. Per-block attribution and program totals are recorded in
+CFG JSON and text output.
+
+This model is a budget, not a reconstructed schedule. It does not model TDMA or
+round-robin arbitration, shared caches, DMA, memory-controller queues or the
+other cores' actual workloads. A multicore safety claim needs a `[multicore]`
+section with budgets that are justified for the target; without it the bound is
+single-core. See [timing-models.md](timing-models.md) for the base core model.
+
 ### WCET
 
 The optional `[wcet]` table enables worst-case execution-time analysis. It
@@ -507,6 +553,12 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_branch_max_states`
 - `board_profile_data_memory`
 - `board_profile_data_memory_regions`
+- `board_profile_multicore_model`
+- `board_profile_multicore_cores`
+- `board_profile_multicore_core_id`
+- `board_profile_multicore_data_read_cycles`
+- `board_profile_multicore_data_write_cycles`
+- `board_profile_multicore_fetch_cycles`
 - `board_profile_wcet` (`configured` when `[wcet]` is present; the selected
   backend is recorded in `wcet.model`)
 - `board_profile_wcet_default_loop_bound`
