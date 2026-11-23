@@ -49,7 +49,8 @@ branch prediction and WCET.
 
 The profile pins its CPU model. An explicit `--cpu` must name the same model;
 a conflict is a configuration error. The profile architecture must match both
-the CPU model and the loaded ELF.
+the CPU model and the loaded ELF. See [timing-models.md](timing-models.md) for
+the available model classes, including bounded AArch64/RISC-V models.
 
 ## File format
 
@@ -440,9 +441,12 @@ resolved inputs, not a safe upper bound.
 
 Use `--require-safe` for a certification-style run. The gate requires the IPET
 backend, a timing model whose determinism is `deterministic` or `bounded`,
-complete data-cache/data-memory address coverage (no unresolved or unmapped
-accesses), and a `bounded` result for every execution root. The analyzer fails
-before emitting the CFG if any of these conditions is not met:
+complete instruction classification (no fallback-mnemonic costs), complete
+data-cache/data-memory address coverage (no unresolved or unmapped accesses),
+and a `bounded` result for every execution root. Bounded abstract
+AArch64/RISC-V models also require a board profile with at least one memory
+region. The analyzer fails before emitting the CFG if any of these conditions
+is not met:
 
 ```sh
 elf2tdg firmware.elf --board-profile board.toml \

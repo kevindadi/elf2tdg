@@ -34,9 +34,12 @@ Implemented:
 - Execution roots for startup, main, ISR, task, callback and pointer entries;
   ISR roots retain vector and IRQ numbers.
 - Timing models for Cortex-M0/M0+/M3/M4/M7/M33 and generic in-order RV32/RV64:
-  per-block cycles and optional wall-clock time from `--freq`. M3 adds opt-in
-  generic AArch64 and x86-64 statistical throughput models
-  (`--cpu aarch64` / `--cpu x86-64`); they are never enabled silently.
+  per-block cycles and optional wall-clock time from `--freq`. Opt-in bounded
+  abstract models for AArch64/RISC-V are available with
+  `--cpu aarch64-bounded`, `--cpu riscv32-bounded` or
+  `--cpu riscv64-bounded`. Generic AArch64/x86-64 throughput models
+  (`--cpu aarch64` / `--cpu x86-64`) remain statistical. None are enabled
+  silently. See [docs/timing-models.md](docs/timing-models.md).
 - Optional TOML/JSON board profiles (`--board-profile`, schema v2) supply clock
   domains, memory regions, instruction-cost overrides and optional performance
   models:
@@ -382,11 +385,11 @@ Useful flags:
 
 | Flag | Meaning |
 |---|---|
-| `--cpu cortex-m4` | explicit timing model; Cortex-M/RISC-V are auto-detected when omitted. `aarch64` and `x86-64` select statistical generic models |
+| `--cpu cortex-m4` | explicit timing model; Cortex-M and generic RISC-V are auto-detected when omitted. `aarch64`/`x86-64` select statistical generic models; `aarch64-bounded`/`riscv32-bounded`/`riscv64-bounded` select explicit additive bounded models |
 | `--board-profile PATH` | board timing profile in TOML (or JSON with a `.json` extension); supplies CPU, clocks, memory timing, pipeline/cache/branch models and WCET bounds |
 | `--path-analysis longest-path|ipet` | WCET backend when `[wcet]` is enabled; `ipet` uses the pure-Rust `microlp` solver |
 | `--flowfacts PATH` | external F4 `.ff` or FFX flow-fact file; may be repeated and requires a `[wcet]` profile |
-| `--require-safe` | certification gate: requires the IPET backend, a deterministic/bounded timing model, complete cache/memory address coverage and bounded results for every execution root |
+| `--require-safe` | certification gate: requires the IPET backend, a deterministic/bounded timing model, complete instruction and cache/memory coverage, a board memory profile for bounded AArch64/RISC-V models and bounded results for every execution root |
 | `--freq 168MHz` | core clock; enables `time_ns` in blocks and overrides the profile's core clock |
 | `--format json|text|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
 | `--view cfg|elf` | program CFG (default) or loader-backed ELF layout |
@@ -493,6 +496,7 @@ crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rule
 docs/cfg-format.md        program CFG, roots, calls, concurrency and timing
 docs/text-report.md       readable CFG/WCET report sections and semantics
 docs/flow-facts.md        F4/FFX import, resolution and merge rules
+docs/timing-models.md     timing-model classes, bounded assumptions and --cpu names
 docs/analysis-architecture.md  pass model, soundness contract and precision roadmap
 docs/board-profile.md     board clocks, memory fetch costs and cycle overrides
 docs/analysis-profile.md  recommended firmware build flags and inline DWARF
@@ -505,7 +509,9 @@ fuzz/                     cargo-fuzz ELF/CFG validation harness
 See [docs/cfg-format.md](docs/cfg-format.md) for the CFG model,
 [docs/text-report.md](docs/text-report.md) for the readable report,
 [docs/flow-facts.md](docs/flow-facts.md) for F4/FFX import,
-[docs/analysis-architecture.md](docs/analysis-architecture.md) for the pass
-model and precision roadmap, [docs/analysis-profile.md](docs/analysis-profile.md)
+[docs/timing-models.md](docs/timing-models.md) for timing-model classes and
+bounded assumptions, [docs/analysis-architecture.md](docs/analysis-architecture.md)
+for the pass model and precision roadmap,
+[docs/analysis-profile.md](docs/analysis-profile.md)
 for the recommended firmware build profile, and
 [docs/elf-view.md](docs/elf-view.md) for the loader-backed ELF layout view.

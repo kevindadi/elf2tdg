@@ -116,8 +116,10 @@ from summed local estimates.
   profile or imported F4/FFX files, and automatic inference is not implemented.
 - Cache/branch/data-memory analyses are per-function and not path-sensitive.
 - Interrupts, DMA, multicore interference and concurrency are not modeled.
-- The Cortex-M7 and generic AArch64/RISC-V timing models are marked
-  statistical; they must be replaced by bounded models before claiming a safe
-  upper bound on those cores.
+- Cortex-M7, generic RISC-V, generic AArch64 and x86-64 models are statistical.
+  Opt-in bounded abstract AArch64/RISC-V models (`aarch64-bounded`,
+  `riscv32-bounded`, `riscv64-bounded`) are available, but they require a board
+  profile with memory regions for `--require-safe` and still exclude multicore
+  interference.
 - The default backend remains `longest-path` until IPET has broader benchmark
   validation.
