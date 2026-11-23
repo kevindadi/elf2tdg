@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.5";
+pub const CFG_SCHEMA_VERSION: &str = "2.6";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -774,6 +774,8 @@ pub struct CfgLoopBoundInfo {
     pub header: Addr,
     /// Maximum loop header iterations per external entry.
     pub bound: u32,
+    /// Source of the bound (board profile, F4/FFX file, or a merge).
+    pub source: String,
 }
 
 /// A function CFG graph. Node IDs are internal petgraph indices; stable block

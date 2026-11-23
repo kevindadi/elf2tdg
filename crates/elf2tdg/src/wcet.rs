@@ -1,8 +1,9 @@
 //! CFG-based worst-case execution-time analysis.
 //!
 //! The analysis computes a longest path through each function CFG using block
-//! cycle upper bounds. Natural loops are bounded from the WCET profile; a loop
-//! without a configured bound makes the containing function unbounded.
+//! cycle upper bounds. Natural loops are bounded from flow facts (board profile
+//! or imported F4/FFX); a loop without a configured bound makes the containing
+//! function unbounded.
 //! Interprocedural call costs are computed bottom-up over call-graph SCCs.
 //! Recursive SCCs are reported as unbounded.
 
@@ -21,13 +22,26 @@ use crate::cfg::{
     FunctionCfg, ProgramCfg,
 };
 use crate::cfg_graph::CfgGraphAnalysis;
+use crate::flow_facts::FlowFacts;
 
 const MODEL_NAME: &str = "cfg-longest-path";
 
-/// Runs WCET analysis over the program and attaches per-function results.
+/// Convenience wrapper used by the unit tests.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn analyze_program(program: &mut ProgramCfg, profile: &WcetProfile) -> CfgWcetInfo {
+    let facts = FlowFacts::from_wcet_profile(profile);
+    analyze_program_with_facts(program, profile, &facts)
+}
+
+/// Runs WCET analysis over the program with explicit flow facts.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub(crate) fn analyze_program(program: &mut ProgramCfg, profile: &WcetProfile) -> CfgWcetInfo {
+pub(crate) fn analyze_program_with_facts(
+    program: &mut ProgramCfg,
+    profile: &WcetProfile,
+    facts: &FlowFacts,
+) -> CfgWcetInfo {
     let frequency_hz = frequency_hz(program);
     let mut function_indices = Vec::new();
     let mut index_by_id: BTreeMap<FunctionId, usize> = BTreeMap::new();
@@ -82,7 +96,8 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, profile: &WcetProfile) -
             &program.functions[index],
             &index_by_id,
             &summaries,
-            profile,
+            facts,
+            profile.max_states(),
             frequency_hz,
         ));
     }
@@ -90,11 +105,11 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, profile: &WcetProfile) -
     let roots = root_results(&program.roots, &index_by_id, &summaries);
     let mut info = CfgWcetInfo {
         model: MODEL_NAME.to_owned(),
-        default_loop_bound: profile.default_loop_bound(),
+        default_loop_bound: facts.default_loop_bound(),
         max_states: profile.max_states(),
         frequency_hz,
         solver: None,
-        flow_facts: None,
+        flow_facts: Some(facts.info()),
         functions_analyzed: 0,
         functions_partial: 0,
         functions_unbounded: 0,
@@ -103,7 +118,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, profile: &WcetProfile) -
         caveats: vec![
             "WCET is a CFG longest-path estimate over modeled block upper bounds, not a hardware proof."
                 .to_owned(),
-            "Loops require an explicit bound (default_loop_bound or a loop_bounds entry); loops without bounds make the containing function unbounded."
+            "Loops require an explicit bound from the board profile or an imported F4/FFX file; loops without bounds make the containing function unbounded."
                 .to_owned(),
             "Recursive call-graph SCCs are reported as unbounded."
                 .to_owned(),
@@ -117,6 +132,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, profile: &WcetProfile) -
                 .to_owned(),
         ],
     };
+    info.caveats.extend(facts.warnings().iter().cloned());
     for (index, summary) in summaries.into_iter().enumerate() {
         let Some(summary) = summary else {
             continue;
@@ -180,7 +196,8 @@ fn analyze_function(
     function: &CfgFunction,
     index_by_id: &BTreeMap<FunctionId, usize>,
     summaries: &[Option<CfgFunctionWcet>],
-    profile: &WcetProfile,
+    facts: &FlowFacts,
+    max_states: usize,
     frequency_hz: Option<u64>,
 ) -> CfgFunctionWcet {
     let Some(entry) = function.cfg.entry else {
@@ -202,7 +219,7 @@ fn analyze_function(
     {
         partial = true;
     }
-    let loops = match build_loop_context(&function.cfg, &analysis, profile) {
+    let loops = match build_loop_context(&function.cfg, &analysis, facts) {
         Ok(context) => context,
         Err(reason) => return unbounded_summary(&reason, 0, 0),
     };
@@ -221,7 +238,7 @@ fn analyze_function(
         entry,
         &loops,
         &call_info.block_cycles,
-        profile.max_states(),
+        max_states,
     ) {
         Ok(path) => path,
         Err(WcetPathError::StateLimit) => {
@@ -285,7 +302,7 @@ struct LoopContext {
 fn build_loop_context(
     cfg: &FunctionCfg,
     analysis: &CfgGraphAnalysis,
-    profile: &WcetProfile,
+    facts: &FlowFacts,
 ) -> Result<LoopContext, String> {
     let node_by_id: BTreeMap<BlockId, NodeIndex> = cfg
         .blocks_by_address
@@ -303,9 +320,8 @@ fn build_loop_context(
             return Err("loop-header-missing".to_owned());
         };
         let header_address = cfg.graph[header_node].address;
-        let bound = profile
-            .loop_bound_for(header_address)
-            .or_else(|| profile.default_loop_bound())
+        let bound = facts
+            .bound_for(header_address)
             .ok_or_else(|| format!("loop-unbounded:0x{header_address:x}"))?;
         let loop_set: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
         let has_exit = cfg.graph.edge_references().any(|edge| {
@@ -313,7 +329,7 @@ fn build_loop_context(
                 && !loop_set.contains(&cfg.graph[edge.target()].id)
         });
         if !has_exit {
-            if !profile.bound_nonterminating_loops() {
+            if !facts.bound_nonterminating_loops() {
                 return Err(format!("non-terminating-loop:0x{header_address:x}"));
             }
             nonterminating_bounded = true;

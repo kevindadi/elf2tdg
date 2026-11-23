@@ -1,6 +1,7 @@
 //! Function discovery, CFG/call-graph recovery and program analysis for M0.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
 
 use elf2tdg_schema::{
     Addr, BasicBlock, BlockId, Confidence, Context, ContextId, ContextKind, Determinism,
@@ -62,6 +63,8 @@ pub struct AnalysisOptions {
     /// Reject the analysis when any execution root's WCET result is not a
     /// bounded safe result.
     pub require_safe: bool,
+    /// External F4 `.ff` or FFX flow-fact files, applied after profile facts.
+    pub flow_fact_paths: Vec<PathBuf>,
 }
 
 impl Default for AnalysisOptions {
@@ -76,6 +79,7 @@ impl Default for AnalysisOptions {
             max_diagnostics: DEFAULT_MAX_DIAGNOSTICS,
             path_analysis: PathAnalysis::LongestPath,
             require_safe: false,
+            flow_fact_paths: Vec::new(),
         }
     }
 }
@@ -3259,20 +3263,26 @@ impl<'a> Analyzer<'a> {
         program_cfg.image = Some(image.clone());
         program_cfg.timing = Some(timing.clone());
         program_cfg.diagnostics.clone_from(&self.diagnostics);
-        if let Some(profile) = self
+        let wcet_profile = self
             .timing
             .as_ref()
             .and_then(TimingCostModel::profile)
-            .and_then(BoardProfile::wcet)
-        {
+            .and_then(BoardProfile::wcet);
+        if !self.options.flow_fact_paths.is_empty() && wcet_profile.is_none() {
+            return Err(Error::Config(
+                "flow-fact files require a board profile with a [wcet] section".to_owned(),
+            ));
+        }
+        if let Some(profile) = wcet_profile {
+            let mut facts = crate::flow_facts::FlowFacts::from_wcet_profile(profile);
+            facts
+                .apply_paths(&self.options.flow_fact_paths, &program_cfg)
+                .map_err(Error::Config)?;
             let info = match self.options.path_analysis {
                 PathAnalysis::LongestPath => {
-                    crate::wcet::analyze_program(&mut program_cfg, profile)
+                    crate::wcet::analyze_program_with_facts(&mut program_cfg, profile, &facts)
                 }
-                PathAnalysis::Ipet => {
-                    let facts = crate::flow_facts::FlowFacts::from_wcet_profile(profile);
-                    crate::ipet::analyze_program(&mut program_cfg, &facts)
-                }
+                PathAnalysis::Ipet => crate::ipet::analyze_program(&mut program_cfg, &facts),
             };
             program_cfg.wcet = Some(info);
         }

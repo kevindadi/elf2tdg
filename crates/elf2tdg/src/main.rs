@@ -37,6 +37,11 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     board_profile: Option<PathBuf>,
 
+    /// External F4 `.ff` or FFX flow-fact file; may be repeated. Requires a
+    /// board profile with a [wcet] section.
+    #[arg(long, value_name = "PATH", action = clap::ArgAction::Append)]
+    flowfacts: Vec<PathBuf>,
+
     /// List the compile-time analysis pass plan and exit. If --board-profile is
     /// supplied, optional passes enabled by that profile are marked as such.
     #[arg(long)]
@@ -251,10 +256,11 @@ fn main() -> Result<()> {
             || cli.reachable_from.is_some()
             || cli.no_prune_runtime
             || cli.no_cfg_instructions
-            || cli.require_safe)
+            || cli.require_safe
+            || !cli.flowfacts.is_empty())
     {
         anyhow::bail!(
-            "--function, --all-functions, --reachable-from, --no-prune-runtime, --no-cfg-instructions and --require-safe are only supported with --view cfg"
+            "--function, --all-functions, --reachable-from, --no-prune-runtime, --no-cfg-instructions, --require-safe and --flowfacts are only supported with --view cfg"
         );
     }
     if cli.view == View::Elf {
@@ -292,6 +298,7 @@ fn main() -> Result<()> {
         max_diagnostics: cli.max_diagnostics,
         path_analysis,
         require_safe: cli.require_safe,
+        flow_fact_paths: cli.flowfacts.clone(),
         ..AnalysisOptions::default()
     };
     let analysis = analyze_with_cfg(&image, &options).context("analysis failed")?;

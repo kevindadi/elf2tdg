@@ -20,6 +20,7 @@ gimli = { version = "0.34", default-features = false, features = ["read", "std"]
 good_lp = { version = "1.15", default-features = false, features = ["microlp"] }
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
 petgraph = { version = "0.8.3", default-features = false, features = ["std", "stable_graph"] }
+roxmltree = { version = "0.21", default-features = false, features = ["std"] }
 rustc-demangle = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

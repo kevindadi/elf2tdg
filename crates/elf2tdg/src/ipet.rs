@@ -21,11 +21,11 @@ use petgraph::graph::DiGraph;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
-use elf2tdg_schema::{Addr, BlockId, FunctionId};
+use elf2tdg_schema::{BlockId, FunctionId};
 
 use crate::cfg::{
-    CfgFlowFactsInfo, CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution,
-    CfgLoopBoundInfo, CfgWcetInfo, CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus,
+    FunctionCfg, ProgramCfg,
 };
 use crate::flow_facts::FlowFacts;
 use crate::wcet::{
@@ -107,7 +107,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
         max_states: 0,
         frequency_hz,
         solver: Some(SOLVER_NAME.to_owned()),
-        flow_facts: Some(flow_facts_info(facts)),
+        flow_facts: Some(facts.info()),
         functions_analyzed: 0,
         functions_partial: 0,
         functions_unbounded: 0,
@@ -116,7 +116,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
         caveats: vec![
             "IPET maximizes block execution counts under flow conservation and configured loop bounds; it is a static estimate, not a hardware proof."
                 .to_owned(),
-            "Loop bounds are assumptions supplied by the board profile, not proven loop facts."
+            "Loop bounds are assumptions supplied by the board profile or imported flow-fact files, not proven loop facts."
                 .to_owned(),
             "Callee summaries are context-insensitive and computed bottom-up per function."
                 .to_owned(),
@@ -132,6 +132,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 .to_owned(),
         ],
     };
+    info.caveats.extend(facts.warnings().iter().cloned());
     for (index, summary) in summaries.into_iter().enumerate() {
         let Some(summary) = summary else {
             continue;
@@ -153,21 +154,6 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
         program.functions[index].wcet = Some(summary);
     }
     info
-}
-
-fn flow_facts_info(facts: &FlowFacts) -> CfgFlowFactsInfo {
-    CfgFlowFactsInfo {
-        source: facts.source().to_owned(),
-        default_loop_bound: facts.default_loop_bound(),
-        bound_nonterminating_loops: facts.bound_nonterminating_loops(),
-        loops: facts
-            .loops()
-            .map(|(header, bound)| CfgLoopBoundInfo {
-                header: Addr::new(header),
-                bound,
-            })
-            .collect(),
-    }
 }
 
 fn analyze_function(

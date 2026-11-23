@@ -176,10 +176,18 @@ pub const BUILTIN_PASSES: &[PassInfo] = &[
         soundness: Soundness::ModelDependent,
     },
     PassInfo {
+        id: "flow.facts",
+        title: "Loop bounds from the board profile and F4/FFX files",
+        kind: PassKind::Analysis,
+        requires: &["ir.cfg"],
+        provides: &["flow.facts"],
+        soundness: Soundness::ModelDependent,
+    },
+    PassInfo {
         id: "wcet.longest-path",
         title: "CFG longest-path WCET summary",
         kind: PassKind::PathAnalysis,
-        requires: &["ir.cfg", "ir.calls", "timing.block-costs"],
+        requires: &["ir.cfg", "ir.calls", "timing.block-costs", "flow.facts"],
         provides: &["wcet.function", "wcet.root"],
         soundness: Soundness::Estimate,
     },
@@ -238,6 +246,11 @@ pub fn plan(profile: Option<&BoardProfile>, path_analysis: PathAnalysis) -> Vec<
                     profile.is_some_and(BoardProfile::data_memory_enabled),
                     "no memory region declares data wait states",
                     "a memory region declares data wait states",
+                ),
+                "flow.facts" => optional(
+                    profile.is_some_and(|profile| profile.wcet().is_some()),
+                    "no [wcet] section in the board profile",
+                    "[wcet] is present; --flowfacts files are merged at analysis time",
                 ),
                 "wcet.longest-path" => path_analysis_pass(
                     profile,
@@ -410,6 +423,7 @@ default_loop_bound = 4
             "analysis.data-cache",
             "analysis.branch-prediction",
             "analysis.data-memory",
+            "flow.facts",
             "wcet.longest-path",
             "wcet.ipet",
         ] {

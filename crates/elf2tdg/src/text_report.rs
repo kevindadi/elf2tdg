@@ -457,7 +457,7 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
             kv_indent(
                 out,
                 "loop bound",
-                &format!("{} = {}", loop_.header, loop_.bound),
+                &format!("{} = {} ({})", loop_.header, loop_.bound, loop_.source),
             );
         }
     }

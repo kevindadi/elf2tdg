@@ -474,13 +474,6 @@ impl WcetProfile {
         self.max_states
     }
 
-    pub(crate) fn loop_bound_for(&self, header: u64) -> Option<u32> {
-        self.loop_bounds
-            .iter()
-            .find(|entry| entry.header == header)
-            .map(|entry| entry.bound)
-    }
-
     pub(crate) fn loop_bounds(&self) -> impl Iterator<Item = (u64, u32)> + '_ {
         self.loop_bounds
             .iter()
@@ -1588,7 +1581,10 @@ bound = 12
         assert_eq!(wcet.default_loop_bound(), Some(4));
         assert_eq!(wcet.max_states(), 1024);
         assert!(wcet.bound_nonterminating_loops());
-        assert_eq!(wcet.loop_bound_for(0x800_0100), Some(12));
+        assert_eq!(
+            wcet.loop_bounds().collect::<Vec<_>>(),
+            vec![(0x800_0100, 12)]
+        );
         assert_eq!(wcet.loop_bound_count(), 1);
         assert!(
             BoardProfile::parse_toml(&valid.replace("schema_version = 2", "schema_version = 1"))
