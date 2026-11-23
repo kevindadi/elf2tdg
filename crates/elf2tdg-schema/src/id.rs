@@ -163,7 +163,7 @@ macro_rules! define_plain_id {
 
 define_plain_id!(
     /// Names a concurrency runtime (for example `freertos`, `zephyr`,
-    /// `rust-embassy`, `rust-rtic`, `pthread`, `openmp`).
+    /// `rust-embassy`, `rust-rtic`, `freertos`, `zephyr`).
     RuntimeId
 );
 define_plain_id!(

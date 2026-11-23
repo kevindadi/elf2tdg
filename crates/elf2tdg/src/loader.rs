@@ -776,8 +776,8 @@ fn raw_uint_at(
 ///
 /// Calls in dynamic executables target PLT entries rather than the imported
 /// function itself. Without these symbols a whole PLT block can be folded into
-/// one function, so a call to `GOMP_parallel` or `std::thread::join` becomes a
-/// call into another stub's body and no runtime rule can match it.
+/// one function, so a call to `xTaskCreate` becomes a call into another
+/// stub's body and no runtime rule can match it.
 fn synthesize_plt_symbols(
     file: &object::File<'_>,
     sections: &[Section],

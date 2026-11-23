@@ -90,60 +90,6 @@ pub fn apply(
             entry_heuristic = true;
         }
         if resolution.chosen.is_none()
-            && hit.rule.runtime == "cpp-std"
-            && let Some(callee) = hit
-                .callee
-                .as_ref()
-                .and_then(|callee| function_by_id.get(callee).copied())
-            && let Some(marker) = std::iter::once(callee.primary_name.as_str())
-                .chain(callee.symbols.iter().map(String::as_str))
-                .find_map(rules::cpp_callable_marker)
-                .map(str::to_owned)
-        {
-            let mut candidates: Vec<&Function> = functions
-                .iter()
-                .filter(|function| function.id != callee.id)
-                .filter(|function| {
-                    let has_run = function.primary_name.contains("_M_run")
-                        || function.symbols.iter().any(|name| name.contains("_M_run"));
-                    let has_marker = function.primary_name.contains(&marker)
-                        || function.symbols.iter().any(|name| name.contains(&marker));
-                    has_run && has_marker
-                })
-                .collect();
-            candidates.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
-            candidates.dedup_by(|left, right| left.id == right.id);
-            if candidates.len() == 1 {
-                resolution.chosen = Some(candidates[0]);
-                entry_heuristic = true;
-                sink.push(
-                    Severity::Info,
-                    "cpp-callable-entry",
-                    format!(
-                        "recovered a conservative C++ thread entry from the {} callable marker",
-                        hit.rule.api
-                    ),
-                    Some(&hit.caller),
-                    Some(hit.site),
-                );
-            } else if candidates.len() > 1 {
-                sink.push(
-                    Severity::Info,
-                    "cpp-callable-ambiguous",
-                    format!(
-                        "found {} candidate _M_run functions for {}; keeping the spawn target opaque",
-                        candidates.len(),
-                        hit.rule.api
-                    ),
-                    Some(&hit.caller),
-                    Some(hit.site),
-                );
-            }
-            if !candidates.is_empty() {
-                resolution.candidates = candidates;
-            }
-        }
-        if resolution.chosen.is_none()
             && let Some(entry_arg) = hit.rule.entry_arg
             && let Some(caller) = function_by_id.get(&hit.caller).copied()
             && let Some(decoded) = decoded_by_function.get(&caller.address.get())
@@ -457,7 +403,6 @@ pub fn apply(
         }
     }
     break_parent_cycles(contexts, &mut sink);
-    add_parallel_scopes(edges, &membership, scopes);
 
     for hit in hits.iter().filter(|hit| hit.rule.op == RuleOp::Join) {
         let spawned = spawn_by_caller
@@ -1360,47 +1305,6 @@ fn break_parent_cycles(contexts: &mut [Context], sink: &mut DiagnosticSink<'_>) 
         if to_clear.contains(&context.id) {
             context.parent = None;
         }
-    }
-}
-
-/// OpenMP parallel regions are implicit scopes: the runtime call creates the
-/// team and joins it before returning. Record one scope per resolved OpenMP
-/// spawn so JSON/diagram consumers see the structured region, not just a
-/// thread context.
-fn add_parallel_scopes(
-    edges: &[Edge],
-    membership: &BTreeMap<FunctionId, ContextId>,
-    scopes: &mut Vec<Scope>,
-) {
-    for edge in edges {
-        let Edge::Spawn {
-            id,
-            from_function,
-            site,
-            spawn_kind: SpawnKind::OpenMpRegion,
-            confidence,
-            ..
-        } = edge
-        else {
-            continue;
-        };
-        let Some(entering_context) = membership.get(from_function) else {
-            continue;
-        };
-        let scope_id = ScopeId::new(format!("scope:omp:0x{:x}", site.get()));
-        if scopes.iter().any(|scope| scope.id == scope_id) {
-            continue;
-        }
-        scopes.push(Scope {
-            id: scope_id,
-            kind: elf2tdg_schema::ScopeKind::OpenMpParallel,
-            entering_context: entering_context.clone(),
-            enter_site: *site,
-            exit_site: None,
-            implicit_join: true,
-            members: vec![id.clone()],
-            confidence: *confidence,
-        });
     }
 }
 

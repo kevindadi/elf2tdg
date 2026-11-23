@@ -288,234 +288,7 @@ static RULES: &[Rule] = &[
         true,
         true,
     ),
-    // ---- C++ standard library and OpenMP --------------------------------
-    // C++ symbols remain Itanium-mangled. The constructor instantiations for
-    // a callable are identifiable by the template marker after C1/C2; move
-    // constructors do not contain it. Runtime code later matches that marker
-    // against generated `_M_run` symbols to recover a conservative entry.
-    spawn(
-        "cpp-std",
-        "std::thread::thread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt6threadC1I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::thread::thread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt6threadCI1I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::thread::thread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt6threadCI2I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::thread::thread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt6threadC2I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::thread::thread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt3__16threadC1I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::thread::thread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt3__16threadC2I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::jthread::jthread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt7jthreadC1I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::jthread::jthread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt7jthreadC2I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::jthread::jthread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt3__17jthreadC1I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::jthread::jthread",
-        SpawnKind::OsThread,
-        Matcher::RawContains("_ZNSt3__17jthreadC2I"),
-        Confidence::Medium,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::async",
-        SpawnKind::AsyncTask,
-        Matcher::RawContains("_ZNSt5asyncI"),
-        Confidence::Low,
-        false,
-        true,
-    ),
-    spawn(
-        "cpp-std",
-        "std::async",
-        SpawnKind::AsyncTask,
-        Matcher::RawContains("_ZNSt3__15asyncI"),
-        Confidence::Low,
-        false,
-        true,
-    ),
-    join(
-        "cpp-std",
-        "std::thread::join",
-        JoinKind::Join,
-        Matcher::RawContains("_ZNSt6thread4joinEv"),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "cpp-std",
-        "std::thread::join",
-        JoinKind::Join,
-        Matcher::RawContains("_ZNSt3__16thread4joinEv"),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "cpp-std",
-        "std::thread::detach",
-        JoinKind::Detach,
-        Matcher::RawContains("_ZNSt6thread6detachEv"),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "cpp-std",
-        "std::thread::detach",
-        JoinKind::Detach,
-        Matcher::RawContains("_ZNSt3__16thread6detachEv"),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "cpp-std",
-        "std::jthread::join",
-        JoinKind::Join,
-        Matcher::RawContains("_ZNSt7jthread4joinEv"),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "cpp-std",
-        "std::jthread::join",
-        JoinKind::Join,
-        Matcher::RawContains("_ZNSt3__17jthread4joinEv"),
-        Confidence::High,
-        true,
-    ),
-    // OpenMP outlined regions are real parallel contexts. GCC's GOMP passes
-    // the entry as argument 0; LLVM's libomp fork-call passes it as argument 2.
-    spawn_c(
-        "openmp",
-        "GOMP_parallel",
-        SpawnKind::OpenMpRegion,
-        Matcher::RawExact("GOMP_parallel"),
-        Confidence::High,
-        0,
-    ),
-    spawn_c(
-        "openmp",
-        "GOMP_parallel_start",
-        SpawnKind::OpenMpRegion,
-        Matcher::RawExact("GOMP_parallel_start"),
-        Confidence::High,
-        0,
-    ),
-    spawn_c(
-        "openmp",
-        "__kmpc_fork_call",
-        SpawnKind::OpenMpRegion,
-        Matcher::RawExact("__kmpc_fork_call"),
-        Confidence::High,
-        2,
-    ),
-    spawn_c(
-        "openmp",
-        "__kmpc_fork_teams",
-        SpawnKind::OpenMpRegion,
-        Matcher::RawExact("__kmpc_fork_teams"),
-        Confidence::High,
-        2,
-    ),
-    // ---- POSIX / RTOS C APIs (entry argument recovered by value tracking) --
-    spawn_c(
-        "pthread",
-        "pthread_create",
-        SpawnKind::OsThread,
-        Matcher::RawExact("pthread_create"),
-        Confidence::High,
-        2,
-    ),
-    spawn_c(
-        "pthread",
-        "pthread_create",
-        SpawnKind::OsThread,
-        Matcher::RawExact("_pthread_create"),
-        Confidence::High,
-        2,
-    ),
-    join(
-        "pthread",
-        "pthread_join",
-        JoinKind::Join,
-        Matcher::RawExact("pthread_join"),
-        Confidence::High,
-        true,
-    ),
-    join(
-        "pthread",
-        "pthread_detach",
-        JoinKind::Detach,
-        Matcher::RawExact("pthread_detach"),
-        Confidence::High,
-        true,
-    ),
+    // ---- RTOS C APIs (entry argument recovered by value tracking) ---------
     spawn_c(
         "freertos",
         "xTaskCreate",
@@ -590,97 +363,6 @@ static RULES: &[Rule] = &[
     ),
     // ---- Callback / function-pointer registration -----------------------
     callback(
-        "libc",
-        "atexit",
-        Matcher::RawExact("atexit"),
-        Confidence::High,
-        &[0],
-    ),
-    callback(
-        "libc",
-        "__cxa_atexit",
-        Matcher::RawExact("__cxa_atexit"),
-        Confidence::High,
-        &[0],
-    ),
-    callback(
-        "libc",
-        "on_exit",
-        Matcher::RawExact("on_exit"),
-        Confidence::High,
-        &[0],
-    ),
-    callback(
-        "libc",
-        "signal",
-        Matcher::RawExact("signal"),
-        Confidence::High,
-        &[1],
-    ),
-    callback(
-        "libc",
-        "bsd_signal",
-        Matcher::RawExact("bsd_signal"),
-        Confidence::High,
-        &[1],
-    ),
-    callback(
-        "libc",
-        "qsort",
-        Matcher::RawExact("qsort"),
-        Confidence::High,
-        &[3],
-    ),
-    callback(
-        "libc",
-        "bsearch",
-        Matcher::RawExact("bsearch"),
-        Confidence::High,
-        &[4],
-    ),
-    callback(
-        "pthread",
-        "pthread_once",
-        Matcher::RawExact("pthread_once"),
-        Confidence::High,
-        &[1],
-    ),
-    callback(
-        "pthread",
-        "pthread_key_create",
-        Matcher::RawExact("pthread_key_create"),
-        Confidence::High,
-        &[1],
-    ),
-    callback(
-        "pthread",
-        "pthread_atfork",
-        Matcher::RawExact("pthread_atfork"),
-        Confidence::High,
-        &[0, 1, 2],
-    ),
-    callback(
-        "libc",
-        "ftw",
-        Matcher::RawExact("ftw"),
-        Confidence::Medium,
-        &[1],
-    ),
-    callback(
-        "libc",
-        "nftw",
-        Matcher::RawExact("nftw"),
-        Confidence::Medium,
-        &[1],
-    ),
-    callback(
-        "libc",
-        "scandir",
-        Matcher::RawExact("scandir"),
-        Confidence::Medium,
-        &[2, 3],
-    ),
-    callback(
         "freertos",
         "xTimerCreate",
         Matcher::RawExact("xTimerCreate"),
@@ -735,106 +417,6 @@ static RULES: &[Rule] = &[
         Matcher::RawExact("tx_timer_create"),
         Confidence::High,
         &[2],
-    ),
-    // ---- pthread / POSIX -------------------------------------------------
-    lock(
-        "pthread",
-        "pthread_mutex_lock",
-        LockKind::Mutex,
-        LockOperation::Acquire,
-        Matcher::RawExact("pthread_mutex_lock"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "pthread_mutex_trylock",
-        LockKind::Mutex,
-        LockOperation::TryAcquire,
-        Matcher::RawExact("pthread_mutex_trylock"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "pthread_mutex_unlock",
-        LockKind::Mutex,
-        LockOperation::Release,
-        Matcher::RawExact("pthread_mutex_unlock"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "pthread_rwlock_rdlock",
-        LockKind::RwLockRead,
-        LockOperation::Acquire,
-        Matcher::RawExact("pthread_rwlock_rdlock"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "pthread_rwlock_wrlock",
-        LockKind::RwLockWrite,
-        LockOperation::Acquire,
-        Matcher::RawExact("pthread_rwlock_wrlock"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "pthread_rwlock_tryrdlock",
-        LockKind::RwLockRead,
-        LockOperation::TryAcquire,
-        Matcher::RawExact("pthread_rwlock_tryrdlock"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "pthread_rwlock_trywrlock",
-        LockKind::RwLockWrite,
-        LockOperation::TryAcquire,
-        Matcher::RawExact("pthread_rwlock_trywrlock"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "pthread_rwlock_unlock",
-        LockKind::RwLock,
-        LockOperation::Release,
-        Matcher::RawExact("pthread_rwlock_unlock"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "sem_wait",
-        LockKind::Semaphore,
-        LockOperation::Acquire,
-        Matcher::RawExact("sem_wait"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "sem_trywait",
-        LockKind::Semaphore,
-        LockOperation::TryAcquire,
-        Matcher::RawExact("sem_trywait"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "pthread",
-        "sem_post",
-        LockKind::Semaphore,
-        LockOperation::Release,
-        Matcher::RawExact("sem_post"),
-        Confidence::High,
-        true,
     ),
     // ---- FreeRTOS / Zephyr / ThreadX ------------------------------------
     lock(
@@ -945,88 +527,6 @@ static RULES: &[Rule] = &[
         Confidence::High,
         true,
     ),
-    // ---- C++ std::mutex / shared_mutex ----------------------------------
-    lock(
-        "cpp-std",
-        "std::mutex::lock",
-        LockKind::Mutex,
-        LockOperation::Acquire,
-        Matcher::RawExact("_ZNSt5mutex4lockEv"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "cpp-std",
-        "std::mutex::try_lock",
-        LockKind::Mutex,
-        LockOperation::TryAcquire,
-        Matcher::RawExact("_ZNSt5mutex8try_lockEv"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "cpp-std",
-        "std::mutex::unlock",
-        LockKind::Mutex,
-        LockOperation::Release,
-        Matcher::RawExact("_ZNSt5mutex6unlockEv"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "cpp-std",
-        "std::shared_mutex::lock_shared",
-        LockKind::RwLockRead,
-        LockOperation::Acquire,
-        Matcher::RawExact("_ZNSt12shared_mutex11lock_sharedEv"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "cpp-std",
-        "std::shared_mutex::unlock_shared",
-        LockKind::RwLockRead,
-        LockOperation::Release,
-        Matcher::RawExact("_ZNSt12shared_mutex13unlock_sharedEv"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "cpp-std",
-        "std::shared_mutex::try_lock_shared",
-        LockKind::RwLockRead,
-        LockOperation::TryAcquire,
-        Matcher::RawExact("_ZNSt12shared_mutex15try_lock_sharedEv"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "cpp-std",
-        "std::shared_mutex::lock",
-        LockKind::RwLockWrite,
-        LockOperation::Acquire,
-        Matcher::RawExact("_ZNSt12shared_mutex4lockEv"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "cpp-std",
-        "std::shared_mutex::unlock",
-        LockKind::RwLockWrite,
-        LockOperation::Release,
-        Matcher::RawExact("_ZNSt12shared_mutex6unlockEv"),
-        Confidence::High,
-        true,
-    ),
-    lock(
-        "cpp-std",
-        "std::shared_mutex::try_lock",
-        LockKind::RwLockWrite,
-        LockOperation::TryAcquire,
-        Matcher::RawExact("_ZNSt12shared_mutex8try_lockEv"),
-        Confidence::High,
-        true,
-    ),
 ];
 
 /// Matches a callee function against the rule database.
@@ -1130,10 +630,10 @@ pub fn normalize_crate_hashes(name: &str) -> String {
 /// Returns true when a function is known by API or ABI convention not to
 /// return to its caller.
 ///
-/// This is deliberately a name-based classification: it covers C/POSIX exit
-/// and abort entry points, Rust panic entry points, compiler runtime failure
-/// hooks and C++ termination/unwind helpers. Functions that merely contain a
-/// halt loop are classified from their recovered control-flow graph instead.
+/// This is deliberately a name-based classification: it covers C exit and
+/// abort entry points, Rust panic entry points, compiler runtime failure hooks
+/// and C++ ABI termination/unwind helpers. Functions that merely contain a halt
+/// loop are classified from their recovered control-flow graph instead.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn is_noreturn_name(name: &str) -> bool {
@@ -1166,8 +666,6 @@ pub fn is_noreturn_name(name: &str) -> bool {
                 | "_exit"
                 | "_Exit"
                 | "quick_exit"
-                | "thrd_exit"
-                | "pthread_exit"
                 | "longjmp"
                 | "_longjmp"
                 | "siglongjmp"
@@ -1178,7 +676,6 @@ pub fn is_noreturn_name(name: &str) -> bool {
                 | "__assert_perror_fail"
                 | "__stack_chk_fail"
                 | "__stack_chk_fail_local"
-                | "__libc_fatal"
                 | "__cxa_throw"
                 | "__cxa_rethrow"
                 | "__cxa_pure_virtual"
@@ -1216,9 +713,6 @@ pub fn is_noreturn_name(name: &str) -> bool {
     if normalized.contains("::hint::") && bare == "unreachable_unchecked" {
         return true;
     }
-    if normalized.contains("::process::") && matches!(bare, "abort" | "exit" | "_exit") {
-        return true;
-    }
     if normalized.contains("::alloc::")
         && matches!(bare, "handle_alloc_error" | "capacity_overflow")
     {
@@ -1238,33 +732,7 @@ pub fn is_noreturn_name(name: &str) -> bool {
     if normalized.contains("::str::") && bare == "slice_error_fail" {
         return true;
     }
-    if normalized.contains("std::terminate")
-        || normalized.contains("__gnu_cxx::__verbose_terminate_handler")
-        || normalized.starts_with("_ZSt9terminate")
-    {
-        return true;
-    }
     false
-}
-
-/// Extracts the Itanium-mangled lambda/callable marker from a C++ thread
-/// constructor such as
-/// `_ZNSt6threadC1IZ4mainEUlvE_JEvEEOT_DpOT0_`.
-///
-/// The marker (`Z4mainEUlvE_` here) also appears in the generated
-/// `_State_impl<...>::_M_run` symbol, which lets the analyzer recover a
-/// conservative thread entry without a full C++ demangler.
-#[must_use]
-pub fn cpp_callable_marker(name: &str) -> Option<&str> {
-    let constructor = ["CI1I", "CI2I", "C1I", "C2I"]
-        .iter()
-        .find_map(|pattern| name.find(pattern).map(|index| index + pattern.len()))?;
-    let suffix = &name[constructor..];
-    let start = suffix.find('Z')?;
-    let tail = &suffix[start..];
-    let end = tail.find('J').unwrap_or(tail.len());
-    let marker = &tail[..end];
-    (marker.len() >= 4 && marker.starts_with('Z')).then_some(marker)
 }
 
 /// Extracts the first generic argument from a demangled Rust function symbol.
@@ -1315,27 +783,6 @@ pub fn is_runtime_internal(name: &str) -> bool {
         "rtic::",
         "futures_",
     ];
-    // C++ runtime symbols are still Itanium-mangled when they reach here.
-    const CPP_PREFIXES: &[&str] = &[
-        "_ZNSt6thread",
-        "_ZNKSt6thread",
-        "_ZNSt7jthread",
-        "_ZNKSt7jthread",
-        "_ZNSt5async",
-        "_ZNSt6future",
-        "_ZNSt7promise",
-        "_ZNSt3__16thread",
-        "_ZNKSt3__16thread",
-        "_ZNSt3__17jthread",
-        "_ZNKSt3__17jthread",
-        "_ZNSt3__15async",
-    ];
-    if CPP_PREFIXES
-        .iter()
-        .any(|prefix| name.trim_start().starts_with(prefix))
-    {
-        return true;
-    }
     let normalized = normalize_crate_hashes(name);
     let mut normalized = normalized.trim();
     loop {
@@ -1356,9 +803,8 @@ pub fn is_runtime_internal(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuleOp, cpp_callable_marker, extract_first_generic_arg, is_noreturn_name,
-        is_runtime_internal, match_demangled_name, match_function, match_inline_names,
-        normalize_crate_hashes,
+        RuleOp, extract_first_generic_arg, is_noreturn_name, is_runtime_internal,
+        match_demangled_name, match_function, normalize_crate_hashes,
     };
     use elf2tdg_schema::{
         Addr, Function, FunctionId, FunctionKind, Language, LockKind, LockOperation, SpawnKind,
@@ -1454,6 +900,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_cpp_standard_library_concurrency_and_locks() {
+        for name in [
+            "_ZNSt6threadC1IZ4mainEUlvE_JEvEEOT_DpOT0_",
+            "_ZNSt6thread4joinEv",
+            "_ZNSt6thread6detachEv",
+            "_ZNSt6asyncIZ4mainEUlvE_JEvEESt6futureINSt9result_ofIFvvEE4typeEEDpOT_",
+            "_ZNSt5mutex4lockEv",
+            "_ZNSt12shared_mutex4lockEv",
+        ] {
+            let function = function(name, &[name], Language::Cpp);
+            assert!(
+                match_function(&function).is_none(),
+                "{name} is outside the supported global no-std profile"
+            );
+        }
+    }
+
+    #[test]
     fn matches_embassy_inline_spawner_calls() {
         let rule = match_demangled_name(
             "<embassy_executor[3333333333333333]::spawner::Spawner>::spawn::<app[1234567890abcdef]::sensor_task::{closure#0}>",
@@ -1475,35 +939,42 @@ mod tests {
 
     #[test]
     fn matches_c_rtos_apis() {
-        let create = function("pthread_create", &["pthread_create"], Language::C);
-        let rule = match_function(&create).expect("pthread rule");
-        assert_eq!(rule.runtime, "pthread");
-        assert_eq!(rule.op, RuleOp::Spawn);
-
         let task = function("xTaskCreate", &["xTaskCreate"], Language::C);
         let rule = match_function(&task).expect("freertos rule");
         assert_eq!(rule.runtime, "freertos");
+        assert_eq!(rule.op, RuleOp::Spawn);
+
+        let zephyr = function("k_thread_create", &["k_thread_create"], Language::C);
+        let rule = match_function(&zephyr).expect("zephyr rule");
+        assert_eq!(rule.runtime, "zephyr");
+
+        let threadx = function("tx_thread_create", &["tx_thread_create"], Language::C);
+        let rule = match_function(&threadx).expect("threadx rule");
+        assert_eq!(rule.runtime, "threadx");
     }
 
     #[test]
-    fn matches_lock_rules_by_demangled_and_raw_names() {
-        let pthread = function(
-            "pthread_mutex_unlock",
-            &["pthread_mutex_unlock"],
-            Language::C,
-        );
-        let rule = match_function(&pthread).expect("pthread unlock rule");
+    fn matches_rtos_lock_rules() {
+        let take = function("xSemaphoreTake", &["xSemaphoreTake"], Language::C);
+        let rule = match_function(&take).expect("FreeRTOS semaphore take rule");
         assert_eq!(rule.op, RuleOp::Lock);
-        assert_eq!(rule.lock.map(|lock| lock.kind), Some(LockKind::Mutex));
+        assert_eq!(rule.lock.map(|lock| lock.kind), Some(LockKind::Semaphore));
+        assert_eq!(
+            rule.lock.map(|lock| lock.operation),
+            Some(LockOperation::Acquire)
+        );
+
+        let give = function("xSemaphoreGive", &["xSemaphoreGive"], Language::C);
+        let rule = match_function(&give).expect("FreeRTOS semaphore give rule");
+        assert_eq!(rule.op, RuleOp::Lock);
         assert_eq!(
             rule.lock.map(|lock| lock.operation),
             Some(LockOperation::Release)
         );
 
-        let inline = match_inline_names("std::mutex::lock", Some("_ZNSt5mutex4lockEv"))
-            .expect("C++ inline lock rule");
-        assert_eq!(inline.op, RuleOp::Lock);
-        assert_eq!(inline.lock.map(|lock| lock.kind), Some(LockKind::Mutex));
+        let mutex = function("k_mutex_lock", &["k_mutex_lock"], Language::C);
+        let rule = match_function(&mutex).expect("Zephyr mutex rule");
+        assert_eq!(rule.lock.map(|lock| lock.kind), Some(LockKind::Mutex));
 
         let std_mutex = function(
             "<std[f9fb83b88fa27b65]::sync::poison::mutex::Mutex<u64>>::lock",
@@ -1528,71 +999,49 @@ mod tests {
         assert!(!is_runtime_internal("app::main"));
         assert!(!is_runtime_internal("<app::Worker>::run"));
         assert!(!is_runtime_internal("<&mut app::Worker>::call_mut"));
-        assert!(is_runtime_internal("_ZNSt6thread15_M_start_threadE..."));
-        assert!(is_runtime_internal("_ZNKSt6thread8joinableEv"));
         assert!(!is_runtime_internal("_Z4bodyi"));
     }
 
     #[test]
-    fn matches_cpp_threads_and_openmp() {
-        let constructor = function(
-            "_ZNSt6threadC1IZ4mainEUlvE_JEvEEOT_DpOT0_",
-            &["_ZNSt6threadC1IZ4mainEUlvE_JEvEEOT_DpOT0_"],
-            Language::Cpp,
-        );
-        let rule = match_function(&constructor).expect("C++ thread constructor rule");
-        assert_eq!(rule.runtime, "cpp-std");
-        assert_eq!(rule.op, RuleOp::Spawn);
-        assert_eq!(rule.spawn_kind, SpawnKind::OsThread);
-
-        let join = function(
-            "_ZNSt6thread4joinEv",
-            &["_ZNSt6thread4joinEv"],
-            Language::Cpp,
-        );
-        let rule = match_function(&join).expect("C++ join rule");
-        assert_eq!(rule.op, RuleOp::Join);
-
-        let gomp = function("GOMP_parallel", &["GOMP_parallel"], Language::C);
-        let rule = match_function(&gomp).expect("GOMP rule");
-        assert_eq!(rule.runtime, "openmp");
-        assert_eq!(rule.entry_arg, Some(0));
-
-        let kmpc = function("__kmpc_fork_call", &["__kmpc_fork_call"], Language::C);
-        let rule = match_function(&kmpc).expect("libomp rule");
-        assert_eq!(rule.runtime, "openmp");
-        assert_eq!(rule.entry_arg, Some(2));
+    fn rejects_host_runtime_apis() {
+        for name in [
+            "pthread_create",
+            "pthread_join",
+            "pthread_mutex_lock",
+            "pthread_rwlock_rdlock",
+            "sem_wait",
+            "sem_post",
+            "GOMP_parallel",
+            "__kmpc_fork_call",
+            "atexit",
+            "qsort",
+            "signal",
+            "pthread_atfork",
+        ] {
+            let function = function(name, &[name], Language::C);
+            assert!(
+                match_function(&function).is_none(),
+                "{name} is outside the supported global no-std profile"
+            );
+        }
     }
 
     #[test]
-    fn extracts_cpp_callable_marker() {
-        assert_eq!(
-            cpp_callable_marker("_ZNSt6threadC1IZ4mainEUlvE_JEvEEOT_DpOT0_"),
-            Some("Z4mainEUlvE_")
-        );
-        assert_eq!(
-            cpp_callable_marker("_ZNSt6threadCI1IZ4mainEUlvE_JEvEEOT_DpOT0_"),
-            Some("Z4mainEUlvE_")
-        );
-        assert_eq!(cpp_callable_marker("_ZNSt6threadD1Ev"), None);
-    }
-
-    #[test]
-    fn matches_callback_registration_rules() {
-        let qsort = function("qsort", &["qsort"], Language::C);
-        let rule = match_function(&qsort).expect("qsort callback rule");
-        assert_eq!(rule.op, RuleOp::Callback);
-        assert_eq!(rule.callback_args, Some(&[3][..]));
-
-        let atfork = function("pthread_atfork", &["pthread_atfork"], Language::C);
-        let rule = match_function(&atfork).expect("pthread_atfork callback rule");
-        assert_eq!(rule.op, RuleOp::Callback);
-        assert_eq!(rule.callback_args, Some(&[0, 1, 2][..]));
-
+    fn matches_rtos_callback_registration_rules() {
         let timer = function("xTimerCreate", &["xTimerCreate"], Language::C);
         let rule = match_function(&timer).expect("FreeRTOS timer callback rule");
         assert_eq!(rule.op, RuleOp::Callback);
         assert_eq!(rule.callback_args, Some(&[4][..]));
+
+        let zephyr = function("k_timer_init", &["k_timer_init"], Language::C);
+        let rule = match_function(&zephyr).expect("Zephyr timer callback rule");
+        assert_eq!(rule.op, RuleOp::Callback);
+        assert_eq!(rule.callback_args, Some(&[1, 2][..]));
+
+        let threadx = function("tx_timer_create", &["tx_timer_create"], Language::C);
+        let rule = match_function(&threadx).expect("ThreadX timer callback rule");
+        assert_eq!(rule.op, RuleOp::Callback);
+        assert_eq!(rule.callback_args, Some(&[2][..]));
     }
 
     #[test]
@@ -1600,12 +1049,9 @@ mod tests {
         for name in [
             "abort",
             "_exit",
-            "std::process::exit",
-            "pthread_exit",
             "longjmp",
             "__stack_chk_fail",
             "__cxa_throw",
-            "std::terminate",
             "core[581b33c2f4131567]::panicking::panic_fmt",
             "core::panicking::panic_const::panic_const_async_fn_resumed",
             "core::panicking::begin_panic::<&str>",

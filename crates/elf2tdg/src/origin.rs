@@ -4,8 +4,8 @@
 //! through the decoded instructions of one function for the latest simple
 //! definition of the ABI argument register. It understands literal-pool
 //! loads, `lea`/`adr`/`adrp`/`auipc`, register copies, immediate additions and
-//! simple `movz`/`movk` sequences, covering the common
-//! `pthread_create`/RTOS/OpenMP call patterns at `-O0`/`-O1`.
+//! simple `movz`/`movk` sequences, covering common embedded RTOS
+//! entry-argument call patterns at `-O0`/`-O1`.
 //!
 //! Parameter forwarding through user wrappers is not modeled; unresolved
 //! entries stay opaque rather than being guessed.
@@ -1912,9 +1912,8 @@ mod tests {
 
     #[test]
     fn forwards_x86_stack_spilled_wrapper_argument() {
-        // -O0 wrapper prologue from:
-        // start_worker(pthread_t *t, void *(*entry)(void *), void *arg)
-        //   { pthread_create(t, 0, entry, arg); }
+        // -O0 wrapper prologue that spills the entry pointer to the stack
+        // before reloading it into an argument register.
         let code = vec![
             0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0x48, 0x89, 0x7d, 0xf8, 0x48, 0x89,
             0x75, 0xf0, 0x48, 0x89, 0x55, 0xe8, 0x48, 0x8b, 0x4d, 0xe8, 0x48, 0x8b, 0x55, 0xf0,

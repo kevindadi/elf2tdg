@@ -346,7 +346,7 @@ pub struct Priority {
 pub enum PriorityScheme {
     /// Smaller numbers are higher priority (`Zephyr`, `ThreadX`).
     LowerIsHigher,
-    /// Larger numbers are higher priority (`FreeRTOS`, pthread).
+    /// Larger numbers are higher priority (`FreeRTOS`, `Zephyr`, `ThreadX`).
     HigherIsHigher,
     /// Unknown or not applicable.
     Unknown,
@@ -580,9 +580,9 @@ pub struct LockEvent {
     /// Source call site from `DW_AT_call_file`/`DW_AT_call_line` when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_site: Option<SourceLoc>,
-    /// Runtime that defined the API, for example `pthread` or `freertos`.
+    /// Runtime that defined the API, for example `freertos` or `zephyr`.
     pub runtime: RuntimeId,
-    /// API symbol/name, for example `pthread_mutex_lock`.
+    /// API symbol/name, for example `xSemaphoreTake`.
     pub api: String,
     /// Kind of lock or synchronization primitive.
     pub lock_kind: LockKind,
@@ -678,7 +678,7 @@ pub enum JoinTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum SpawnKind {
-    /// OS thread (pthread, `FreeRTOS` task, `Zephyr` thread, ...).
+    /// OS thread (`FreeRTOS` task, `Zephyr` thread, `ThreadX` thread, ...).
     OsThread,
     /// Thread scoped to a structured-concurrency region.
     ScopedThread,
@@ -686,7 +686,8 @@ pub enum SpawnKind {
     AsyncTask,
     /// Task owned by an executor/driver context.
     ExecutorTask,
-    /// OpenMP parallel region.
+    /// OpenMP parallel region (schema compatibility; not emitted by the
+    /// no-std baseline).
     #[serde(rename = "openmp-region")]
     OpenMpRegion,
     /// Rayon task/job.
@@ -776,8 +777,8 @@ pub struct Scope {
 
 /// Flavor of a structured-concurrency scope.
 ///
-/// The enum retains variants for compatibility. The default no-std Rust
-/// profile emits OpenMP parallel-region scopes only.
+/// The enum retains variants for compatibility. The current no-std baseline
+/// emits no host-runtime scopes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScopeKind {
@@ -789,7 +790,8 @@ pub enum ScopeKind {
     RayonJoin,
     /// Crossbeam `scope`.
     CrossbeamScope,
-    /// OpenMP parallel region.
+    /// OpenMP parallel region (schema compatibility; not emitted by the
+    /// no-std baseline).
     #[serde(rename = "openmp-parallel")]
     OpenMpParallel,
     /// TBB task group.
