@@ -176,6 +176,14 @@ pub const BUILTIN_PASSES: &[PassInfo] = &[
         soundness: Soundness::ModelDependent,
     },
     PassInfo {
+        id: "analysis.multicore",
+        title: "Multicore access-budget interference",
+        kind: PassKind::Analysis,
+        requires: &["ir.cfg", "timing.block-costs"],
+        provides: &["analysis.multicore"],
+        soundness: Soundness::ModelDependent,
+    },
+    PassInfo {
         id: "flow.facts",
         title: "Loop bounds from the board profile and F4/FFX files",
         kind: PassKind::Analysis,
@@ -246,6 +254,11 @@ pub fn plan(profile: Option<&BoardProfile>, path_analysis: PathAnalysis) -> Vec<
                     profile.is_some_and(BoardProfile::data_memory_enabled),
                     "no memory region declares data wait states",
                     "a memory region declares data wait states",
+                ),
+                "analysis.multicore" => optional(
+                    profile.is_some_and(|profile| profile.multicore().is_some()),
+                    "no [multicore] section in the board profile",
+                    "[multicore] is present in the board profile",
                 ),
                 "flow.facts" => optional(
                     profile.is_some_and(|profile| profile.wcet().is_some()),
@@ -423,6 +436,7 @@ default_loop_bound = 4
             "analysis.data-cache",
             "analysis.branch-prediction",
             "analysis.data-memory",
+            "analysis.multicore",
             "flow.facts",
             "wcet.longest-path",
             "wcet.ipet",

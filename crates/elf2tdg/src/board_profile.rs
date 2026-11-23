@@ -56,6 +56,65 @@ const fn default_wcet_max_states() -> usize {
     100_000
 }
 
+fn default_multicore_model() -> String {
+    "access-budget".to_owned()
+}
+
+/// Multicore interference budget for one core.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MulticoreProfile {
+    #[serde(default = "default_multicore_model")]
+    model: String,
+    cores: u32,
+    #[serde(default)]
+    core_id: u32,
+    #[serde(default)]
+    data_read_interference_cycles: u32,
+    #[serde(default)]
+    data_write_interference_cycles: u32,
+    #[serde(default)]
+    instruction_fetch_interference_cycles: u32,
+    #[serde(default)]
+    confidence: Option<Confidence>,
+    #[serde(default)]
+    caveats: Vec<String>,
+}
+
+impl MulticoreProfile {
+    pub(crate) fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub(crate) fn cores(&self) -> u32 {
+        self.cores
+    }
+
+    pub(crate) fn core_id(&self) -> u32 {
+        self.core_id
+    }
+
+    pub(crate) fn data_read_interference_cycles(&self) -> u32 {
+        self.data_read_interference_cycles
+    }
+
+    pub(crate) fn data_write_interference_cycles(&self) -> u32 {
+        self.data_write_interference_cycles
+    }
+
+    pub(crate) fn instruction_fetch_interference_cycles(&self) -> u32 {
+        self.instruction_fetch_interference_cycles
+    }
+
+    pub(crate) fn confidence(&self) -> Option<Confidence> {
+        self.confidence
+    }
+
+    pub(crate) fn caveats(&self) -> &[String] {
+        &self.caveats
+    }
+}
+
 /// A versioned description of one board's timing-relevant configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,6 +139,8 @@ pub struct BoardProfile {
     data_cache: Option<DataCacheProfile>,
     #[serde(default)]
     branch_prediction: Option<BranchPredictionProfile>,
+    #[serde(default)]
+    multicore: Option<MulticoreProfile>,
     #[serde(default)]
     wcet: Option<WcetProfile>,
     #[serde(default)]
@@ -680,6 +741,7 @@ impl BoardProfile {
         self.validate_instruction_cache()?;
         self.validate_data_cache()?;
         self.validate_branch_prediction()?;
+        self.validate_multicore()?;
         self.validate_wcet()?;
         for caveat in &self.caveats {
             validate_text("caveats", caveat)?;
@@ -992,6 +1054,38 @@ impl BoardProfile {
         Ok(())
     }
 
+    fn validate_multicore(&self) -> Result<()> {
+        let Some(multicore) = &self.multicore else {
+            return Ok(());
+        };
+        if self.schema_version < 2 {
+            return Err(Error::Config(
+                "board profile multicore requires schema_version 2".to_owned(),
+            ));
+        }
+        if multicore.model != "access-budget" {
+            return Err(Error::Config(format!(
+                "board profile multicore.model must be \"access-budget\", not {:?}",
+                multicore.model
+            )));
+        }
+        if multicore.cores < 2 {
+            return Err(Error::Config(
+                "board profile multicore.cores must be at least 2".to_owned(),
+            ));
+        }
+        if multicore.core_id >= multicore.cores {
+            return Err(Error::Config(format!(
+                "board profile multicore.core_id {} is outside 0..{}",
+                multicore.core_id, multicore.cores
+            )));
+        }
+        for caveat in &multicore.caveats {
+            validate_text("multicore.caveats", caveat)?;
+        }
+        Ok(())
+    }
+
     fn validate_wcet(&self) -> Result<()> {
         let Some(wcet) = &self.wcet else {
             return Ok(());
@@ -1189,6 +1283,10 @@ impl BoardProfile {
 
     /// Optional WCET analysis configuration.
     #[must_use]
+    pub(crate) fn multicore(&self) -> Option<&MulticoreProfile> {
+        self.multicore.as_ref()
+    }
+
     pub(crate) fn wcet(&self) -> Option<&WcetProfile> {
         self.wcet.as_ref()
     }
@@ -1427,6 +1525,39 @@ note = "board errata"
         assert!(BoardProfile::parse_toml(&old_schema).is_err());
         let zero_width = valid.replace("data_width_bytes = 8", "data_width_bytes = 0");
         assert!(BoardProfile::parse_toml(&zero_width).is_err());
+    }
+
+    #[test]
+    fn validates_multicore_profiles() {
+        let valid = format!(
+            r#"{}
+[multicore]
+cores = 4
+core_id = 1
+data_read_interference_cycles = 8
+data_write_interference_cycles = 9
+instruction_fetch_interference_cycles = 2
+confidence = "low"
+"#,
+            VALID.replace("schema_version = 1", "schema_version = 2")
+        );
+        let profile = BoardProfile::parse_toml(&valid).expect("valid multicore profile");
+        let multicore = profile.multicore().expect("multicore profile");
+        assert_eq!(multicore.model(), "access-budget");
+        assert_eq!(multicore.cores(), 4);
+        assert_eq!(multicore.core_id(), 1);
+        assert_eq!(multicore.data_read_interference_cycles(), 8);
+        assert_eq!(multicore.data_write_interference_cycles(), 9);
+        assert_eq!(multicore.instruction_fetch_interference_cycles(), 2);
+
+        let old_schema = valid.replace("schema_version = 2", "schema_version = 1");
+        assert!(BoardProfile::parse_toml(&old_schema).is_err());
+        let one_core = valid.replace("cores = 4", "cores = 1");
+        assert!(BoardProfile::parse_toml(&one_core).is_err());
+        let bad_core = valid.replace("core_id = 1", "core_id = 4");
+        assert!(BoardProfile::parse_toml(&bad_core).is_err());
+        let bad_model = valid.replace("[multicore]", "[multicore]\nmodel = \"round-robin\"");
+        assert!(BoardProfile::parse_toml(&bad_model).is_err());
     }
 
     #[test]

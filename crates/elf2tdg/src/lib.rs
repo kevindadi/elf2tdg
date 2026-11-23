@@ -16,6 +16,7 @@ mod flow_facts;
 mod icache;
 mod ipet;
 pub mod loader;
+mod multicore;
 pub mod origin;
 pub mod passes;
 pub mod rules;

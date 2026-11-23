@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.6";
+pub const CFG_SCHEMA_VERSION: &str = "2.7";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -265,8 +265,57 @@ pub struct CfgBlock {
     /// Data-memory latency analysis for this block, when memory regions declare
     /// data-access timing.
     pub data_memory: Option<CfgBlockDataMemory>,
+    /// Multicore interference attribution for this block.
+    pub multicore: Option<CfgBlockMulticore>,
     /// Control-flow terminator classification.
     pub terminator: CfgTerminator,
+}
+
+/// Multicore interference attributed to one basic block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockMulticore {
+    /// Data read accesses charged to the interference budget.
+    pub data_read_accesses: u32,
+    /// Data write accesses charged to the interference budget.
+    pub data_write_accesses: u32,
+    /// Instruction fetches charged to the interference budget.
+    pub instruction_fetches: u32,
+    /// Total interference cycles added to the block cost.
+    pub interference_cycles: u32,
+}
+
+/// Program-level multicore interference metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgMulticoreInfo {
+    /// Interference model name.
+    pub model: String,
+    /// Total cores in the system.
+    pub cores: u32,
+    /// Core analyzed by this run.
+    pub core_id: u32,
+    /// Confidence in the interference budget, when declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<Confidence>,
+    /// Interference budget per data read.
+    pub data_read_interference_cycles: u32,
+    /// Interference budget per data write.
+    pub data_write_interference_cycles: u32,
+    /// Interference budget per instruction fetch.
+    pub instruction_fetch_interference_cycles: u32,
+    /// Functions with at least one analyzed block.
+    pub functions_analyzed: u32,
+    /// Blocks with at least one charged event.
+    pub blocks_analyzed: u32,
+    /// Total data read accesses charged.
+    pub data_read_accesses: u32,
+    /// Total data write accesses charged.
+    pub data_write_accesses: u32,
+    /// Total instruction fetches charged.
+    pub instruction_fetches: u32,
+    /// Total interference cycles added across the program.
+    pub interference_cycles: u32,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
 }
 
 /// Instruction-cache cost analysis for one basic block.
@@ -867,6 +916,7 @@ impl FunctionCfg {
                 data_cache: None,
                 branch_prediction: None,
                 data_memory: None,
+                multicore: None,
                 terminator: block.terminator,
             });
             blocks_by_address.insert(address, node);
@@ -1258,6 +1308,8 @@ pub struct ProgramCfg {
     pub branch_prediction: Option<CfgBranchPredictionInfo>,
     /// Data-memory latency analysis metadata.
     pub data_memory: Option<CfgDataMemoryInfo>,
+    /// Multicore interference analysis metadata.
+    pub multicore: Option<CfgMulticoreInfo>,
     /// WCET analysis metadata.
     pub wcet: Option<CfgWcetInfo>,
     /// Analysis diagnostics.
@@ -2438,6 +2490,8 @@ struct CfgDocument<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     data_memory: Option<&'a CfgDataMemoryInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    multicore: Option<&'a CfgMulticoreInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     wcet: Option<&'a CfgWcetInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pointer_roots: Vec<Addr>,
@@ -2525,6 +2579,8 @@ struct CfgBlockView {
     branch_prediction: Option<CfgBlockBranchPrediction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data_memory: Option<CfgBlockDataMemory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    multicore: Option<CfgBlockMulticore>,
     terminator: CfgTerminator,
 }
 
@@ -2674,6 +2730,7 @@ pub fn render_json_selected(
         data_cache: program.data_cache.as_ref(),
         branch_prediction: program.branch_prediction.as_ref(),
         data_memory: program.data_memory.as_ref(),
+        multicore: program.multicore.as_ref(),
         wcet: program.wcet.as_ref(),
         pointer_roots: program
             .pointer_roots
@@ -2756,6 +2813,7 @@ fn function_view(
             data_cache: block.data_cache.clone(),
             branch_prediction: block.branch_prediction.clone(),
             data_memory: block.data_memory.clone(),
+            multicore: block.multicore.clone(),
             terminator: block.terminator,
         });
     }

@@ -876,6 +876,38 @@ impl TimingCostModel {
                         .to_owned(),
                 );
             }
+            if let Some(multicore) = profile.multicore() {
+                params.extras.insert(
+                    "board_profile_multicore_model".to_owned(),
+                    multicore.model().to_owned(),
+                );
+                params.extras.insert(
+                    "board_profile_multicore_cores".to_owned(),
+                    multicore.cores().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_multicore_core_id".to_owned(),
+                    multicore.core_id().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_multicore_data_read_cycles".to_owned(),
+                    multicore.data_read_interference_cycles().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_multicore_data_write_cycles".to_owned(),
+                    multicore.data_write_interference_cycles().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_multicore_fetch_cycles".to_owned(),
+                    multicore
+                        .instruction_fetch_interference_cycles()
+                        .to_string(),
+                );
+                caveats.push(
+                    "Multicore interference uses a per-access/per-fetch budget; arbitration schedules, shared caches, DMA and other cores' workloads are not modeled."
+                        .to_owned(),
+                );
+            }
         }
         if !unknown_mnemonics.is_empty() {
             params.extras.insert(

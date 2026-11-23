@@ -2998,6 +2998,15 @@ impl<'a> Analyzer<'a> {
             let info = crate::data_memory::analyze_program(&mut program_cfg, profile);
             program_cfg.data_memory = Some(info);
         }
+        if let Some(multicore) = self
+            .timing
+            .as_ref()
+            .and_then(TimingCostModel::profile)
+            .and_then(BoardProfile::multicore)
+        {
+            let info = crate::multicore::analyze_program(&mut program_cfg, multicore);
+            program_cfg.multicore = Some(info);
+        }
         let isr_vectors = std::mem::take(&mut self.isr_vectors);
         let startup_address = self.startup_address;
         let Some(startup_address) = startup_address else {

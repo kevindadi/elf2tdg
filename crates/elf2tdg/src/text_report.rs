@@ -14,8 +14,8 @@ use petgraph::visit::EdgeRef;
 use crate::cfg::{
     CFG_SCHEMA_VERSION, CfgBlock, CfgBranchPredictionInfo, CfgCacheInfo, CfgCallEdge, CfgCallSite,
     CfgConcurrencyKind, CfgDataCacheInfo, CfgDataMemoryInfo, CfgFunction, CfgFunctionWcet,
-    CfgInstruction, CfgLockEvent, CfgRoot, CfgWcetInfo, CfgWcetRoot, CfgWcetStatus, FunctionCfg,
-    ProgramCfg,
+    CfgInstruction, CfgLockEvent, CfgMulticoreInfo, CfgRoot, CfgWcetInfo, CfgWcetRoot,
+    CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 
@@ -235,6 +235,7 @@ fn render_analysis_models(out: &mut String, program: &ProgramCfg) {
     any |= render_data_cache(out, program.data_cache.as_ref());
     any |= render_branch_prediction(out, program.branch_prediction.as_ref());
     any |= render_data_memory(out, program.data_memory.as_ref());
+    any |= render_multicore(out, program.multicore.as_ref());
     if !any {
         let _ = writeln!(
             out,
@@ -359,6 +360,56 @@ fn render_branch_prediction(
         ),
     );
     for caveat in &prediction.caveats {
+        let _ = writeln!(out, "    caveat: {caveat}");
+    }
+    true
+}
+
+fn render_multicore(out: &mut String, info: Option<&CfgMulticoreInfo>) -> bool {
+    let Some(info) = info else {
+        return false;
+    };
+    let _ = writeln!(out, "* multicore interference: {}", info.model);
+    kv_indent(
+        out,
+        "topology",
+        &format!("{} core(s), this is core {}", info.cores, info.core_id),
+    );
+    if let Some(confidence) = &info.confidence {
+        kv_indent(out, "confidence", &serde_name(confidence));
+    }
+    kv_indent(
+        out,
+        "budgets",
+        &format!(
+            "{} read, {} write, {} fetch cycle(s) per event",
+            info.data_read_interference_cycles,
+            info.data_write_interference_cycles,
+            info.instruction_fetch_interference_cycles
+        ),
+    );
+    kv_indent(
+        out,
+        "events",
+        &format!(
+            "{} read(s), {} write(s), {} fetch(es)",
+            info.data_read_accesses, info.data_write_accesses, info.instruction_fetches
+        ),
+    );
+    kv_indent(
+        out,
+        "coverage",
+        &format!(
+            "{} function(s), {} block(s)",
+            info.functions_analyzed, info.blocks_analyzed
+        ),
+    );
+    kv_indent(
+        out,
+        "interference",
+        &format!("{} cycle(s)", info.interference_cycles),
+    );
+    for caveat in &info.caveats {
         let _ = writeln!(out, "    caveat: {caveat}");
     }
     true
@@ -868,6 +919,16 @@ fn render_block_annotations(out: &mut String, block: &CfgBlock) {
             out,
             "    data-memory: {} access(es), {} mapped, {} unmapped, {} wait cycle(s)",
             memory.accesses, memory.mapped_accesses, memory.unmapped_accesses, memory.wait_cycles
+        );
+    }
+    if let Some(multicore) = block.multicore.as_ref() {
+        let _ = writeln!(
+            out,
+            "    multicore: {} read(s), {} write(s), {} fetch(es), {} interference cycle(s)",
+            multicore.data_read_accesses,
+            multicore.data_write_accesses,
+            multicore.instruction_fetches,
+            multicore.interference_cycles
         );
     }
 }
