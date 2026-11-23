@@ -128,8 +128,8 @@ another allocated section. ARM/AArch64 exception-vector sections and RISC-V
 (`b`/`jal`), so vector/trap dispatch becomes reachable without a call edge.
 Executable symbols with recognizable `vector`, `trap` or `exception` names
 (such as `vectors`, `__vector_table`, `trap_entry` or `exception_handler`) are
-also retained. `_init`/`_fini` and libc startup symbols are architecture-level
-roots as well. Every remaining named code symbol and DWARF subprogram entry is
+also retained. `_init`/`_fini` and startup symbols are architecture-level roots
+as well. Every remaining named code symbol and DWARF subprogram entry is
 a general function root rather than an architecture-specific one.
 Computed trap dispatch through `auipc`+`jalr` or a value written to `mtvec`/
 `VBAR` still needs `--reachable-from` or `--all-functions`.
@@ -217,7 +217,7 @@ the information is not lost. Common causes in Rust images are:
   vtable or other runtime computation;
 - calls through a GOT/`.data.rel.ro` slot whose dynamic relocation could not be
   applied;
-- imported libc functions reached through an unresolved GOT slot;
+- imported functions reached through an unresolved GOT slot;
 - calls through opaque async state machines or trait objects that cannot be
   associated with a plausible vtable candidate.
 
@@ -753,8 +753,8 @@ target is treated as terminating because executing the call cannot return.
 Functions are classified in two ways:
 
 - `api` — a recognized noreturn symbol or ABI entry point, including C
-  `abort`/`_exit`/`exit`, `pthread_exit`, `longjmp`, assertion and stack-check
-  failures, C++ `std::terminate`/`__cxa_throw`/`_Unwind_Resume`, Rust
+  `abort`/`_exit`/`exit`, `longjmp`, assertion and stack-check failures, C++
+  ABI termination/unwind helpers (`__cxa_throw`, `_Unwind_Resume`), Rust
   `core::panicking::*` entry points, allocation failure handlers, and embedded
   system-reset/fatal APIs;
 - `control-flow` — the recovered CFG has no path back to the caller. This

@@ -69,17 +69,22 @@ linker; do not let a packaging step run `strip` on the final image. Keep
   precompiled `std` still contains panic/formatting paths. The supported Rust
   profile is `no_std`, so the application does not link that runtime at all.
 
-## Rust support profile: no_std only
+## Support profile: no_std only
 
-The Rust side of this project targets freestanding embedded images:
+The analyzer targets freestanding images:
 
-- Embassy (`embassy_executor::Spawner::spawn`, task polling) and RTIC;
+- Rust: Embassy (`embassy_executor::Spawner::spawn`, task polling) and RTIC;
 - `core` and optional `alloc` code in the analyzed image;
-- no `std::thread`, Tokio, async-std, smol, Rayon, or crossbeam rules.
+- no Rust `std`/Tokio/async-std/smol/Rayon/crossbeam rules;
+- no C++ standard-library threading or locking rules (`std::thread`,
+  `std::jthread`, `std::async`, `std::mutex`, `std::shared_mutex`).
 
-C/C++/OpenMP and native RTOS APIs remain supported separately. A Rust image that
-does link `std` or Tokio is outside the supported profile; the analyzer will not
-synthesize task roots for those APIs.
+C, freestanding C++ and native RTOS APIs remain supported separately. Host
+POSIX pthread, OpenMP and other operating-system runtimes are outside the
+global no-std profile. A Rust image that links `std` or Tokio is outside the
+supported profile; the analyzer will not synthesize task roots for those APIs.
+A C++ image that links the standard library is likewise outside the supported
+profile for concurrency and lock recovery.
 
 ## Keep formatting and panic scaffolding out of the application
 
@@ -145,11 +150,10 @@ database: location lists, split-DWARF cross-unit references and flattened
 anonymous aggregates are outside the bounded extraction.
 
 The CFG also exposes typed `locks` events for acquire/try-acquire/release
-operations. The supported rules cover pthread mutex/RW-lock/semaphores,
-FreeRTOS/Zephyr/ThreadX semaphores/mutexes, and C++
-`std::mutex`/`shared_mutex`. Lock identity and ordering are deliberately not
-guessed. The default Rust `no_std` profile does not define std/`parking_lot`
-lock rules.
+operations. The supported rules cover FreeRTOS/Zephyr/ThreadX
+semaphores/mutexes. Lock identity and ordering are deliberately not guessed.
+The supported no-std profile does not define POSIX pthread, Rust
+std/`parking_lot` or C++ standard-library lock rules.
 
 ## Limits
 

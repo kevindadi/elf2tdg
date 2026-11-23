@@ -11,8 +11,9 @@ CFG that retains the ISR and reset paths.
 Cortex-M Embassy image. It exercises `embassy_executor::Spawner::spawn`, async
 task roots, inline DWARF recovery, and Cortex-M vector-table default-handler
 filtering. It uses the recommended `analysis` Cargo profile (`-O1`, full DWARF,
-ThinLTO, `panic=abort`). `std::thread`, Tokio, Rayon, crossbeam, async-std and
-smol are not part of the supported Rust profile.
+ThinLTO, `panic=abort`). Rust `std`, Tokio, Rayon, crossbeam, async-std and
+smol are not part of the supported Rust profile; C++ standard-library
+threading and locking are also outside the global no-std profile.
 
 - [Executor CFG](rust-concurrency/artifacts/cfg-analysis-executor.svg)
 - [Sensor-task CFG](rust-concurrency/artifacts/cfg-analysis-sensor.svg)

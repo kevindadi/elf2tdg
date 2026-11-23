@@ -59,21 +59,18 @@ Implemented:
 - Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
 - Compile-time analysis pass plan (`--list-passes`) with explicit pass
   dependencies and soundness labels; no runtime dynamic-library ABI.
-- Runtime rule engine for spawn/join/scope/await:
+- Runtime rule engine for spawn/join/await on embedded no-std runtimes:
   - Rust no-std: Embassy (`Spawner::spawn`, task poll) and RTIC;
     `std::thread`, Rayon, crossbeam, Tokio, async-std and smol are outside the
     supported Rust profile;
-  - POSIX pthread, FreeRTOS, Zephyr and ThreadX C APIs;
-  - C++ `std::thread`/`jthread` constructors, joins/detach, and `std::async`
-    from Itanium-mangled symbols. A callable type marker is matched against
-    generated `_State_impl<...>::_M_run` symbols to recover a conservative
-    thread entry instead of leaving every C++ spawn opaque;
-  - GCC `GOMP_parallel`/`GOMP_parallel_start` and LLVM libomp
-    `__kmpc_fork_call`/`__kmpc_fork_teams` OpenMP regions.
+  - FreeRTOS, Zephyr and ThreadX C APIs;
+  - POSIX pthread, OpenMP, C++ standard-library threading/synchronization
+    (`std::thread`, `std::jthread`, `std::async`, `std::mutex`) and other host
+    runtimes are outside the global no-std profile.
 - Dynamic-ELF PLT synthesis: imported functions get named `plt` nodes and
-  direct call edges, so runtime rules can match `GOMP_parallel`,
-  `pthread_create`, `xTaskCreate`, and similar imports instead of folding
-  several PLT stubs into one anonymous function. GLOB_DAT-only imports
+  direct call edges, so runtime rules can match `xTaskCreate` and similar
+  embedded RTOS imports instead of folding several PLT stubs into one
+  anonymous function. GLOB_DAT-only imports
   without a local PLT stub (`malloc`, `free`, `syscall`, ...) become zero-size
   `external` function nodes, so GOT-indirect calls resolve instead of remaining
   unresolved.
@@ -89,9 +86,9 @@ Implemented:
   linkage names, source call sites, concrete `low`/`high` addresses and depth.
 - Direct and DWARF-inlined lock operations produce typed CFG `locks` events:
   acquire/try-acquire/release, lock/semaphore kind, concrete inline ranges,
-  source call sites and containing context. Supported rules cover pthread,
-  FreeRTOS, Zephyr, ThreadX and C++ `std::mutex`/`shared_mutex`; the default
-  no-std Rust profile does not define std/`parking_lot` lock rules. Lock
+  source call sites and containing context. Supported rules cover FreeRTOS,
+  Zephyr and ThreadX. POSIX pthread, C++ standard-library locks and Rust
+  std/`parking_lot` locks are outside the supported no-std profile. Lock
   identity/order is not guessed.
 - When an inlined spawn entry cannot be mapped to a callable symbol, the
   analyzer emits a synthetic zero-size `task-entry` function and a task root,
@@ -103,14 +100,13 @@ Implemented:
   gap recovers direct calls to known function entries. These edges are
   `low`-confidence and reported with a `heuristic-direct-calls` diagnostic,
   without treating the scan as ground truth.
-- Join annotations use a conservative unique-spawn heuristic for C/C++ and
-  RTOS APIs. OpenMP parallel regions become scope-enter/scope-exit annotations;
-  structured Rust thread scopes remain vocabulary only in the no-std profile.
+- Join annotations use a conservative unique-spawn heuristic for embedded
+  RTOS APIs. Structured Rust thread scopes and host runtime scopes remain
+  vocabulary only in the no-std profile.
 - Bounded spawn-entry recovery for Thumb/A32, x86-64, AArch64 and RISC-V C
   APIs: literal-pool loads, RIP-relative `lea`/memory loads, `adr`/`adrp` +
   `add`, `auipc` + `addi`, register copies, immediate adds and simple
-  `movz`/`movk` chains. FreeRTOS `xTaskCreate` has a real Cortex-M fixture;
-  OpenMP `GOMP_parallel` entry recovery has a real host fixture.
+  `movz`/`movk` chains. FreeRTOS `xTaskCreate` has a real Cortex-M fixture.
 - Helper-wrapper forwarding: when a runtime API receives an entry register
   that came from the wrapper's own argument, call sites of that wrapper are
   inspected and a unique entry is resolved. Stack spill/reload pairs
@@ -157,7 +153,6 @@ Implemented:
   `ops->run()` when aggregate member metadata identifies the loaded field and
   typed global objects or global pointers provide concrete candidates. The
   result is a bounded `resolved-typed-field-candidates` call set.
-- OpenMP parallel-region `Scope` nodes with implicit join membership.
 - Embassy task-handle poll await rule in addition to spawn detection.
 - DWARF line-program extraction: functions receive source file/line/column
   information when debug info is present.
@@ -185,8 +180,7 @@ Implemented:
   continuation; unreachable continuation blocks are removed, while shared
   return blocks stay reachable from their other predecessors.
 - Callback registration rules emit `callback-bind` CFG edges when the callback
-  argument resolves to a concrete function. Rules cover libc/POSIX
-  `atexit`/`signal`/`qsort`/`pthread_atfork`, FreeRTOS timers, Zephyr
+  argument resolves to a concrete function. Rules cover FreeRTOS timers, Zephyr
   timer/work initialization and ThreadX timers; callbacks become system roots.
 - Global pointer roots are recovered from init/fini arrays, writable data, GOT
   slots and read-only pointer tables. They seed the default CFG system scope
@@ -257,10 +251,6 @@ Still deferred:
 - Fully computed pointer targets beyond the bounded patterns above, such as
   values transformed through arbitrary arithmetic, indirect callees, or
   pointer state that crosses more than a few call levels.
-- Fully type-aware C++ callable recovery and libc++ demangling; the current
-  `_M_run` marker heuristic is conservative and does not recover the lambda
-  body itself.
-- OpenMP task/barrier edges beyond the parallel-region scope and spawn.
 - General `.await` lowering beyond recognized runtime handle poll functions.
 - Full DWARF type/location coverage beyond the bounded extraction above:
   location lists, split-DWARF cross-unit references, nested anonymous
@@ -316,19 +306,15 @@ The checked-in Rust example is a `thumbv7em-none-eabi` no-std Embassy ELF; its
 integration test loads that artifact directly. The allocator/trait-object and
 static trait-registry fixtures also target `thumbv7em-none-eabi` and are
 rebuilt with `make alloc-fixture` and `make static-trait-fixture`. Rebuilding
-them requires `rustup target add thumbv7em-none-eabi`. C++ and OpenMP fixtures
-are compiled on demand with `g++`/`gcc`. Tests that build fixtures report a
-skip when the required toolchain is absent.
+them requires `rustup target add thumbv7em-none-eabi`. C++ fixtures are
+compiled on demand with `g++`; C fixtures use `gcc`. Tests that build fixtures
+report a skip when the required toolchain is absent.
 
 ## Usage
 
 ```sh
 # Loader-backed ELF layout: colored segments, sections and disassembly
 cargo run -p elf2tdg -- firmware.elf --view elf --output elf-layout.mmd
-
-# Dynamic C/C++/OpenMP host binary: PLT imports become named function nodes
-cargo run -p elf2tdg -- app.elf --cpu x86-64 --freq 3GHz \
-    --format json --output app-cfg.json
 
 # Lossless function CFG for one function
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \

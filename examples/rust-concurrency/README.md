@@ -125,15 +125,18 @@ elf2tdg artifacts/rust-concurrency-analysis.elf --view cfg --format json \
 
 ## Scope
 
-The supported Rust runtime profile for this project is no-std embedded Rust:
+The supported runtime profile for this project is global no-std:
 
-- Embassy (`Spawner::spawn`, task polling) and RTIC;
+- Rust: Embassy (`Spawner::spawn`, task polling) and RTIC;
 - `core` and optional `alloc` symbols in the analyzed image;
-- no `std::thread`, Rayon, crossbeam, Tokio, async-std, or smol rules.
+- no Rust `std`/Tokio/async-std/smol/Rayon/crossbeam rules;
+- no C++ standard-library threading or locking rules.
 
-C/C++/OpenMP and native RTOS APIs remain supported separately. The example
-itself does not use heap allocation; real-time firmware should normally prefer
-static task pools unless an allocator has a bounded, analyzed policy.
+C, freestanding C++ and native RTOS APIs remain supported separately. Host
+POSIX pthread, OpenMP and other operating-system runtimes are outside the
+global no-std profile. The example itself does not use heap allocation;
+real-time firmware should normally prefer static task pools unless an
+allocator has a bounded, analyzed policy.
 
 See [`../../docs/analysis-profile.md`](../../docs/analysis-profile.md) for the
 profile, inline DWARF recovery and source-level rules.
