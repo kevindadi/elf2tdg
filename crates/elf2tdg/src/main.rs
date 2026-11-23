@@ -26,9 +26,10 @@ struct Cli {
     /// --list-passes is used.
     input: Option<PathBuf>,
 
-    /// CPU/timing model, e.g. cortex-m4, riscv32, aarch64 or x86-64.
-    /// Cortex-M/RISC-V are auto-detected; generic AArch64/x86-64 are statistical
-    /// and must be requested explicitly.
+    /// CPU/timing model, e.g. cortex-m4, riscv32, riscv64-bounded,
+    /// aarch64-bounded or x86-64. Cortex-M and generic RISC-V are auto-detected;
+    /// statistical AArch64/x86-64 and bounded AArch64/RISC-V models must be
+    /// requested explicitly.
     #[arg(long)]
     cpu: Option<String>,
 

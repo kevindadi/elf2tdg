@@ -37,12 +37,18 @@ pub enum TimingModel {
     CortexM7,
     /// Cortex-M33.
     CortexM33,
-    /// Generic in-order RV32.
+    /// Generic in-order RV32 throughput model.
     RiscV32,
-    /// Generic in-order RV64.
+    /// Generic in-order RV64 throughput model.
     RiscV64,
+    /// Abstract single-issue in-order RV32 bounded model.
+    RiscV32Bounded,
+    /// Abstract single-issue in-order RV64 bounded model.
+    RiscV64Bounded,
     /// Generic out-of-order `AArch64` throughput model.
     Aarch64Generic,
+    /// Abstract single-issue in-order `AArch64` bounded model.
+    Aarch64Bounded,
     /// Generic out-of-order `x86-64` throughput model.
     X86_64Generic,
 }
@@ -61,8 +67,17 @@ impl TimingModel {
             "cortex-m33" | "m33" => Some(Self::CortexM33),
             "riscv32" | "riscv32-generic" | "rv32" => Some(Self::RiscV32),
             "riscv64" | "riscv64-generic" | "rv64" => Some(Self::RiscV64),
+            "riscv32-bounded" | "rv32-bounded" | "riscv32-inorder" | "rv32-inorder" => {
+                Some(Self::RiscV32Bounded)
+            }
+            "riscv64-bounded" | "rv64-bounded" | "riscv64-inorder" | "rv64-inorder" => {
+                Some(Self::RiscV64Bounded)
+            }
             "aarch64" | "aarch64-generic" | "arm64" | "cortex-a53" | "cortex-a55"
             | "cortex-a72" | "cortex-a76" | "neoverse-n1" => Some(Self::Aarch64Generic),
+            "aarch64-bounded" | "aarch64-inorder" | "aarch64-in-order" => {
+                Some(Self::Aarch64Bounded)
+            }
             "x86-64" | "x86-64-generic" | "amd64" | "x86-64-v2" | "x86-64-v3" => {
                 Some(Self::X86_64Generic)
             }
@@ -118,7 +133,7 @@ impl TimingModel {
         };
         let Some(model) = Self::from_name(name) else {
             return Err(Error::Config(format!(
-                "unknown CPU/timing model {name:?}; use cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m7, cortex-m33, riscv32, riscv64, aarch64 or x86-64"
+                "unknown CPU/timing model {name:?}; use cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m7, cortex-m33, riscv32, riscv64, riscv32-bounded, riscv64-bounded, aarch64, aarch64-bounded or x86-64"
             )));
         };
         if !model.matches_arch(image.arch) {
@@ -139,9 +154,9 @@ impl TimingModel {
             | Self::CortexM4
             | Self::CortexM7
             | Self::CortexM33 => arch == ArchKind::Thumb,
-            Self::RiscV32 => arch == ArchKind::Riscv32,
-            Self::RiscV64 => arch == ArchKind::Riscv64,
-            Self::Aarch64Generic => arch == ArchKind::Aarch64,
+            Self::RiscV32 | Self::RiscV32Bounded => arch == ArchKind::Riscv32,
+            Self::RiscV64 | Self::RiscV64Bounded => arch == ArchKind::Riscv64,
+            Self::Aarch64Generic | Self::Aarch64Bounded => arch == ArchKind::Aarch64,
             Self::X86_64Generic => arch == ArchKind::X86_64,
         }
     }
@@ -158,7 +173,10 @@ impl TimingModel {
             Self::CortexM33 => "cortex-m33",
             Self::RiscV32 => "riscv32-generic",
             Self::RiscV64 => "riscv64-generic",
+            Self::RiscV32Bounded => "riscv32-bounded",
+            Self::RiscV64Bounded => "riscv64-bounded",
             Self::Aarch64Generic => "aarch64-generic",
+            Self::Aarch64Bounded => "aarch64-bounded",
             Self::X86_64Generic => "x86-64-generic",
         }
     }
@@ -173,9 +191,9 @@ impl TimingModel {
             | Self::CortexM4
             | Self::CortexM7
             | Self::CortexM33 => "thumb",
-            Self::RiscV32 => "riscv32",
-            Self::RiscV64 => "riscv64",
-            Self::Aarch64Generic => "aarch64",
+            Self::RiscV32 | Self::RiscV32Bounded => "riscv32",
+            Self::RiscV64 | Self::RiscV64Bounded => "riscv64",
+            Self::Aarch64Generic | Self::Aarch64Bounded => "aarch64",
             Self::X86_64Generic => "x86-64",
         }
     }
@@ -192,8 +210,30 @@ impl TimingModel {
             Self::CortexM33 => "Cortex-M33",
             Self::RiscV32 => "generic in-order RV32",
             Self::RiscV64 => "generic in-order RV64",
+            Self::RiscV32Bounded => "bounded single-issue in-order RV32",
+            Self::RiscV64Bounded => "bounded single-issue in-order RV64",
             Self::Aarch64Generic => "generic AArch64",
+            Self::Aarch64Bounded => "bounded single-issue in-order AArch64",
             Self::X86_64Generic => "generic x86-64",
+        }
+    }
+
+    /// Whether this is an explicit abstract bounded model.
+    #[must_use]
+    pub fn is_bounded_abstract(self) -> bool {
+        matches!(
+            self,
+            Self::RiscV32Bounded | Self::RiscV64Bounded | Self::Aarch64Bounded
+        )
+    }
+
+    /// Version of the cost table.
+    #[must_use]
+    pub fn table_version(self) -> &'static str {
+        if self.is_bounded_abstract() {
+            "0.3.0-bounded"
+        } else {
+            "0.2.0-m3"
         }
     }
 
@@ -205,7 +245,10 @@ impl TimingModel {
             | Self::CortexM0Plus
             | Self::CortexM3
             | Self::CortexM4
-            | Self::CortexM33 => Determinism::Bounded,
+            | Self::CortexM33
+            | Self::RiscV32Bounded
+            | Self::RiscV64Bounded
+            | Self::Aarch64Bounded => Determinism::Bounded,
             Self::CortexM7
             | Self::RiscV32
             | Self::RiscV64
@@ -226,7 +269,10 @@ impl TimingModel {
             Self::CortexM7
             | Self::RiscV32
             | Self::RiscV64
+            | Self::RiscV32Bounded
+            | Self::RiscV64Bounded
             | Self::Aarch64Generic
+            | Self::Aarch64Bounded
             | Self::X86_64Generic => Confidence::Low,
         }
     }
@@ -251,11 +297,19 @@ impl TimingModel {
                     .to_owned(),
             ),
             Self::RiscV32 | Self::RiscV64 => caveats.push(
-                "Generic in-order RISC-V model; a specific core's pipeline and memory system may differ substantially."
+                "Generic in-order RISC-V throughput model; a specific core's pipeline and memory system may differ substantially."
+                    .to_owned(),
+            ),
+            Self::RiscV32Bounded | Self::RiscV64Bounded => caveats.push(
+                "Bounded abstract RISC-V model: additive per-instruction upper bounds for a single-issue in-order core. Base costs assume single-cycle instruction/data memory and include a branch/call/return allowance; caches, memory latency, multicore interference and exceptions require a board profile or are unmodeled."
                     .to_owned(),
             ),
             Self::Aarch64Generic => caveats.push(
                 "Generic AArch64 throughput model: out-of-order issue, caches, branch prediction and memory latency are not modeled; this is not a bound."
+                    .to_owned(),
+            ),
+            Self::Aarch64Bounded => caveats.push(
+                "Bounded abstract AArch64 model: additive per-instruction upper bounds for a single-issue in-order core. Base costs assume single-cycle instruction/data memory and include a branch/call/return allowance; caches, memory latency, multicore interference and exceptions require a board profile or are unmodeled."
                     .to_owned(),
             ),
             Self::X86_64Generic => caveats.push(
@@ -270,6 +324,23 @@ impl TimingModel {
     #[must_use]
     pub fn params(self) -> TimingParams {
         match self {
+            Self::RiscV32Bounded | Self::RiscV64Bounded | Self::Aarch64Bounded => {
+                let mut extras = BTreeMap::new();
+                extras.insert(
+                    "bounded_semantics".to_owned(),
+                    "abstract-single-issue-in-order".to_owned(),
+                );
+                extras.insert("base_memory_model".to_owned(), "single-cycle".to_owned());
+                extras.insert("pipeline_overlap".to_owned(), "none".to_owned());
+                extras.insert(
+                    "branch_allowance".to_owned(),
+                    "included-in-class-upper-bounds".to_owned(),
+                );
+                TimingParams {
+                    extras,
+                    ..TimingParams::default()
+                }
+            }
             Self::CortexM7 | Self::Aarch64Generic | Self::X86_64Generic => TimingParams {
                 caches: Some(CacheParams {
                     icache: true,
@@ -292,7 +363,10 @@ impl TimingModel {
             Self::CortexM3 | Self::CortexM4 | Self::CortexM33 => cortex_m3_cost(class),
             Self::CortexM7 => cortex_m7_cost(class),
             Self::RiscV32 | Self::RiscV64 => riscv_cost(class),
+            Self::RiscV32Bounded => riscv_bounded_cost(class, 64),
+            Self::RiscV64Bounded => riscv_bounded_cost(class, 128),
             Self::Aarch64Generic => aarch64_cost(class),
+            Self::Aarch64Bounded => aarch64_bounded_cost(class),
             Self::X86_64Generic => x86_64_cost(class),
         }
     }
@@ -317,7 +391,7 @@ impl TimingModel {
                 arch: self.arch().to_owned(),
                 core: Some(self.core().to_owned()),
                 determinism: self.determinism(),
-                table_version: "0.2.0-m3".to_owned(),
+                table_version: self.table_version().to_owned(),
                 params: self.params(),
                 caveats: self.caveats(),
             }],
@@ -406,7 +480,7 @@ impl TimingCostModel {
         if let Some(explicit) = explicit {
             let Some(explicit_model) = TimingModel::from_name(explicit) else {
                 return Err(Error::Config(format!(
-                    "unknown CPU/timing model {explicit:?}; use cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m7, cortex-m33, riscv32, riscv64, aarch64 or x86-64"
+                    "unknown CPU/timing model {explicit:?}; use cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m7, cortex-m33, riscv32, riscv64, riscv32-bounded, riscv64-bounded, aarch64, aarch64-bounded or x86-64"
                 )));
             };
             if explicit_model.id() != profile_model.id() {
@@ -506,7 +580,8 @@ impl TimingCostModel {
     /// ready, so this is a local cost rather than a whole-program WCET bound.
     #[must_use]
     pub fn block_cost(&self, instructions: &[DecodedInsn]) -> (CostRange, Vec<(String, u64)>) {
-        if let Some(profile) = &self.profile
+        if !self.model.is_bounded_abstract()
+            && let Some(profile) = &self.profile
             && let Some(pipeline) = profile.pipeline()
         {
             return Self::pipeline_block_cost(profile, pipeline, instructions);
@@ -817,7 +892,9 @@ impl TimingCostModel {
                 id: TimingModelId::new(self.model.id()),
                 arch: self.model.arch().to_owned(),
                 core: Some(self.model.core().to_owned()),
-                determinism: if self
+                determinism: if self.model.is_bounded_abstract() {
+                    self.model.determinism()
+                } else if self
                     .profile
                     .as_ref()
                     .is_some_and(|profile| profile.pipeline().is_some())
@@ -826,7 +903,7 @@ impl TimingCostModel {
                 } else {
                     self.model.determinism()
                 },
-                table_version: "0.2.0-m3".to_owned(),
+                table_version: self.model.table_version().to_owned(),
                 params,
                 caveats,
             }],
@@ -899,18 +976,25 @@ impl TimingCostModel {
                 );
             }
             if profile.pipeline().is_some() {
-                caveats.retain(|caveat| {
-                    !caveat.contains("Load/store and branch penalties are table-based")
-                });
-                caveats.push(
-                    "Board-profile pipeline costs use an in-order resource/dependency model. Registers are assumed ready at block entry; memory dependencies, inter-block pipeline state, caches, branch prediction and exception entry are not modeled."
-                        .to_owned(),
-                );
-                if profile.instruction_cost_override_count() > 0 {
+                if self.model.is_bounded_abstract() {
                     caveats.push(
-                        "instruction_costs overrides are not added to pipeline block costs; use pipeline.instructions to override latency, occupancy or resources."
+                        "Board-profile [pipeline] is ignored by the bounded abstract model; block costs remain additive instruction upper bounds."
                             .to_owned(),
                     );
+                } else {
+                    caveats.retain(|caveat| {
+                        !caveat.contains("Load/store and branch penalties are table-based")
+                    });
+                    caveats.push(
+                        "Board-profile pipeline costs use an in-order resource/dependency model. Registers are assumed ready at block entry; memory dependencies, inter-block pipeline state, caches, branch prediction and exception entry are not modeled."
+                            .to_owned(),
+                    );
+                    if profile.instruction_cost_override_count() > 0 {
+                        caveats.push(
+                            "instruction_costs overrides are not added to pipeline block costs; use pipeline.instructions to override latency, occupancy or resources."
+                                .to_owned(),
+                        );
+                    }
                 }
             }
             if profile.instruction_cache().is_some() {
@@ -1155,7 +1239,23 @@ fn is_load(mnemonic: &str) -> bool {
         || mnemonic.starts_with("ldur")
         || matches!(
             mnemonic,
-            "ld" | "lw" | "lh" | "lb" | "lhu" | "lbu" | "lwu" | "lr" | "lr.w"
+            "ld" | "lw"
+                | "lh"
+                | "lb"
+                | "lhu"
+                | "lbu"
+                | "lwu"
+                | "lr"
+                | "lr.w"
+                | "ldsp"
+                | "lwsp"
+                | "lq"
+                | "flw"
+                | "fld"
+                | "flq"
+                | "flwsp"
+                | "fldsp"
+                | "flqsp"
         )
 }
 
@@ -1166,7 +1266,23 @@ fn is_store(mnemonic: &str) -> bool {
         || mnemonic.starts_with("stur")
         || matches!(
             mnemonic,
-            "st" | "sw" | "sh" | "sb" | "sc" | "sc.w" | "amoswap" | "amoadd"
+            "st" | "sw"
+                | "sh"
+                | "sb"
+                | "sc"
+                | "sc.w"
+                | "sd"
+                | "sdsp"
+                | "swsp"
+                | "sq"
+                | "fsw"
+                | "fsd"
+                | "fsq"
+                | "fswsp"
+                | "fsdsp"
+                | "fsqsp"
+                | "amoswap"
+                | "amoadd"
         )
 }
 
@@ -1297,6 +1413,45 @@ fn aarch64_cost(class: InstructionClass) -> CostRange {
     }
 }
 
+/// Additive upper bounds for an abstract single-issue in-order RISC-V core.
+///
+/// The base table assumes single-cycle instruction and data memory. Memory
+/// wait states, cache misses and branch-prediction penalties are added by the
+/// board-profile analyses. The branch/call/return bound includes a conservative
+/// pipeline-restart allowance; divide and barrier bounds cover the common
+/// iterative implementations.
+fn riscv_bounded_cost(class: InstructionClass, divide_max: u32) -> CostRange {
+    let max = match class {
+        InstructionClass::Alu | InstructionClass::Nop | InstructionClass::Other => 2.0,
+        InstructionClass::Load
+        | InstructionClass::Store
+        | InstructionClass::PushPop
+        | InstructionClass::LdmStm
+        | InstructionClass::Multiply => 4.0,
+        InstructionClass::Branch | InstructionClass::Call | InstructionClass::Return => 20.0,
+        InstructionClass::Divide => f64::from(divide_max),
+        InstructionClass::Barrier => 64.0,
+    };
+    CostRange::new(1.0, max)
+}
+
+/// Additive upper bounds for an abstract single-issue in-order `AArch64` core.
+fn aarch64_bounded_cost(class: InstructionClass) -> CostRange {
+    let max = match class {
+        InstructionClass::Alu
+        | InstructionClass::Nop
+        | InstructionClass::Other
+        | InstructionClass::Load
+        | InstructionClass::Store
+        | InstructionClass::PushPop
+        | InstructionClass::LdmStm
+        | InstructionClass::Multiply => 4.0,
+        InstructionClass::Branch | InstructionClass::Call | InstructionClass::Return => 20.0,
+        InstructionClass::Divide | InstructionClass::Barrier => 64.0,
+    };
+    CostRange::new(1.0, max)
+}
+
 fn x86_64_cost(class: InstructionClass) -> CostRange {
     match class {
         InstructionClass::Alu | InstructionClass::Nop | InstructionClass::Store => {
@@ -1407,6 +1562,148 @@ mod tests {
         );
         assert!(TimingModel::select(Some("aarch64"), &image(ArchKind::X86_64)).is_err());
         assert!(TimingModel::select(Some("x86-64"), &image(ArchKind::Aarch64)).is_err());
+    }
+
+    #[test]
+    fn bounded_aarch64_and_riscv_models_are_explicit() {
+        for (name, model, arch) in [
+            (
+                "aarch64-bounded",
+                TimingModel::Aarch64Bounded,
+                ArchKind::Aarch64,
+            ),
+            (
+                "riscv32-bounded",
+                TimingModel::RiscV32Bounded,
+                ArchKind::Riscv32,
+            ),
+            (
+                "riscv64-bounded",
+                TimingModel::RiscV64Bounded,
+                ArchKind::Riscv64,
+            ),
+        ] {
+            assert_eq!(TimingModel::from_name(name), Some(model));
+            assert_eq!(
+                TimingModel::select(Some(name), &image(arch)).unwrap(),
+                Some(model)
+            );
+            assert_eq!(model.determinism(), elf2tdg_schema::Determinism::Bounded);
+            assert_eq!(model.confidence(), elf2tdg_schema::Confidence::Low);
+            assert_eq!(model.table_version(), "0.3.0-bounded");
+            assert!(model.is_bounded_abstract());
+            assert_eq!(
+                model
+                    .params()
+                    .extras
+                    .get("bounded_semantics")
+                    .map(String::as_str),
+                Some("abstract-single-issue-in-order")
+            );
+        }
+        assert!(TimingModel::select(Some("aarch64-bounded"), &image(ArchKind::X86_64)).is_err());
+    }
+
+    #[test]
+    fn bounded_model_costs_have_defined_upper_bounds() {
+        let mut branch = insn(0x1000, 4, "b");
+        branch.is_jump = true;
+        let mut call = insn(0x1004, 4, "bl");
+        call.is_call = true;
+
+        let aarch64 = TimingModel::Aarch64Bounded;
+        assert_eq!(aarch64.instruction_cost(&insn(0x1000, 4, "ldr")).max, 4.0);
+        assert_eq!(aarch64.instruction_cost(&branch).max, 20.0);
+        assert_eq!(aarch64.instruction_cost(&call).max, 20.0);
+        assert_eq!(aarch64.instruction_cost(&insn(0x1000, 4, "sdiv")).max, 64.0);
+
+        let rv32 = TimingModel::RiscV32Bounded;
+        assert_eq!(rv32.instruction_cost(&insn(0x1000, 4, "ld")).max, 4.0);
+        assert_eq!(rv32.instruction_cost(&branch).max, 20.0);
+        assert_eq!(rv32.instruction_cost(&insn(0x1000, 4, "div")).max, 64.0);
+
+        let rv64 = TimingModel::RiscV64Bounded;
+        assert_eq!(rv64.instruction_cost(&insn(0x1000, 4, "div")).max, 128.0);
+    }
+
+    #[test]
+    fn riscv_compressed_loads_and_stores_are_classified() {
+        let model = TimingModel::RiscV64Bounded;
+        for mnemonic in ["ld", "sd", "c.ldsp", "c.sdsp", "c.lwsp", "c.swsp"] {
+            let cost = model.instruction_cost(&insn(0x1000, 4, mnemonic));
+            assert_eq!(cost.max, 4.0, "{mnemonic}");
+        }
+    }
+
+    #[test]
+    fn bounded_model_block_cost_is_additive() {
+        let model =
+            TimingCostModel::select(Some("riscv64-bounded"), None, &image(ArchKind::Riscv64))
+                .expect("select")
+                .expect("bounded model");
+        let instructions = [
+            insn(0x1000, 4, "add"),
+            insn(0x1004, 4, "ld"),
+            insn(0x1008, 4, "add"),
+        ];
+        let (cycles, unknown) = model.block_cost(&instructions);
+        assert_eq!(unknown.len(), 0);
+        assert_eq!(cycles.min, 3.0);
+        let expected_max: f64 = instructions
+            .iter()
+            .map(|instruction| model.instruction_cost(instruction).cycles.max)
+            .sum();
+        assert_eq!(cycles.max, expected_max);
+
+        let info = model.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0].determinism,
+            elf2tdg_schema::Determinism::Bounded
+        );
+        assert_eq!(info.models[0].table_version, "0.3.0-bounded");
+    }
+
+    #[test]
+    fn bounded_model_with_profile_stays_bounded() {
+        let profile = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:bounded-rv64"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[clocks.core]
+hz = 1_000_000_000
+
+[[memory]]
+name = "ram"
+start = 0x400000
+size = 0x100000
+kind = "ram"
+executable = true
+"#,
+        )
+        .expect("valid profile");
+        let model = TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("bounded model");
+        let info = model.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0].determinism,
+            elf2tdg_schema::Determinism::Bounded
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_memory_regions")
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
