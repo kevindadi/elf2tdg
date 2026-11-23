@@ -3893,6 +3893,7 @@ fn frequency_only_timing_info(frequency_hz: Option<u64>) -> TimingInfo {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn enforce_safe_wcet(program: &cfg::ProgramCfg) -> Result<()> {
     let Some(wcet) = program.wcet.as_ref() else {
         return Err(Error::UnsafeWcet(
@@ -3931,6 +3932,40 @@ fn enforce_safe_wcet(program: &cfg::ProgramCfg) -> Result<()> {
             "timing model(s) are not suitable for a safe bound: {}",
             unsafe_models.join(", ")
         )));
+    }
+    let unknown_mnemonics = timing
+        .models
+        .iter()
+        .filter_map(|model| model.params.extras.get("unknown_instruction_mnemonics"))
+        .filter_map(|value| value.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0);
+    if unknown_mnemonics > 0 {
+        return Err(Error::UnsafeWcet(format!(
+            "{unknown_mnemonics} unrecognized mnemonic(s) used fallback instruction costs; add instruction_costs overrides"
+        )));
+    }
+    let bounded_abstract = timing.models.iter().any(|model| {
+        model
+            .params
+            .extras
+            .get("bounded_semantics")
+            .is_some_and(|value| value == "abstract-single-issue-in-order")
+    });
+    if bounded_abstract {
+        let memory_regions = timing
+            .models
+            .iter()
+            .filter_map(|model| model.params.extras.get("board_profile_memory_regions"))
+            .filter_map(|value| value.parse::<usize>().ok())
+            .max()
+            .unwrap_or(0);
+        if memory_regions == 0 {
+            return Err(Error::UnsafeWcet(
+                "bounded AArch64/RISC-V models require a board profile with at least one memory region"
+                    .to_owned(),
+            ));
+        }
     }
     if let Some(cache) = program.data_cache.as_ref()
         && cache.unresolved_memory_accesses > 0
