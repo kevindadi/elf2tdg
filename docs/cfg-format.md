@@ -362,13 +362,15 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.4`.
+`cfg_schema_version` is `2.5`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.4 adds per-function and per-root WCET metadata. Version
-2.3 adds region-based data-memory latency metadata. Version 2.2 adds
-branch-prediction analysis metadata. Version 2.1 adds data-cache analysis and
-decoded memory-access metadata. Version 2.0 adds instruction-cache analysis
-metadata. Version 1.9 added runtime/API provenance to callback annotations.
+functions. Version 2.5 adds IPET solver results, the backend name and the flow
+facts used by the model. Version 2.4 adds per-function and per-root WCET
+metadata. Version 2.3 adds region-based data-memory latency metadata. Version
+2.2 adds branch-prediction analysis metadata. Version 2.1 adds data-cache
+analysis and decoded memory-access metadata. Version 2.0 adds instruction-cache
+analysis metadata. Version 1.9 added runtime/API provenance to callback
+annotations.
 Version 1.8 made the CFG document self-contained: it adds top-level
 `timing`, `roots`, `calls`, `concurrency` and `locks`, all sourced from
 `ProgramCfg`. `roots` records startup/main/ISR/task/callback/
@@ -390,18 +392,23 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.4",
+  "cfg_schema_version": "2.5",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
-    "model": "cfg-longest-path", "default_loop_bound": 4,
-    "max_states": 20000, "frequency_hz": 168000000,
+    "model": "cfg-ipet", "solver": "microlp", "max_states": 0,
+    "default_loop_bound": 4, "frequency_hz": 168000000,
+    "flow_facts": {
+      "source": "board-profile [wcet]",
+      "default_loop_bound": 4,
+      "bound_nonterminating_loops": true,
+      "loops": []
+    },
     "functions_analyzed": 8, "functions_partial": 8,
     "functions_unbounded": 4, "functions_unknown": 0,
     "roots": [
       { "function": "fn:0x800085c", "kind": "task", "name": "sensor_task",
-        "status": "partial", "cycles": 87.0, "time_ns": 517.86,
-        "path": ["bb:0x800085c", "bb:0x800086a"] }
+        "status": "partial", "cycles": 87.0, "time_ns": 517.86 }
     ],
     "caveats": []
   },
@@ -529,6 +536,37 @@ without a function remain. The omitted count is reported as
 `diagnostics_omitted` (absent when zero). This keeps a `--reachable-from`
 slice from being dominated by unrelated runtime diagnostics.
 
+When `--path-analysis ipet` is selected, each analyzed function also carries
+the solver result. `blocks` lists only positive execution counts, ordered by
+block address:
+
+```json
+"wcet": {
+  "status": "partial",
+  "cycles": 87.0,
+  "time_ns": 517.86,
+  "reason": "incomplete-call-or-control-flow-model",
+  "unresolved_calls": 0,
+  "external_calls": 0,
+  "ipet": {
+    "solver": "microlp",
+    "status": "optimal",
+    "objective": 87.0,
+    "blocks": [
+      { "block": "bb:0x800085c", "executions": 1 },
+      { "block": "bb:0x800086a", "executions": 1 }
+    ]
+  }
+}
+```
+
+A `partial` IPET objective is an estimate over the resolved inputs, not a safe
+upper bound. The top-level `wcet.flow_facts` object records the loop bounds and
+defaults used by the model. Irreducible cycles that are not covered by natural
+loop bounds are reported as `unbounded` instead of producing an unsound model.
+`blocks` is one optimal solution; alternate optima may distribute execution
+counts differently while producing the same objective.
+
 When full debug information is present, each function can also carry the unique
 inlined subroutine ranges found inside it:
 
@@ -563,7 +601,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `data_cache` | data-cache model parameters, access coverage, analysis counts and caveats |
 | `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
-| `wcet` | CFG longest-path WCET model, per-root results and caveats |
+| `wcet` | WCET model (`cfg-longest-path` or `cfg-ipet`), backend/solver, flow facts, per-root results and caveats |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
@@ -776,3 +814,9 @@ asserts that the CFG validates.
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
   stripped images can still be selected by address.
+- IPET is per-function and context-insensitive: callee summaries are reused
+  across call sites. Flow facts currently come from `[wcet]` loop bounds; F4
+  `.ff`/FFX import and automatic inference are not implemented. Irreducible
+  cycles are unbounded, non-terminating bounded loops are `partial`, and a
+  `partial` objective is not a safe upper bound. Interrupts, DMA, multicore
+  interference and concurrency are not modeled.

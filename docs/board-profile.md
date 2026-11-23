@@ -389,14 +389,21 @@ it, but callee branches remain outside the analysis.
 
 ### WCET
 
-The optional `[wcet]` table enables CFG longest-path worst-case execution-time
-analysis. It requires `schema_version = 2`.
+The optional `[wcet]` table enables worst-case execution-time analysis. It
+requires `schema_version = 2`. The backend is selected on the command line:
+
+- `--path-analysis longest-path` (default): CFG longest path with bounded loop
+  visits and bottom-up callee summaries.
+- `--path-analysis ipet`: IPET integer-linear program over block and edge
+  execution counts, solved with the pure-Rust `microlp` backend.
+
+Both backends consume the same loop bounds.
 
 | Field | Required | Meaning |
 |---|---|---|
 | `default_loop_bound` | no | Maximum iterations for natural loops without a specific bound. If omitted, unbounded loops make the containing function unbounded. |
 | `bound_nonterminating_loops` | no | Apply loop bounds to natural loops with no static exit and mark the result `partial`; defaults to `false`. |
-| `max_states` | no | Maximum unrolled predictor-free CFG states per function; defaults to `100000`. |
+| `max_states` | no | Maximum unrolled predictor-free CFG states per function for `longest-path`; defaults to `100000`. Ignored by IPET. |
 | `[[wcet.loop_bounds]]` | no | Per-loop overrides with `header` (block address) and `bound` (positive maximum iterations). |
 
 ```toml
@@ -410,13 +417,34 @@ header = 0x0800_0100
 bound = 100
 ```
 
-The analyzer takes each block's upper cycle bound, computes the longest path
-through the function CFG, and adds callee WCET summaries at call sites. Loop
-visit counts are bounded; nested inner-loop counters reset when an outer
-backedge is taken. Functions in recursive call-graph SCCs are unbounded.
-Functions with unresolved calls, external calls, unresolved control flow or
-missing block timing are reported as `partial`; functions whose natural loop has
-no static exit are `unbounded` unless `bound_nonterminating_loops` is enabled.
+The longest-path backend takes each block's upper cycle bound, computes the
+longest path through the function CFG, and adds callee WCET summaries at call
+sites. Loop visit counts are bounded; nested inner-loop counters reset when an
+outer backedge is taken.
+
+The IPET backend maximizes `sum(block_upper_bound * executions)` subject to
+flow conservation, loop bounds and callee summaries. The solver result includes
+the positive block execution counts (`functions[].wcet.ipet.blocks`). A cycle
+that remains after removing all natural-loop backedges is irreducible and is
+reported as `unbounded` instead of producing an unsound constraint set.
+Non-terminating natural loops use a synthetic exit to make the bounded model
+feasible and are marked `partial`.
+
+Both backends mark functions with unresolved calls, external calls, unresolved
+control flow or missing block timing as `partial`. Functions in recursive
+call-graph SCCs are unbounded. A `partial` result is an estimate over the
+resolved inputs, not a safe upper bound.
+
+Use `--require-safe` for a certification-style run. The gate requires the IPET
+backend, a timing model whose determinism is `deterministic` or `bounded`,
+complete data-cache/data-memory address coverage (no unresolved or unmapped
+accesses), and a `bounded` result for every execution root. The analyzer fails
+before emitting the CFG if any of these conditions is not met:
+
+```sh
+elf2tdg firmware.elf --board-profile board.toml \
+  --path-analysis ipet --require-safe --format json --output wcet.json
+```
 
 When a core frequency is known, per-function and per-root `time_ns` values are
 emitted. Results are per execution root from `ProgramCfg.roots`; they are not a
@@ -472,7 +500,8 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_branch_max_states`
 - `board_profile_data_memory`
 - `board_profile_data_memory_regions`
-- `board_profile_wcet`
+- `board_profile_wcet` (`configured` when `[wcet]` is present; the selected
+  backend is recorded in `wcet.model`)
 - `board_profile_wcet_default_loop_bound`
 - `board_profile_wcet_bound_nonterminating_loops`
 - `board_profile_wcet_max_states`

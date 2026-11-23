@@ -1,0 +1,123 @@
+# Analysis architecture and precision roadmap
+
+This document records the intended analysis architecture. It separates what is
+implemented today from the planned IPET and multicore work; `--list-passes`
+is the authoritative status report for a build/profile.
+
+## Goals
+
+- Target multicore AArch64 and RISC-V images.
+- Produce **certifiable safe upper bounds** when the selected models and flow
+  facts support that claim; never silently turn an incomplete model into a
+  bound.
+- Keep analyses modular and removable at compile time.
+- Emit human-readable CFG/WCET text in addition to machine-readable JSON.
+
+## Pass model
+
+The build uses a compile-time pass catalog, not a runtime dynamic-library ABI.
+Each pass declares:
+
+- a stable ID (`domain.role`, for example `wcet.longest-path`);
+- its kind (`frontend`, `timing`, `analysis`, `path-analysis`, `report`);
+- consumed and produced fact IDs;
+- a soundness claim (`model-only`, `model-dependent`, `safe-upper-bound`,
+  `estimate`, `planned`).
+
+The catalog lives in `crates/elf2tdg/src/passes.rs` and is exposed by:
+
+```sh
+elf2tdg --list-passes
+elf2tdg --list-passes --board-profile board.toml
+```
+
+The analyzer still invokes the current analyses directly. The catalog is the
+scheduler contract for the next refactor: passes will read/write typed facts
+through a `PassContext`, and the registry will topologically order them. The
+public pass IDs and the JSON schema remain stable across that migration.
+
+### Why compile-time
+
+Rust trait objects do not have a stable cross-`cdylib` ABI. Compile-time
+registration with Cargo features is type-safe, testable and sufficient for
+built-in analyses. If third-party runtime plugins are needed later, the
+recommended boundary is an out-of-process JSON/IPC or WASM provider, not a raw
+Rust `dylib` interface.
+
+## Precision ladder
+
+| Level | Capability | Status |
+|---|---|---|
+| P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
+| P1 | Flow facts and IPET/ILP backend | first version implemented: profile loop bounds, per-function IPET, pure-Rust `microlp`; F4/FFX and non-loop flow facts are next |
+| P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
+| P3 | Context-sensitive summaries, recursion, SMT infeasible paths | planned |
+| P4 | Interrupt/CRPD and multicore shared-resource interference | planned |
+| P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
+
+The IPET first version is available with:
+
+```sh
+elf2tdg firmware.elf --board-profile board.toml \
+  --path-analysis ipet --view cfg --format text --function main
+```
+
+It builds a per-function integer program with flow conservation, natural-loop
+bounds and callee summaries, solves it with `microlp`, and records the positive
+block execution counts. The remaining P1 work is:
+
+1. F4 `.ff` and FFX importers for loop, branch and call facts.
+2. A convenience API for programmatic flow facts beyond `[wcet]`.
+3. Larger benchmarks comparing IPET and longest-path precision and solve time.
+4. Making IPET the default only after the bounded-results contract is validated.
+
+The irreducible-cycle guard is deliberate: if removing all natural-loop
+backedges still leaves a cycle, the function is reported `unbounded` rather than
+emitting an unsound finite number.
+
+## Soundness contract
+
+Every pass result must carry:
+
+- the model/solver version and configuration hash;
+- the soundness claim and the assumptions it depends on;
+- unsupported or unresolved inputs;
+- a status (`bounded`, `partial`, `unbounded`, `unknown`).
+
+`partial` results are never presented as safe bounds. IPET output is a safe
+upper bound only when the flow facts, block costs and microarchitecture models
+are all conservative. Unresolved calls, missing callee summaries, unresolved
+control flow, missing block timing and non-terminating loops that were bound by
+assumption all mark a result `partial`. Irreducible cycles are reported
+`unbounded` because no configured loop bound covers them. The text report
+prints these statuses and caveats; later passes must preserve them. The
+`--require-safe` CLI gate requires the IPET backend, a timing model classified
+as `deterministic` or `bounded` (not `statistical`), complete cache/memory
+address coverage, and a `bounded` result for every execution root; otherwise the
+run fails before emitting a CFG.
+
+## Multicore direction
+
+Multicore support should not be implemented as extra per-block constants. It
+needs an interference pass with explicit resource models:
+
+- shared bus/memory arbitration (TDMA, round-robin, priority);
+- cache sharing, cache coloring and CRPD;
+- bank/channel contention;
+- interrupt and preemption effects.
+
+These facts should feed the same IPET constraints as the single-core analyses,
+so a system-level bound is composed from sound per-resource bounds rather than
+from summed local estimates.
+
+## Current limits
+
+- IPET is implemented but still context-insensitive and uses only profile loop
+  bounds; F4/FFX import and automatic loop-bound inference are not implemented.
+- Cache/branch/data-memory analyses are per-function and not path-sensitive.
+- Interrupts, DMA, multicore interference and concurrency are not modeled.
+- The Cortex-M7 and generic AArch64/RISC-V timing models are marked
+  statistical; they must be replaced by bounded models before claiming a safe
+  upper bound on those cores.
+- The default backend remains `longest-path` until IPET has broader benchmark
+  validation.

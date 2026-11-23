@@ -1,0 +1,94 @@
+# Human-readable CFG and WCET report
+
+`--format text` renders the same selected program CFG as the JSON, DOT and
+Mermaid exporters, but in a form intended to be read and diffed directly:
+
+```sh
+cargo run -p elf2tdg -- firmware.elf --view cfg --format text \
+    --function main --output main-report.txt
+```
+
+With a board profile that enables WCET analysis, the report also carries the
+per-function and per-root worst-case cycles:
+
+```sh
+cargo run -p elf2tdg -- firmware.elf --view cfg --format text \
+    --board-profile examples/profiles/cortex-m7-wcet.toml \
+    --function sensor_task --output sensor-task.txt
+```
+
+## Sections
+
+The report is deterministic and uses plain text only.
+
+1. **Image** — path, architecture, entry point, ELF type, symbol/debug flags
+   and the CFG schema version.
+2. **Program** — selected/total function, block, edge, call, root, concurrency,
+   lock and diagnostic counts.
+3. **Execution roots** — startup, main, ISR, task, callback and pointer roots,
+   including vector/IRQ numbers and confidence.
+4. **Timing** — the instruction timing model, determinism, cost-table version,
+   frequency domains and model caveats.
+5. **Analysis models** — instruction/data cache, branch prediction and
+   data-memory latency summaries when enabled.
+6. **WCET** — model name, loop-bound configuration, result counts, per-root
+   cycles/nanoseconds and the analysis caveats.
+7. **Interprocedural call graph** — caller, callee, call site, flags and
+   bounded candidate sets.
+8. **Concurrency annotations** — spawn/join/await/callback/scope sites.
+9. **Lock events** — acquire/try-acquire/release events with API provenance.
+10. **Diagnostics** — scoped to the selected functions, with omitted image-wide
+    diagnostics counted.
+11. **Function sections** — metadata, WCET result, then every basic block with
+    instructions, calls, typed edges and per-block analysis annotations.
+
+## Example
+
+```text
+function main
+-------------
+
+id               fn:0x8000138
+address          0x8000138 (14 bytes)
+section          .text
+source           main.c:26:16
+language         c
+kind             normal
+noreturn         control-flow
+entry            bb:0x8000138
+blocks           3
+edges            3
+call sites       2
+wcet             partial, 42.0 cycle(s), 250.0 ns (incomplete-call-or-control-flow-model)
+wcet path        bb:0x8000138 -> bb:0x800013e
+
+  block bb:0x8000138  0x8000138  6B  cycles 4..8  terminator=call
+    instructions:
+      0x8000138  2B  push {r4, lr}  [main.c:26:16]
+      0x800013a  4B  bl #0x8000120  [call]  [main.c:27:5]
+    calls:
+      @0x800013a -> sensor_task  [direct]
+    edges:
+      -> bb:0x800013e call-return  @0x800013a
+```
+
+`--no-cfg-instructions` keeps block, edge, call and WCET information but
+replaces the instruction listing with a count. The JSON output remains the
+lossless machine-readable form; see [cfg-format.md](cfg-format.md).
+
+## WCET semantics
+
+The `wcet` section reports the selected backend:
+
+- `cfg-longest-path` (default): CFG longest path with bounded loop visits.
+- `cfg-ipet` (`--path-analysis ipet`): IPET integer-linear program solved with
+  the pure-Rust `microlp` backend. The report prints the solver status, objective
+  and positive block execution counts for each function.
+
+Both are static estimates, not hardware proofs: loop bounds must be configured,
+recursive call-graph SCCs are unbounded, cache/branch/data-memory results are
+local, and interrupts, DMA, bus contention and concurrency are not modeled. A
+function marked `partial` has unresolved inputs; `unbounded` means no finite
+estimate was produced. A partial IPET objective is not a safe upper bound.
+Irreducible cycles are reported as `unbounded` rather than producing an
+unsound model.

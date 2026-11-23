@@ -44,10 +44,13 @@ Implemented:
   - LRU instruction and data caches with per-block hit/miss ranges;
   - static, BTFN or two-bit bimodal branch prediction;
   - per-region data-memory bus widths and read/write wait states;
-  - loop-bounded per-function and per-root WCET estimates.
+  - loop-bounded per-function and per-root WCET estimates, from either a CFG
+    longest-path backend or an IPET/ILP backend solved with pure-Rust `microlp`.
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md).
-- Versioned CFG JSON plus DOT and Mermaid renderers.
+- Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
+- Compile-time analysis pass plan (`--list-passes`) with explicit pass
+  dependencies and soundness labels; no runtime dynamic-library ABI.
 - Runtime rule engine for spawn/join/scope/await:
   - Rust no-std: Embassy (`Spawner::spawn`, task poll) and RTIC;
     `std::thread`, Rayon, crossbeam, Tokio, async-std and smol are outside the
@@ -210,13 +213,16 @@ Implemented:
   blocks and merges contiguous fallthrough-only blocks. Unreachable removal is
   skipped when a reachable unresolved control transfer could target unknown
   code.
-- CFG CLI view: the default `--view cfg` exports lossless per-function JSON or
-  DOT/Mermaid CFGs, with function selection (`--function`), typed control-flow
-  edges, call/return blocks, noreturn continuation pruning, call targets,
-  indirect-target expressions, raw instruction bytes and source locations. CFG
-  JSON also carries execution roots, the interprocedural call graph,
-  concurrency annotations and lock events. Concrete instructions can be omitted
-  from JSON and graph labels with `--no-cfg-instructions`. By default the CFG
+- CFG CLI view: the default `--view cfg` exports lossless per-function JSON,
+  DOT/Mermaid graphs or a human-readable text report, with function selection
+  (`--function`), typed control-flow edges, call/return blocks, noreturn
+  continuation pruning, call targets, indirect-target expressions, raw
+  instruction bytes and source locations. CFG JSON also carries execution
+  roots, the interprocedural call graph, concurrency annotations and lock
+  events. Concrete instructions can be omitted from JSON, text and graph labels
+  with `--no-cfg-instructions`. `--list-passes` prints the compile-time
+  analysis plan, including which optional models the board profile enables. By
+  default the CFG
   is a multi-root system slice: main/startup, every valid vector-table ISR,
   ARM/AArch64 exception vectors, RISC-V trap vectors, ELF init/fini entry
   points, task/async contexts, callback registrations, global function-pointer
@@ -257,9 +263,14 @@ Still deferred:
 - Wrapper forwarding through multiple user levels and through values that are
   transformed before the runtime call.
 
-The analyzer produces an optional CFG longest-path WCET estimate when a board
-profile enables `[wcet]`. It is a static estimate, not a hardware proof: loop
-bounds must be supplied, recursive call cycles are unbounded, cache/branch/
+The analyzer produces WCET estimates when a board profile enables `[wcet]`.
+`--path-analysis longest-path` is the default; `--path-analysis ipet` builds a
+per-function integer linear program with flow conservation, profile loop bounds
+and bottom-up callee summaries, solved by the pure-Rust `microlp` backend.
+Irreducible cycles and recursive call cycles are unbounded, while unresolved
+calls/control flow or non-terminating loops bounded by assumption mark a result
+`partial`; a partial objective is not a safe upper bound. Results are static
+estimates, not hardware proofs: loop bounds must be supplied, cache/branch/
 data-memory results are not call-path context-sensitive, and interrupts, DMA,
 bus contention and concurrency are not modeled. Without `[wcet]`, static cycle
 counts remain per-block costs, not execution-time bounds.
@@ -310,11 +321,28 @@ cargo run -p elf2tdg -- app.elf --cpu x86-64 --freq 3GHz \
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
     --function main --output main-cfg.json
 
-# Readable CFG and compact CFG JSON
+# Human-readable CFG/WCET report (sections, blocks, edges, calls, WCET)
+cargo run -p elf2tdg -- firmware.elf --view cfg --format text \
+    --function main --output main-report.txt
+
+# The same report with a WCET profile: per-function and per-root cycles
+cargo run -p elf2tdg -- firmware.elf --view cfg --format text \
+    --board-profile board.toml --function sensor_task --output sensor-task.txt
+
+# IPET backend: solver status, objective and block execution counts
+cargo run -p elf2tdg -- firmware.elf --view cfg --format text \
+    --board-profile board.toml --path-analysis ipet \
+    --function sensor_task --output sensor-task-ipet.txt
+
+# Readable graph and compact CFG JSON
 cargo run -p elf2tdg -- firmware.elf --view cfg --format dot \
     --function main --output main.dot
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
     --function main --no-cfg-instructions --output main-blocks.json
+
+# List the compile-time analysis pass plan; add --board-profile to see what it enables
+cargo run -p elf2tdg -- --list-passes
+cargo run -p elf2tdg -- --list-passes --board-profile board.toml
 
 # Default CFG: all async roots (main, startup, ISR vectors, tasks, callbacks)
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
@@ -332,9 +360,11 @@ cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
 ```
 
 The CFG JSON format is documented in [docs/cfg-format.md](docs/cfg-format.md).
-CFG diagnostics are scoped to the selected/reachable functions, with the number
-of omitted image-wide diagnostics reported as `diagnostics_omitted`.
-For the recommended `opt-level=1` + full-debug-info firmware profile, see
+The human-readable report is documented in
+[docs/text-report.md](docs/text-report.md). CFG diagnostics are scoped to the
+selected/reachable functions, with the number of omitted image-wide diagnostics
+reported as `diagnostics_omitted`. For the recommended `opt-level=1` +
+full-debug-info firmware profile, see
 [docs/analysis-profile.md](docs/analysis-profile.md).
 
 Useful flags:
@@ -343,15 +373,18 @@ Useful flags:
 |---|---|
 | `--cpu cortex-m4` | explicit timing model; Cortex-M/RISC-V are auto-detected when omitted. `aarch64` and `x86-64` select statistical generic models |
 | `--board-profile PATH` | board timing profile in TOML (or JSON with a `.json` extension); supplies CPU, clocks, memory timing, pipeline/cache/branch models and WCET bounds |
+| `--path-analysis longest-path|ipet` | WCET backend when `[wcet]` is enabled; `ipet` uses the pure-Rust `microlp` solver |
+| `--require-safe` | certification gate: requires the IPET backend, a deterministic/bounded timing model, complete cache/memory address coverage and bounded results for every execution root |
 | `--freq 168MHz` | core clock; enables `time_ns` in blocks and overrides the profile's core clock |
-| `--format json|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
+| `--format json|text|dot|mermaid` | output format; defaults to `json`, or `mermaid` for `--view elf` |
 | `--view cfg|elf` | program CFG (default) or loader-backed ELF layout |
 | `--elf-max-insns N` | maximum disassembly instructions per executable section in `--view elf` (default 256; 0 = unlimited) |
 | `--function NAME|CONTEXT|0xADDR` | select one function or task alias for CFG output; task names map to their poll entry |
 | `--reachable-from NAME|CONTEXT|0xADDR` | narrow the CFG to one function or task root |
 | `--no-prune-runtime` | expand panic/format/compiler-builtins/drop-glue boundaries during CFG reachability |
 | `--all-functions` | export CFGs for every function, including unreachable code |
-| `--no-cfg-instructions` | omit concrete instructions from CFG JSON and DOT/Mermaid labels |
+| `--no-cfg-instructions` | omit concrete instructions from CFG JSON, text and DOT/Mermaid labels |
+| `--list-passes` | print the compile-time analysis pass plan and exit; a board profile marks optional passes enabled |
 | `--output PATH` | write to a file instead of stdout |
 | `--max-diagnostics N` | cap retained diagnostics (default 500) |
 | `--verbose` | print a summary to stderr |
@@ -446,6 +479,8 @@ crates/elf2tdg-schema/    shared IDs, diagnostics, timing and runtime records
 crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rules,
                           origin tracking, emitters, CLI
 docs/cfg-format.md        program CFG, roots, calls, concurrency and timing
+docs/text-report.md       readable CFG/WCET report sections and semantics
+docs/analysis-architecture.md  pass model, soundness contract and precision roadmap
 docs/board-profile.md     board clocks, memory fetch costs and cycle overrides
 docs/analysis-profile.md  recommended firmware build flags and inline DWARF
 docs/elf-view.md          loader-backed ELF layout, colors and disassembly limits
@@ -455,6 +490,8 @@ fuzz/                     cargo-fuzz ELF/CFG validation harness
 ```
 
 See [docs/cfg-format.md](docs/cfg-format.md) for the CFG model,
-[docs/analysis-profile.md](docs/analysis-profile.md) for the recommended
-firmware build profile, and [docs/elf-view.md](docs/elf-view.md) for the
-loader-backed ELF layout view.
+[docs/text-report.md](docs/text-report.md) for the readable report,
+[docs/analysis-architecture.md](docs/analysis-architecture.md) for the pass
+model and precision roadmap, [docs/analysis-profile.md](docs/analysis-profile.md)
+for the recommended firmware build profile, and
+[docs/elf-view.md](docs/elf-view.md) for the loader-backed ELF layout view.
