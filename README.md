@@ -59,10 +59,10 @@ Implemented:
     `<call>` nesting select per-caller-chain function versions;
   - FFX non-loop facts: conditional branch outcomes (`<conditional>/<case>`)
     and call counts (`<call numcall=...>` / `executed=false`), enforced by IPET;
-  - FFX infeasible-path conflicts (`<conflict>` over edges/blocks); unordered
-    function/loop constraints are enforced by IPET. Ordered conflicts and
-    OTAWA `<not-all seq="true">` are reduced to those constraints when their
-    order is structurally forced; other ordered forms are recorded but ignored.
+  - FFX infeasible-path conflicts (`<conflict>` over edges/blocks) and OTAWA
+    `<not-all seq="true">`; IPET enforces unordered constraints, structurally
+    forced ordered conflicts, and cross-iteration ordered sequences through a
+    product sequence-progress automaton.
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
   [docs/flow-facts.md](docs/flow-facts.md).
@@ -304,10 +304,12 @@ Unordered FFX infeasible-path conflicts are enforced by IPET when all elements
 share one function and are outside loops or within one non-nested loop. Ordered
 conflicts are reduced to the same constraints when CFG reachability (or
 per-iteration reachability with loop backedges removed) forces the declared
-order; structurally impossible sequences add no constraint, and cross-iteration
-ordered forms are ignored with warnings. Cross-function, nested-loop and
-specific-iteration conflicts are recorded but ignored. Context enumeration has
-bounded depth and counts;
+order. Other ordered conflicts use a product IPET with a sequence-progress
+automaton: function scope spans the invocation, loop scope resets on entry and
+iteration scope resets per iteration. Structurally impossible sequences add no
+constraint; the product is capped and exceeding it makes the function
+`unknown`. Cross-function and specific-iteration forms are recorded but
+ignored. Context enumeration has bounded depth and counts;
 exceeding a limit falls back to a conservative context-insensitive model and
 marks affected results `partial`.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved

@@ -221,26 +221,33 @@ appear in one execution sub-trace:
   interpreted per function invocation; top-level conflicts are ignored because
   their whole-program scope cannot be guaranteed per invocation.
 - Conflicts are also recognized through the OTAWA `<not-all seq="true">`
-  form. Both that form and `<conflict ordered="yes">` are ordered conflicts.
-  They are applied only when the declared order is **structurally forced**:
-  - function-scope ordered conflicts are checked by CFG reachability between
-    consecutive elements. If every pair is reachable in the declared order,
-    any trace containing all elements must use that order, so the unordered
-    `sum <= n - 1` constraint applies exactly;
-  - `<iteration number="*">` loop-scope ordered conflicts are checked on the
-    per-iteration CFG with loop backedges removed. A forced order supports the
-    loop aggregate constraint.
+  form. Both that form and `<conflict ordered="yes">` are ordered conflicts and
+  are enforced by IPET in two ways:
+  - **Structural reduction.** Function-scope conflicts whose elements are
+    outside loops are checked by CFG reachability between consecutive elements.
+    If every pair is reachable in the declared order, any trace containing all
+    elements must use that order, so the unordered `sum <= n - 1` constraint
+    applies exactly. `<iteration number="*">` conflicts use the per-iteration
+    CFG with loop backedges removed and, when the order is forced, the loop
+    aggregate constraint.
+  - **Automaton product.** Other ordered conflicts use a product IPET with a
+    sequence-progress automaton. Function scope tracks progress over the whole
+    invocation, loop scope resets on entry and spans all iterations, and
+    `<iteration number="*">` scope resets on entry and every backedge. This
+    models cross-iteration ordering exactly without unrolling loop iterations.
+    The product is capped (100,000 states / 200,000 transitions); exceeding the
+    cap makes the function `unknown` rather than returning an unsound bound.
   If the sequence is structurally impossible, the fact is vacuously satisfied:
-  no constraint is added and the record explains why. Whole-loop ordered
-  conflicts without an iteration context, and ordered conflicts whose order is
-  not structurally forced, are ignored with warnings; cross-iteration order is
-  not modeled.
+  no constraint or automaton is needed and the record explains why. Ordered
+  conflicts that repeat an element, name a backedge element in an iteration
+  scope, or span multiple functions are ignored conservatively.
 - Caller contexts follow the same rules as other FFX facts. Loop contexts are
   accepted: a `<loop ...>` may omit its bound and acts as a context only; a
   missing bound produces a warning and falls back to the profile/default or
   inference. `<iteration number="*">` conflicts are supported. Conflicts for a
-  specific iteration number, nested `<call>`/`<loop>` elements inside a
-  conflict, and conflicts spanning nested loops are ignored with warnings.
+  specific iteration number and nested `<call>`/`<loop>` elements inside a
+  conflict are ignored with warnings. Unordered conflicts spanning nested loops
+  are ignored; ordered conflicts use the automaton product.
 - All elements must resolve inside one function. For a conflict declared inside
   a `<loop>` or `<iteration>` context, every edge endpoint and block must be
   inside that loop; entry/exit edges are rejected with a warning. Two structural
@@ -328,6 +335,7 @@ Imported facts are recorded in `wcet.flow_facts`:
       "function": "fn:0x8000120",
       "ordered": false,
       "applied": true,
+      "mode": "aggregate",
       "scope": "function",
       "elements": [
         { "kind": "block", "source": "bb:0x8000120" },

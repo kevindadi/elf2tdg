@@ -51,7 +51,7 @@ Rust `dylib` interface.
 | Level | Capability | Status |
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
-| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain analysis, FFX branch/call facts, unordered and structurally-forced ordered infeasible-path conflicts in IPET, per-function IPET, pure-Rust `microlp`; cross-iteration order, call-site-sensitive contexts and richer FFX constructs are next |
+| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration ordered infeasible-path conflicts in IPET (the latter via a product automaton), per-function IPET, pure-Rust `microlp`; call-site-sensitive contexts, richer FFX constructs and conflict scalability are next |
 | P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
 | P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | planned; caller-function context summaries are implemented in P1 |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
@@ -68,8 +68,8 @@ It builds a per-function integer program with flow conservation, natural-loop
 bounds and callee summaries, solves it with `microlp`, and records the positive
 block execution counts. The remaining P1 work is:
 
-1. Additional FFX constructs, cross-iteration/cross-function infeasible-path
-   forms, and inference beyond canonical counted loops.
+1. Additional FFX constructs, cross-function infeasible-path forms, and
+   inference beyond canonical counted loops.
 2. A convenience API for programmatic flow facts beyond files and `[wcet]`.
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
 4. Making IPET the default only after the bounded-results contract is validated.
@@ -135,10 +135,13 @@ from summed local estimates.
   conflicts reduce to the same constraints only when reachability forces the
   declared order: function-scope acyclic order, or per-iteration loop-body
   order with loop backedges removed. Structurally impossible sequences add no
-  constraint. Cross-iteration, cross-function, whole-loop ordered,
-  nested-loop and specific-iteration conflicts are ignored with warnings.
-  `longest-path` records but does not enforce conflicts. Conditional call sites
-  remain unsupported for call-count facts.
+  constraint. Other ordered conflicts use a product IPET with a progress
+  automaton: function scope spans an invocation, loop scope resets on entry,
+  and iteration scope resets on entry/backedge. The product is capped; cap
+  overflow makes the function `unknown`. Cross-function, specific-iteration
+  and duplicate-edge conflicts are ignored with warnings. `longest-path`
+  records but does not enforce conflicts. Conditional call sites remain
+  unsupported for call-count facts.
 - Cache/branch/data-memory analyses are per-function and not path-sensitive.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.

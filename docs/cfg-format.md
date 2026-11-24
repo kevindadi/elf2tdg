@@ -362,9 +362,10 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.18`.
+`cfg_schema_version` is `2.19`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.18 adds infeasible-path conflict records. Version 2.17
+functions. Version 2.19 adds the conflict enforcement `mode` (`aggregate` or
+`automaton`). Version 2.18 adds infeasible-path conflict records. Version 2.17
 adds optional caller `context` fields to resolved loop, branch and call
 flow-fact records. Version 2.16 adds those records.
 Version 2.15 adds priority-ceiling blocking, per-task lock hold times and
@@ -407,7 +408,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.18",
+  "cfg_schema_version": "2.19",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -424,7 +425,7 @@ global data.
       ],
       "conflicts": [
         { "function": "fn:0x8000120", "ordered": false, "applied": true,
-          "scope": "function",
+          "mode": "aggregate", "scope": "function",
           "elements": [
             { "kind": "block", "source": "bb:0x8000120" },
             { "kind": "edge", "source": "bb:0x8000124",
@@ -891,11 +892,15 @@ asserts that the CFG validates.
   conservative counted-loop inference. FFX branch/call facts are enforced as
   edge/block constraints in matching contexts. Unordered infeasible-path
   conflicts are enforced when their elements share one function and are either
-  outside loops or within one non-nested loop. Ordered conflicts use the same
-  constraints only when reachability forces the declared order (function-scope
+  outside loops or within one non-nested loop. Ordered conflicts use aggregate
+  constraints when reachability forces the declared order (function-scope
   acyclic order or per-iteration loop-body order); structurally impossible
-  sequences add no constraint. Cross-iteration, cross-function, nested-loop and
-  specific-iteration conflicts are ignored with warnings.
+  sequences add no constraint. Cross-iteration ordered conflicts use a product
+  IPET with a sequence-progress automaton: function scope spans the whole
+  invocation, loop scope resets on entry, and iteration scope resets on entry
+  and each backedge. The automaton product is capped; exceeding the cap makes
+  the function `unknown`. Cross-function, specific-iteration and duplicate-edge
+  conflicts are ignored with warnings.
   Conditional or multi-target call sites and F4 non-loop directives are ignored
   conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a
