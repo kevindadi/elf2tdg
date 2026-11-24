@@ -214,6 +214,14 @@ pub const BUILTIN_PASSES: &[PassInfo] = &[
         soundness: Soundness::SafeUpperBound,
     },
     PassInfo {
+        id: "system.layered-model",
+        title: "Layered task/resource model and coarse system bound",
+        kind: PassKind::Analysis,
+        requires: &["ir.roots", "wcet.function", "wcet.root"],
+        provides: &["system.model", "system.petri"],
+        soundness: Soundness::ModelDependent,
+    },
+    PassInfo {
         id: "report.text",
         title: "Human-readable CFG and WCET report",
         kind: PassKind::Report,
@@ -276,6 +284,11 @@ pub fn plan(profile: Option<&BoardProfile>, path_analysis: PathAnalysis) -> Vec<
                     path_analysis,
                     PathAnalysis::Ipet,
                     "select --path-analysis ipet",
+                ),
+                "system.layered-model" => optional(
+                    profile.is_some_and(|profile| profile.wcet().is_some()),
+                    "no [wcet] section in the board profile",
+                    "[wcet] is present; the model is built after per-root WCET",
                 ),
                 "report.text" => (PassStatus::Enabled, "always available"),
                 _ => (PassStatus::Enabled, "built in"),
@@ -413,6 +426,11 @@ default_loop_bound = 4
             .expect("longest-path descriptor");
         assert_eq!(longest_path.status, PassStatus::Disabled);
         assert!(longest_path.reason.contains("--path-analysis longest-path"));
+        let layered = states
+            .iter()
+            .find(|pass| pass.info.id == "system.layered-model")
+            .expect("layered model descriptor");
+        assert_eq!(layered.status, PassStatus::Enabled);
 
         let states = plan(Some(&board), PathAnalysis::LongestPath);
         let ipet = states
@@ -440,6 +458,7 @@ default_loop_bound = 4
             "flow.facts",
             "wcet.longest-path",
             "wcet.ipet",
+            "system.layered-model",
         ] {
             let pass = states
                 .iter()

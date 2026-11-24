@@ -21,6 +21,7 @@ pub mod origin;
 pub mod passes;
 pub mod rules;
 pub mod runtime;
+mod system_model;
 pub mod text_report;
 pub mod timing;
 mod wcet;

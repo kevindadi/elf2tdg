@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.7";
+pub const CFG_SCHEMA_VERSION: &str = "2.8";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -315,6 +315,134 @@ pub struct CfgMulticoreInfo {
     /// Total interference cycles added across the program.
     pub interference_cycles: u32,
     /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
+/// One execution root in the layered system model.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemTask {
+    /// Stable local task ID (`t0`, `t1`, ...).
+    pub id: String,
+    /// Root function.
+    pub function: FunctionId,
+    /// Root category.
+    pub kind: CfgRootKind,
+    /// Human-readable task/handler name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Local WCET result for this root.
+    pub status: CfgWcetStatus,
+    /// Local worst-case cycles, when finite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycles: Option<f64>,
+    /// Local worst-case time in nanoseconds, when finite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_ns: Option<f64>,
+    /// Maximum activations modeled in the current bound window.
+    pub activation_bound: u32,
+}
+
+/// One place in the coarse layered Petri-net representation.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemPlace {
+    /// Stable place ID.
+    pub id: String,
+    /// Place category: `core`, `ready` or `done`.
+    pub kind: String,
+    /// Initial tokens.
+    pub tokens: u32,
+    /// Maximum token capacity.
+    pub capacity: u32,
+}
+
+/// One transition in the coarse layered Petri-net representation.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemTransition {
+    /// Stable transition ID.
+    pub id: String,
+    /// Transition category; currently `execute`.
+    pub kind: String,
+    /// Task ID consumed by this transition.
+    pub task: String,
+    /// Local WCET cost charged when the transition fires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_cycles: Option<f64>,
+    /// Maximum modeled firings.
+    pub activations: u32,
+    /// Input place IDs.
+    pub inputs: Vec<String>,
+    /// Output place IDs.
+    pub outputs: Vec<String>,
+}
+
+/// One concurrency dependency between program functions.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemDependency {
+    /// Dependency kind: `spawn`, `join`, `await`, `callback`, `scope-enter`
+    /// or `scope-exit`.
+    pub kind: String,
+    /// Function containing the operation.
+    pub from: FunctionId,
+    /// Resolved target function, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<FunctionId>,
+    /// Bounded alternatives when the target is not unique.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<FunctionId>,
+    /// Call site.
+    pub site: Addr,
+    /// Runtime that defines the operation, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    /// API symbol/name, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
+    /// Resolution confidence.
+    pub confidence: Confidence,
+}
+
+/// Coarse bound produced by the layered model.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemBound {
+    /// Bound scope. The current scope is one activation per execution root on
+    /// the analyzed core.
+    pub scope: String,
+    /// Aggregate status over all modeled tasks.
+    pub status: CfgWcetStatus,
+    /// Sum of local worst-case cycles, when every task has a finite cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycles: Option<f64>,
+    /// Sum of local worst-case nanoseconds, when every task has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_ns: Option<f64>,
+    /// Number of modeled tasks.
+    pub tasks: u32,
+    /// Assumptions required by this bound.
+    pub assumptions: Vec<String>,
+}
+
+/// Layered system model and coarse bound.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemModelInfo {
+    /// Model name.
+    pub model: String,
+    /// Total cores in the configured system.
+    pub cores: u32,
+    /// Analyzed core.
+    pub core_id: u32,
+    /// Execution-root tasks included in the concurrent bound.
+    pub tasks: Vec<CfgSystemTask>,
+    /// Startup/main boot roots excluded from the concurrent bound.
+    pub boot_roots: u32,
+    /// Petri-net places.
+    pub places: Vec<CfgSystemPlace>,
+    /// Petri-net transitions.
+    pub transitions: Vec<CfgSystemTransition>,
+    /// Concurrency dependencies between functions.
+    pub dependencies: Vec<CfgSystemDependency>,
+    /// Coarse bound.
+    pub bound: CfgSystemBound,
+    /// Model caveats.
     pub caveats: Vec<String>,
 }
 
@@ -1312,6 +1440,8 @@ pub struct ProgramCfg {
     pub multicore: Option<CfgMulticoreInfo>,
     /// WCET analysis metadata.
     pub wcet: Option<CfgWcetInfo>,
+    /// Layered system model and coarse system bound.
+    pub system_model: Option<CfgSystemModelInfo>,
     /// Analysis diagnostics.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -2493,6 +2623,8 @@ struct CfgDocument<'a> {
     multicore: Option<&'a CfgMulticoreInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wcet: Option<&'a CfgWcetInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_model: Option<&'a CfgSystemModelInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pointer_roots: Vec<Addr>,
     #[serde(skip_serializing_if = "is_empty_slice")]
@@ -2732,6 +2864,7 @@ pub fn render_json_selected(
         data_memory: program.data_memory.as_ref(),
         multicore: program.multicore.as_ref(),
         wcet: program.wcet.as_ref(),
+        system_model: program.system_model.as_ref(),
         pointer_roots: program
             .pointer_roots
             .iter()

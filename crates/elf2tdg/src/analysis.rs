@@ -3295,6 +3295,7 @@ impl<'a> Analyzer<'a> {
             };
             program_cfg.wcet = Some(info);
         }
+        program_cfg.system_model = crate::system_model::analyze(&program_cfg);
         if self.options.require_safe {
             enforce_safe_wcet(&program_cfg)?;
         }

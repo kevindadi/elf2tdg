@@ -14,8 +14,8 @@ use petgraph::visit::EdgeRef;
 use crate::cfg::{
     CFG_SCHEMA_VERSION, CfgBlock, CfgBranchPredictionInfo, CfgCacheInfo, CfgCallEdge, CfgCallSite,
     CfgConcurrencyKind, CfgDataCacheInfo, CfgDataMemoryInfo, CfgFunction, CfgFunctionWcet,
-    CfgInstruction, CfgLockEvent, CfgMulticoreInfo, CfgRoot, CfgWcetInfo, CfgWcetRoot,
-    CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CfgInstruction, CfgLockEvent, CfgMulticoreInfo, CfgRoot, CfgSystemModelInfo, CfgWcetInfo,
+    CfgWcetRoot, CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 
@@ -54,6 +54,9 @@ pub fn render_text_selected(
     render_timing(&mut out, program);
     render_analysis_models(&mut out, program);
     render_wcet(&mut out, program);
+    if program.system_model.is_some() {
+        render_system_model(&mut out, program.system_model.as_ref());
+    }
     render_calls(&mut out, program, selected);
     render_concurrency(&mut out, program, selected);
     render_locks(&mut out, program, selected);
@@ -535,6 +538,67 @@ fn render_wcet_root(out: &mut String, program: &ProgramCfg, root: &CfgWcetRoot) 
     if !root.path.is_empty() {
         let _ = writeln!(out, "      path: {}", join_block_path(&root.path));
     }
+}
+
+fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
+    section(out, "layered system model");
+    let Some(model) = model else {
+        let _ = writeln!(out, "  (not analyzed)\n");
+        return;
+    };
+    kv(out, "model", &model.model);
+    kv(out, "scope", &model.bound.scope);
+    kv(out, "status", &serde_name(&model.bound.status));
+    kv(
+        out,
+        "topology",
+        &format!("{} core(s), analyzed core {}", model.cores, model.core_id),
+    );
+    if let Some(cycles) = model.bound.cycles {
+        kv(out, "cycles", &format!("{cycles:.1} cycle(s)"));
+    }
+    if let Some(time) = model.bound.time_ns {
+        kv(out, "time", &format!("{time:.1} ns"));
+    }
+    kv(
+        out,
+        "model size",
+        &format!(
+            "{} task(s), {} place(s), {} transition(s), {} dependency(ies)",
+            model.tasks.len(),
+            model.places.len(),
+            model.transitions.len(),
+            model.dependencies.len()
+        ),
+    );
+    for task in model.tasks.iter().take(16) {
+        let name = task
+            .name
+            .as_deref()
+            .unwrap_or_else(|| task.function.as_str());
+        let _ = writeln!(
+            out,
+            "  * task {} {} [{}] {}",
+            task.id,
+            name,
+            serde_name(&task.kind),
+            wcet_cost(task.status, task.cycles, task.time_ns)
+        );
+    }
+    if model.tasks.len() > 16 {
+        let _ = writeln!(
+            out,
+            "  ... {} more task(s)",
+            model.tasks.len().saturating_sub(16)
+        );
+    }
+    for assumption in &model.bound.assumptions {
+        let _ = writeln!(out, "  assumption: {assumption}");
+    }
+    for caveat in &model.caveats {
+        let _ = writeln!(out, "  caveat: {caveat}");
+    }
+    out.push('\n');
 }
 
 fn render_calls(out: &mut String, program: &ProgramCfg, selected: &[&CfgFunction]) {
