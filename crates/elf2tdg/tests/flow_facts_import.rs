@@ -735,8 +735,8 @@ fn infeasible_path_conflicts_are_recorded_and_reported() {
 <flowfacts>
   <function name="sensor_task">
     <conflict ordered="yes">
-      <block address="0x0800_0120"/>
       <block address="0x0800_0128"/>
+      <block address="0x0800_0120"/>
     </conflict>
   </function>
 </flowfacts>
@@ -752,7 +752,7 @@ fn infeasible_path_conflicts_are_recorded_and_reported() {
         conflict
             .reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("ordered"))
+            .is_some_and(|reason| reason.contains("structurally impossible"))
     );
     assert_eq!(conflict.elements.len(), 2);
     assert!(

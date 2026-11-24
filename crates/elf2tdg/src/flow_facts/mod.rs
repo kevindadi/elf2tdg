@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use elf2tdg_schema::{Addr, BlockId, FunctionId};
+use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
 use crate::board_profile::WcetProfile;
@@ -1020,12 +1021,6 @@ fn resolve_conflict(
     let mut seen = BTreeSet::new();
     elements.retain(|element| seen.insert(element.clone()));
     record.elements = elements;
-    if fact.ordered {
-        record.reason = Some(format!(
-            "{origin}: ordered conflicts are not supported; conflict ignored"
-        ));
-        return Ok(record);
-    }
     match conflict_scope(function, &record.elements) {
         Ok(scope) => {
             if let Some(target) = &fact.loop_context {
@@ -1077,6 +1072,36 @@ fn resolve_conflict(
                     return Ok(record);
                 }
             }
+            if fact.ordered {
+                if fact.elements.len() != record.elements.len() {
+                    record.reason = Some(format!(
+                        "{origin}: ordered conflict repeats an element; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+                match ordered_sequence_support(
+                    function,
+                    &record.elements,
+                    &scope,
+                    fact.all_iterations,
+                ) {
+                    OrderedSequenceSupport::Forced => {
+                        record.scope = Some(scope);
+                        record.applied = true;
+                    }
+                    OrderedSequenceSupport::Impossible => {
+                        record.reason = Some(format!(
+                            "{origin}: ordered conflict sequence is structurally impossible; no constraint added"
+                        ));
+                    }
+                    OrderedSequenceSupport::Unsupported => {
+                        record.reason = Some(format!(
+                            "{origin}: ordered conflict scope is not supported; conflict ignored"
+                        ));
+                    }
+                }
+                return Ok(record);
+            }
             record.scope = Some(scope);
             record.applied = true;
         }
@@ -1085,6 +1110,131 @@ fn resolve_conflict(
         }
     }
     Ok(record)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrderedSequenceSupport {
+    /// The specified order is the only structurally possible order.
+    Forced,
+    /// No execution can contain the sequence in the specified order.
+    Impossible,
+    /// The scope requires a cross-iteration or otherwise unsupported order.
+    Unsupported,
+}
+
+fn ordered_sequence_support(
+    function: &CfgFunction,
+    elements: &[InfeasibleElement],
+    scope: &InfeasibleScope,
+    all_iterations: bool,
+) -> OrderedSequenceSupport {
+    if elements.len() <= 1 {
+        return OrderedSequenceSupport::Forced;
+    }
+    let node_by_id: BTreeMap<BlockId, NodeIndex> = function
+        .cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (function.cfg.graph[*node].id.clone(), *node))
+        .collect();
+    let analysis = crate::cfg_graph::analyze(&function.cfg);
+    let (allowed_blocks, excluded_edges) = match scope {
+        InfeasibleScope::Function => (None, BTreeSet::new()),
+        InfeasibleScope::Loop { header } if all_iterations => {
+            let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == *header) else {
+                return OrderedSequenceSupport::Unsupported;
+            };
+            let blocks: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
+            let backedges: BTreeSet<(BlockId, BlockId)> = analysis
+                .loops
+                .iter()
+                .flat_map(|loop_| {
+                    loop_
+                        .backedges
+                        .iter()
+                        .map(|edge| (edge.from.clone(), edge.to.clone()))
+                })
+                .collect();
+            (Some(blocks), backedges)
+        }
+        InfeasibleScope::Loop { .. } => return OrderedSequenceSupport::Unsupported,
+    };
+    if all_iterations
+        && elements.iter().any(|element| match element {
+            InfeasibleElement::Edge { source, target, .. } => {
+                excluded_edges.contains(&(source.clone(), target.clone()))
+            }
+            InfeasibleElement::Block { .. } => false,
+        })
+    {
+        return OrderedSequenceSupport::Unsupported;
+    }
+    for pair in elements.windows(2) {
+        let (_, from_exit) = element_bounds(&pair[0]);
+        let (to_entry, _) = element_bounds(&pair[1]);
+        let Some(from_node) = node_by_id.get(from_exit) else {
+            return OrderedSequenceSupport::Unsupported;
+        };
+        let Some(to_node) = node_by_id.get(to_entry) else {
+            return OrderedSequenceSupport::Unsupported;
+        };
+        if !cfg_reaches(
+            function,
+            *from_node,
+            *to_node,
+            allowed_blocks.as_ref(),
+            &excluded_edges,
+        ) {
+            return OrderedSequenceSupport::Impossible;
+        }
+    }
+    OrderedSequenceSupport::Forced
+}
+
+fn element_bounds(element: &InfeasibleElement) -> (&BlockId, &BlockId) {
+    match element {
+        InfeasibleElement::Edge { source, target, .. } => (source, target),
+        InfeasibleElement::Block { block } => (block, block),
+    }
+}
+
+fn cfg_reaches(
+    function: &CfgFunction,
+    start: NodeIndex,
+    goal: NodeIndex,
+    allowed_blocks: Option<&BTreeSet<BlockId>>,
+    excluded_edges: &BTreeSet<(BlockId, BlockId)>,
+) -> bool {
+    if start == goal {
+        return true;
+    }
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![start];
+    seen.insert(start);
+    while let Some(node) = stack.pop() {
+        let source = function.cfg.graph[node].id.clone();
+        for edge in function
+            .cfg
+            .graph
+            .edges_directed(node, petgraph::Direction::Outgoing)
+        {
+            let target = edge.target();
+            let target_id = function.cfg.graph[target].id.clone();
+            if allowed_blocks.is_some_and(|blocks| !blocks.contains(&target_id)) {
+                continue;
+            }
+            if excluded_edges.contains(&(source.clone(), target_id.clone())) {
+                continue;
+            }
+            if target == goal {
+                return true;
+            }
+            if seen.insert(target) {
+                stack.push(target);
+            }
+        }
+    }
+    false
 }
 
 fn resolve_conflict_element(

@@ -949,9 +949,8 @@ auto_loop_bounds = false
             .expect("finite cycles")
     }
 
-    #[test]
-    fn edge_conflict_removes_a_feasible_high_cost_path() {
-        let program = ProgramCfg::new(vec![function(
+    fn diamond_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
             0x1000,
             FunctionCfg::build(
                 vec![
@@ -970,7 +969,40 @@ auto_loop_bounds = false
                 ],
                 Some(0x1000),
             ),
-        )]);
+        )])
+    }
+
+    fn loop_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x2000,
+            FunctionCfg::build(
+                vec![
+                    block(0x2000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x2002, CfgTerminator::Branch, 1.0),
+                    block(0x2004, CfgTerminator::Fallthrough, 10.0),
+                    block(0x2006, CfgTerminator::Fallthrough, 20.0),
+                    block(0x2008, CfgTerminator::Fallthrough, 5.0),
+                    block(0x200a, CfgTerminator::Branch, 1.0),
+                    block(0x200c, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x2000, 0x2002, CfgEdgeKind::Fallthrough),
+                    edge(0x2002, 0x2004, CfgEdgeKind::Branch),
+                    edge(0x2002, 0x2008, CfgEdgeKind::Fallthrough),
+                    edge(0x2004, 0x2006, CfgEdgeKind::Fallthrough),
+                    edge(0x2006, 0x200a, CfgEdgeKind::Fallthrough),
+                    edge(0x2008, 0x200a, CfgEdgeKind::Fallthrough),
+                    edge(0x200a, 0x2002, CfgEdgeKind::Branch),
+                    edge(0x200a, 0x200c, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x2000),
+            ),
+        )])
+    }
+
+    #[test]
+    fn edge_conflict_removes_a_feasible_high_cost_path() {
+        let program = diamond_program();
         let baseline = analyze_baseline(&program);
         let (constrained, facts) = analyze_with(
             &program,
@@ -995,31 +1027,7 @@ auto_loop_bounds = false
 
     #[test]
     fn loop_conflict_uses_the_header_iteration_budget() {
-        let program = ProgramCfg::new(vec![function(
-            0x2000,
-            FunctionCfg::build(
-                vec![
-                    block(0x2000, CfgTerminator::Fallthrough, 1.0),
-                    block(0x2002, CfgTerminator::Branch, 1.0),
-                    block(0x2004, CfgTerminator::Fallthrough, 10.0),
-                    block(0x2006, CfgTerminator::Fallthrough, 20.0),
-                    block(0x2008, CfgTerminator::Fallthrough, 5.0),
-                    block(0x200a, CfgTerminator::Branch, 1.0),
-                    block(0x200c, CfgTerminator::Return, 1.0),
-                ],
-                vec![
-                    edge(0x2000, 0x2002, CfgEdgeKind::Fallthrough),
-                    edge(0x2002, 0x2004, CfgEdgeKind::Branch),
-                    edge(0x2002, 0x2008, CfgEdgeKind::Fallthrough),
-                    edge(0x2004, 0x2006, CfgEdgeKind::Fallthrough),
-                    edge(0x2006, 0x200a, CfgEdgeKind::Fallthrough),
-                    edge(0x2008, 0x200a, CfgEdgeKind::Fallthrough),
-                    edge(0x200a, 0x2002, CfgEdgeKind::Branch),
-                    edge(0x200a, 0x200c, CfgEdgeKind::Fallthrough),
-                ],
-                Some(0x2000),
-            ),
-        )]);
+        let program = loop_program();
         let baseline = analyze_baseline(&program);
         let (constrained, applied_facts) = analyze_with(
             &program,
@@ -1080,31 +1088,11 @@ auto_loop_bounds = false
     }
 
     #[test]
-    fn ordered_conflicts_are_recorded_but_not_applied() {
-        let program = ProgramCfg::new(vec![function(
-            0x1000,
-            FunctionCfg::build(
-                vec![
-                    block(0x1000, CfgTerminator::Branch, 1.0),
-                    block(0x1002, CfgTerminator::Fallthrough, 10.0),
-                    block(0x1004, CfgTerminator::Fallthrough, 20.0),
-                    block(0x1006, CfgTerminator::Return, 1.0),
-                    block(0x1008, CfgTerminator::Fallthrough, 5.0),
-                ],
-                vec![
-                    edge(0x1000, 0x1002, CfgEdgeKind::Branch),
-                    edge(0x1000, 0x1008, CfgEdgeKind::Fallthrough),
-                    edge(0x1002, 0x1004, CfgEdgeKind::Fallthrough),
-                    edge(0x1004, 0x1006, CfgEdgeKind::Fallthrough),
-                    edge(0x1008, 0x1006, CfgEdgeKind::Fallthrough),
-                ],
-                Some(0x1000),
-            ),
-        )]);
+    fn structurally_forced_ordered_conflicts_are_applied() {
+        let program = diamond_program();
         let baseline = analyze_baseline(&program);
-        let mut constrained = program;
-        let mut facts = facts();
-        let document = FlowFactDocument::parse_text(
+        let (constrained, facts) = analyze_with(
+            &program,
             r#"
 <flowfacts>
   <function name="main">
@@ -1115,20 +1103,32 @@ auto_loop_bounds = false
   </function>
 </flowfacts>
 "#,
-            "ordered.ffx",
-        )
-        .expect("parse");
-        facts
-            .apply_document(document, &constrained)
-            .expect("apply conflict");
-        let _ = analyze_program(&mut constrained, &facts);
-        assert_eq!(
-            constrained.functions[0]
-                .wcet
-                .as_ref()
-                .and_then(|wcet| wcet.cycles),
-            Some(baseline)
         );
+        assert_eq!(baseline, 32.0);
+        assert_eq!(constrained, 7.0);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(conflict.ordered);
+    }
+
+    #[test]
+    fn structurally_impossible_ordered_conflicts_add_no_constraint() {
+        let program = diamond_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <edge src="0x1004" dst="0x1006"/>
+      <edge src="0x1002" dst="0x1004"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(constrained, baseline);
         let conflict = &facts.infeasible_paths()[0];
         assert!(!conflict.applied);
         assert!(conflict.ordered);
@@ -1136,7 +1136,67 @@ auto_loop_bounds = false
             conflict
                 .reason
                 .as_deref()
-                .is_some_and(|reason| reason.contains("ordered"))
+                .is_some_and(|reason| reason.contains("structurally impossible"))
+        );
+    }
+
+    #[test]
+    fn ordered_iteration_conflicts_use_forced_in_iteration_order() {
+        let program = loop_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="*">
+        <conflict ordered="yes">
+          <block address="0x2004"/>
+          <block address="0x2006"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(constrained < baseline, "{constrained} < {baseline}");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0x2002"
+        ));
+    }
+
+    #[test]
+    fn whole_loop_ordered_conflicts_are_not_cross_iteration_reduced() {
+        let program = loop_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <conflict ordered="yes">
+        <block address="0x2004"/>
+        <block address="0x2006"/>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(constrained, baseline);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("not supported"))
         );
     }
 }
