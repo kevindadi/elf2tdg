@@ -16,8 +16,9 @@ use good_lp::{
 use crate::board_profile::{BoardProfile, SystemLinkKind, SystemProfile};
 use crate::cfg::{
     CfgConcurrencyKind, CfgSystemBound, CfgSystemDependency, CfgSystemFiring, CfgSystemLink,
-    CfgSystemModelInfo, CfgSystemPetriSolution, CfgSystemPlace, CfgSystemTask, CfgSystemTimedInfo,
-    CfgSystemTransition, CfgWcetRoot, CfgWcetStatus, ProgramCfg,
+    CfgSystemModelInfo, CfgSystemPetriSolution, CfgSystemPlace, CfgSystemResponseInfo,
+    CfgSystemResponseTask, CfgSystemTask, CfgSystemTimedInfo, CfgSystemTransition, CfgWcetRoot,
+    CfgWcetStatus, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 use crate::wcet::frequency_hz;
@@ -268,6 +269,7 @@ pub(crate) fn analyze(
         .max()
         .unwrap_or(1);
     let aggregate = aggregate_status(&tasks);
+    let response = response_times(&tasks);
     let timed = solve_timed_model(&tasks, system);
     let petri = solve_state_equation(&places, &transitions, &link_constraints);
     let (bound_status, bound_cycles, bound_time_ns) = bound_from_solution(
@@ -367,6 +369,7 @@ pub(crate) fn analyze(
         links,
         petri,
         timed,
+        response,
         bound: CfgSystemBound {
             scope: "analyzed-core-activation-bounds".to_owned(),
             status: bound_status,
@@ -753,6 +756,214 @@ fn solve_timed_model(
     })
 }
 
+const MAX_RESPONSE_ITERATIONS: usize = 4_096;
+const MAX_RESPONSE_NS: f64 = 1.0e15;
+
+/// Convert a nanosecond quantity to `f64` for the response-time arithmetic.
+///
+/// The response layer already caps windows at `MAX_RESPONSE_NS`, far below
+/// the 2^53 integer range where `f64` is exact.
+#[allow(clippy::cast_precision_loss)]
+fn nanos(value: u64) -> f64 {
+    value as f64
+}
+
+fn response_entry(
+    target: &CfgSystemTask,
+    status: &str,
+    time_ns: Option<f64>,
+    deadline_missed: bool,
+    reason: Option<&str>,
+) -> CfgSystemResponseTask {
+    CfgSystemResponseTask {
+        task: target.id.clone(),
+        function: target.function.clone(),
+        status: status.to_owned(),
+        time_ns,
+        deadline_ns: target.deadline_ns,
+        deadline_missed,
+        reason: reason.map(str::to_owned),
+    }
+}
+
+fn contributes(task: &CfgSystemTask) -> bool {
+    task.activation_bound > 0 || task.period_ns.is_some()
+}
+
+fn response_input_status(tasks: &[CfgSystemTask]) -> &'static str {
+    if tasks
+        .iter()
+        .any(|task| contributes(task) && task.status == CfgWcetStatus::Unbounded)
+    {
+        "unbounded"
+    } else if tasks
+        .iter()
+        .any(|task| contributes(task) && task.status == CfgWcetStatus::Unknown)
+    {
+        "unknown"
+    } else if tasks
+        .iter()
+        .any(|task| contributes(task) && task.status == CfgWcetStatus::Partial)
+    {
+        "partial"
+    } else {
+        "bounded"
+    }
+}
+
+enum ResponseInput {
+    Time(f64),
+    Unavailable(CfgSystemResponseTask),
+}
+
+fn response_input(target: &CfgSystemTask, no_local_time: bool) -> ResponseInput {
+    if target.activation_bound == 0 && target.period_ns.is_none() {
+        return ResponseInput::Unavailable(response_entry(
+            target,
+            "bounded",
+            Some(0.0),
+            false,
+            Some("task has zero activation bound"),
+        ));
+    }
+    let Some(time_ns) = target.time_ns else {
+        return ResponseInput::Unavailable(response_entry(
+            target,
+            "no-local-time",
+            None,
+            false,
+            Some("local time estimate is unavailable"),
+        ));
+    };
+    if no_local_time {
+        return ResponseInput::Unavailable(response_entry(
+            target,
+            "no-local-time",
+            None,
+            false,
+            Some("another task has no local time estimate"),
+        ));
+    }
+    ResponseInput::Time(time_ns)
+}
+
+fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
+    let input_status = response_input_status(tasks);
+    let no_local_time = tasks
+        .iter()
+        .any(|task| contributes(task) && task.time_ns.is_none());
+    let mut responses = Vec::with_capacity(tasks.len());
+    for target in tasks {
+        let target_time = match response_input(target, no_local_time) {
+            ResponseInput::Time(time_ns) => time_ns,
+            ResponseInput::Unavailable(response) => {
+                responses.push(response);
+                continue;
+            }
+        };
+
+        let mut response = target_time;
+        let mut diverged = false;
+        let mut converged = false;
+        for _ in 0..MAX_RESPONSE_ITERATIONS {
+            let mut next = target_time;
+            for other in tasks {
+                if other.id == target.id {
+                    next += self_extra_activations(other, response) * target_time;
+                } else if let Some(other_time) = other.time_ns {
+                    next += other_activations(other, response) * other_time;
+                }
+            }
+            if !next.is_finite() || next > MAX_RESPONSE_NS {
+                diverged = true;
+                break;
+            }
+            // A post-fixed point f(R) <= R is already a safe upper bound and
+            // avoids a tolerance that could understate the bound.
+            if next <= response {
+                converged = true;
+                break;
+            }
+            response = next;
+        }
+        if diverged {
+            responses.push(response_entry(
+                target,
+                "unbounded",
+                None,
+                false,
+                Some("busy-period iteration exceeded the response cap"),
+            ));
+        } else if !converged {
+            responses.push(response_entry(
+                target,
+                "unknown",
+                None,
+                false,
+                Some("busy-period iteration limit reached without a post-fixed point"),
+            ));
+        } else {
+            let deadline_missed = target
+                .deadline_ns
+                .is_some_and(|deadline| response > nanos(deadline));
+            responses.push(response_entry(
+                target,
+                input_status,
+                Some(response),
+                deadline_missed,
+                None,
+            ));
+        }
+    }
+    CfgSystemResponseInfo {
+        model: "work-conserving-busy-period".to_owned(),
+        tasks: responses,
+        caveats: vec![
+            "Response bounds assume a single analyzed core and a work-conserving scheduler with arbitrary preemption order."
+                .to_owned(),
+            "Each periodic task contributes one carry-in activation plus releases inside the busy window; non-periodic tasks contribute their full activation bound."
+                .to_owned(),
+            "Periodic activation bounds derived from horizon_ns are horizon counts and do not truncate a busy window that extends past the horizon; the response layer counts releases for the full window."
+                .to_owned(),
+            "The target task's own earlier activations are included as self-interference, so the result bounds any activation, including one with queued prior work."
+                .to_owned(),
+            "Preemption cost, fork/join blocking, locks, resources, interrupts, other cores, caches and CRPD are not modeled."
+                .to_owned(),
+            "Partial or unbounded local WCET inputs make the response bound partial or unbounded."
+                .to_owned(),
+        ],
+    }
+}
+
+/// Activations of another task that can contribute to a window of `window_ns`.
+///
+/// A periodic task gets one carry-in activation plus every release inside the
+/// window. The configured activation bound is a per-horizon count for periodic
+/// tasks, so it must not cap a window that extends past the horizon. A
+/// non-periodic task contributes at most its total activation bound.
+fn other_activations(task: &CfgSystemTask, window_ns: f64) -> f64 {
+    match task.period_ns {
+        Some(period) => {
+            let jitter = task.release_jitter_ns.map_or(0.0, nanos);
+            ((window_ns + jitter) / nanos(period)).floor() + 1.0
+        }
+        None => f64::from(task.activation_bound),
+    }
+}
+
+/// Earlier activations of the target that can still be queued for the analyzed
+/// activation. Periodic tasks include one carry-in plus releases in the window;
+/// non-periodic tasks include every other activation in their total bound.
+fn self_extra_activations(task: &CfgSystemTask, window_ns: f64) -> f64 {
+    match task.period_ns {
+        Some(period) => {
+            let jitter = task.release_jitter_ns.map_or(0.0, nanos);
+            ((window_ns + jitter) / nanos(period)).floor() + 1.0
+        }
+        None => f64::from(task.activation_bound.saturating_sub(1)),
+    }
+}
+
 fn system_task(id: &str, root: &CfgWcetRoot, config: &TaskConfig) -> CfgSystemTask {
     CfgSystemTask {
         id: id.to_owned(),
@@ -921,8 +1132,96 @@ fn dependencies(program: &ProgramCfg) -> Vec<CfgSystemDependency> {
 
 #[cfg(test)]
 mod tests {
-    use super::{periodic_releases, solve_state_equation};
-    use crate::cfg::{CfgSystemPlace, CfgSystemTransition};
+    use super::{periodic_releases, response_times, solve_state_equation};
+    use crate::cfg::{
+        CfgRootKind, CfgSystemPlace, CfgSystemTask, CfgSystemTransition, CfgWcetStatus,
+    };
+    use elf2tdg_schema::FunctionId;
+
+    fn task(
+        id: &str,
+        time_ns: Option<f64>,
+        activation_bound: u32,
+        period_ns: Option<u64>,
+    ) -> CfgSystemTask {
+        CfgSystemTask {
+            id: id.to_owned(),
+            function: FunctionId::new(format!("fn:{id}")),
+            kind: CfgRootKind::Task,
+            name: Some(id.to_owned()),
+            status: if time_ns.is_some() {
+                CfgWcetStatus::Bounded
+            } else {
+                CfgWcetStatus::Unbounded
+            },
+            cycles: None,
+            time_ns,
+            activation_bound,
+            period_ns,
+            release_offset_ns: None,
+            release_jitter_ns: None,
+            deadline_ns: None,
+        }
+    }
+
+    fn response_for<'a>(
+        result: &'a crate::cfg::CfgSystemResponseInfo,
+        task: &str,
+    ) -> &'a crate::cfg::CfgSystemResponseTask {
+        result
+            .tasks
+            .iter()
+            .find(|response| response.task == task)
+            .expect("response entry")
+    }
+
+    #[test]
+    fn response_counts_periodic_releases_without_activation_cap() {
+        let tasks = vec![
+            task("t0", Some(100.0), 1, None),
+            // A bound of one activation in the horizon must not cap the
+            // releases that interfere with a longer busy window.
+            task("t1", Some(50.0), 1, Some(100)),
+        ];
+        let result = response_times(&tasks);
+        let response = response_for(&result, "t0");
+        assert_eq!(response.status, "bounded");
+        assert_eq!(response.time_ns, Some(250.0));
+    }
+
+    #[test]
+    fn response_includes_periodic_self_interference() {
+        let mut target = task("t0", Some(100.0), 1, Some(1_000));
+        target.deadline_ns = Some(150);
+        let result = response_times(&[target]);
+        let response = response_for(&result, "t0");
+        assert_eq!(response.status, "bounded");
+        // One carry-in activation is included even though the activation bound
+        // is one and the response window is shorter than the period.
+        assert_eq!(response.time_ns, Some(200.0));
+        assert!(response.deadline_missed);
+    }
+
+    #[test]
+    fn response_reports_unbounded_under_overload() {
+        let tasks = vec![
+            task("t0", Some(100.0), 1, None),
+            task("t1", Some(200.0), 1, Some(100)),
+        ];
+        let result = response_times(&tasks);
+        let response = response_for(&result, "t0");
+        assert_eq!(response.status, "unbounded");
+        assert_eq!(response.time_ns, None);
+    }
+
+    #[test]
+    fn response_zero_activation_is_exact() {
+        let tasks = vec![task("t0", None, 0, None), task("t1", Some(10.0), 1, None)];
+        let result = response_times(&tasks);
+        let response = response_for(&result, "t0");
+        assert_eq!(response.status, "bounded");
+        assert_eq!(response.time_ns, Some(0.0));
+    }
 
     fn place(id: &str, kind: &str, tokens: u32, capacity: u32) -> CfgSystemPlace {
         CfgSystemPlace {

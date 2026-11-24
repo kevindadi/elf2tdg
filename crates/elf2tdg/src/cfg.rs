@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.12";
+pub const CFG_SCHEMA_VERSION: &str = "2.13";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -499,6 +499,39 @@ pub struct CfgSystemTimedInfo {
     pub caveats: Vec<String>,
 }
 
+/// Per-task response-time result.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemResponseTask {
+    /// Task ID.
+    pub task: String,
+    /// Root function.
+    pub function: FunctionId,
+    /// `bounded`, `partial`, `unbounded`, `no-local-time` or `unknown`.
+    pub status: String,
+    /// Response-time upper bound in nanoseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_ns: Option<f64>,
+    /// Relative deadline, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_ns: Option<u64>,
+    /// Whether the finite response bound exceeds the deadline.
+    pub deadline_missed: bool,
+    /// Why the response bound is unavailable or partial.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Per-task response-time analysis result.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemResponseInfo {
+    /// Analysis model name.
+    pub model: String,
+    /// Per-task results.
+    pub tasks: Vec<CfgSystemResponseTask>,
+    /// Model caveats.
+    pub caveats: Vec<String>,
+}
+
 /// Layered system model and coarse bound.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgSystemModelInfo {
@@ -530,6 +563,8 @@ pub struct CfgSystemModelInfo {
     /// Discrete-time-expanded feasibility result, when configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timed: Option<CfgSystemTimedInfo>,
+    /// Per-task response-time upper bounds.
+    pub response: CfgSystemResponseInfo,
     /// Coarse bound.
     pub bound: CfgSystemBound,
     /// Model caveats.
