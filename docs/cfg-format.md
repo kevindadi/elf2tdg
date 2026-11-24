@@ -364,8 +364,9 @@ missing metadata falls back to the existing bounded heuristics.
 
 `cfg_schema_version` is `2.8`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.8 adds the layered `system_model` and its coarse
-single-activation system bound. Version 2.7 adds multicore access-budget
+functions. Version 2.8 adds the layered `system_model`, its state-equation
+ILP solution and the coarse single-activation system bound. Version 2.7 adds
+multicore access-budget
 interference metadata at program and block level. Version 2.6 records the source of each explicit loop
 bound, including bounds imported from F4/FFX files. Version 2.5 adds IPET solver results, the
 backend name and the flow facts used by the model. Version 2.4 adds per-function
@@ -682,9 +683,10 @@ When a WCET profile is active, the document also carries a layered
 `system_model`. It converts each concurrent execution root into a task, emits
 one analyzed-core place plus ready/done places and one `execute` transition per
 task, records spawn/join/await/callback dependencies, and reports a coarse
-`analyzed-core-single-activation` bound. The bound sums local root costs once;
-it is not a per-task response-time bound and does not yet solve the Petri net.
-See [layered-model.md](layered-model.md) for the model and assumptions.
+`analyzed-core-single-activation` bound. It solves the state-equation ILP
+relaxation with `microlp`; the bound is not a per-task response-time bound and
+does not yet solve exact reachability or a timed Petri net. See
+[layered-model.md](layered-model.md) for the model and assumptions.
 
 These fields are CFG-native. They are populated from function CFGs and runtime
 analysis facts; serializing the CFG JSON is self-contained. `calls`,
@@ -848,5 +850,6 @@ asserts that the CFG validates.
   unbounded, non-terminating bounded loops are `partial`, and a `partial`
   objective is not a safe upper bound. Multicore interference uses an explicit
   access budget; arbitration schedules, shared caches, DMA and concurrency are
-  not modeled. The layered `system_model` is a single-activation workload
-  relaxation, not a scheduler or response-time analysis.
+  not modeled. The layered `system_model` is a single-activation state-equation
+  relaxation, not a scheduler, exact-reachability analysis or response-time
+  analysis.

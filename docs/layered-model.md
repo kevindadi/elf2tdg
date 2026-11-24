@@ -7,13 +7,14 @@ conservative, and it is exported in CFG JSON as `system_model`.
 
 ```text
 Layer 1  root/local WCET        cfg-longest-path or cfg-ipet per execution root
-Layer 2  layered system model  tasks, places, transitions, dependencies, bound
-Layer 3  future Petri-net ILP  state-equation or timed-PN resource analysis
+Layer 2  layered system model  tasks, places, transitions, dependencies
+Layer 3  state-equation ILP    current coarse reachability relaxation
+Layer 4  future timed PN       exact reachability / response-time analysis
 ```
 
-The current implementation stops at Layer 2. It records the Petri-net-shaped
-structure and computes a coarse closed-form bound, but it does not yet solve a
-state-equation or timed Petri net.
+The current implementation builds Layer 2 and solves its state-equation ILP
+relaxation with the pure-Rust `microlp` backend. It does not solve exact
+reachability or a timed Petri net yet.
 
 ## What is modeled
 
@@ -49,9 +50,20 @@ bound.cycles = sum(task.local_cycles)   for one activation of every task
 bound.time_ns = sum(task.local_time_ns)
 ```
 
-This is the closed-form solution of the current Petri-net relaxation: every
-transition fires at most once, all tasks serialize on one analyzed core, and no
-ordering constraints from spawn/join are applied. It is intentionally coarse.
+The model is an integer program:
+
+```text
+variables   x_t = firing count of transition t, integer, 0 <= x_t <= activations
+objective   maximize sum(cost_t * x_t)
+constraint  M_final = M_initial + C * x
+constraint  exact final marking for ready/done/core places
+```
+
+The state equation is only a necessary condition for Petri-net reachability.
+Solving it may accept firing-count combinations that no concrete schedule can
+realize, so the optimum is a conservative upper bound. With the current one
+activation per task and one analyzed core, every `execute` transition fires
+once and the objective equals the total local work.
 
 The aggregate status is:
 
@@ -84,7 +96,7 @@ layered model is a composition IR, not an additional certification gate yet.
 ```json
 {
   "system_model": {
-    "model": "layered-petri-single-activation",
+    "model": "layered-petri-state-equation",
     "cores": 2,
     "core_id": 0,
     "boot_roots": 2,
@@ -126,6 +138,15 @@ layered model is a composition IR, not an additional certification gate yet.
         "confidence": "medium"
       }
     ],
+    "petri": {
+      "solver": "microlp",
+      "relaxation": "state-equation",
+      "status": "optimal",
+      "objective": 87.0,
+      "firing": [
+        { "transition": "execute:t0", "fires": 1 }
+      ]
+    },
     "bound": {
       "scope": "analyzed-core-single-activation",
       "status": "bounded",
@@ -140,14 +161,12 @@ layered model is a composition IR, not an additional certification gate yet.
 
 ## Next layer
 
-The next step is to solve the exported Petri-net structure rather than its
-closed form:
+The state-equation solver is in place. The next steps tighten it:
 
 1. add bounded activation counts or a hyperperiod to the task places;
-2. encode dependencies as fork/join places and arcs;
+2. encode spawn/join dependencies as fork/join arcs and ordering constraints;
 3. encode locks, buses and memory banks as resource places;
-4. maximize weighted firing counts under the state equation (a sound
-   over-approximation of reachability) or use a timed Petri net for per-task
-   response time;
-5. add a system-bound status to the safe gate only after the model and solver
-   are validated.
+4. add bounded reachability or timed-Petri-net analysis for per-task response
+   time;
+5. add the system bound to the safe gate only after the model and solver are
+   validated.
