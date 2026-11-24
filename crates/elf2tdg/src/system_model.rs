@@ -13,12 +13,12 @@ use good_lp::{
     Expression, ProblemVariables, Solution, SolutionStatus, SolverModel, Variable, constraint,
 };
 
-use crate::board_profile::{BoardProfile, SystemLinkKind, SystemProfile};
+use crate::board_profile::{BoardProfile, SystemBlockingModel, SystemLinkKind, SystemProfile};
 use crate::cfg::{
-    CfgConcurrencyKind, CfgSystemBound, CfgSystemDependency, CfgSystemFiring, CfgSystemLink,
-    CfgSystemModelInfo, CfgSystemPetriSolution, CfgSystemPlace, CfgSystemResponseInfo,
-    CfgSystemResponseTask, CfgSystemTask, CfgSystemTimedInfo, CfgSystemTransition, CfgWcetRoot,
-    CfgWcetStatus, ProgramCfg,
+    CfgConcurrencyKind, CfgSystemBlockingInfo, CfgSystemBlockingTask, CfgSystemBound,
+    CfgSystemDependency, CfgSystemFiring, CfgSystemInversion, CfgSystemLink, CfgSystemModelInfo,
+    CfgSystemPetriSolution, CfgSystemPlace, CfgSystemResponseInfo, CfgSystemResponseTask,
+    CfgSystemTask, CfgSystemTimedInfo, CfgSystemTransition, CfgWcetRoot, CfgWcetStatus, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 use crate::wcet::frequency_hz;
@@ -43,6 +43,7 @@ struct TaskConfig {
     release_jitter_ns: Option<u64>,
     deadline_ns: Option<u64>,
     resources: BTreeMap<String, u32>,
+    locks: BTreeMap<String, u64>,
 }
 
 /// Builds the layered system model from the completed per-root WCET layer.
@@ -108,6 +109,7 @@ pub(crate) fn analyze(
             release_jitter_ns: None,
             deadline_ns: None,
             resources: BTreeMap::new(),
+            locks: BTreeMap::new(),
         })
         .collect();
     let mut matched = vec![false; roots.len()];
@@ -153,6 +155,7 @@ pub(crate) fn analyze(
                 period.map(|_| entry.release_jitter_ns().unwrap_or(0));
             configs[index].deadline_ns = entry.deadline_ns();
             configs[index].resources.clone_from(entry.resources());
+            configs[index].locks.clone_from(entry.locks());
         }
     }
 
@@ -272,7 +275,8 @@ pub(crate) fn analyze(
         .max()
         .unwrap_or(1);
     let aggregate = aggregate_status(&tasks);
-    let response = response_times(&tasks);
+    let blocking = blocking_analysis(&tasks, system)?;
+    let response = response_times(&tasks, blocking.as_ref());
     let timed = solve_timed_model(&tasks, system);
     let petri = solve_state_equation(&places, &transitions, &link_constraints);
     let (bound_status, bound_cycles, bound_time_ns) = bound_from_solution(
@@ -301,7 +305,7 @@ pub(crate) fn analyze(
             system.resources().len()
         ));
         caveats.push(
-            "Resource places are cumulative per-window budgets; lock/bus hold semantics, arbitration and resource waiting time are not modeled."
+            "Resource places are cumulative per-window budgets; lock hold semantics are modeled separately only when blocking_model is configured, and arbitration and resource waiting time are not modeled."
                 .to_owned(),
         );
         if !system.resources().is_empty() {
@@ -372,6 +376,7 @@ pub(crate) fn analyze(
         links,
         petri,
         timed,
+        blocking,
         response,
         bound: CfgSystemBound {
             scope: "analyzed-core-activation-bounds".to_owned(),
@@ -775,6 +780,7 @@ fn response_entry(
     target: &CfgSystemTask,
     status: &str,
     time_ns: Option<f64>,
+    blocking_ns: Option<f64>,
     deadline_missed: bool,
     reason: Option<&str>,
 ) -> CfgSystemResponseTask {
@@ -783,6 +789,7 @@ fn response_entry(
         function: target.function.clone(),
         status: status.to_owned(),
         time_ns,
+        blocking_ns,
         deadline_ns: target.deadline_ns,
         deadline_missed,
         reason: reason.map(str::to_owned),
@@ -791,6 +798,212 @@ fn response_entry(
 
 fn contributes(task: &CfgSystemTask) -> bool {
     task.activation_bound > 0 || task.period_ns.is_some()
+}
+
+fn blocking_analysis(
+    tasks: &[CfgSystemTask],
+    system: Option<&SystemProfile>,
+) -> Result<Option<CfgSystemBlockingInfo>, String> {
+    let Some(system) = system else {
+        return Ok(None);
+    };
+    let Some(model) = system.blocking_model() else {
+        return Ok(None);
+    };
+    for task in tasks {
+        for lock in task.locks.keys() {
+            if !system
+                .locks()
+                .iter()
+                .any(|declared| declared.name() == lock)
+            {
+                return Err(format!(
+                    "task {:?} uses lock {lock:?} that is not declared in [system.locks]",
+                    task.id
+                ));
+            }
+        }
+    }
+    blocking_for_model(tasks, model).map(Some)
+}
+
+fn blocking_for_model(
+    tasks: &[CfgSystemTask],
+    model: SystemBlockingModel,
+) -> Result<CfgSystemBlockingInfo, String> {
+    match model {
+        SystemBlockingModel::PriorityCeiling => {
+            if tasks.iter().any(|task| !task.locks.is_empty()) {
+                let mut priorities: BTreeMap<u32, &str> = BTreeMap::new();
+                for task in tasks.iter().filter(|task| contributes(task)) {
+                    let Some(priority) = task.priority else {
+                        return Err(format!(
+                            "board profile blocking analysis requires a priority for every contributing task; task {:?} has none",
+                            task.id
+                        ));
+                    };
+                    if let Some(previous) = priorities.insert(priority, task.id.as_str()) {
+                        return Err(format!(
+                            "board profile priority-ceiling blocking requires distinct priorities; tasks {previous:?} and {:?} share priority {priority}",
+                            task.id
+                        ));
+                    }
+                }
+            }
+            Ok(priority_ceiling_blocking(tasks, model))
+        }
+    }
+}
+
+fn priority_inversions(users: &BTreeMap<String, Vec<&CfgSystemTask>>) -> Vec<CfgSystemInversion> {
+    let mut inversions = Vec::new();
+    for (lock, lock_users) in users {
+        for blocked in lock_users {
+            for blocker in lock_users {
+                let (Some(high_priority), Some(low_priority)) =
+                    (blocked.priority, blocker.priority)
+                else {
+                    continue;
+                };
+                if high_priority <= low_priority {
+                    continue;
+                }
+                let Some(hold_ns) = blocker.locks.get(lock) else {
+                    continue;
+                };
+                inversions.push(CfgSystemInversion {
+                    lock: lock.clone(),
+                    blocked: blocked.id.clone(),
+                    blocker: blocker.id.clone(),
+                    blocked_priority: high_priority,
+                    blocker_priority: low_priority,
+                    hold_ns: *hold_ns,
+                });
+            }
+        }
+    }
+    inversions.sort_by(|left, right| {
+        left.lock
+            .cmp(&right.lock)
+            .then_with(|| left.blocked.cmp(&right.blocked))
+            .then_with(|| left.blocker.cmp(&right.blocker))
+    });
+    inversions
+}
+
+fn priority_ceiling_tasks(
+    tasks: &[CfgSystemTask],
+    ceilings: &BTreeMap<String, u32>,
+) -> Vec<CfgSystemBlockingTask> {
+    let mut blocking_tasks = Vec::with_capacity(tasks.len());
+    for target in tasks {
+        if !contributes(target) {
+            blocking_tasks.push(CfgSystemBlockingTask {
+                task: target.id.clone(),
+                status: "bounded".to_owned(),
+                time_ns: Some(0.0),
+                blocker: None,
+                lock: None,
+                reason: Some("task has zero activation bound".to_owned()),
+            });
+            continue;
+        }
+        let Some(target_priority) = target.priority else {
+            blocking_tasks.push(CfgSystemBlockingTask {
+                task: target.id.clone(),
+                status: "bounded".to_owned(),
+                time_ns: Some(0.0),
+                blocker: None,
+                lock: None,
+                reason: None,
+            });
+            continue;
+        };
+        let mut best: Option<(u64, &CfgSystemTask, &str)> = None;
+        for blocker in tasks.iter().filter(|blocker| contributes(blocker)) {
+            if blocker.id == target.id {
+                continue;
+            }
+            let Some(blocker_priority) = blocker.priority else {
+                continue;
+            };
+            if blocker_priority >= target_priority {
+                continue;
+            }
+            for (lock, hold_ns) in &blocker.locks {
+                let Some(ceiling) = ceilings.get(lock) else {
+                    continue;
+                };
+                if *ceiling < target_priority {
+                    continue;
+                }
+                if best.is_none_or(|(best_hold, _, _)| *hold_ns > best_hold) {
+                    best = Some((*hold_ns, blocker, lock.as_str()));
+                }
+            }
+        }
+        let (time_ns, blocker, lock, reason) =
+            best.map_or((0.0, None, None, None), |(hold_ns, blocker, lock)| {
+                (
+                    nanos(hold_ns),
+                    Some(blocker.id.clone()),
+                    Some(lock.to_owned()),
+                    None,
+                )
+            });
+        blocking_tasks.push(CfgSystemBlockingTask {
+            task: target.id.clone(),
+            status: "bounded".to_owned(),
+            time_ns: Some(time_ns),
+            blocker,
+            lock,
+            reason,
+        });
+    }
+    blocking_tasks
+}
+
+fn priority_ceiling_blocking(
+    tasks: &[CfgSystemTask],
+    model: SystemBlockingModel,
+) -> CfgSystemBlockingInfo {
+    let mut ceilings: BTreeMap<String, u32> = BTreeMap::new();
+    let mut users: BTreeMap<String, Vec<&CfgSystemTask>> = BTreeMap::new();
+    for task in tasks.iter().filter(|task| contributes(task)) {
+        let Some(priority) = task.priority else {
+            continue;
+        };
+        for lock in task.locks.keys() {
+            ceilings
+                .entry(lock.clone())
+                .and_modify(|ceiling| *ceiling = (*ceiling).max(priority))
+                .or_insert(priority);
+            users.entry(lock.clone()).or_default().push(task);
+        }
+    }
+
+    let mut caveats = vec![
+        "Blocking bounds assume the immediate priority ceiling protocol: at most one lower-priority critical section can block a task activation."
+            .to_owned(),
+        "Lock ceilings are derived as the maximum priority of modeled tasks that use the lock; every lock user must be in the modeled task set."
+            .to_owned(),
+        "Each hold_ns value must upper-bound one contiguous lock acquisition, including nested critical sections, on the analyzed core."
+            .to_owned(),
+        "Only lower-priority tasks contribute blocking; higher- and equal-priority execution is covered by response interference."
+            .to_owned(),
+        "Non-preemptive sections, interrupt masking, spinlocks, chained blocking and unmodeled lock users are not modeled."
+            .to_owned(),
+    ];
+    if ceilings.is_empty() {
+        caveats.push("No modeled locks are configured; all blocking times are zero.".to_owned());
+    }
+
+    CfgSystemBlockingInfo {
+        model: model.name().to_owned(),
+        tasks: priority_ceiling_tasks(tasks, &ceilings),
+        inversions: priority_inversions(&users),
+        caveats,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -879,12 +1092,14 @@ fn response_input(
     tasks: &[CfgSystemTask],
     target: &CfgSystemTask,
     model: ResponseModel,
+    blocking_ns: Option<f64>,
 ) -> ResponseInput {
     if target.activation_bound == 0 && target.period_ns.is_none() {
         return ResponseInput::Unavailable(response_entry(
             target,
             "bounded",
             Some(0.0),
+            blocking_ns,
             false,
             Some("task has zero activation bound"),
         ));
@@ -894,6 +1109,7 @@ fn response_input(
             target,
             "no-local-time",
             None,
+            blocking_ns,
             false,
             Some("local time estimate is unavailable"),
         ));
@@ -909,6 +1125,7 @@ fn response_input(
             target,
             "no-local-time",
             None,
+            blocking_ns,
             false,
             Some("an interfering task has no local time estimate"),
         ));
@@ -916,8 +1133,12 @@ fn response_input(
     ResponseInput::Time(time_ns)
 }
 
-fn response_caveats(model: ResponseModel, priority_fallback: Option<usize>) -> Vec<String> {
-    let mut caveats = Vec::with_capacity(8);
+fn response_caveats(
+    model: ResponseModel,
+    priority_fallback: Option<usize>,
+    blocking_active: bool,
+) -> Vec<String> {
+    let mut caveats = Vec::with_capacity(9);
     match model {
         ResponseModel::WorkConserving => {
             caveats.push(
@@ -943,10 +1164,17 @@ fn response_caveats(model: ResponseModel, priority_fallback: Option<usize>) -> V
                 "Equal-priority tasks are conservatively treated as interference because the same-priority tie-break order is not modeled."
                     .to_owned(),
             );
-            caveats.push(
-                "Priority inversion, priority inheritance and priority-ceiling protocols are not modeled."
-                    .to_owned(),
-            );
+            if blocking_active {
+                caveats.push(
+                    "Priority inversion is handled only by the configured priority-ceiling blocking model; priority inheritance and other blocking protocols are not modeled."
+                        .to_owned(),
+                );
+            } else {
+                caveats.push(
+                    "Blocking, priority inversion, priority inheritance and priority-ceiling protocols are not modeled."
+                        .to_owned(),
+                );
+            }
         }
     }
     caveats.push(
@@ -961,8 +1189,14 @@ fn response_caveats(model: ResponseModel, priority_fallback: Option<usize>) -> V
         "The target task's own earlier activations are included as self-interference, so the result bounds any activation, including one with queued prior work."
             .to_owned(),
     );
+    if blocking_active {
+        caveats.push(
+            "Response times include the configured blocking bound from system_model.blocking, added once per activation."
+                .to_owned(),
+        );
+    }
     caveats.push(
-        "Preemption cost, fork/join blocking, locks, resources, interrupts, other cores, caches and CRPD are not modeled."
+        "Preemption cost, fork/join blocking, unmodeled locks, resources, interrupts, other cores, caches and CRPD are not modeled."
             .to_owned(),
     );
     caveats.push(
@@ -972,11 +1206,18 @@ fn response_caveats(model: ResponseModel, priority_fallback: Option<usize>) -> V
     caveats
 }
 
-fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
+fn response_times(
+    tasks: &[CfgSystemTask],
+    blocking: Option<&CfgSystemBlockingInfo>,
+) -> CfgSystemResponseInfo {
     let (model, priority_fallback) = response_model(tasks);
     let mut responses = Vec::with_capacity(tasks.len());
     for target in tasks {
-        let target_time = match response_input(tasks, target, model) {
+        let blocking_ns = blocking
+            .and_then(|info| info.tasks.iter().find(|entry| entry.task == target.id))
+            .and_then(|entry| entry.time_ns);
+        let blocking_time = blocking_ns.unwrap_or(0.0);
+        let target_time = match response_input(tasks, target, model, blocking_ns) {
             ResponseInput::Time(time_ns) => time_ns,
             ResponseInput::Unavailable(response) => {
                 responses.push(response);
@@ -984,11 +1225,11 @@ fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
             }
         };
 
-        let mut response = target_time;
+        let mut response = target_time + blocking_time;
         let mut diverged = false;
         let mut converged = false;
         for _ in 0..MAX_RESPONSE_ITERATIONS {
-            let mut next = target_time;
+            let mut next = target_time + blocking_time;
             for other in tasks {
                 if other.id == target.id {
                     next += self_extra_activations(other, response) * target_time;
@@ -1015,6 +1256,7 @@ fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
                 target,
                 "unbounded",
                 None,
+                blocking_ns,
                 false,
                 Some("busy-period iteration exceeded the response cap"),
             ));
@@ -1023,6 +1265,7 @@ fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
                 target,
                 "unknown",
                 None,
+                blocking_ns,
                 false,
                 Some("busy-period iteration limit reached without a post-fixed point"),
             ));
@@ -1034,6 +1277,7 @@ fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
                 target,
                 response_input_status(tasks, target, model),
                 Some(response),
+                blocking_ns,
                 deadline_missed,
                 None,
             ));
@@ -1042,7 +1286,7 @@ fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
     CfgSystemResponseInfo {
         model: model.name().to_owned(),
         tasks: responses,
-        caveats: response_caveats(model, priority_fallback),
+        caveats: response_caveats(model, priority_fallback, blocking.is_some()),
     }
 }
 
@@ -1085,6 +1329,7 @@ fn system_task(id: &str, root: &CfgWcetRoot, config: &TaskConfig) -> CfgSystemTa
         cycles: root.cycles,
         time_ns: root.time_ns,
         priority: config.priority,
+        locks: config.locks.clone(),
         activation_bound: config.activations,
         period_ns: config.period_ns,
         release_offset_ns: config.release_offset_ns,
@@ -1244,7 +1489,10 @@ fn dependencies(program: &ProgramCfg) -> Vec<CfgSystemDependency> {
 
 #[cfg(test)]
 mod tests {
-    use super::{periodic_releases, response_times, solve_state_equation};
+    use std::collections::BTreeMap;
+
+    use super::{blocking_for_model, periodic_releases, response_times, solve_state_equation};
+    use crate::board_profile::SystemBlockingModel;
     use crate::cfg::{
         CfgRootKind, CfgSystemPlace, CfgSystemTask, CfgSystemTransition, CfgWcetStatus,
     };
@@ -1269,12 +1517,23 @@ mod tests {
             cycles: None,
             time_ns,
             priority: None,
+            locks: BTreeMap::new(),
             activation_bound,
             period_ns,
             release_offset_ns: None,
             release_jitter_ns: None,
             deadline_ns: None,
         }
+    }
+
+    fn with_priority(mut task: CfgSystemTask, priority: u32) -> CfgSystemTask {
+        task.priority = Some(priority);
+        task
+    }
+
+    fn with_lock(mut task: CfgSystemTask, lock: &str, hold_ns: u64) -> CfgSystemTask {
+        task.locks.insert(lock.to_owned(), hold_ns);
+        task
     }
 
     fn response_for<'a>(
@@ -1296,7 +1555,7 @@ mod tests {
             // releases that interfere with a longer busy window.
             task("t1", Some(50.0), 1, Some(100)),
         ];
-        let result = response_times(&tasks);
+        let result = response_times(&tasks, None);
         let response = response_for(&result, "t0");
         assert_eq!(response.status, "bounded");
         assert_eq!(response.time_ns, Some(250.0));
@@ -1306,7 +1565,7 @@ mod tests {
     fn response_includes_periodic_self_interference() {
         let mut target = task("t0", Some(100.0), 1, Some(1_000));
         target.deadline_ns = Some(150);
-        let result = response_times(&[target]);
+        let result = response_times(&[target], None);
         let response = response_for(&result, "t0");
         assert_eq!(response.status, "bounded");
         // One carry-in activation is included even though the activation bound
@@ -1321,7 +1580,7 @@ mod tests {
             task("t0", Some(100.0), 1, None),
             task("t1", Some(200.0), 1, Some(100)),
         ];
-        let result = response_times(&tasks);
+        let result = response_times(&tasks, None);
         let response = response_for(&result, "t0");
         assert_eq!(response.status, "unbounded");
         assert_eq!(response.time_ns, None);
@@ -1330,7 +1589,7 @@ mod tests {
     #[test]
     fn response_zero_activation_is_exact() {
         let tasks = vec![task("t0", None, 0, None), task("t1", Some(10.0), 1, None)];
-        let result = response_times(&tasks);
+        let result = response_times(&tasks, None);
         let response = response_for(&result, "t0");
         assert_eq!(response.status, "bounded");
         assert_eq!(response.time_ns, Some(0.0));
@@ -1347,7 +1606,7 @@ mod tests {
         let mut low = task("t3", Some(1_000.0), 1, None);
         low.priority = Some(0);
 
-        let result = response_times(&[target, high, equal, low]);
+        let result = response_times(&[target, high, equal, low], None);
         assert_eq!(result.model, "fixed-priority-busy-period");
         // t0: own work + higher-priority t1 + equal-priority t2; low t3 is
         // excluded.
@@ -1367,7 +1626,7 @@ mod tests {
         let mut low = task("t2", Some(1_000.0), 1, None);
         low.priority = Some(0);
 
-        let result = response_times(&[target, high, low]);
+        let result = response_times(&[target, high, low], None);
         assert_eq!(result.model, "fixed-priority-busy-period");
         assert_eq!(response_for(&result, "t0").time_ns, Some(150.0));
         assert_eq!(response_for(&result, "t2").time_ns, Some(1_200.0));
@@ -1379,7 +1638,7 @@ mod tests {
         target.priority = Some(1);
         let high = task("t1", Some(50.0), 1, None);
 
-        let result = response_times(&[target, high]);
+        let result = response_times(&[target, high], None);
         assert_eq!(result.model, "work-conserving-busy-period");
         assert_eq!(response_for(&result, "t0").time_ns, Some(150.0));
         assert!(
@@ -1400,9 +1659,120 @@ mod tests {
         low.priority = Some(0);
         low.status = CfgWcetStatus::Partial;
 
-        let result = response_times(&[target, high, low]);
+        let result = response_times(&[target, high, low], None);
         assert_eq!(response_for(&result, "t0").status, "bounded");
         assert_eq!(response_for(&result, "t0").time_ns, Some(150.0));
+    }
+
+    #[test]
+    fn priority_ceiling_uses_single_largest_lower_blocker() {
+        let tasks = vec![
+            with_lock(
+                with_priority(task("t0", Some(10.0), 1, None), 3),
+                "uart",
+                100,
+            ),
+            with_lock(
+                with_priority(task("t1", Some(10.0), 1, None), 1),
+                "uart",
+                500,
+            ),
+            with_lock(
+                with_priority(task("t2", Some(10.0), 1, None), 2),
+                "uart",
+                300,
+            ),
+            with_lock(
+                with_priority(task("t3", Some(10.0), 1, None), 0),
+                "spi",
+                900,
+            ),
+        ];
+        let blocking =
+            blocking_for_model(&tasks, SystemBlockingModel::PriorityCeiling).expect("blocking");
+        assert_eq!(blocking.model, "priority-ceiling");
+        let for_task = |id: &str| {
+            blocking
+                .tasks
+                .iter()
+                .find(|entry| entry.task == id)
+                .expect("blocking entry")
+        };
+        assert_eq!(for_task("t0").time_ns, Some(500.0));
+        assert_eq!(for_task("t0").blocker.as_deref(), Some("t1"));
+        assert_eq!(for_task("t0").lock.as_deref(), Some("uart"));
+        assert_eq!(for_task("t1").time_ns, Some(0.0));
+        assert_eq!(for_task("t2").time_ns, Some(500.0));
+        assert_eq!(for_task("t3").time_ns, Some(0.0));
+        assert_eq!(blocking.inversions.len(), 3);
+        assert!(blocking.inversions.iter().any(|inversion| {
+            inversion.lock == "uart"
+                && inversion.blocked == "t0"
+                && inversion.blocker == "t1"
+                && inversion.hold_ns == 500
+        }));
+    }
+
+    #[test]
+    fn priority_ceiling_can_block_task_without_own_locks() {
+        let tasks = vec![
+            with_priority(task("t0", Some(10.0), 1, None), 3),
+            with_lock(
+                with_priority(task("t1", Some(10.0), 1, None), 4),
+                "uart",
+                50,
+            ),
+            with_lock(
+                with_priority(task("t2", Some(10.0), 1, None), 1),
+                "uart",
+                700,
+            ),
+            with_priority(task("t3", Some(10.0), 1, None), 2),
+        ];
+        let blocking =
+            blocking_for_model(&tasks, SystemBlockingModel::PriorityCeiling).expect("blocking");
+        let target = blocking
+            .tasks
+            .iter()
+            .find(|entry| entry.task == "t0")
+            .expect("t0 blocking");
+        assert_eq!(target.time_ns, Some(700.0));
+        assert_eq!(target.blocker.as_deref(), Some("t2"));
+        assert_eq!(target.lock.as_deref(), Some("uart"));
+    }
+
+    #[test]
+    fn blocking_requires_priorities_when_locks_are_configured() {
+        let tasks = vec![
+            with_lock(
+                with_priority(task("t0", Some(10.0), 1, None), 3),
+                "uart",
+                100,
+            ),
+            task("t1", Some(10.0), 1, None),
+        ];
+        let error = blocking_for_model(&tasks, SystemBlockingModel::PriorityCeiling)
+            .expect_err("incomplete priorities");
+        assert!(error.contains("requires a priority"));
+    }
+
+    #[test]
+    fn blocking_requires_distinct_priorities() {
+        let tasks = vec![
+            with_lock(
+                with_priority(task("t0", Some(10.0), 1, None), 2),
+                "uart",
+                100,
+            ),
+            with_lock(
+                with_priority(task("t1", Some(10.0), 1, None), 2),
+                "uart",
+                200,
+            ),
+        ];
+        let error = blocking_for_model(&tasks, SystemBlockingModel::PriorityCeiling)
+            .expect_err("duplicate priorities");
+        assert!(error.contains("distinct priorities"));
     }
 
     fn place(id: &str, kind: &str, tokens: u32, capacity: u32) -> CfgSystemPlace {

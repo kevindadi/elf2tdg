@@ -508,6 +508,124 @@ priority = 4
     assert!(text.contains("fixed-priority-busy-period"));
 }
 
+#[allow(clippy::too_many_lines)]
+#[test]
+fn derives_priority_ceiling_blocking_bounds_from_profile() {
+    let Some(elf_path) = example_elf() else {
+        eprintln!("skipping blocking test: example ELF is absent");
+        return;
+    };
+    let profile_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/cortex-m7-wcet.toml");
+    let Ok(mut profile_text) = std::fs::read_to_string(&profile_path) else {
+        eprintln!("skipping blocking test: WCET profile is absent");
+        return;
+    };
+    profile_text.push_str(
+        r#"
+[system]
+blocking_model = "priority-ceiling"
+
+[[system.locks]]
+name = "uart"
+
+[[system.tasks]]
+target = "app_main"
+priority = 1
+
+[[system.tasks]]
+target = "sensor_task"
+priority = 3
+locks = { uart = 200 }
+
+[[system.tasks]]
+target = "monitor_task"
+priority = 2
+locks = { uart = 900 }
+
+[[system.tasks]]
+target = "HardFault"
+priority = 4
+"#,
+    );
+    let profile = BoardProfile::parse_toml(&profile_text).expect("valid blocking profile");
+    let image = loader::load(&elf_path).expect("example ELF must load");
+    let analysis = analyze_with_cfg(
+        &image,
+        &AnalysisOptions {
+            board_profile: Some(profile),
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("analysis must succeed");
+
+    let model = analysis
+        .cfg
+        .system_model
+        .as_ref()
+        .expect("layered system model");
+    let blocking = model.blocking.as_ref().expect("blocking analysis");
+    assert_eq!(blocking.model, "priority-ceiling");
+    let named = |suffix: &str| {
+        model
+            .tasks
+            .iter()
+            .find(|task| {
+                task.name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with(suffix))
+            })
+            .unwrap_or_else(|| panic!("task ending with {suffix}"))
+    };
+    let sensor = named("sensor_task");
+    let monitor = named("monitor_task");
+    let hard_fault = named("HardFault");
+    let sensor_blocking = blocking
+        .tasks
+        .iter()
+        .find(|entry| entry.task == sensor.id)
+        .expect("sensor blocking");
+    assert_eq!(sensor_blocking.status, "bounded");
+    assert_eq!(sensor_blocking.time_ns, Some(900.0));
+    assert_eq!(
+        sensor_blocking.blocker.as_deref(),
+        Some(monitor.id.as_str())
+    );
+    assert_eq!(sensor_blocking.lock.as_deref(), Some("uart"));
+    assert!(blocking.inversions.iter().any(|inversion| {
+        inversion.lock == "uart"
+            && inversion.blocked == sensor.id
+            && inversion.blocker == monitor.id
+            && inversion.hold_ns == 900
+    }));
+
+    let sensor_response = model
+        .response
+        .tasks
+        .iter()
+        .find(|response| response.task == sensor.id)
+        .expect("sensor response");
+    assert_eq!(sensor_response.blocking_ns, Some(900.0));
+    let expected = sensor.time_ns.expect("sensor local time")
+        + hard_fault.time_ns.expect("HardFault local time")
+        + 900.0;
+    assert!((sensor_response.time_ns.expect("sensor response") - expected).abs() < 1e-6);
+    assert_eq!(model.response.model, "fixed-priority-busy-period");
+
+    let json =
+        cfg::render_json(&analysis.cfg, Some("sensor_task"), false).expect("CFG JSON must render");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(
+        value["system_model"]["blocking"]["model"],
+        "priority-ceiling"
+    );
+    let text = text_report::render_text(&analysis.cfg, Some("sensor_task"), false)
+        .expect("text report must render");
+    assert!(text.contains("blocking model"));
+    assert!(text.contains("priority-ceiling"));
+    assert!(text.contains("inversion"));
+}
+
 #[test]
 fn checks_discrete_time_expanded_deadline_feasibility() {
     let Some(elf_path) = example_elf() else {

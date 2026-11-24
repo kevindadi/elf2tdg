@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.14";
+pub const CFG_SCHEMA_VERSION: &str = "2.15";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -341,6 +341,9 @@ pub struct CfgSystemTask {
     /// Fixed scheduling priority, when configured. Larger values run first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<u32>,
+    /// Maximum configured hold time per lock and critical section, in ns.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub locks: BTreeMap<String, u64>,
     /// Maximum activations modeled in the current bound window.
     pub activation_bound: u32,
     /// Period used to derive the release bound, when configured.
@@ -514,6 +517,9 @@ pub struct CfgSystemResponseTask {
     /// Response-time upper bound in nanoseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_ns: Option<f64>,
+    /// Blocking time included in the response bound, when modeled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocking_ns: Option<f64>,
     /// Relative deadline, when configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline_ns: Option<u64>,
@@ -531,6 +537,57 @@ pub struct CfgSystemResponseInfo {
     pub model: String,
     /// Per-task results.
     pub tasks: Vec<CfgSystemResponseTask>,
+    /// Model caveats.
+    pub caveats: Vec<String>,
+}
+
+/// Per-task blocking-time result.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemBlockingTask {
+    /// Task ID.
+    pub task: String,
+    /// `bounded` or `unknown`.
+    pub status: String,
+    /// Blocking-time upper bound in nanoseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_ns: Option<f64>,
+    /// Lower-priority task that determines the bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<String>,
+    /// Lock held by the blocker that determines the bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock: Option<String>,
+    /// Why the blocking bound is unavailable or incomplete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// A potential direct priority inversion on a shared lock.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemInversion {
+    /// Lock name.
+    pub lock: String,
+    /// Higher-priority task that can be blocked.
+    pub blocked: String,
+    /// Lower-priority task that can hold the lock.
+    pub blocker: String,
+    /// Priority of the blocked task.
+    pub blocked_priority: u32,
+    /// Priority of the blocking task.
+    pub blocker_priority: u32,
+    /// Maximum blocker hold time in nanoseconds.
+    pub hold_ns: u64,
+}
+
+/// Blocking and priority-inversion analysis result.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemBlockingInfo {
+    /// Blocking protocol name.
+    pub model: String,
+    /// Per-task blocking bounds.
+    pub tasks: Vec<CfgSystemBlockingTask>,
+    /// Direct priority-inversion relations between modeled tasks.
+    pub inversions: Vec<CfgSystemInversion>,
     /// Model caveats.
     pub caveats: Vec<String>,
 }
@@ -566,6 +623,9 @@ pub struct CfgSystemModelInfo {
     /// Discrete-time-expanded feasibility result, when configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timed: Option<CfgSystemTimedInfo>,
+    /// Blocking and priority-inversion analysis, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocking: Option<CfgSystemBlockingInfo>,
     /// Per-task response-time upper bounds.
     pub response: CfgSystemResponseInfo,
     /// Coarse bound.

@@ -129,7 +129,11 @@ pub(crate) struct SystemProfile {
     #[serde(default)]
     resources: Vec<SystemResourceProfile>,
     #[serde(default)]
+    locks: Vec<SystemLockProfile>,
+    #[serde(default)]
     links: Vec<SystemLinkProfile>,
+    #[serde(default)]
+    blocking_model: Option<SystemBlockingModel>,
     #[serde(default)]
     horizon_ns: Option<u64>,
     #[serde(default)]
@@ -143,6 +147,14 @@ impl SystemProfile {
 
     pub(crate) fn resources(&self) -> &[SystemResourceProfile] {
         &self.resources
+    }
+
+    pub(crate) fn locks(&self) -> &[SystemLockProfile] {
+        &self.locks
+    }
+
+    pub(crate) fn blocking_model(&self) -> Option<SystemBlockingModel> {
+        self.blocking_model
     }
 
     pub(crate) fn links(&self) -> &[SystemLinkProfile] {
@@ -177,6 +189,8 @@ pub(crate) struct SystemTaskProfile {
     deadline_ns: Option<u64>,
     #[serde(default)]
     resources: BTreeMap<String, u32>,
+    #[serde(default)]
+    locks: BTreeMap<String, u64>,
 }
 
 impl SystemTaskProfile {
@@ -210,6 +224,10 @@ impl SystemTaskProfile {
 
     pub(crate) fn resources(&self) -> &BTreeMap<String, u32> {
         &self.resources
+    }
+
+    pub(crate) fn locks(&self) -> &BTreeMap<String, u64> {
+        &self.locks
     }
 }
 
@@ -274,6 +292,36 @@ impl SystemResourceProfile {
 
     pub(crate) fn capacity(&self) -> u32 {
         self.capacity
+    }
+}
+
+/// A mutex-like lock whose critical sections participate in blocking analysis.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemLockProfile {
+    name: String,
+}
+
+impl SystemLockProfile {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Supported blocking and priority-inversion protocols.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SystemBlockingModel {
+    /// Immediate priority ceiling: at most one lower-priority critical section
+    /// can block a task.
+    PriorityCeiling,
+}
+
+impl SystemBlockingModel {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::PriorityCeiling => "priority-ceiling",
+        }
     }
 }
 
@@ -1320,6 +1368,23 @@ impl BoardProfile {
                 )));
             }
         }
+        let mut locks = BTreeSet::new();
+        for lock in &system.locks {
+            validate_text("system.locks.name", &lock.name)?;
+            if !locks.insert(lock.name.as_str()) {
+                return Err(Error::Config(format!(
+                    "board profile system lock {:?} is declared twice",
+                    lock.name
+                )));
+            }
+        }
+        let has_task_locks = system.tasks.iter().any(|task| !task.locks.is_empty());
+        if system.blocking_model.is_none() && (!system.locks.is_empty() || has_task_locks) {
+            return Err(Error::Config(
+                "board profile system locks require blocking_model = \"priority-ceiling\""
+                    .to_owned(),
+            ));
+        }
         if system.horizon_ns == Some(0) {
             return Err(Error::Config(
                 "board profile system.horizon_ns must be positive".to_owned(),
@@ -1384,6 +1449,20 @@ impl BoardProfile {
                     return Err(Error::Config(format!(
                         "board profile system task {:?} needs {units} unit(s) of resource {:?}, capacity is {capacity}",
                         task.target, resource
+                    )));
+                }
+            }
+            for (lock, hold_ns) in &task.locks {
+                if !locks.contains(lock.as_str()) {
+                    return Err(Error::Config(format!(
+                        "board profile system task {:?} uses undeclared lock {:?}",
+                        task.target, lock
+                    )));
+                }
+                if *hold_ns == 0 {
+                    return Err(Error::Config(format!(
+                        "board profile system task {:?} lock {:?} hold_ns must be positive",
+                        task.target, lock
                     )));
                 }
             }
@@ -1715,7 +1794,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoardProfile, UnknownInstructionPolicy};
+    use super::{BoardProfile, SystemBlockingModel, UnknownInstructionPolicy};
 
     const VALID: &str = r#"
 schema_version = 1
@@ -1969,6 +2048,49 @@ count = 2
             "[[system.tasks]]\ntarget = \"sensor_task\"\nactivations = 2\n\n[[system.resources]]",
         );
         assert!(BoardProfile::parse_toml(&duplicate_target).is_err());
+    }
+
+    #[test]
+    fn validates_system_lock_and_blocking_profiles() {
+        let valid = VALID.replace("schema_version = 1", "schema_version = 2")
+            + r#"
+[wcet]
+default_loop_bound = 4
+
+[system]
+blocking_model = "priority-ceiling"
+
+[[system.locks]]
+name = "uart"
+
+[[system.tasks]]
+target = "sensor_task"
+priority = 3
+locks = { uart = 500 }
+"#;
+        let profile = BoardProfile::parse_toml(&valid).expect("valid blocking profile");
+        let system = profile.system().expect("system profile");
+        assert_eq!(system.tasks()[0].locks().get("uart"), Some(&500));
+        assert_eq!(system.locks().len(), 1);
+        assert_eq!(system.locks()[0].name(), "uart");
+        assert_eq!(
+            system.blocking_model().map(SystemBlockingModel::name),
+            Some("priority-ceiling")
+        );
+
+        let locks_without_model = valid.replace("blocking_model = \"priority-ceiling\"\n", "");
+        assert!(BoardProfile::parse_toml(&locks_without_model).is_err());
+        let undeclared_lock = valid.replace("locks = { uart = 500 }", "locks = { spi = 500 }");
+        assert!(BoardProfile::parse_toml(&undeclared_lock).is_err());
+        let zero_hold = valid.replace("uart = 500", "uart = 0");
+        assert!(BoardProfile::parse_toml(&zero_hold).is_err());
+        let duplicate_lock = valid.replace(
+            "[[system.locks]]\nname = \"uart\"",
+            "[[system.locks]]\nname = \"uart\"\n\n[[system.locks]]\nname = \"uart\"",
+        );
+        assert!(BoardProfile::parse_toml(&duplicate_lock).is_err());
+        let unsupported_protocol = valid.replace("priority-ceiling", "priority-inheritance");
+        assert!(BoardProfile::parse_toml(&unsupported_protocol).is_err());
     }
 
     #[test]
