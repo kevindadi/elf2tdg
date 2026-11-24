@@ -540,6 +540,7 @@ fn render_wcet_root(out: &mut String, program: &ProgramCfg, root: &CfgWcetRoot) 
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
     section(out, "layered system model");
     let Some(model) = model else {
@@ -579,13 +580,21 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
         out,
         "model size",
         &format!(
-            "{} task(s), {} place(s), {} transition(s), {} dependency(ies)",
+            "{} task(s), {} place(s), {} transition(s), {} dependency(ies), {} link(s)",
             model.tasks.len(),
             model.places.len(),
             model.transitions.len(),
-            model.dependencies.len()
+            model.dependencies.len(),
+            model.links.len()
         ),
     );
+    for link in &model.links {
+        let _ = writeln!(
+            out,
+            "  * link {} {} -> {} x{}",
+            link.kind, link.from, link.to, link.count
+        );
+    }
     if let Some(petri) = &model.petri {
         kv(out, "petri solver", &petri.solver);
         kv(out, "petri relaxation", &petri.relaxation);
