@@ -132,6 +132,8 @@ pub(crate) struct SystemProfile {
     links: Vec<SystemLinkProfile>,
     #[serde(default)]
     horizon_ns: Option<u64>,
+    #[serde(default)]
+    slot_ns: Option<u64>,
 }
 
 impl SystemProfile {
@@ -150,6 +152,10 @@ impl SystemProfile {
     pub(crate) fn horizon_ns(&self) -> Option<u64> {
         self.horizon_ns
     }
+
+    pub(crate) fn slot_ns(&self) -> Option<u64> {
+        self.slot_ns
+    }
 }
 
 /// One execution root in a `[system]` profile.
@@ -165,6 +171,8 @@ pub(crate) struct SystemTaskProfile {
     release_offset_ns: Option<u64>,
     #[serde(default)]
     release_jitter_ns: Option<u64>,
+    #[serde(default)]
+    deadline_ns: Option<u64>,
     #[serde(default)]
     resources: BTreeMap<String, u32>,
 }
@@ -188,6 +196,10 @@ impl SystemTaskProfile {
 
     pub(crate) fn release_jitter_ns(&self) -> Option<u64> {
         self.release_jitter_ns
+    }
+
+    pub(crate) fn deadline_ns(&self) -> Option<u64> {
+        self.deadline_ns
     }
 
     pub(crate) fn resources(&self) -> &BTreeMap<String, u32> {
@@ -1307,6 +1319,16 @@ impl BoardProfile {
                 "board profile system.horizon_ns must be positive".to_owned(),
             ));
         }
+        if system.slot_ns == Some(0) {
+            return Err(Error::Config(
+                "board profile system.slot_ns must be positive".to_owned(),
+            ));
+        }
+        if system.slot_ns.is_some() && system.horizon_ns.is_none() {
+            return Err(Error::Config(
+                "board profile system.slot_ns requires system.horizon_ns".to_owned(),
+            ));
+        }
         let mut has_period = false;
         let mut targets = BTreeSet::new();
         for (index, task) in system.tasks.iter().enumerate() {
@@ -1314,6 +1336,11 @@ impl BoardProfile {
             if task.activations == Some(0) {
                 return Err(Error::Config(format!(
                     "board profile system.tasks[{index}].activations must be positive"
+                )));
+            }
+            if task.deadline_ns == Some(0) {
+                return Err(Error::Config(format!(
+                    "board profile system.tasks[{index}].deadline_ns must be positive"
                 )));
             }
             if let Some(period) = task.period_ns {
@@ -1884,15 +1911,20 @@ count = 2
         assert!(BoardProfile::parse_toml(&bad_kind).is_err());
 
         let periodic = valid
-            .replace("[system]", "[system]\nhorizon_ns = 5_000_000")
+            .replace(
+                "[system]",
+                "[system]\nhorizon_ns = 5_000_000\nslot_ns = 100_000",
+            )
             .replace(
                 "activations = 3",
-                "period_ns = 1_000_000\nrelease_offset_ns = 0\nrelease_jitter_ns = 100",
+                "period_ns = 1_000_000\nrelease_offset_ns = 0\nrelease_jitter_ns = 100\ndeadline_ns = 2_000_000",
             );
         let profile = BoardProfile::parse_toml(&periodic).expect("valid periodic profile");
         let system = profile.system().expect("system profile");
         assert_eq!(system.horizon_ns(), Some(5_000_000));
+        assert_eq!(system.slot_ns(), Some(100_000));
         assert_eq!(system.tasks()[0].period_ns(), Some(1_000_000));
+        assert_eq!(system.tasks()[0].deadline_ns(), Some(2_000_000));
         assert_eq!(system.tasks()[0].release_offset_ns(), Some(0));
         assert_eq!(system.tasks()[0].release_jitter_ns(), Some(100));
         assert_eq!(system.tasks()[0].activations(), None);
@@ -1902,6 +1934,12 @@ count = 2
         assert!(BoardProfile::parse_toml(&zero_period).is_err());
         let zero_horizon = periodic.replace("horizon_ns = 5_000_000", "horizon_ns = 0");
         assert!(BoardProfile::parse_toml(&zero_horizon).is_err());
+        let zero_slot = periodic.replace("slot_ns = 100_000", "slot_ns = 0");
+        assert!(BoardProfile::parse_toml(&zero_slot).is_err());
+        let slot_without_horizon = periodic.replace("horizon_ns = 5_000_000\n", "");
+        assert!(BoardProfile::parse_toml(&slot_without_horizon).is_err());
+        let zero_deadline = periodic.replace("deadline_ns = 2_000_000", "deadline_ns = 0");
+        assert!(BoardProfile::parse_toml(&zero_deadline).is_err());
         let offset_without_period = valid.replace("activations = 3", "release_offset_ns = 10");
         assert!(BoardProfile::parse_toml(&offset_without_period).is_err());
 

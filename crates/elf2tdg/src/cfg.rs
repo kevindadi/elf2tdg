@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.11";
+pub const CFG_SCHEMA_VERSION: &str = "2.12";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -349,6 +349,9 @@ pub struct CfgSystemTask {
     /// Release jitter applied conservatively to the first release.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release_jitter_ns: Option<u64>,
+    /// Relative deadline from each release, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_ns: Option<u64>,
 }
 
 /// One place in the coarse layered Petri-net representation.
@@ -475,6 +478,27 @@ pub struct CfgSystemBound {
     pub assumptions: Vec<String>,
 }
 
+/// Discrete-time-expanded Petri-net feasibility result.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemTimedInfo {
+    /// Timed model name.
+    pub model: String,
+    /// Time-slot width in nanoseconds.
+    pub slot_ns: u64,
+    /// Number of slots in the bound window.
+    pub horizon_slots: u32,
+    /// `feasible`, `infeasible`, `unsupported` or `no-local-time`.
+    pub status: String,
+    /// Number of task activation instances.
+    pub activations: u32,
+    /// Total execution slots required by all activations.
+    pub execution_slots: u32,
+    /// Number of binary slot variables.
+    pub variables: u32,
+    /// Model caveats.
+    pub caveats: Vec<String>,
+}
+
 /// Layered system model and coarse bound.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgSystemModelInfo {
@@ -503,6 +527,9 @@ pub struct CfgSystemModelInfo {
     /// State-equation ILP solution, when the model was solved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub petri: Option<CfgSystemPetriSolution>,
+    /// Discrete-time-expanded feasibility result, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timed: Option<CfgSystemTimedInfo>,
     /// Coarse bound.
     pub bound: CfgSystemBound,
     /// Model caveats.

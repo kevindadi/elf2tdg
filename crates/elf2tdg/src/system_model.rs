@@ -13,14 +13,17 @@ use good_lp::{
     Expression, ProblemVariables, Solution, SolutionStatus, SolverModel, Variable, constraint,
 };
 
-use crate::board_profile::{BoardProfile, SystemLinkKind};
+use crate::board_profile::{BoardProfile, SystemLinkKind, SystemProfile};
 use crate::cfg::{
     CfgConcurrencyKind, CfgSystemBound, CfgSystemDependency, CfgSystemFiring, CfgSystemLink,
-    CfgSystemModelInfo, CfgSystemPetriSolution, CfgSystemPlace, CfgSystemTask, CfgSystemTransition,
-    CfgWcetRoot, CfgWcetStatus, ProgramCfg,
+    CfgSystemModelInfo, CfgSystemPetriSolution, CfgSystemPlace, CfgSystemTask, CfgSystemTimedInfo,
+    CfgSystemTransition, CfgWcetRoot, CfgWcetStatus, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 use crate::wcet::frequency_hz;
+
+const MAX_TIMED_ACTIVATIONS: u32 = 10_000;
+const MAX_TIMED_VARIABLES: u64 = 200_000;
 
 #[derive(Clone, Copy, Debug)]
 struct LinkConstraint {
@@ -36,6 +39,7 @@ struct TaskConfig {
     period_ns: Option<u64>,
     release_offset_ns: Option<u64>,
     release_jitter_ns: Option<u64>,
+    deadline_ns: Option<u64>,
     resources: BTreeMap<String, u32>,
 }
 
@@ -99,6 +103,7 @@ pub(crate) fn analyze(
             period_ns: None,
             release_offset_ns: None,
             release_jitter_ns: None,
+            deadline_ns: None,
             resources: BTreeMap::new(),
         })
         .collect();
@@ -142,6 +147,7 @@ pub(crate) fn analyze(
                 period.map(|_| entry.release_offset_ns().unwrap_or(0));
             configs[index].release_jitter_ns =
                 period.map(|_| entry.release_jitter_ns().unwrap_or(0));
+            configs[index].deadline_ns = entry.deadline_ns();
             configs[index].resources.clone_from(entry.resources());
         }
     }
@@ -262,6 +268,7 @@ pub(crate) fn analyze(
         .max()
         .unwrap_or(1);
     let aggregate = aggregate_status(&tasks);
+    let timed = solve_timed_model(&tasks, system);
     let petri = solve_state_equation(&places, &transitions, &link_constraints);
     let (bound_status, bound_cycles, bound_time_ns) = bound_from_solution(
         aggregate,
@@ -277,7 +284,7 @@ pub(crate) fn analyze(
             .to_owned(),
         "Spawn/join/await/callback annotations remain metadata; only explicit [system.links] fork/join count constraints are encoded, and temporal ordering is not modeled."
             .to_owned(),
-        "Lock/semaphore waiting, release instants, deadlines, preemption and scheduling order are not modeled in this layer."
+        "Lock/semaphore waiting, release instants, deadlines, preemption and scheduling order are not modeled in the state-equation layer; the optional timed model uses slot-level release/deadline windows."
             .to_owned(),
         "Activation bounds are upper bounds; ready/done markings stay within [0, capacity], the core marking is exact, and firing counts are solved by the pure-Rust microlp backend."
             .to_owned(),
@@ -300,7 +307,7 @@ pub(crate) fn analyze(
         }
         if system.tasks().iter().any(|task| task.period_ns().is_some()) {
             caveats.push(
-                "Periodic releases are approximated by a release count over horizon_ns; release instants, deadlines and ordering are not modeled."
+                "Periodic releases are approximated by a release count over horizon_ns in the state-equation layer; the timed model uses release/deadline windows."
                     .to_owned(),
             );
         }
@@ -359,6 +366,7 @@ pub(crate) fn analyze(
         dependencies: dependencies(program),
         links,
         petri,
+        timed,
         bound: CfgSystemBound {
             scope: "analyzed-core-activation-bounds".to_owned(),
             status: bound_status,
@@ -377,7 +385,7 @@ pub(crate) fn analyze(
                     .to_owned(),
                 "Fork/join link counts are maximum relation counts per source activation, not temporal ordering constraints."
                     .to_owned(),
-                "No release instant, deadline, preemption, scheduling order or lock-wait model is applied in this first layer."
+                "The state-equation bound does not model release instants, deadlines, preemption, scheduling order or lock waits; see the timed feasibility model when enabled."
                     .to_owned(),
             ],
         },
@@ -563,6 +571,188 @@ fn bound_from_solution(
     (aggregate, Some(objective), time)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn solve_timed_model(
+    tasks: &[CfgSystemTask],
+    system: Option<&SystemProfile>,
+) -> Option<CfgSystemTimedInfo> {
+    let system = system?;
+    let slot_ns = system.slot_ns()?;
+    let horizon_ns = system.horizon_ns()?;
+    let mut caveats = vec![
+        "Discrete-time-expanded model: execution is preemptible only at slot boundaries and local WCET is rounded up to whole slots."
+            .to_owned(),
+        "The timed model reports release/deadline feasibility only; it does not produce a per-task response-time upper bound."
+            .to_owned(),
+        "Fork/join links, cumulative resource budgets and other cores' workloads are not included in the timed feasibility model."
+            .to_owned(),
+        "Releases at or beyond horizon_ns have no execution window and are excluded from timed feasibility."
+            .to_owned(),
+    ];
+    if slot_ns == 0 || horizon_ns == 0 {
+        return Some(CfgSystemTimedInfo {
+            model: "discrete-time-expanded-petri".to_owned(),
+            slot_ns,
+            horizon_slots: 0,
+            status: "unsupported".to_owned(),
+            activations: 0,
+            execution_slots: 0,
+            variables: 0,
+            caveats,
+        });
+    }
+    let horizon_slots = u32::try_from(horizon_ns / slot_ns).unwrap_or(u32::MAX);
+    if tasks.iter().any(|task| task.time_ns.is_none()) {
+        caveats.push(
+            "At least one task has no local time estimate; timed feasibility was skipped."
+                .to_owned(),
+        );
+        return Some(CfgSystemTimedInfo {
+            model: "discrete-time-expanded-petri".to_owned(),
+            slot_ns,
+            horizon_slots,
+            status: "no-local-time".to_owned(),
+            activations: 0,
+            execution_slots: 0,
+            variables: 0,
+            caveats,
+        });
+    }
+
+    let mut instances = Vec::new();
+    let mut total_variables = 0_u64;
+    let mut execution_slots = 0_u64;
+
+    for task in tasks {
+        let time_ns = task.time_ns?;
+        let execution_ns = time_ns.ceil().max(0.0) as u64;
+        let slots_per_activation = execution_ns.div_ceil(slot_ns).max(1);
+        let earliest = task
+            .release_offset_ns
+            .unwrap_or(0)
+            .saturating_sub(task.release_jitter_ns.unwrap_or(0));
+        for activation in 0..task.activation_bound {
+            let release_ns = match task.period_ns {
+                Some(period) => {
+                    earliest.saturating_add(u64::from(activation).saturating_mul(period))
+                }
+                None => 0,
+            };
+            if release_ns >= horizon_ns {
+                break;
+            }
+            let relative_deadline = task.deadline_ns.unwrap_or(horizon_ns);
+            let deadline_ns = release_ns.saturating_add(relative_deadline).min(horizon_ns);
+            let first_slot = release_ns.div_ceil(slot_ns);
+            let last_slot = deadline_ns / slot_ns;
+            if first_slot >= last_slot
+                || last_slot.saturating_sub(first_slot) < slots_per_activation
+            {
+                execution_slots = execution_slots.saturating_add(slots_per_activation);
+                return Some(CfgSystemTimedInfo {
+                    model: "discrete-time-expanded-petri".to_owned(),
+                    slot_ns,
+                    horizon_slots,
+                    status: "infeasible".to_owned(),
+                    activations: u32::try_from(instances.len()).unwrap_or(u32::MAX),
+                    execution_slots: u32::try_from(execution_slots).unwrap_or(u32::MAX),
+                    variables: u32::try_from(total_variables).unwrap_or(u32::MAX),
+                    caveats,
+                });
+            }
+            total_variables = total_variables.saturating_add(last_slot.saturating_sub(first_slot));
+            execution_slots = execution_slots.saturating_add(slots_per_activation);
+            instances.push((first_slot, last_slot, slots_per_activation));
+            if u32::try_from(instances.len()).unwrap_or(u32::MAX) > MAX_TIMED_ACTIVATIONS
+                || total_variables > MAX_TIMED_VARIABLES
+            {
+                caveats.push(
+                    "Timed model exceeds the activation or variable limit; increase slot_ns or shorten the horizon."
+                        .to_owned(),
+                );
+                return Some(CfgSystemTimedInfo {
+                    model: "discrete-time-expanded-petri".to_owned(),
+                    slot_ns,
+                    horizon_slots,
+                    status: "unsupported".to_owned(),
+                    activations: u32::try_from(instances.len()).unwrap_or(u32::MAX),
+                    execution_slots: u32::try_from(execution_slots).unwrap_or(u32::MAX),
+                    variables: u32::try_from(total_variables).unwrap_or(u32::MAX),
+                    caveats,
+                });
+            }
+        }
+    }
+
+    if instances.is_empty() {
+        return Some(CfgSystemTimedInfo {
+            model: "discrete-time-expanded-petri".to_owned(),
+            slot_ns,
+            horizon_slots,
+            status: "feasible".to_owned(),
+            activations: 0,
+            execution_slots: 0,
+            variables: 0,
+            caveats,
+        });
+    }
+
+    let mut variables = ProblemVariables::new();
+    let mut objective = Expression::from(0.0);
+    let mut slot_load: BTreeMap<u64, Expression> = BTreeMap::new();
+    let mut activation_vars = Vec::with_capacity(instances.len());
+    for &(first_slot, last_slot, slots_per_activation) in &instances {
+        let mut vars = Vec::new();
+        for slot in first_slot..last_slot {
+            let variable = variables.add(good_lp::variable().binary());
+            objective += variable;
+            *slot_load
+                .entry(slot)
+                .or_insert_with(|| Expression::from(0.0)) += variable;
+            vars.push(variable);
+        }
+        activation_vars.push((vars, slots_per_activation));
+    }
+
+    let mut constraints = Vec::new();
+    for (vars, slots_per_activation) in activation_vars {
+        let mut sum = Expression::from(0.0);
+        for variable in vars {
+            sum += variable;
+        }
+        constraints.push(constraint::eq(sum, slots_per_activation as f64));
+    }
+    for load in slot_load.into_values() {
+        constraints.push(constraint::leq(load, 1.0));
+    }
+
+    let mut model = variables.maximise(objective).using(good_lp::microlp);
+    for item in constraints {
+        model = model.with(item);
+    }
+    let status = match model.solve() {
+        Ok(_) => "feasible",
+        Err(good_lp::ResolutionError::Infeasible) => "infeasible",
+        Err(good_lp::ResolutionError::Unbounded) => "unbounded",
+        Err(_) => "solver-error",
+    };
+    Some(CfgSystemTimedInfo {
+        model: "discrete-time-expanded-petri".to_owned(),
+        slot_ns,
+        horizon_slots,
+        status: status.to_owned(),
+        activations: u32::try_from(instances.len()).unwrap_or(u32::MAX),
+        execution_slots: u32::try_from(execution_slots).unwrap_or(u32::MAX),
+        variables: u32::try_from(total_variables).unwrap_or(u32::MAX),
+        caveats,
+    })
+}
+
 fn system_task(id: &str, root: &CfgWcetRoot, config: &TaskConfig) -> CfgSystemTask {
     CfgSystemTask {
         id: id.to_owned(),
@@ -576,6 +766,7 @@ fn system_task(id: &str, root: &CfgWcetRoot, config: &TaskConfig) -> CfgSystemTa
         period_ns: config.period_ns,
         release_offset_ns: config.release_offset_ns,
         release_jitter_ns: config.release_jitter_ns,
+        deadline_ns: config.deadline_ns,
     }
 }
 

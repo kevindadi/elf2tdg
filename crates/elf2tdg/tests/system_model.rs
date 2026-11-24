@@ -325,3 +325,98 @@ count = 1
     assert_eq!(fires(&app_main.id), 2);
     assert_eq!(fires(&sensor.id), 4);
 }
+
+#[test]
+fn checks_discrete_time_expanded_deadline_feasibility() {
+    let Some(elf_path) = example_elf() else {
+        eprintln!("skipping timed model test: example ELF is absent");
+        return;
+    };
+    let profile_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/cortex-m7-wcet.toml");
+    let Ok(mut profile_text) = std::fs::read_to_string(&profile_path) else {
+        eprintln!("skipping timed model test: WCET profile is absent");
+        return;
+    };
+    profile_text.push_str(
+        r#"
+
+[system]
+horizon_ns = 5_000_000
+slot_ns = 100_000
+
+[[system.tasks]]
+target = "sensor_task"
+period_ns = 1_000_000
+release_offset_ns = 0
+release_jitter_ns = 0
+deadline_ns = 2_000_000
+"#,
+    );
+    let profile = BoardProfile::parse_toml(&profile_text).expect("valid timed profile");
+    let image = loader::load(&elf_path).expect("example ELF must load");
+    let analysis = analyze_with_cfg(
+        &image,
+        &AnalysisOptions {
+            board_profile: Some(profile),
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("analysis must succeed");
+    let model = analysis
+        .cfg
+        .system_model
+        .as_ref()
+        .expect("layered system model");
+    let timed = model.timed.as_ref().expect("timed model");
+    assert_eq!(timed.model, "discrete-time-expanded-petri");
+    assert_eq!(timed.slot_ns, 100_000);
+    assert_eq!(timed.status, "feasible");
+    assert!(timed.activations > 0);
+    assert!(timed.execution_slots >= timed.activations);
+    assert!(timed.variables > 0);
+}
+
+#[test]
+fn flags_short_timed_deadline() {
+    let Some(elf_path) = example_elf() else {
+        eprintln!("skipping short-deadline test: example ELF is absent");
+        return;
+    };
+    let profile_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/cortex-m7-wcet.toml");
+    let Ok(mut profile_text) = std::fs::read_to_string(&profile_path) else {
+        eprintln!("skipping short-deadline test: WCET profile is absent");
+        return;
+    };
+    profile_text.push_str(
+        r#"
+
+[system]
+horizon_ns = 5_000_000
+slot_ns = 100_000
+
+[[system.tasks]]
+target = "sensor_task"
+period_ns = 1_000_000
+deadline_ns = 50_000
+"#,
+    );
+    let profile = BoardProfile::parse_toml(&profile_text).expect("valid timed profile");
+    let image = loader::load(&elf_path).expect("example ELF must load");
+    let analysis = analyze_with_cfg(
+        &image,
+        &AnalysisOptions {
+            board_profile: Some(profile),
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("analysis must succeed");
+    let timed = analysis
+        .cfg
+        .system_model
+        .as_ref()
+        .and_then(|model| model.timed.as_ref())
+        .expect("timed model");
+    assert_eq!(timed.status, "infeasible");
+}
