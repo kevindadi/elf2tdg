@@ -185,7 +185,7 @@ pub const BUILTIN_PASSES: &[PassInfo] = &[
     },
     PassInfo {
         id: "flow.facts",
-        title: "Loop bounds from the board profile, F4/FFX files and counted-loop inference",
+        title: "Loop bounds, inferred counts and FFX branch/call facts",
         kind: PassKind::Analysis,
         requires: &["ir.cfg"],
         provides: &["flow.facts"],

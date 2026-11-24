@@ -514,6 +514,26 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 &format!("{} = {} ({})", loop_.header, loop_.bound, loop_.source),
             );
         }
+        for branch in &facts.branches {
+            kv_indent(
+                out,
+                "branch fact",
+                &format!(
+                    "{} {} {} <= {} ({})",
+                    branch.function, branch.site, branch.outcome, branch.max_count, branch.source
+                ),
+            );
+        }
+        for call in &facts.calls {
+            kv_indent(
+                out,
+                "call fact",
+                &format!(
+                    "{} {} <= {} ({})",
+                    call.function, call.site, call.max_count, call.source
+                ),
+            );
+        }
     }
     kv_indent(
         out,

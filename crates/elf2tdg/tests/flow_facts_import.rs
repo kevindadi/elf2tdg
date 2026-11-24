@@ -5,7 +5,9 @@ use std::process::Command;
 
 use elf2tdg::analysis::{AnalysisOptions, AnalysisOutput, PathAnalysis, analyze_with_cfg};
 use elf2tdg::board_profile::BoardProfile;
+use elf2tdg::cfg;
 use elf2tdg::loader;
+use elf2tdg::text_report;
 
 fn fixture_elf() -> Option<PathBuf> {
     let path =
@@ -203,6 +205,181 @@ fn context_specific_facts_are_reported() {
             .caveats
             .iter()
             .any(|caveat| caveat.contains("context-insensitively"))
+    );
+    let _ = std::fs::remove_file(ffx);
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn imports_ffx_branch_and_call_facts() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let baseline = analyze(Vec::new(), profile(""), PathAnalysis::Ipet);
+    let baseline_delay = baseline
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name == "delay")
+        .and_then(|function| function.wcet.as_ref())
+        .and_then(|wcet| wcet.cycles)
+        .expect("baseline delay WCET");
+    let baseline_main = baseline
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name == "main")
+        .and_then(|function| function.wcet.as_ref())
+        .and_then(|wcet| wcet.cycles)
+        .expect("baseline main WCET");
+
+    let branch = temp_file(
+        "branch.ffx",
+        r#"
+<flowfacts>
+  <conditional>
+    <condition address="0x0800_00f6"/>
+    <case cond="1" executed="false"/>
+  </conditional>
+</flowfacts>
+"#,
+    );
+    let output = analyze(vec![branch.clone()], profile(""), PathAnalysis::Ipet);
+    let facts = output
+        .cfg
+        .wcet
+        .as_ref()
+        .expect("WCET")
+        .flow_facts
+        .as_ref()
+        .expect("flow facts");
+    let branch_fact = facts
+        .branches
+        .iter()
+        .find(|fact| fact.site.get() == 0x0800_00f6)
+        .expect("imported branch fact");
+    assert_eq!(branch_fact.outcome, "taken");
+    assert_eq!(branch_fact.max_count, 0);
+    assert!(branch_fact.source.contains("branch.ffx"));
+    let tightened_delay = output
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name == "delay")
+        .and_then(|function| function.wcet.as_ref())
+        .and_then(|wcet| wcet.cycles)
+        .expect("branch-constrained delay WCET");
+    assert!(
+        tightened_delay < baseline_delay,
+        "branch fact must tighten WCET: {tightened_delay} < {baseline_delay}"
+    );
+    let json = cfg::render_json(&output.cfg, None, false).expect("CFG JSON");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(
+        value["wcet"]["flow_facts"]["branches"][0]["outcome"],
+        "taken"
+    );
+    let text = text_report::render_text(&output.cfg, None, false).expect("text report");
+    assert!(text.contains("branch fact"));
+
+    let call = temp_file(
+        "call.ffx",
+        r#"
+<flowfacts>
+  <call name="delay" address="0x0800_0140" numcall="1"/>
+</flowfacts>
+"#,
+    );
+    let output = analyze(vec![call.clone()], profile(""), PathAnalysis::Ipet);
+    let facts = output
+        .cfg
+        .wcet
+        .as_ref()
+        .expect("WCET")
+        .flow_facts
+        .as_ref()
+        .expect("flow facts");
+    let call_fact = facts
+        .calls
+        .iter()
+        .find(|fact| fact.site.get() == 0x0800_0140)
+        .expect("imported call fact");
+    assert_eq!(call_fact.max_count, 1);
+    assert!(call_fact.source.contains("call.ffx"));
+    let tightened_main = output
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name == "main")
+        .and_then(|function| function.wcet.as_ref())
+        .and_then(|wcet| wcet.cycles)
+        .expect("call-constrained main WCET");
+    assert!(
+        tightened_main < baseline_main,
+        "call fact must tighten WCET: {tightened_main} < {baseline_main}"
+    );
+    let json = cfg::render_json(&output.cfg, None, false).expect("CFG JSON");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(value["wcet"]["flow_facts"]["calls"][0]["max_count"], 1);
+    let text = text_report::render_text(&output.cfg, None, false).expect("text report");
+    assert!(text.contains("call fact"));
+
+    let _ = std::fs::remove_file(branch);
+    let _ = std::fs::remove_file(call);
+}
+
+#[test]
+fn context_specific_non_loop_facts_are_ignored_conservatively() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let ffx = temp_file(
+        "context-branch.ffx",
+        r#"
+<flowfacts>
+  <function name="main">
+    <call name="delay">
+      <conditional address="0x0800_00e4">
+        <case cond="1" executed="false"/>
+      </conditional>
+    </call>
+  </function>
+</flowfacts>
+"#,
+    );
+    let output = analyze(vec![ffx.clone()], profile(""), PathAnalysis::Ipet);
+    let wcet = output.cfg.wcet.as_ref().expect("WCET");
+    let facts = wcet.flow_facts.as_ref().expect("flow facts");
+    assert!(facts.branches.is_empty());
+    assert!(
+        wcet.caveats
+            .iter()
+            .any(|caveat| caveat.contains("context-specific branch fact"))
+    );
+    let _ = std::fs::remove_file(ffx);
+}
+
+#[test]
+fn longest_path_reports_ignored_non_loop_facts() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let ffx = temp_file(
+        "longest-branch.ffx",
+        r#"
+<flowfacts>
+  <conditional address="0x0800_00e4">
+    <case cond="1" executed="false"/>
+  </conditional>
+</flowfacts>
+"#,
+    );
+    let output = analyze(vec![ffx.clone()], profile(""), PathAnalysis::LongestPath);
+    let wcet = output.cfg.wcet.as_ref().expect("WCET");
+    assert!(
+        wcet.caveats
+            .iter()
+            .any(|caveat| caveat.contains("enforced only by the IPET"))
     );
     let _ = std::fs::remove_file(ffx);
 }

@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.15";
+pub const CFG_SCHEMA_VERSION: &str = "2.16";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -164,7 +164,7 @@ pub struct CfgInstruction {
     pub is_jump: bool,
     /// Return/interrupt-return instruction.
     pub is_return: bool,
-    /// Conditional branch.
+    /// Conditional branch or ARM/Thumb instruction with an explicit condition.
     pub is_conditional: bool,
     /// Direct target address.
     pub direct_target: Option<u64>,
@@ -222,7 +222,8 @@ pub struct CfgCallSite {
     pub direct: bool,
     /// Tail call.
     pub tail: bool,
-    /// Conditional external branch modeled as a tail call.
+    /// Conditional call, or a conditional external branch modeled as a tail
+    /// call.
     pub conditional: bool,
     /// Target was recovered heuristically.
     pub heuristic: bool,
@@ -1127,9 +1128,43 @@ pub struct CfgFlowFactsInfo {
     pub default_loop_bound: Option<u32>,
     /// Whether loops without a static exit were explicitly bounded.
     pub bound_nonterminating_loops: bool,
-    /// Explicit loop bounds keyed by header block address.
+    /// Resolved loop bounds keyed by header block address.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<CfgLoopBoundInfo>,
+    /// Non-loop branch execution facts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<CfgBranchFactInfo>,
+    /// Non-loop call execution facts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<CfgCallFactInfo>,
+}
+
+/// One resolved branch/edge execution fact.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBranchFactInfo {
+    /// Function containing the branch.
+    pub function: FunctionId,
+    /// Conditional branch instruction address.
+    pub site: Addr,
+    /// `taken`, `not-taken` or `both`.
+    pub outcome: String,
+    /// Maximum executions of that edge/block.
+    pub max_count: u32,
+    /// Source of the fact.
+    pub source: String,
+}
+
+/// One resolved call-site execution fact.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgCallFactInfo {
+    /// Caller function.
+    pub function: FunctionId,
+    /// Call instruction address.
+    pub site: Addr,
+    /// Maximum calls from this site.
+    pub max_count: u32,
+    /// Source of the fact.
+    pub source: String,
 }
 
 /// One resolved loop bound from the flow facts.

@@ -27,7 +27,7 @@ use crate::cfg::{
     CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus,
     FunctionCfg, ProgramCfg,
 };
-use crate::flow_facts::FlowFacts;
+use crate::flow_facts::{BranchOutcome, FlowFacts};
 use crate::wcet::{
     build_call_info, frequency_hz, function_call_targets, root_results, time_ns, unbounded_summary,
     unknown_summary,
@@ -118,6 +118,8 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 .to_owned(),
             "Loop bounds come from the board profile, imported flow-fact files or conservative counted-loop inference; inferred patterns are not a general proof of loop termination."
                 .to_owned(),
+            "Branch and call flow facts constrain IPET edge/block counts; context-specific facts, conditional/multi-target call sites and blocks with multiple calls are ignored with warnings."
+                .to_owned(),
             "Callee summaries are context-insensitive and computed bottom-up per function."
                 .to_owned(),
             "Block execution counts describe one optimal solution; alternate optima may distribute counts differently while producing the same objective."
@@ -202,6 +204,7 @@ fn analyze_function(
         &reachable_nodes,
         &call_info.block_cycles,
         facts,
+        &function.id,
     ) {
         Ok(outcome) => outcome,
         Err(IpetError::Unbounded(reason)) => {
@@ -260,6 +263,7 @@ fn solve_function(
     reachable_nodes: &BTreeSet<NodeIndex>,
     call_cycles: &BTreeMap<NodeIndex, f64>,
     facts: &FlowFacts,
+    function_id: &FunctionId,
 ) -> Result<IpetOutcome, IpetError> {
     let loops = build_loops(cfg, entry, analysis, facts)?;
 
@@ -311,10 +315,18 @@ fn solve_function(
     }
 
     let objective = objective(cfg, &block_vars, call_cycles);
-    let constraints = constraints(cfg, entry, &loops, &block_vars, &edge_vars, &loop_exit_vars);
+    let mut model_constraints =
+        constraints(cfg, entry, &loops, &block_vars, &edge_vars, &loop_exit_vars);
+    model_constraints.extend(non_loop_constraints(
+        cfg,
+        &block_vars,
+        &edge_vars,
+        facts,
+        function_id,
+    ));
     let model = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = model
-        .with_all(constraints)
+        .with_all(model_constraints)
         .solve()
         .map_err(|error| match error {
             good_lp::ResolutionError::Unbounded => {
@@ -551,6 +563,72 @@ fn constraints(
         }
         let lhs = Expression::from(header_var) - entry_flow * f64::from(loop_.bound);
         constraints.push(constraint::leq(lhs, 0.0));
+    }
+    constraints
+}
+
+fn non_loop_constraints(
+    cfg: &FunctionCfg,
+    block_vars: &BTreeMap<NodeIndex, Variable>,
+    edge_vars: &BTreeMap<EdgeIndex, Variable>,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+) -> Vec<good_lp::Constraint> {
+    let node_by_id: BTreeMap<_, _> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    let mut constraints = Vec::new();
+    for branch in facts
+        .branches()
+        .iter()
+        .filter(|branch| &branch.function == function_id)
+    {
+        let Some(&node) = node_by_id.get(&branch.block) else {
+            continue;
+        };
+        let Some(&block_var) = block_vars.get(&node) else {
+            continue;
+        };
+        match branch.outcome {
+            BranchOutcome::Both => {
+                constraints.push(constraint::leq(Expression::from(block_var), 0.0));
+            }
+            BranchOutcome::Taken | BranchOutcome::NotTaken => {
+                let kind = if branch.outcome == BranchOutcome::Taken {
+                    crate::cfg::CfgEdgeKind::Branch
+                } else {
+                    crate::cfg::CfgEdgeKind::Fallthrough
+                };
+                let edge = cfg
+                    .graph
+                    .edges_directed(node, petgraph::Direction::Outgoing)
+                    .find(|edge| edge.weight().site == branch.site && edge.weight().kind == kind);
+                if let Some(edge_var) = edge.and_then(|edge| edge_vars.get(&edge.id())) {
+                    constraints.push(constraint::leq(
+                        Expression::from(*edge_var),
+                        f64::from(branch.max_count),
+                    ));
+                }
+            }
+        }
+    }
+    for call in facts
+        .calls()
+        .iter()
+        .filter(|call| &call.function == function_id)
+    {
+        let Some(&node) = node_by_id.get(&call.block) else {
+            continue;
+        };
+        let Some(&block_var) = block_vars.get(&node) else {
+            continue;
+        };
+        constraints.push(constraint::leq(
+            Expression::from(block_var),
+            f64::from(call.max_count),
+        ));
     }
     constraints
 }

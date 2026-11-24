@@ -132,6 +132,12 @@ pub(crate) fn analyze_program_with_facts(
                 .to_owned(),
         ],
     };
+    if facts.has_non_loop_facts() {
+        info.caveats.push(
+            "Branch and call flow facts are enforced only by the IPET backend; longest-path ignores them and remains a conservative overestimate."
+                .to_owned(),
+        );
+    }
     info.caveats.extend(facts.warnings().iter().cloned());
     for (index, summary) in summaries.into_iter().enumerate() {
         let Some(summary) = summary else {

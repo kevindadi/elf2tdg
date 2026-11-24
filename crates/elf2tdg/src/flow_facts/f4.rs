@@ -15,6 +15,8 @@ pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String
         origin: origin.to_owned(),
         checksum: None,
         loops: Vec::new(),
+        branches: Vec::new(),
+        calls: Vec::new(),
         warnings: Vec::new(),
     };
     for (index, statement) in statements(text).into_iter().enumerate() {
