@@ -366,6 +366,13 @@ impl FlowFacts {
                         function: conflict.function.clone(),
                         ordered: conflict.ordered,
                         applied: conflict.applied,
+                        mode: conflict.applied.then(|| {
+                            match conflict.enforcement {
+                                InfeasibleEnforcement::Aggregate => "aggregate",
+                                InfeasibleEnforcement::Automaton { .. } => "automaton",
+                            }
+                            .to_owned()
+                        }),
                         reason: conflict.reason.clone(),
                         scope,
                         loop_header,
@@ -827,6 +834,26 @@ pub(crate) enum InfeasibleScope {
     Loop { header: BlockId },
 }
 
+/// How an infeasible-path conflict is enforced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InfeasibleEnforcement {
+    /// Linear aggregate constraint over original block/edge counts.
+    Aggregate,
+    /// Product IPET with a sequence-progress automaton.
+    Automaton { reset: OrderedReset },
+}
+
+/// Where an ordered-conflict automaton resets its progress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OrderedReset {
+    /// No reset; the sequence spans the whole function invocation.
+    Function,
+    /// Reset when entering the loop; the sequence spans all its iterations.
+    LoopEntry { header: BlockId },
+    /// Reset on loop entry and every backedge; the sequence is per iteration.
+    LoopIteration { header: BlockId },
+}
+
 /// One resolved infeasible-path conflict.
 #[derive(Clone, Debug)]
 pub(crate) struct InfeasiblePathConstraint {
@@ -838,6 +865,7 @@ pub(crate) struct InfeasiblePathConstraint {
     pub(crate) source: String,
     pub(crate) scope: Option<InfeasibleScope>,
     pub(crate) applied: bool,
+    pub(crate) enforcement: InfeasibleEnforcement,
     pub(crate) reason: Option<String>,
 }
 
@@ -982,6 +1010,7 @@ fn resolve_conflict(
         source: origin.to_owned(),
         scope: None,
         applied: false,
+        enforcement: InfeasibleEnforcement::Aggregate,
         reason: None,
     };
     let Some(scope_name) = &fact.scope else {
@@ -1021,6 +1050,9 @@ fn resolve_conflict(
     let mut seen = BTreeSet::new();
     elements.retain(|element| seen.insert(element.clone()));
     record.elements = elements;
+    if fact.ordered {
+        return resolve_ordered_conflict(program, function, fact, record, origin);
+    }
     match conflict_scope(function, &record.elements) {
         Ok(scope) => {
             if let Some(target) = &fact.loop_context {
@@ -1072,36 +1104,6 @@ fn resolve_conflict(
                     return Ok(record);
                 }
             }
-            if fact.ordered {
-                if fact.elements.len() != record.elements.len() {
-                    record.reason = Some(format!(
-                        "{origin}: ordered conflict repeats an element; conflict ignored"
-                    ));
-                    return Ok(record);
-                }
-                match ordered_sequence_support(
-                    function,
-                    &record.elements,
-                    &scope,
-                    fact.all_iterations,
-                ) {
-                    OrderedSequenceSupport::Forced => {
-                        record.scope = Some(scope);
-                        record.applied = true;
-                    }
-                    OrderedSequenceSupport::Impossible => {
-                        record.reason = Some(format!(
-                            "{origin}: ordered conflict sequence is structurally impossible; no constraint added"
-                        ));
-                    }
-                    OrderedSequenceSupport::Unsupported => {
-                        record.reason = Some(format!(
-                            "{origin}: ordered conflict scope is not supported; conflict ignored"
-                        ));
-                    }
-                }
-                return Ok(record);
-            }
             record.scope = Some(scope);
             record.applied = true;
         }
@@ -1112,13 +1114,181 @@ fn resolve_conflict(
     Ok(record)
 }
 
+#[allow(clippy::too_many_lines)]
+fn resolve_ordered_conflict(
+    program: &ProgramCfg,
+    function: &CfgFunction,
+    fact: &ConflictFact,
+    mut record: InfeasiblePathConstraint,
+    origin: &str,
+) -> Result<InfeasiblePathConstraint, String> {
+    if fact.elements.len() != record.elements.len() {
+        record.reason = Some(format!(
+            "{origin}: ordered conflict repeats an element; conflict ignored"
+        ));
+        return Ok(record);
+    }
+    let declared_loop = if let Some(target) = &fact.loop_context {
+        let header_address = resolve_target(program, target, origin)?;
+        let context_function = function_for_block(program, header_address, origin)?;
+        if context_function.id != function.id {
+            record.reason = Some(format!(
+                "{origin}: conflict loop context belongs to another function; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        let Some(&node) = function.cfg.blocks_by_address.get(&header_address) else {
+            record.reason = Some(format!(
+                "{origin}: conflict loop context is not a block in {:?}; conflict ignored",
+                function.primary_name
+            ));
+            return Ok(record);
+        };
+        let header = function.cfg.graph[node].id.clone();
+        let analysis = crate::cfg_graph::analyze(&function.cfg);
+        let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == header) else {
+            record.reason = Some(format!(
+                "{origin}: conflict loop context is not a natural loop; conflict ignored"
+            ));
+            return Ok(record);
+        };
+        let loop_blocks: BTreeSet<&BlockId> = loop_.blocks.iter().collect();
+        let outside = record.elements.iter().any(|element| match element {
+            InfeasibleElement::Edge { source, target, .. } => {
+                !loop_blocks.contains(source) || !loop_blocks.contains(target)
+            }
+            InfeasibleElement::Block { block } => !loop_blocks.contains(block),
+        });
+        if outside {
+            record.reason = Some(format!(
+                "{origin}: loop-scoped ordered conflict has an element outside the loop; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        if fact.all_iterations {
+            let backedges: BTreeSet<(BlockId, BlockId)> = loop_
+                .backedges
+                .iter()
+                .map(|edge| (edge.from.clone(), edge.to.clone()))
+                .collect();
+            if record.elements.iter().any(|element| match element {
+                InfeasibleElement::Edge { source, target, .. } => {
+                    backedges.contains(&(source.clone(), target.clone()))
+                }
+                InfeasibleElement::Block { .. } => false,
+            }) {
+                record.reason = Some(format!(
+                    "{origin}: iteration-scoped ordered conflict contains a loop-backedge element; conflict ignored"
+                ));
+                return Ok(record);
+            }
+            Some(OrderedReset::LoopIteration {
+                header: header.clone(),
+            })
+        } else {
+            Some(OrderedReset::LoopEntry {
+                header: header.clone(),
+            })
+        }
+    } else {
+        if fact.all_iterations {
+            record.reason = Some(format!(
+                "{origin}: iteration-scoped ordered conflict lacks a loop context; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        None
+    };
+
+    let structural = conflict_scope(function, &record.elements);
+    if let Some(reset) = declared_loop {
+        if let (
+            OrderedReset::LoopIteration { header },
+            Ok(InfeasibleScope::Loop {
+                header: scope_header,
+            }),
+        ) = (&reset, &structural)
+            && header == scope_header
+        {
+            match ordered_sequence_support(
+                function,
+                &record.elements,
+                &InfeasibleScope::Loop {
+                    header: header.clone(),
+                },
+                true,
+            ) {
+                OrderedSequenceSupport::Forced => {
+                    record.scope = Some(InfeasibleScope::Loop {
+                        header: header.clone(),
+                    });
+                    record.enforcement = InfeasibleEnforcement::Aggregate;
+                    record.applied = true;
+                    return Ok(record);
+                }
+                OrderedSequenceSupport::Impossible => {
+                    record.reason = Some(format!(
+                        "{origin}: ordered conflict sequence is structurally impossible; no constraint added"
+                    ));
+                    return Ok(record);
+                }
+                OrderedSequenceSupport::Unsupported => {}
+            }
+        }
+        record.scope = Some(InfeasibleScope::Loop {
+            header: reset.header().clone(),
+        });
+        record.enforcement = InfeasibleEnforcement::Automaton { reset };
+        record.applied = true;
+        return Ok(record);
+    }
+
+    if matches!(structural, Ok(InfeasibleScope::Function)) {
+        match ordered_sequence_support(
+            function,
+            &record.elements,
+            &InfeasibleScope::Function,
+            false,
+        ) {
+            OrderedSequenceSupport::Forced => {
+                record.scope = Some(InfeasibleScope::Function);
+                record.enforcement = InfeasibleEnforcement::Aggregate;
+                record.applied = true;
+                return Ok(record);
+            }
+            OrderedSequenceSupport::Impossible => {
+                record.reason = Some(format!(
+                    "{origin}: ordered conflict sequence is structurally impossible; no constraint added"
+                ));
+                return Ok(record);
+            }
+            OrderedSequenceSupport::Unsupported => {}
+        }
+    }
+    record.scope = Some(InfeasibleScope::Function);
+    record.enforcement = InfeasibleEnforcement::Automaton {
+        reset: OrderedReset::Function,
+    };
+    record.applied = true;
+    Ok(record)
+}
+
+impl OrderedReset {
+    fn header(&self) -> &BlockId {
+        match self {
+            Self::Function => unreachable!("function reset has no loop header"),
+            Self::LoopEntry { header } | Self::LoopIteration { header } => header,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OrderedSequenceSupport {
     /// The specified order is the only structurally possible order.
     Forced,
     /// No execution can contain the sequence in the specified order.
     Impossible,
-    /// The scope requires a cross-iteration or otherwise unsupported order.
+    /// Structural reduction is not applicable; use the automaton product.
     Unsupported,
 }
 
@@ -2003,8 +2173,8 @@ fn file_matches(expected: &str, actual: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextKind, ContextualLoopBound, FactScope, FlowFacts, InfeasiblePathConstraint,
-        LoopBound, block_at, checked_call_site, resolve_context,
+        ContextKind, ContextualLoopBound, FactScope, FlowFacts, InfeasibleEnforcement,
+        InfeasiblePathConstraint, LoopBound, block_at, checked_call_site, resolve_context,
     };
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
@@ -2375,6 +2545,7 @@ bound = 10
             source: "conflict.ffx".to_owned(),
             scope: None,
             applied: true,
+            enforcement: InfeasibleEnforcement::Aggregate,
             reason: None,
         });
         assert!(facts.has_contextual_facts());

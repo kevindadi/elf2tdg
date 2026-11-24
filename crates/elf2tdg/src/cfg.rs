@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.18";
+pub const CFG_SCHEMA_VERSION: &str = "2.19";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1152,6 +1152,9 @@ pub struct CfgInfeasiblePathInfo {
     pub ordered: bool,
     /// Whether the constraint was added to the IPET model.
     pub applied: bool,
+    /// Enforcement mode (`aggregate` or `automaton`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     /// Why the conflict was not applied.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,

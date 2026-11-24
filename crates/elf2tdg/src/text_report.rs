@@ -555,6 +555,11 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 "ignored"
             };
             let scope = conflict.scope.as_deref().unwrap_or("unresolved");
+            let mode = conflict
+                .mode
+                .as_deref()
+                .map(|mode| format!(", mode {mode}"))
+                .unwrap_or_default();
             let context = context_suffix(&conflict.context);
             let reason = conflict
                 .reason
@@ -565,7 +570,7 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 out,
                 "infeasible path",
                 &format!(
-                    "{status} {} element(s), scope {scope}{context} ({}){reason}",
+                    "{status} {} element(s), scope {scope}{mode}{context} ({}){reason}",
                     conflict.elements.len(),
                     conflict.source
                 ),

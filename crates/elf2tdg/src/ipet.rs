@@ -14,7 +14,7 @@
 //! incomplete callee summaries mark the result `partial`; a partial numeric
 //! objective is not a safe bound.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use good_lp::{
     Expression, ProblemVariables, Solution, SolutionStatus, SolverModel, Variable, constraint,
@@ -30,7 +30,10 @@ use crate::cfg::{
     CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus,
     FunctionCfg, ProgramCfg,
 };
-use crate::flow_facts::{BranchOutcome, FactScope, FlowFacts, InfeasibleElement, InfeasibleScope};
+use crate::flow_facts::{
+    BranchOutcome, FactScope, FlowFacts, InfeasibleElement, InfeasibleEnforcement, InfeasibleScope,
+    OrderedReset,
+};
 use crate::wcet::{
     CallContext, VersionSummaries, aggregate_context_summaries, build_call_info_with,
     callee_context, frequency_hz, function_call_targets, plan_contexts, root_results, time_ns,
@@ -239,7 +242,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts are enforced only for unordered conflicts whose elements share one function and are outside loops or within one non-nested loop; ordered, cross-function and nested-loop conflicts are skipped with warnings."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope; cross-function, specific-iteration and duplicate-edge conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -381,6 +384,20 @@ fn solve_function(
     scope: FactScope<'_>,
 ) -> Result<IpetOutcome, IpetError> {
     let loops = build_loops(cfg, entry, analysis, facts, scope)?;
+    let automata = ordered_automata(facts, function_id, scope);
+    if !automata.is_empty() {
+        return solve_function_with_automata(
+            cfg,
+            entry,
+            reachable_nodes,
+            call_cycles,
+            facts,
+            function_id,
+            scope,
+            &loops,
+            &automata,
+        );
+    }
 
     let mut nodes: Vec<NodeIndex> = reachable_nodes.iter().copied().collect();
     nodes.sort_by_key(|node| (cfg.graph[*node].address, node.index()));
@@ -759,6 +776,564 @@ fn infeasible_path_constraints(
         .collect()
 }
 
+const MAX_AUTOMATON_NODES: usize = 100_000;
+const MAX_AUTOMATON_EDGES: usize = 200_000;
+
+#[derive(Clone, Debug)]
+struct OrderedAutomaton {
+    pattern: Vec<InfeasibleElement>,
+    reset: OrderedReset,
+}
+
+fn ordered_automata(
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+) -> Vec<OrderedAutomaton> {
+    facts
+        .infeasible_paths()
+        .iter()
+        .filter_map(|conflict| {
+            if !conflict.applied
+                || !conflict.ordered
+                || conflict.function.as_ref() != Some(function_id)
+                || !scope.matches(&conflict.context)
+                || conflict.elements.is_empty()
+            {
+                return None;
+            }
+            let InfeasibleEnforcement::Automaton { reset } = &conflict.enforcement else {
+                return None;
+            };
+            Some(OrderedAutomaton {
+                pattern: conflict.elements.clone(),
+                reset: reset.clone(),
+            })
+        })
+        .collect()
+}
+
+struct AutomatonRuntime {
+    pattern: Vec<InfeasibleElement>,
+    reset: OrderedReset,
+    loop_blocks: Option<BTreeSet<BlockId>>,
+    backedges: BTreeSet<(BlockId, BlockId)>,
+}
+
+impl AutomatonRuntime {
+    fn reset_on(&self, source: &BlockId, target: &BlockId) -> bool {
+        match &self.reset {
+            OrderedReset::Function => false,
+            OrderedReset::LoopEntry { .. } => self
+                .loop_blocks
+                .as_ref()
+                .is_some_and(|blocks| !blocks.contains(source) && blocks.contains(target)),
+            OrderedReset::LoopIteration { .. } => {
+                let entry = self
+                    .loop_blocks
+                    .as_ref()
+                    .is_some_and(|blocks| !blocks.contains(source) && blocks.contains(target));
+                entry || self.backedges.contains(&(source.clone(), target.clone()))
+            }
+        }
+    }
+}
+
+fn automaton_runtimes(
+    cfg: &FunctionCfg,
+    automata: &[OrderedAutomaton],
+) -> Result<Vec<AutomatonRuntime>, IpetError> {
+    let analysis = crate::cfg_graph::analyze(cfg);
+    automata
+        .iter()
+        .map(|automaton| match &automaton.reset {
+            OrderedReset::Function => Ok(AutomatonRuntime {
+                pattern: automaton.pattern.clone(),
+                reset: OrderedReset::Function,
+                loop_blocks: None,
+                backedges: BTreeSet::new(),
+            }),
+            OrderedReset::LoopEntry { header } | OrderedReset::LoopIteration { header } => {
+                let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == *header)
+                else {
+                    return Err(IpetError::Unknown("ordered-loop-missing".to_owned()));
+                };
+                let backedges = if matches!(automaton.reset, OrderedReset::LoopIteration { .. }) {
+                    loop_
+                        .backedges
+                        .iter()
+                        .map(|edge| (edge.from.clone(), edge.to.clone()))
+                        .collect()
+                } else {
+                    BTreeSet::new()
+                };
+                Ok(AutomatonRuntime {
+                    pattern: automaton.pattern.clone(),
+                    reset: automaton.reset.clone(),
+                    loop_blocks: Some(loop_.blocks.iter().cloned().collect()),
+                    backedges,
+                })
+            }
+        })
+        .collect()
+}
+
+fn initial_progress(runtimes: &[AutomatonRuntime], entry_block: &BlockId) -> Option<Vec<usize>> {
+    let block = InfeasibleElement::Block {
+        block: entry_block.clone(),
+    };
+    let mut progress = vec![0; runtimes.len()];
+    for (index, runtime) in runtimes.iter().enumerate() {
+        if runtime.pattern.first() == Some(&block) {
+            progress[index] = 1;
+            if progress[index] >= runtime.pattern.len() {
+                return None;
+            }
+        }
+    }
+    Some(progress)
+}
+
+fn advance_progress(
+    runtimes: &[AutomatonRuntime],
+    progress: &[usize],
+    source: &BlockId,
+    target: &BlockId,
+    edge_element: &InfeasibleElement,
+) -> Option<Vec<usize>> {
+    let block = InfeasibleElement::Block {
+        block: target.clone(),
+    };
+    let mut next = Vec::with_capacity(runtimes.len());
+    for (index, runtime) in runtimes.iter().enumerate() {
+        let mut position = progress[index];
+        if runtime.reset_on(source, target) {
+            position = 0;
+        }
+        if runtime.pattern.get(position) == Some(edge_element) {
+            position += 1;
+            if position >= runtime.pattern.len() {
+                return None;
+            }
+        }
+        if runtime.pattern.get(position) == Some(&block) {
+            position += 1;
+            if position >= runtime.pattern.len() {
+                return None;
+            }
+        }
+        next.push(position);
+    }
+    Some(next)
+}
+
+struct ProductNode {
+    original: NodeIndex,
+    progress: Vec<usize>,
+}
+
+struct ProductEdge {
+    original: EdgeIndex,
+    from: usize,
+    to: usize,
+}
+
+fn build_product_graph(
+    cfg: &FunctionCfg,
+    entry: NodeIndex,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    runtimes: &[AutomatonRuntime],
+) -> Result<(Vec<ProductNode>, Vec<ProductEdge>), IpetError> {
+    let entry_block = cfg.graph[entry].id.clone();
+    let Some(start_progress) = initial_progress(runtimes, &entry_block) else {
+        return Err(IpetError::Unknown("infeasible-ordered-entry".to_owned()));
+    };
+    let mut index_by_key: BTreeMap<(NodeIndex, Vec<usize>), usize> = BTreeMap::new();
+    let mut nodes = vec![ProductNode {
+        original: entry,
+        progress: start_progress.clone(),
+    }];
+    index_by_key.insert((entry, start_progress), 0);
+    let mut edges = Vec::new();
+    let mut queue = VecDeque::from([0usize]);
+    while let Some(from) = queue.pop_front() {
+        let node = &nodes[from];
+        let source = node.original;
+        let source_id = cfg.graph[source].id.clone();
+        let progress = node.progress.clone();
+        for edge in cfg
+            .graph
+            .edges_directed(source, petgraph::Direction::Outgoing)
+        {
+            let target = edge.target();
+            if !reachable_nodes.contains(&target) {
+                continue;
+            }
+            let target_id = cfg.graph[target].id.clone();
+            let edge_element = InfeasibleElement::Edge {
+                source: source_id.clone(),
+                target: target_id.clone(),
+                site: edge.weight().site,
+            };
+            let Some(next_progress) =
+                advance_progress(runtimes, &progress, &source_id, &target_id, &edge_element)
+            else {
+                continue;
+            };
+            let key = (target, next_progress.clone());
+            let to = if let Some(index) = index_by_key.get(&key) {
+                *index
+            } else {
+                if nodes.len() >= MAX_AUTOMATON_NODES {
+                    return Err(IpetError::Unknown("ipet-automaton-too-large".to_owned()));
+                }
+                let index = nodes.len();
+                nodes.push(ProductNode {
+                    original: target,
+                    progress: next_progress,
+                });
+                index_by_key.insert(key, index);
+                queue.push_back(index);
+                index
+            };
+            if edges.len() >= MAX_AUTOMATON_EDGES {
+                return Err(IpetError::Unknown("ipet-automaton-too-large".to_owned()));
+            }
+            edges.push(ProductEdge {
+                original: edge.id(),
+                from,
+                to,
+            });
+        }
+    }
+    Ok((nodes, edges))
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+fn solve_function_with_automata(
+    cfg: &FunctionCfg,
+    entry: NodeIndex,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    call_cycles: &BTreeMap<NodeIndex, f64>,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+    loops: &[LoopModel],
+    automata: &[OrderedAutomaton],
+) -> Result<IpetOutcome, IpetError> {
+    let runtimes = automaton_runtimes(cfg, automata)?;
+    let (nodes, edges) = build_product_graph(cfg, entry, reachable_nodes, &runtimes)?;
+    let node_by_block_id: BTreeMap<BlockId, NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    let nonexit_headers: BTreeSet<NodeIndex> = loops
+        .iter()
+        .filter(|loop_| !loop_.has_exit)
+        .map(|loop_| loop_.header)
+        .collect();
+    let mut vars = ProblemVariables::new();
+    let node_variables: Vec<Variable> = nodes
+        .iter()
+        .map(|_| vars.add(good_lp::variable().integer().min(0.0)))
+        .collect();
+    let edge_variables: Vec<Variable> = edges
+        .iter()
+        .map(|_| vars.add(good_lp::variable().integer().min(0.0)))
+        .collect();
+    let mut exit_variables: BTreeMap<usize, Variable> = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if nonexit_headers.contains(&node.original) {
+            exit_variables.insert(index, vars.add(good_lp::variable().integer().min(0.0)));
+        }
+    }
+    if nodes
+        .len()
+        .saturating_add(edges.len())
+        .saturating_add(exit_variables.len())
+        > MAX_MODEL_VARIABLES
+    {
+        return Err(IpetError::Unknown("ipet-model-too-large".to_owned()));
+    }
+
+    let mut nodes_by_original: BTreeMap<NodeIndex, Vec<usize>> = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        nodes_by_original
+            .entry(node.original)
+            .or_default()
+            .push(index);
+    }
+    let mut edges_by_original: BTreeMap<EdgeIndex, Vec<usize>> = BTreeMap::new();
+    let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for (index, edge) in edges.iter().enumerate() {
+        edges_by_original
+            .entry(edge.original)
+            .or_default()
+            .push(index);
+        incoming[edge.to].push(index);
+        outgoing[edge.from].push(index);
+    }
+
+    let mut objective = Expression::from(0.0);
+    for (index, node) in nodes.iter().enumerate() {
+        let block = &cfg.graph[node.original];
+        let base = block.cycles.map_or(0.0, |cycles| cycles.max);
+        let call = call_cycles.get(&node.original).copied().unwrap_or(0.0);
+        objective += node_variables[index] * (base + call);
+    }
+
+    let block_expression = |block: &BlockId| -> Expression {
+        let Some(node) = node_by_block_id.get(block) else {
+            return Expression::from(0.0);
+        };
+        let Some(indices) = nodes_by_original.get(node) else {
+            return Expression::from(0.0);
+        };
+        let mut expression = Expression::from(0.0);
+        for index in indices {
+            expression += node_variables[*index];
+        }
+        expression
+    };
+    let edge_expression = |edge: EdgeIndex| -> Expression {
+        let Some(indices) = edges_by_original.get(&edge) else {
+            return Expression::from(0.0);
+        };
+        let mut expression = Expression::from(0.0);
+        for index in indices {
+            expression += edge_variables[*index];
+        }
+        expression
+    };
+
+    let mut constraints = Vec::new();
+    let has_reachable_outgoing: BTreeSet<NodeIndex> = reachable_nodes
+        .iter()
+        .copied()
+        .filter(|node| {
+            cfg.graph
+                .edges_directed(*node, petgraph::Direction::Outgoing)
+                .any(|edge| reachable_nodes.contains(&edge.target()))
+        })
+        .collect();
+    for (index, node) in nodes.iter().enumerate() {
+        let variable = node_variables[index];
+        let mut incoming_flow = Expression::from(0.0);
+        for edge in &incoming[index] {
+            incoming_flow += edge_variables[*edge];
+        }
+        let entry_flow = if index == 0 { 1.0 } else { 0.0 };
+        constraints.push(constraint::eq(
+            Expression::from(variable) - incoming_flow,
+            entry_flow,
+        ));
+        let mut outgoing_flow = Expression::from(0.0);
+        let mut has_outgoing = false;
+        for edge in &outgoing[index] {
+            outgoing_flow += edge_variables[*edge];
+            has_outgoing = true;
+        }
+        if let Some(exit) = exit_variables.get(&index) {
+            outgoing_flow += *exit;
+            has_outgoing = true;
+        }
+        if has_outgoing {
+            constraints.push(constraint::eq(
+                Expression::from(variable) - outgoing_flow,
+                0.0,
+            ));
+        } else if has_reachable_outgoing.contains(&node.original) {
+            constraints.push(constraint::leq(Expression::from(variable), 0.0));
+        }
+    }
+
+    for loop_ in loops {
+        let Some(header_indices) = nodes_by_original.get(&loop_.header) else {
+            continue;
+        };
+        let mut header = Expression::from(0.0);
+        for index in header_indices {
+            header += node_variables[*index];
+        }
+        let mut entries = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
+        for entry_edge in &loop_.entry_edges {
+            if let Some(indices) = edges_by_original.get(entry_edge) {
+                for index in indices {
+                    entries += edge_variables[*index];
+                }
+            }
+        }
+        constraints.push(constraint::leq(
+            header - entries * f64::from(loop_.bound),
+            0.0,
+        ));
+    }
+
+    for branch in facts
+        .branches()
+        .iter()
+        .filter(|branch| &branch.function == function_id && scope.matches(&branch.context))
+    {
+        match branch.outcome {
+            BranchOutcome::Both => {
+                constraints.push(constraint::leq(block_expression(&branch.block), 0.0));
+            }
+            BranchOutcome::Taken | BranchOutcome::NotTaken => {
+                let Some(&node) = node_by_block_id.get(&branch.block) else {
+                    continue;
+                };
+                let kind = if branch.outcome == BranchOutcome::Taken {
+                    crate::cfg::CfgEdgeKind::Branch
+                } else {
+                    crate::cfg::CfgEdgeKind::Fallthrough
+                };
+                let edge = cfg
+                    .graph
+                    .edges_directed(node, petgraph::Direction::Outgoing)
+                    .find(|edge| edge.weight().site == branch.site && edge.weight().kind == kind);
+                if let Some(edge) = edge {
+                    constraints.push(constraint::leq(
+                        edge_expression(edge.id()),
+                        f64::from(branch.max_count),
+                    ));
+                }
+            }
+        }
+    }
+    for call in facts
+        .calls()
+        .iter()
+        .filter(|call| &call.function == function_id && scope.matches(&call.context))
+    {
+        constraints.push(constraint::leq(
+            block_expression(&call.block),
+            f64::from(call.max_count),
+        ));
+    }
+    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
+        conflict.applied
+            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
+            && conflict
+                .function
+                .as_ref()
+                .is_some_and(|function| function == function_id)
+            && scope.matches(&conflict.context)
+    }) {
+        let mut sum = Expression::from(0.0);
+        for element in &conflict.elements {
+            match element {
+                InfeasibleElement::Block { block } => sum += block_expression(block),
+                InfeasibleElement::Edge {
+                    source,
+                    target,
+                    site,
+                } => {
+                    let Some(&source) = node_by_block_id.get(source) else {
+                        continue;
+                    };
+                    let Some(&target) = node_by_block_id.get(target) else {
+                        continue;
+                    };
+                    if let Some(edge) = cfg
+                        .graph
+                        .edges_directed(source, petgraph::Direction::Outgoing)
+                        .find(|edge| edge.target() == target && edge.weight().site == *site)
+                    {
+                        sum += edge_expression(edge.id());
+                    }
+                }
+            }
+        }
+        let Ok(count) = u32::try_from(conflict.elements.len()) else {
+            continue;
+        };
+        let bound = f64::from(count.saturating_sub(1));
+        match conflict.scope.as_ref() {
+            Some(InfeasibleScope::Function) => {
+                constraints.push(constraint::leq(sum, bound));
+            }
+            Some(InfeasibleScope::Loop { header }) => {
+                let header_expression = block_expression(header);
+                constraints.push(constraint::leq(sum - header_expression * bound, 0.0));
+            }
+            None => {}
+        }
+    }
+
+    let model = vars.maximise(objective.clone()).using(good_lp::microlp);
+    let solution = model
+        .with_all(constraints)
+        .solve()
+        .map_err(|error| match error {
+            good_lp::ResolutionError::Unbounded => {
+                IpetError::Unbounded("ipet-unbounded".to_owned())
+            }
+            other => IpetError::Unknown(format!("ipet-solver: {other}")),
+        })?;
+    let status = match solution.status() {
+        SolutionStatus::Optimal => "optimal",
+        SolutionStatus::TimeLimit => "time-limit",
+        SolutionStatus::GapLimit => "gap-limit",
+    };
+    let mut partial = status != "optimal" || loops.iter().any(|loop_| !loop_.has_exit);
+    let mut counts: BTreeMap<NodeIndex, u64> = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let value = solution.value(node_variables[index]);
+        let rounded = value.round();
+        if (value - rounded).abs() > 1e-4 {
+            partial = true;
+        }
+        if rounded < 0.0 {
+            partial = true;
+            continue;
+        }
+        let count = rounded as u64;
+        if count >= u64::from(i32::MAX as u32) {
+            return Err(IpetError::Unbounded(
+                "ipet-solver-bound-saturated".to_owned(),
+            ));
+        }
+        let entry = counts.entry(node.original).or_default();
+        *entry = entry
+            .checked_add(count)
+            .ok_or_else(|| IpetError::Unbounded("ipet-solver-bound-saturated".to_owned()))?;
+        if *entry >= u64::from(i32::MAX as u32) {
+            return Err(IpetError::Unbounded(
+                "ipet-solver-bound-saturated".to_owned(),
+            ));
+        }
+    }
+    let objective = solution.eval(&objective);
+    if !objective.is_finite() || objective < 0.0 {
+        return Err(IpetError::Unknown("ipet-objective-not-finite".to_owned()));
+    }
+    let blocks = counts
+        .into_iter()
+        .filter(|(_, executions)| *executions > 0)
+        .map(|(node, executions)| CfgIpetBlockCount {
+            block: cfg.graph[node].id.clone(),
+            executions,
+        })
+        .collect();
+    Ok(IpetOutcome {
+        solution: CfgIpetSolution {
+            solver: SOLVER_NAME.to_owned(),
+            status: status.to_owned(),
+            objective,
+            blocks,
+        },
+        partial,
+    })
+}
+
 fn non_loop_constraints(
     cfg: &FunctionCfg,
     block_vars: &BTreeMap<NodeIndex, Variable>,
@@ -834,7 +1409,9 @@ mod tests {
         CfgBlockDraft, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction, CfgTerminator,
         FunctionCfg, ProgramCfg,
     };
-    use crate::flow_facts::{FlowFactDocument, FlowFacts, InfeasibleScope};
+    use crate::flow_facts::{
+        FlowFactDocument, FlowFacts, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
+    };
     use elf2tdg_schema::{CostRange, FunctionId, FunctionKind, Language};
 
     fn profile() -> BoardProfile {
@@ -1109,6 +1686,7 @@ auto_loop_bounds = false
         let conflict = &facts.infeasible_paths()[0];
         assert!(conflict.applied);
         assert!(conflict.ordered);
+        assert_eq!(facts.info().conflicts[0].mode.as_deref(), Some("aggregate"));
     }
 
     #[test]
@@ -1171,7 +1749,7 @@ auto_loop_bounds = false
     }
 
     #[test]
-    fn whole_loop_ordered_conflicts_are_not_cross_iteration_reduced() {
+    fn whole_loop_ordered_conflicts_use_the_automaton_product() {
         let program = loop_program();
         let baseline = analyze_baseline(&program);
         let (constrained, facts) = analyze_with(
@@ -1189,14 +1767,158 @@ auto_loop_bounds = false
 </flowfacts>
 "#,
         );
-        assert_eq!(constrained, baseline);
+        assert!(constrained < baseline, "{constrained} < {baseline}");
         let conflict = &facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
-        assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("not supported"))
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::LoopEntry { .. }
+            }
+        ));
+        assert_eq!(facts.info().conflicts[0].mode.as_deref(), Some("automaton"));
+    }
+
+    #[test]
+    fn cross_iteration_sequence_forbids_the_loop_backedge() {
+        let program = loop_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x200a"/>
+      <block address="0x2002"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
         );
+        assert!(
+            constrained < baseline,
+            "latch-then-header must exclude later iterations: {constrained} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::Function
+            }
+        ));
+    }
+
+    #[test]
+    fn automaton_product_applies_branch_facts() {
+        let program = loop_program();
+        let (automaton_only, _) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x200a"/>
+      <block address="0x2002"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        let (constrained, _) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x200a"/>
+      <block address="0x2002"/>
+    </conflict>
+    <conditional address="0x2002">
+      <case cond="1" executed="false"/>
+    </conditional>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            constrained < automaton_only,
+            "branch fact must apply in the automaton product: {constrained} < {automaton_only}"
+        );
+    }
+
+    #[test]
+    fn multiple_ordered_automata_combine_states() {
+        let program = loop_program();
+        let (single, _) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x200a"/>
+      <block address="0x2002"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        let (combined, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x200a"/>
+      <block address="0x2002"/>
+    </conflict>
+    <conflict ordered="yes">
+      <block address="0x2004"/>
+      <block address="0x2006"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            combined < single,
+            "a second automaton must further constrain the product: {combined} < {single}"
+        );
+        assert_eq!(facts.infeasible_paths().len(), 2);
+        assert!(
+            facts
+                .infeasible_paths()
+                .iter()
+                .all(|conflict| conflict.applied)
+        );
+    }
+
+    #[test]
+    fn function_order_across_iterations_uses_the_automaton_product() {
+        let program = loop_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x2004"/>
+      <block address="0x2006"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(constrained < baseline, "{constrained} < {baseline}");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::Function
+            }
+        ));
     }
 }
