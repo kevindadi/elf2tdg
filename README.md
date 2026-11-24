@@ -64,7 +64,9 @@ Implemented:
   priority-inversion analysis, and optional discrete-time-expanded
   feasibility.
   See
-  [docs/layered-model.md](docs/layered-model.md).
+  [docs/layered-model.md](docs/layered-model.md). The OTAWA capability roadmap
+  and confirmed exclusions are recorded in
+  [docs/otawa-parity.md](docs/otawa-parity.md).
 - Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
 - Compile-time analysis pass plan (`--list-passes`) with explicit pass
   dependencies and soundness labels; no runtime dynamic-library ABI.
@@ -364,6 +366,9 @@ cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
 # List the compile-time analysis pass plan; add --board-profile to see what it enables
 cargo run -p elf2tdg -- --list-passes
 cargo run -p elf2tdg -- --list-passes --board-profile board.toml
+
+# Generate a complete safe-default board profile template (no input ELF needed)
+cargo run -p elf2tdg -- --print-default-profile --cpu cortex-m4 > board.toml
 
 # Default CFG: all async roots (main, startup, ISR vectors, tasks, callbacks)
 cargo run -p elf2tdg -- firmware.elf --view cfg --format json \

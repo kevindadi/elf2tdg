@@ -41,17 +41,43 @@ branch prediction and WCET.
 ## Resolution order
 
 1. `--freq` overrides the profile's `clocks.core`.
-2. The board profile supplies the CPU model, other clock domains, memory
+2. Missing identity fields are filled first: `schema_version` defaults to `2`,
+   `id` to `board:default`, and `arch` from the selected `cpu`.
+3. The board profile supplies the CPU model, other clock domains, memory
    regions and instruction-cost overrides.
-3. Built-in architecture/core tables fill every instruction the profile does
-   not override.
-4. No profile means the pre-profile behavior: built-in tables and `--freq`
+4. Built-in architecture/core tables fill every instruction the profile does
+   not override; omitted optional models stay disabled.
+5. No profile means the pre-profile behavior: built-in tables and `--freq`
    only.
 
 The profile pins its CPU model. An explicit `--cpu` must name the same model;
 a conflict is a configuration error. The profile architecture must match both
 the CPU model and the loaded ELF. See [timing-models.md](timing-models.md) for
 the available model classes, including bounded AArch64/RISC-V models.
+
+## Default profile template
+
+`--print-default-profile` emits a complete profile for the selected CPU
+without requiring an input ELF:
+
+```sh
+elf2tdg --print-default-profile --cpu cortex-m4 > board.toml
+```
+
+Only `schema_version`, `id`, `arch` and `cpu` are active. `schema_version`
+defaults to `2`, `id` defaults to `board:default`, and `arch` is inferred from
+`cpu` when omitted, so the minimum valid profile is:
+
+```toml
+cpu = "cortex-m4"
+```
+
+The template lists every supported hardware attribute as a commented example:
+clocks, memory regions, instruction costs, pipeline resources, caches, branch
+prediction, multicore budget and WCET loop bounds. Omitted sections are
+**disabled**. Board-specific values are never guessed: uncomment a section and
+replace the example values with verified board data. This keeps the safe
+default a disabled model rather than an optimistic one.
 
 ## File format
 
@@ -109,10 +135,10 @@ occupancy = 2
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]`, `[multicore]`, `[wcet]`, `[system]` or per-region data-memory timing. |
-| `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
+| `schema_version` | no | Defaults to `2`. Use `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]`, `[multicore]`, `[wcet]`, `[system]` or per-region data-memory timing. |
+| `id` | no | Stable profile identifier recorded in the CFG timing metadata; defaults to `board:default`. |
 | `name` | no | Human-readable board name. |
-| `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
+| `arch` | no | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; defaults from `cpu`. Architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
 | `cpu` | yes | Built-in timing-model name, for example `cortex-m0`, `cortex-m4`, `riscv32`, `riscv64-bounded` or `aarch64-bounded`. |
 | `confidence` | no | Overrides block-timing confidence (`high`, `medium`, `low`, `unknown`); otherwise the base model's confidence is used. |
 | `unknown_instructions` | no | `warn` (default) emits a `timing-unknown-instruction` diagnostic; `ignore` suppresses it. The fallback cost still applies. |
