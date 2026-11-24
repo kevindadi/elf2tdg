@@ -709,6 +709,18 @@ fn aarch64_register(register: RegId) -> RegId {
         .unwrap_or(register)
 }
 
+/// Normalizes a register to the canonical name used by value effects.
+///
+/// `AArch64` `wN` aliases are folded into `xN`; x86-64 32-bit GPR aliases are
+/// folded into their 64-bit parent. Other architectures are unchanged.
+pub(crate) fn normalize_register(arch: ArchKind, register: RegId) -> RegId {
+    match arch {
+        ArchKind::Aarch64 => aarch64_register(register),
+        ArchKind::X86_64 => x86_64_register(register),
+        _ => register,
+    }
+}
+
 fn aarch64_compare(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Option<(RegId, u64)> {
     if mnemonic != "cmp" {
         return None;
@@ -1594,10 +1606,11 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
             };
             Some(ValueEffect { dest, source })
         }
-        "add" | "adds" => {
+        "add" | "adds" | "sub" | "subs" => {
             let arm64::Arm64OperandType::Reg(base) = &operands.get(1)?.op_type else {
                 return None;
             };
+            let is_subtraction = mnemonic.starts_with("sub");
             match &operands.get(2)?.op_type {
                 arm64::Arm64OperandType::Imm(value) => {
                     let shift = arm64_shift(operands.get(2)?.shift);
@@ -1606,11 +1619,15 @@ fn aarch64_value_effect(detail: &capstone::InsnDetail<'_>, mnemonic: &str) -> Op
                         dest,
                         source: ValueSource::AddImmediate {
                             base: aarch64_register(*base),
-                            imm: value,
+                            imm: if is_subtraction {
+                                value.checked_neg()?
+                            } else {
+                                value
+                            },
                         },
                     })
                 }
-                arm64::Arm64OperandType::Reg(addend) => {
+                arm64::Arm64OperandType::Reg(addend) if !is_subtraction => {
                     let shift = u8::try_from(arm64_shift(operands.get(2)?.shift)).ok()?;
                     Some(ValueEffect {
                         dest,
@@ -1801,7 +1818,14 @@ fn arm_value_effect(
     let writes_load = mnemonic == "ldr";
     let is_address = mnemonic.starts_with("adr");
     let is_addition = mnemonic.starts_with("add");
-    if !(writes_move || writes_top_half || writes_load || is_address || is_addition) {
+    let is_subtraction = mnemonic.starts_with("sub");
+    if !(writes_move
+        || writes_top_half
+        || writes_load
+        || is_address
+        || is_addition
+        || is_subtraction)
+    {
         return None;
     }
     let ArchDetail::ArmDetail(arm) = detail.arch_detail() else {
@@ -1812,21 +1836,34 @@ fn arm_value_effect(
         return None;
     };
 
-    if is_addition {
-        let arm::ArmOperandType::Reg(base) = operands.get(1)?.op_type else {
-            return None;
-        };
-        let immediate = match operands.get(2)?.op_type {
-            arm::ArmOperandType::Imm(value)
-            | arm::ArmOperandType::Cimm(value)
-            | arm::ArmOperandType::Pimm(value) => i64::from(value),
+    if is_addition || is_subtraction {
+        let (base, immediate) = match (operands.get(1), operands.get(2)) {
+            (Some(first), Some(second)) => match (&first.op_type, &second.op_type) {
+                (
+                    arm::ArmOperandType::Reg(base),
+                    arm::ArmOperandType::Imm(value)
+                    | arm::ArmOperandType::Cimm(value)
+                    | arm::ArmOperandType::Pimm(value),
+                ) => (*base, i64::from(*value)),
+                _ => return None,
+            },
+            (Some(first), None) => match first.op_type {
+                arm::ArmOperandType::Imm(value)
+                | arm::ArmOperandType::Cimm(value)
+                | arm::ArmOperandType::Pimm(value) => (dest, i64::from(value)),
+                _ => return None,
+            },
             _ => return None,
         };
         return Some(ValueEffect {
             dest,
             source: ValueSource::AddImmediate {
                 base,
-                imm: immediate,
+                imm: if is_subtraction {
+                    immediate.checked_neg()?
+                } else {
+                    immediate
+                },
             },
         });
     }
@@ -2221,7 +2258,7 @@ fn parse_hex_target(operands: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Decoder, MemoryAccessKind, parse_hex_target};
+    use super::{Decoder, MemoryAccessKind, ValueSource, parse_hex_target};
     use crate::loader::ArchKind;
 
     #[test]
@@ -2358,6 +2395,38 @@ mod tests {
             decoder.register_name(access.base.expect("base register")),
             Some("a1".to_owned())
         );
+    }
+
+    #[test]
+    fn thumb_subs_immediate_is_a_negative_add() {
+        let decoder = Decoder::new(ArchKind::Thumb).unwrap();
+        let insn = decoder
+            .decode_one(&[0x01, 0x38], 0x1000)
+            .unwrap()
+            .expect("subs must decode");
+        let effect = insn.value.expect("subs value effect");
+        assert_eq!(decoder.register_name(effect.dest).as_deref(), Some("r0"));
+        let ValueSource::AddImmediate { base, imm } = effect.source else {
+            panic!("expected add-immediate effect");
+        };
+        assert_eq!(decoder.register_name(base).as_deref(), Some("r0"));
+        assert_eq!(imm, -1);
+    }
+
+    #[test]
+    fn aarch64_subs_immediate_is_a_negative_add() {
+        let decoder = Decoder::new(ArchKind::Aarch64).unwrap();
+        let insn = decoder
+            .decode_one(&[0x00, 0x04, 0x00, 0x71], 0x1000)
+            .unwrap()
+            .expect("subs must decode");
+        let effect = insn.value.expect("subs value effect");
+        assert_eq!(decoder.register_name(effect.dest).as_deref(), Some("x0"));
+        let ValueSource::AddImmediate { base, imm } = effect.source else {
+            panic!("expected add-immediate effect");
+        };
+        assert_eq!(decoder.register_name(base).as_deref(), Some("x0"));
+        assert_eq!(imm, -1);
     }
 
     #[test]
