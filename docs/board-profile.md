@@ -517,10 +517,13 @@ bound 1 and no shared resource budgets.
 
 ```toml
 [system]
+horizon_ns = 5_000_000       # required when any task has period_ns
 
 [[system.tasks]]
 target = "sensor_task"       # function name, symbol, task name or 0x address
-activations = 3              # default: 1
+period_ns = 1_000_000        # derives a release upper bound
+release_offset_ns = 0        # default: 0
+release_jitter_ns = 0        # default: 0
 resources = { bus = 1 }      # units consumed per activation
 
 [[system.resources]]
@@ -530,11 +533,28 @@ capacity = 4                 # units available in the bound window
 
 | Field | Required | Meaning |
 |---|---|---|
+| `[system].horizon_ns` | with period | Bound window in nanoseconds; required when any task has `period_ns`. |
 | `[[system.tasks]].target` | yes | Function/task selector: full name, last `::` segment, symbol, or `0x` address. It must resolve to exactly one concurrent execution root. |
-| `[[system.tasks]].activations` | no | Maximum activations modeled in the bound window; positive, default `1`. |
+| `[[system.tasks]].activations` | no | Explicit activation upper bound; positive. Ignored for the default only when a period is supplied. |
+| `[[system.tasks]].period_ns` | no | Release period in nanoseconds; positive. Derives the activation bound from `horizon_ns`. |
+| `[[system.tasks]].release_offset_ns` | no | First-release offset from the window start; default `0`; requires `period_ns`. |
+| `[[system.tasks]].release_jitter_ns` | no | Conservative first-release jitter; default `0`; requires `period_ns`. |
 | `[[system.tasks]].resources` | no | Inline map of resource name to units consumed per activation. |
 | `[[system.resources]].name` | yes | Resource budget name. |
 | `[[system.resources]].capacity` | yes | Positive units available in the bound window. |
+
+With `period_ns`, the release bound is:
+
+```text
+earliest = max(0, release_offset_ns - release_jitter_ns)
+releases = floor((horizon_ns - earliest) / period_ns) + 1
+```
+
+If both `activations` and `period_ns` are present, the smaller bound is used.
+Periodic releases currently constrain the **number** of activations only;
+release instants, deadlines and ordering require a timed Petri net. Offset or
+jitter without a period is a configuration error, and a period without
+`horizon_ns` is rejected.
 
 The state-equation ILP treats each task's activation bound as an upper bound
 and adds:

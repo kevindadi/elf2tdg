@@ -362,11 +362,13 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.9`.
+`cfg_schema_version` is `2.10`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.9 adds the Petri state-equation solution, task activation
-bounds, cumulative resource budgets and `max_activations`. Version 2.8 adds the
-layered `system_model` and its coarse system bound. Version 2.7 adds multicore
+functions. Version 2.10 adds periodic release bounds (`horizon_ns`, `period_ns`,
+release offset/jitter). Version 2.9 adds the Petri state-equation solution,
+task activation bounds, cumulative resource budgets and `max_activations`.
+Version 2.8 adds the layered `system_model` and its coarse system bound.
+Version 2.7 adds multicore
 access-budget interference metadata at program and block level. Version 2.6 records the source of each explicit loop
 bound, including bounds imported from F4/FFX files. Version 2.5 adds IPET solver results, the
 backend name and the flow facts used by the model. Version 2.4 adds per-function
@@ -396,7 +398,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.9",
+  "cfg_schema_version": "2.10",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {

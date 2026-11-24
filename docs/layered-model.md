@@ -59,6 +59,30 @@ name = "bus"
 capacity = 4                 # units available in this bound window
 ```
 
+For periodic tasks, set `horizon_ns` on `[system]` and `period_ns` on the task:
+
+```toml
+[system]
+horizon_ns = 5_000_000
+
+[[system.tasks]]
+target = "sensor_task"
+period_ns = 1_000_000
+release_offset_ns = 0
+release_jitter_ns = 0
+```
+
+The activation bound is derived as:
+
+```text
+earliest = max(0, release_offset_ns - release_jitter_ns)
+releases = floor((horizon_ns - earliest) / period_ns) + 1
+```
+
+If both `period_ns` and an explicit `activations` are present, the smaller
+bound is kept. This constrains the number of releases in the window; it does
+not enforce release instants, deadlines or order.
+
 `target` is resolved against the recovered concurrent execution roots. A target
 may be the full function/task name, its last `::` segment, a symbol, or a `0x`
 address. Unknown or ambiguous targets are configuration errors rather than
@@ -117,8 +141,9 @@ again.
 ## What the bound does not cover
 
 - Per-task response time or scheduling order.
-- Periodic release times, jitter, deadlines or a hyperperiod; activation
-  bounds are static per-window counts.
+- Release instants, deadlines or ordering. Activation bounds are static
+  per-window counts; release jitter only shifts the first-release count
+  conservatively.
 - Lock/semaphore hold semantics, waiting and priority inversion. Resources are
   cumulative budgets only.
 - Preemption, interrupt nesting and interrupt latency.
@@ -205,7 +230,7 @@ layered model is a composition IR, not an additional certification gate yet.
 The state-equation solver and static activation/resource budgets are in place.
 The next steps tighten them:
 
-1. add periodic release times, jitter or a hyperperiod to the task places;
+1. add release instants, deadlines and per-release ordering to the task net;
 2. encode spawn/join dependencies as fork/join arcs and ordering constraints;
 3. add lock/bus hold semantics and arbitration-aware resource places;
 4. add bounded reachability or timed-Petri-net analysis for per-task response
