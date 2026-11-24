@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.13";
+pub const CFG_SCHEMA_VERSION: &str = "2.14";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -338,6 +338,9 @@ pub struct CfgSystemTask {
     /// Local worst-case time in nanoseconds, when finite.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_ns: Option<f64>,
+    /// Fixed scheduling priority, when configured. Larger values run first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u32>,
     /// Maximum activations modeled in the current bound window.
     pub activation_bound: u32,
     /// Period used to derive the release bound, when configured.

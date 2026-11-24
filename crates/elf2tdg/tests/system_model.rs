@@ -413,6 +413,102 @@ period_ns = 6_000
 }
 
 #[test]
+fn derives_fixed_priority_response_bounds_from_profile() {
+    let Some(elf_path) = example_elf() else {
+        eprintln!("skipping fixed-priority test: example ELF is absent");
+        return;
+    };
+    let profile_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/cortex-m7-wcet.toml");
+    let Ok(mut profile_text) = std::fs::read_to_string(&profile_path) else {
+        eprintln!("skipping fixed-priority test: WCET profile is absent");
+        return;
+    };
+    profile_text.push_str(
+        r#"
+[system]
+
+[[system.tasks]]
+target = "app_main"
+priority = 1
+
+[[system.tasks]]
+target = "sensor_task"
+priority = 3
+
+[[system.tasks]]
+target = "monitor_task"
+priority = 2
+
+[[system.tasks]]
+target = "HardFault"
+priority = 4
+"#,
+    );
+    let profile = BoardProfile::parse_toml(&profile_text).expect("valid priority profile");
+    let image = loader::load(&elf_path).expect("example ELF must load");
+    let analysis = analyze_with_cfg(
+        &image,
+        &AnalysisOptions {
+            board_profile: Some(profile),
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("analysis must succeed");
+
+    let model = analysis
+        .cfg
+        .system_model
+        .as_ref()
+        .expect("layered system model");
+    assert_eq!(model.response.model, "fixed-priority-busy-period");
+    let named = |suffix: &str| {
+        model
+            .tasks
+            .iter()
+            .find(|task| {
+                task.name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with(suffix))
+            })
+            .unwrap_or_else(|| panic!("task ending with {suffix}"))
+    };
+    let response_for = |task: &elf2tdg::cfg::CfgSystemTask| {
+        model
+            .response
+            .tasks
+            .iter()
+            .find(|response| response.task == task.id)
+            .expect("response entry")
+    };
+    let app_main = named("app_main");
+    let sensor = named("sensor_task");
+    let monitor = named("monitor_task");
+    let hard_fault = named("HardFault");
+    assert_eq!(app_main.priority, Some(1));
+    assert_eq!(sensor.priority, Some(3));
+    assert_eq!(monitor.priority, Some(2));
+    assert_eq!(hard_fault.priority, Some(4));
+
+    let app_response = response_for(app_main);
+    let sensor_response = response_for(sensor);
+    let hard_fault_response = response_for(hard_fault);
+    assert_eq!(
+        hard_fault_response.time_ns,
+        Some(hard_fault.time_ns.expect("HardFault local time"))
+    );
+    let expected_sensor =
+        sensor.time_ns.expect("sensor local time") + hard_fault.time_ns.expect("HardFault time");
+    assert!((sensor_response.time_ns.expect("sensor response") - expected_sensor).abs() < 1e-6);
+    assert!(sensor_response.time_ns < app_response.time_ns);
+    assert_eq!(sensor_response.status, "partial");
+
+    let text = text_report::render_text(&analysis.cfg, Some("sensor_task"), false)
+        .expect("text report must render");
+    assert!(text.contains("fixed-priority-busy-period"));
+}
+
+#[test]
 fn checks_discrete_time_expanded_deadline_feasibility() {
     let Some(elf_path) = example_elf() else {
         eprintln!("skipping timed model test: example ELF is absent");

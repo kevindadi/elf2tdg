@@ -164,6 +164,8 @@ impl SystemProfile {
 pub(crate) struct SystemTaskProfile {
     target: String,
     #[serde(default)]
+    priority: Option<u32>,
+    #[serde(default)]
     activations: Option<u32>,
     #[serde(default)]
     period_ns: Option<u64>,
@@ -180,6 +182,10 @@ pub(crate) struct SystemTaskProfile {
 impl SystemTaskProfile {
     pub(crate) fn target(&self) -> &str {
         &self.target
+    }
+
+    pub(crate) fn priority(&self) -> Option<u32> {
+        self.priority
     }
 
     pub(crate) fn activations(&self) -> Option<u32> {
@@ -1867,6 +1873,7 @@ default_loop_bound = 4
 
 [[system.tasks]]
 target = "sensor_task"
+priority = 3
 activations = 3
 resources = { bus = 1 }
 
@@ -1878,6 +1885,7 @@ capacity = 4
         let system = profile.system().expect("system profile");
         assert_eq!(system.tasks().len(), 1);
         assert_eq!(system.tasks()[0].target(), "sensor_task");
+        assert_eq!(system.tasks()[0].priority(), Some(3));
         assert_eq!(system.tasks()[0].activations(), Some(3));
         assert_eq!(system.tasks()[0].resources().get("bus"), Some(&1));
         assert_eq!(system.resources().len(), 1);

@@ -36,6 +36,7 @@ struct LinkConstraint {
 
 #[derive(Clone, Debug)]
 struct TaskConfig {
+    priority: Option<u32>,
     activations: u32,
     period_ns: Option<u64>,
     release_offset_ns: Option<u64>,
@@ -100,6 +101,7 @@ pub(crate) fn analyze(
     let mut configs: Vec<TaskConfig> = roots
         .iter()
         .map(|_| TaskConfig {
+            priority: None,
             activations: 1,
             period_ns: None,
             release_offset_ns: None,
@@ -119,6 +121,7 @@ pub(crate) fn analyze(
                 ));
             }
             matched[index] = true;
+            configs[index].priority = entry.priority();
             let period = entry.period_ns();
             let derived = match period {
                 Some(period) => {
@@ -790,20 +793,76 @@ fn contributes(task: &CfgSystemTask) -> bool {
     task.activation_bound > 0 || task.period_ns.is_some()
 }
 
-fn response_input_status(tasks: &[CfgSystemTask]) -> &'static str {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseModel {
+    WorkConserving,
+    FixedPriority,
+}
+
+impl ResponseModel {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::WorkConserving => "work-conserving-busy-period",
+            Self::FixedPriority => "fixed-priority-busy-period",
+        }
+    }
+
+    /// Whether `other` can delay `target` under this scheduling model.
+    ///
+    /// Equal-priority tasks are included because the tie-break order is not
+    /// modeled. If a priority is unexpectedly missing, include the task rather
+    /// than risk an unsound exclusion.
+    fn interferes(self, other: &CfgSystemTask, target: &CfgSystemTask) -> bool {
+        match self {
+            Self::WorkConserving => true,
+            Self::FixedPriority => match (other.priority, target.priority) {
+                (Some(other), Some(target)) => other >= target,
+                _ => true,
+            },
+        }
+    }
+}
+
+/// Select the response model and count tasks that prevent priority-aware
+/// analysis while some other task does configure a priority.
+fn response_model(tasks: &[CfgSystemTask]) -> (ResponseModel, Option<usize>) {
+    let contributing = tasks.iter().filter(|task| contributes(task)).count();
+    let missing = tasks
+        .iter()
+        .filter(|task| contributes(task) && task.priority.is_none())
+        .count();
+    if contributing == 0 || missing == contributing {
+        // No priorities configured, or no task contributes at all.
+        (ResponseModel::WorkConserving, None)
+    } else if missing == 0 {
+        (ResponseModel::FixedPriority, None)
+    } else {
+        // A partial priority assignment cannot define a fixed-priority bound.
+        (ResponseModel::WorkConserving, Some(missing))
+    }
+}
+
+fn response_input_status(
+    tasks: &[CfgSystemTask],
+    target: &CfgSystemTask,
+    model: ResponseModel,
+) -> &'static str {
+    let relevant = |task: &CfgSystemTask| {
+        contributes(task) && (task.id == target.id || model.interferes(task, target))
+    };
     if tasks
         .iter()
-        .any(|task| contributes(task) && task.status == CfgWcetStatus::Unbounded)
+        .any(|task| relevant(task) && task.status == CfgWcetStatus::Unbounded)
     {
         "unbounded"
     } else if tasks
         .iter()
-        .any(|task| contributes(task) && task.status == CfgWcetStatus::Unknown)
+        .any(|task| relevant(task) && task.status == CfgWcetStatus::Unknown)
     {
         "unknown"
     } else if tasks
         .iter()
-        .any(|task| contributes(task) && task.status == CfgWcetStatus::Partial)
+        .any(|task| relevant(task) && task.status == CfgWcetStatus::Partial)
     {
         "partial"
     } else {
@@ -816,7 +875,11 @@ enum ResponseInput {
     Unavailable(CfgSystemResponseTask),
 }
 
-fn response_input(target: &CfgSystemTask, no_local_time: bool) -> ResponseInput {
+fn response_input(
+    tasks: &[CfgSystemTask],
+    target: &CfgSystemTask,
+    model: ResponseModel,
+) -> ResponseInput {
     if target.activation_bound == 0 && target.period_ns.is_none() {
         return ResponseInput::Unavailable(response_entry(
             target,
@@ -835,26 +898,85 @@ fn response_input(target: &CfgSystemTask, no_local_time: bool) -> ResponseInput 
             Some("local time estimate is unavailable"),
         ));
     };
-    if no_local_time {
+    let interfering_without_time = tasks.iter().any(|task| {
+        task.id != target.id
+            && contributes(task)
+            && model.interferes(task, target)
+            && task.time_ns.is_none()
+    });
+    if interfering_without_time {
         return ResponseInput::Unavailable(response_entry(
             target,
             "no-local-time",
             None,
             false,
-            Some("another task has no local time estimate"),
+            Some("an interfering task has no local time estimate"),
         ));
     }
     ResponseInput::Time(time_ns)
 }
 
+fn response_caveats(model: ResponseModel, priority_fallback: Option<usize>) -> Vec<String> {
+    let mut caveats = Vec::with_capacity(8);
+    match model {
+        ResponseModel::WorkConserving => {
+            caveats.push(
+                "Response bounds assume a single analyzed core and a work-conserving scheduler with arbitrary preemption order."
+                    .to_owned(),
+            );
+            if let Some(missing) = priority_fallback {
+                caveats.push(format!(
+                    "Priority-aware analysis was not selected because {missing} modeled task(s) lack a priority; configure a priority for every modeled task. The work-conserving bound remains conservative."
+                ));
+            }
+        }
+        ResponseModel::FixedPriority => {
+            caveats.push(
+                "Response bounds assume a single analyzed core and a preemptive fixed-priority scheduler; larger priority values run first."
+                    .to_owned(),
+            );
+            caveats.push(
+                "A task interferes when its priority is greater than or equal to the target's priority; lower-priority tasks are excluded."
+                    .to_owned(),
+            );
+            caveats.push(
+                "Equal-priority tasks are conservatively treated as interference because the same-priority tie-break order is not modeled."
+                    .to_owned(),
+            );
+            caveats.push(
+                "Priority inversion, priority inheritance and priority-ceiling protocols are not modeled."
+                    .to_owned(),
+            );
+        }
+    }
+    caveats.push(
+        "Each periodic task contributes one carry-in activation plus releases inside the busy window; non-periodic tasks contribute their full activation bound."
+            .to_owned(),
+    );
+    caveats.push(
+        "Periodic activation bounds derived from horizon_ns are horizon counts and do not truncate a busy window that extends past the horizon; the response layer counts releases for the full window."
+            .to_owned(),
+    );
+    caveats.push(
+        "The target task's own earlier activations are included as self-interference, so the result bounds any activation, including one with queued prior work."
+            .to_owned(),
+    );
+    caveats.push(
+        "Preemption cost, fork/join blocking, locks, resources, interrupts, other cores, caches and CRPD are not modeled."
+            .to_owned(),
+    );
+    caveats.push(
+        "Partial or unbounded local WCET inputs make the response bound partial or unbounded."
+            .to_owned(),
+    );
+    caveats
+}
+
 fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
-    let input_status = response_input_status(tasks);
-    let no_local_time = tasks
-        .iter()
-        .any(|task| contributes(task) && task.time_ns.is_none());
+    let (model, priority_fallback) = response_model(tasks);
     let mut responses = Vec::with_capacity(tasks.len());
     for target in tasks {
-        let target_time = match response_input(target, no_local_time) {
+        let target_time = match response_input(tasks, target, model) {
             ResponseInput::Time(time_ns) => time_ns,
             ResponseInput::Unavailable(response) => {
                 responses.push(response);
@@ -870,7 +992,9 @@ fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
             for other in tasks {
                 if other.id == target.id {
                     next += self_extra_activations(other, response) * target_time;
-                } else if let Some(other_time) = other.time_ns {
+                } else if model.interferes(other, target)
+                    && let Some(other_time) = other.time_ns
+                {
                     next += other_activations(other, response) * other_time;
                 }
             }
@@ -908,7 +1032,7 @@ fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
                 .is_some_and(|deadline| response > nanos(deadline));
             responses.push(response_entry(
                 target,
-                input_status,
+                response_input_status(tasks, target, model),
                 Some(response),
                 deadline_missed,
                 None,
@@ -916,22 +1040,9 @@ fn response_times(tasks: &[CfgSystemTask]) -> CfgSystemResponseInfo {
         }
     }
     CfgSystemResponseInfo {
-        model: "work-conserving-busy-period".to_owned(),
+        model: model.name().to_owned(),
         tasks: responses,
-        caveats: vec![
-            "Response bounds assume a single analyzed core and a work-conserving scheduler with arbitrary preemption order."
-                .to_owned(),
-            "Each periodic task contributes one carry-in activation plus releases inside the busy window; non-periodic tasks contribute their full activation bound."
-                .to_owned(),
-            "Periodic activation bounds derived from horizon_ns are horizon counts and do not truncate a busy window that extends past the horizon; the response layer counts releases for the full window."
-                .to_owned(),
-            "The target task's own earlier activations are included as self-interference, so the result bounds any activation, including one with queued prior work."
-                .to_owned(),
-            "Preemption cost, fork/join blocking, locks, resources, interrupts, other cores, caches and CRPD are not modeled."
-                .to_owned(),
-            "Partial or unbounded local WCET inputs make the response bound partial or unbounded."
-                .to_owned(),
-        ],
+        caveats: response_caveats(model, priority_fallback),
     }
 }
 
@@ -973,6 +1084,7 @@ fn system_task(id: &str, root: &CfgWcetRoot, config: &TaskConfig) -> CfgSystemTa
         status: root.status,
         cycles: root.cycles,
         time_ns: root.time_ns,
+        priority: config.priority,
         activation_bound: config.activations,
         period_ns: config.period_ns,
         release_offset_ns: config.release_offset_ns,
@@ -1156,6 +1268,7 @@ mod tests {
             },
             cycles: None,
             time_ns,
+            priority: None,
             activation_bound,
             period_ns,
             release_offset_ns: None,
@@ -1221,6 +1334,75 @@ mod tests {
         let response = response_for(&result, "t0");
         assert_eq!(response.status, "bounded");
         assert_eq!(response.time_ns, Some(0.0));
+    }
+
+    #[test]
+    fn fixed_priority_excludes_lower_priority_interference() {
+        let mut target = task("t0", Some(100.0), 1, None);
+        target.priority = Some(1);
+        let mut high = task("t1", Some(50.0), 1, None);
+        high.priority = Some(2);
+        let mut equal = task("t2", Some(30.0), 1, None);
+        equal.priority = Some(1);
+        let mut low = task("t3", Some(1_000.0), 1, None);
+        low.priority = Some(0);
+
+        let result = response_times(&[target, high, equal, low]);
+        assert_eq!(result.model, "fixed-priority-busy-period");
+        // t0: own work + higher-priority t1 + equal-priority t2; low t3 is
+        // excluded.
+        assert_eq!(response_for(&result, "t0").time_ns, Some(180.0));
+        assert_eq!(response_for(&result, "t1").time_ns, Some(50.0));
+        assert_eq!(response_for(&result, "t2").time_ns, Some(180.0));
+        // The lowest-priority task still sees every other task.
+        assert_eq!(response_for(&result, "t3").time_ns, Some(1_180.0));
+    }
+
+    #[test]
+    fn fixed_priority_counts_periodic_higher_priority_releases() {
+        let mut target = task("t0", Some(100.0), 1, None);
+        target.priority = Some(1);
+        let mut high = task("t1", Some(50.0), 1, Some(1_000));
+        high.priority = Some(2);
+        let mut low = task("t2", Some(1_000.0), 1, None);
+        low.priority = Some(0);
+
+        let result = response_times(&[target, high, low]);
+        assert_eq!(result.model, "fixed-priority-busy-period");
+        assert_eq!(response_for(&result, "t0").time_ns, Some(150.0));
+        assert_eq!(response_for(&result, "t2").time_ns, Some(1_200.0));
+    }
+
+    #[test]
+    fn response_falls_back_when_priorities_are_incomplete() {
+        let mut target = task("t0", Some(100.0), 1, None);
+        target.priority = Some(1);
+        let high = task("t1", Some(50.0), 1, None);
+
+        let result = response_times(&[target, high]);
+        assert_eq!(result.model, "work-conserving-busy-period");
+        assert_eq!(response_for(&result, "t0").time_ns, Some(150.0));
+        assert!(
+            result
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("lack a priority"))
+        );
+    }
+
+    #[test]
+    fn fixed_priority_ignores_lower_priority_input_status() {
+        let mut target = task("t0", Some(100.0), 1, None);
+        target.priority = Some(1);
+        let mut high = task("t1", Some(50.0), 1, None);
+        high.priority = Some(2);
+        let mut low = task("t2", Some(10.0), 1, None);
+        low.priority = Some(0);
+        low.status = CfgWcetStatus::Partial;
+
+        let result = response_times(&[target, high, low]);
+        assert_eq!(response_for(&result, "t0").status, "bounded");
+        assert_eq!(response_for(&result, "t0").time_ns, Some(150.0));
     }
 
     fn place(id: &str, kind: &str, tokens: u32, capacity: u32) -> CfgSystemPlace {
