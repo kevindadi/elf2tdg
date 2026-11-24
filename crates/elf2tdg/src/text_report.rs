@@ -621,6 +621,9 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
         let time = response
             .time_ns
             .map_or_else(|| "-".to_owned(), |time| format!("{time:.1} ns"));
+        let blocking = response.blocking_ns.map_or_else(String::new, |blocking| {
+            format!(", blocking {blocking:.1} ns")
+        });
         let missed = if response.deadline_missed {
             " DEADLINE-MISS"
         } else {
@@ -628,7 +631,7 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
         };
         let _ = writeln!(
             out,
-            "  * response {} {} time {time}, deadline {deadline}{missed}",
+            "  * response {} {} time {time}, deadline {deadline}{blocking}{missed}",
             response.task, response.status
         );
         if let Some(reason) = &response.reason {
@@ -644,6 +647,55 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
     }
     for caveat in &model.response.caveats {
         let _ = writeln!(out, "    caveat: {caveat}");
+    }
+    if let Some(blocking) = &model.blocking {
+        kv(out, "blocking model", &blocking.model);
+        for entry in blocking.tasks.iter().take(16) {
+            let time = entry
+                .time_ns
+                .map_or_else(|| "-".to_owned(), |time| format!("{time:.1} ns"));
+            let source = match (&entry.blocker, &entry.lock) {
+                (Some(blocker), Some(lock)) => format!(", blocker {blocker} holding {lock}"),
+                _ => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "  * blocking {} {} time {time}{source}",
+                entry.task, entry.status
+            );
+            if let Some(reason) = &entry.reason {
+                let _ = writeln!(out, "    reason: {reason}");
+            }
+        }
+        if blocking.tasks.len() > 16 {
+            let _ = writeln!(
+                out,
+                "  ... {} more blocking result(s)",
+                blocking.tasks.len().saturating_sub(16)
+            );
+        }
+        for inversion in blocking.inversions.iter().take(16) {
+            let _ = writeln!(
+                out,
+                "  * inversion {} blocked {} (prio {}) by {} (prio {}), hold {} ns",
+                inversion.lock,
+                inversion.blocked,
+                inversion.blocked_priority,
+                inversion.blocker,
+                inversion.blocker_priority,
+                inversion.hold_ns
+            );
+        }
+        if blocking.inversions.len() > 16 {
+            let _ = writeln!(
+                out,
+                "  ... {} more inversion(s)",
+                blocking.inversions.len().saturating_sub(16)
+            );
+        }
+        for caveat in &blocking.caveats {
+            let _ = writeln!(out, "    caveat: {caveat}");
+        }
     }
     if let Some(timed) = &model.timed {
         kv(out, "timed model", &timed.model);
@@ -682,6 +734,15 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
         );
         if let Some(priority) = task.priority {
             let _ = writeln!(out, "    priority {priority}");
+        }
+        if !task.locks.is_empty() {
+            let locks = task
+                .locks
+                .iter()
+                .map(|(name, hold_ns)| format!("{name}={hold_ns} ns"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(out, "    locks {locks}");
         }
         if let Some(period) = task.period_ns {
             let offset = task.release_offset_ns.unwrap_or(0);
