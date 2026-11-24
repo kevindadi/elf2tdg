@@ -185,9 +185,17 @@ pub const BUILTIN_PASSES: &[PassInfo] = &[
     },
     PassInfo {
         id: "flow.facts",
-        title: "Loop bounds from the board profile and F4/FFX files",
+        title: "Loop bounds from the board profile, F4/FFX files and counted-loop inference",
         kind: PassKind::Analysis,
         requires: &["ir.cfg"],
+        provides: &["flow.facts"],
+        soundness: Soundness::ModelDependent,
+    },
+    PassInfo {
+        id: "flow.auto-loop-bounds",
+        title: "Conservative counted-loop bound inference",
+        kind: PassKind::Analysis,
+        requires: &["ir.cfg", "ir.instructions"],
         provides: &["flow.facts"],
         soundness: Soundness::ModelDependent,
     },
@@ -272,6 +280,13 @@ pub fn plan(profile: Option<&BoardProfile>, path_analysis: PathAnalysis) -> Vec<
                     profile.is_some_and(|profile| profile.wcet().is_some()),
                     "no [wcet] section in the board profile",
                     "[wcet] is present; --flowfacts files are merged at analysis time",
+                ),
+                "flow.auto-loop-bounds" => optional(
+                    profile
+                        .and_then(BoardProfile::wcet)
+                        .is_some_and(crate::board_profile::WcetProfile::auto_loop_bounds),
+                    "no [wcet] section with auto_loop_bounds enabled",
+                    "[wcet] enables conservative counted-loop inference",
                 ),
                 "wcet.longest-path" => path_analysis_pass(
                     profile,
@@ -447,6 +462,39 @@ default_loop_bound = 4
     }
 
     #[test]
+    fn auto_loop_bounds_pass_follows_the_profile() {
+        let enabled = wcet_profile();
+        let states = plan(Some(&enabled), PathAnalysis::LongestPath);
+        let pass = states
+            .iter()
+            .find(|pass| pass.info.id == "flow.auto-loop-bounds")
+            .expect("auto-loop-bound descriptor");
+        assert_eq!(pass.status, PassStatus::Enabled);
+
+        let disabled = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:pass-test-no-auto"
+arch = "thumb"
+cpu = "cortex-m7"
+
+[clocks.core]
+hz = 1_000_000
+
+[wcet]
+auto_loop_bounds = false
+"#,
+        )
+        .expect("valid profile");
+        let states = plan(Some(&disabled), PathAnalysis::LongestPath);
+        let pass = states
+            .iter()
+            .find(|pass| pass.info.id == "flow.auto-loop-bounds")
+            .expect("auto-loop-bound descriptor");
+        assert_eq!(pass.status, PassStatus::Disabled);
+    }
+
+    #[test]
     fn optional_passes_are_disabled_without_a_profile() {
         let states = plan(None, PathAnalysis::LongestPath);
         for id in [
@@ -456,6 +504,7 @@ default_loop_bound = 4
             "analysis.data-memory",
             "analysis.multicore",
             "flow.facts",
+            "flow.auto-loop-bounds",
             "wcet.longest-path",
             "wcet.ipet",
             "system.layered-model",
