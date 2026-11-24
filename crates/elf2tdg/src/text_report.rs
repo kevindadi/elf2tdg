@@ -565,6 +565,9 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
         "max activations",
         &model.bound.max_activations.to_string(),
     );
+    if let Some(horizon) = model.horizon_ns {
+        kv(out, "horizon", &format!("{horizon} ns"));
+    }
     for place in model.places.iter().filter(|place| place.kind == "budget") {
         let _ = writeln!(
             out,
@@ -615,6 +618,14 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
             task.activation_bound,
             wcet_cost(task.status, task.cycles, task.time_ns)
         );
+        if let Some(period) = task.period_ns {
+            let offset = task.release_offset_ns.unwrap_or(0);
+            let jitter = task.release_jitter_ns.unwrap_or(0);
+            let _ = writeln!(
+                out,
+                "    period {period} ns, offset {offset} ns, jitter {jitter} ns"
+            );
+        }
     }
     if model.tasks.len() > 16 {
         let _ = writeln!(
