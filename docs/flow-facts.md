@@ -1,7 +1,7 @@
 # F4 and FFX flow facts
 
-Loop bounds are supplied by the board profile's `[wcet]` section or by
-external flow-fact files:
+Loop bounds are supplied by the board profile's `[wcet]` section, by external
+flow-fact files, or by conservative counted-loop inference enabled by default:
 
 ```sh
 elf2tdg firmware.elf --board-profile board.toml \
@@ -23,6 +23,11 @@ The two backends share the same resolved facts:
 4. If two explicit bounds disagree for the same loop header, the larger bound
    is kept and a warning is recorded in the WCET caveats.
 5. An imported bound overrides the profile's default bound (it is explicit).
+6. With `auto_loop_bounds = true` (the default), a recognized counted-loop
+   bound is added only when no larger explicit/default bound exists. If the
+   inferred value is larger than an explicit or default bound, the larger
+   inferred value is kept conservatively and a warning is recorded. Set
+   `auto_loop_bounds = false` to disable inference.
 
 Context-specific facts (F4 `in ...` paths or FFX `<call>` nesting) are applied
 context-insensitively because the current WCET analysis is per-function. This

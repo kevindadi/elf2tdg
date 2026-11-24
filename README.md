@@ -51,6 +51,8 @@ Implemented:
     per-block read/write/fetch attribution;
   - loop-bounded per-function and per-root WCET estimates, from either a CFG
     longest-path backend or an IPET/ILP backend solved with pure-Rust `microlp`;
+  - conservative automatic loop-bound inference for canonical counted loops
+    (`auto_loop_bounds`, enabled by default);
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add
     or override loop bounds by address, function + offset, or source line.
   Profiles are strictly validated, and timing metadata records the profile ID,
@@ -284,16 +286,17 @@ The analyzer produces WCET estimates when a board profile enables `[wcet]`.
 `--path-analysis longest-path` is the default; `--path-analysis ipet` builds a
 per-function integer linear program with flow conservation, loop bounds and
 bottom-up callee summaries, solved by the pure-Rust `microlp` backend. Loop
-bounds come from the profile and/or imported F4/FFX files; conflicting bounds
-keep the larger value and context-specific facts are applied context-insensitively
-with a warning.
+bounds come from the profile, imported F4/FFX files, and conservative
+counted-loop inference; conflicting bounds keep the larger value and
+context-specific facts are applied context-insensitively with a warning.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved
 calls/control flow or non-terminating loops bounded by assumption mark a result
 `partial`; a partial objective is not a safe upper bound. Results are static
-estimates, not hardware proofs: loop bounds must be supplied, cache/branch/
-data-memory results are not call-path context-sensitive, and interrupts, DMA,
-bus contention and concurrency are not modeled. Multicore interference is an
-explicit per-access/per-fetch budget, not a reconstructed arbitration schedule.
+estimates, not hardware proofs: loops outside the recognized counted-loop
+patterns need explicit bounds, cache/branch/data-memory results are not
+call-path context-sensitive, and interrupts, DMA, bus contention and
+concurrency are not modeled. Multicore interference is an explicit
+per-access/per-fetch budget, not a reconstructed arbitration schedule.
 Without `[wcet]`, static cycle counts remain per-block costs, not execution-time
 bounds.
 

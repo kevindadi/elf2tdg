@@ -51,7 +51,7 @@ Rust `dylib` interface.
 | Level | Capability | Status |
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
-| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, per-function IPET, pure-Rust `microlp`; automatic inference and non-loop facts are next |
+| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, per-function IPET, pure-Rust `microlp`; non-loop facts, context-sensitive facts and infeasible paths are next |
 | P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
 | P3 | Context-sensitive summaries, recursion, SMT infeasible paths | planned |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
@@ -68,7 +68,8 @@ It builds a per-function integer program with flow conservation, natural-loop
 bounds and callee summaries, solves it with `microlp`, and records the positive
 block execution counts. The remaining P1 work is:
 
-1. Automatic loop-bound inference and non-loop flow facts (branch/call counts).
+1. Non-loop flow facts (branch/call counts), context-sensitive facts, and
+   inference beyond canonical counted loops.
 2. A convenience API for programmatic flow facts beyond files and `[wcet]`.
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
 4. Making IPET the default only after the bounded-results contract is validated.
@@ -121,7 +122,9 @@ from summed local estimates.
 ## Current limits
 
 - IPET is implemented but still context-insensitive; loop bounds come from the
-  profile or imported F4/FFX files, and automatic inference is not implemented.
+  profile, imported F4/FFX files, or canonical counted-loop inference. Non-loop
+  flow facts, context-sensitive facts and infeasible-path constraints are not
+  implemented.
 - Cache/branch/data-memory analyses are per-function and not path-sensitive.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.

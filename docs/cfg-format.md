@@ -586,10 +586,11 @@ block address:
 
 A `partial` IPET objective is an estimate over the resolved inputs, not a safe
 upper bound. The top-level `wcet.flow_facts` object records the loop bounds and
-defaults used by the model, including bounds imported from F4/FFX files; each
-explicit loop bound carries a `source`. Irreducible cycles that are not covered
-by natural loop bounds are reported as `unbounded` instead of producing an
-unsound model. `blocks` is one optimal solution; alternate optima may distribute
+defaults used by the model, including bounds imported from F4/FFX files and
+conservatively inferred counted-loop bounds; each loop bound carries a
+`source` such as `board-profile [wcet]`, an imported file, or
+`inferred counted loop`. Irreducible cycles that are not covered by natural
+loop bounds are reported as `unbounded` instead of producing an unsound model. `blocks` is one optimal solution; alternate optima may distribute
 execution counts differently while producing the same objective. See
 [flow-facts.md](flow-facts.md) for F4/FFX resolution and merge rules.
 
@@ -862,11 +863,12 @@ asserts that the CFG validates.
 - Function selection by name requires symbols, unless DWARF provided the name;
   stripped images can still be selected by address.
 - IPET is per-function and context-insensitive: callee summaries are reused
-  across call sites. Flow facts come from `[wcet]` and imported F4/FFX files;
-  automatic loop-bound inference is not implemented. Irreducible cycles are
-  unbounded, non-terminating bounded loops are `partial`, and a `partial`
-  objective is not a safe upper bound. Multicore interference uses an explicit
-  access budget; arbitration schedules, shared caches, DMA and concurrency are
-  not modeled. The layered `system_model` is an activation/resource-budget
-  state-equation relaxation plus a slot-based feasibility check, not a
-  scheduler, exact-reachability analysis or response-time analysis.
+  across call sites. Flow facts come from `[wcet]`, imported F4/FFX files or
+  conservative counted-loop inference; non-loop and context-sensitive facts
+  are not implemented. Irreducible cycles are unbounded, non-terminating
+  bounded loops are `partial`, and a `partial` objective is not a safe upper
+  bound. Multicore interference uses an explicit access budget; arbitration
+  schedules, shared caches, DMA and concurrency are not modeled. The layered
+  `system_model` is an activation/resource-budget state-equation relaxation
+  plus response, blocking and slot-based feasibility analyses, not a
+  scheduler or exact-reachability analysis.

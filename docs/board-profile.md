@@ -479,6 +479,7 @@ the profile's default bound. See [flow-facts.md](flow-facts.md).
 
 | Field | Required | Meaning |
 |---|---|---|
+| `auto_loop_bounds` | no | Enable conservative counted-loop inference; defaults to `true`. Explicit profile/F4/FFX bounds always win unless the inferred bound is larger, which is kept conservatively with a warning. |
 | `default_loop_bound` | no | Maximum iterations for natural loops without a specific bound. If omitted, unbounded loops make the containing function unbounded. |
 | `bound_nonterminating_loops` | no | Apply loop bounds to natural loops with no static exit and mark the result `partial`; defaults to `false`. |
 | `max_states` | no | Maximum unrolled predictor-free CFG states per function for `longest-path`; defaults to `100000`. Ignored by IPET. |
@@ -486,6 +487,7 @@ the profile's default bound. See [flow-facts.md](flow-facts.md).
 
 ```toml
 [wcet]
+auto_loop_bounds = true
 default_loop_bound = 4
 bound_nonterminating_loops = true
 max_states = 20_000
@@ -494,6 +496,21 @@ max_states = 20_000
 header = 0x0800_0100
 bound = 100
 ```
+
+Automatic inference recognizes canonical counted loops only:
+
+- one natural loop with one latch and one exit edge;
+- a constant induction-register initialization that dominates the header;
+- exactly one constant self-update (`add`/`sub` immediate) on every path to
+  the latch;
+- an adjacent `cmp` + conditional branch, a flag-setting `subs`/`adds` +
+  branch, or a RISC-V branch against the zero register;
+- no calls or other writes to the induction register on the initialization
+  path or in the loop;
+- a positive signed-32-bit counter range that does not wrap.
+
+Anything else remains unbounded and requires an explicit fact. Inferred bounds
+are recorded in `flow_facts.loops` with an `inferred counted loop` source.
 
 The longest-path backend takes each block's upper cycle bound, computes the
 longest path through the function CFG, and adds callee WCET summaries at call
@@ -531,8 +548,9 @@ When a core frequency is known, per-function and per-root `time_ns` values are
 emitted. Results are per execution root from `ProgramCfg.roots`; they are not a
 system-level WCET across preempting interrupts or concurrent tasks. The model is
 a static estimate, not a hardware proof: cache/branch/data-memory results are
-local, loop bounds must be supplied, and interrupts, DMA, bus contention and
-concurrency are outside the analysis.
+local, loops outside the recognized counted-loop patterns need explicit
+bounds, and interrupts, DMA, bus contention and concurrency are outside the
+analysis.
 
 ### Layered system model
 
