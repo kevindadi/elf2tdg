@@ -519,6 +519,7 @@ bound 1 and no shared resource budgets.
 [system]
 horizon_ns = 5_000_000       # required when any task has period_ns
 slot_ns = 100_000            # enables the discrete-time-expanded model
+blocking_model = "priority-ceiling"  # enables blocking/priority-inversion analysis
 
 [[system.tasks]]
 target = "sensor_task"       # function name, symbol, task name or 0x address
@@ -528,10 +529,14 @@ release_offset_ns = 0        # default: 0
 release_jitter_ns = 0        # default: 0
 deadline_ns = 2_000_000      # relative deadline for timed and response analysis
 resources = { bus = 1 }      # units consumed per activation
+locks = { uart = 800 }       # max hold time per critical section, in ns
 
 [[system.resources]]
 name = "bus"
 capacity = 4                 # units available in the bound window
+
+[[system.locks]]
+name = "uart"                # mutex-like lock used by blocking analysis
 
 [[system.links]]
 from = "app_main"
@@ -544,6 +549,7 @@ count = 2                    # default: 1
 |---|---|---|
 | `[system].horizon_ns` | with period | Bound window in nanoseconds; required when any task has `period_ns` or `slot_ns`. |
 | `[system].slot_ns` | no | Positive time-slot width; enables discrete-time-expanded feasibility analysis and requires `horizon_ns`. |
+| `[system].blocking_model` | with locks | `priority-ceiling` enables blocking and direct priority-inversion analysis. It requires a distinct priority for every contributing task. |
 | `[[system.tasks]].target` | yes | Function/task selector: full name, last `::` segment, symbol, or `0x` address. It must resolve to exactly one concurrent execution root. |
 | `[[system.tasks]].priority` | no | Fixed scheduling priority; larger values run first. All contributing tasks need a priority to enable fixed-priority response analysis. |
 | `[[system.tasks]].activations` | no | Explicit activation upper bound; positive. Ignored for the default only when a period is supplied. |
@@ -552,8 +558,10 @@ count = 2                    # default: 1
 | `[[system.tasks]].release_jitter_ns` | no | Conservative first-release jitter; default `0`; requires `period_ns`. |
 | `[[system.tasks]].deadline_ns` | no | Relative deadline from each release for timed feasibility and the response-time deadline check; positive. |
 | `[[system.tasks]].resources` | no | Inline map of resource name to units consumed per activation. |
+| `[[system.tasks]].locks` | no | Inline map of lock name to the maximum hold time in nanoseconds for one critical section. Requires `blocking_model`. |
 | `[[system.resources]].name` | yes | Resource budget name. |
 | `[[system.resources]].capacity` | yes | Positive units available in the bound window. |
+| `[[system.locks]].name` | yes | Mutex-like lock name used by blocking analysis. |
 | `[[system.links]].from` | yes | Source task selector; must resolve to a concurrent task. |
 | `[[system.links]].to` | yes | Target task selector; must resolve to a distinct concurrent task. |
 | `[[system.links]].kind` | yes | `fork` or `join`. |
@@ -589,8 +597,36 @@ priority greater than or equal to the target interfere, and lower-priority
 tasks are excluded. Equal-priority tasks are conservatively included because
 tie-breaking is not modeled. If only some contributing tasks have priorities,
 the analysis falls back to `work-conserving-busy-period` and records a caveat;
-it does not mix the two models silently. A fixed-priority result assumes
-preemptive fixed-priority scheduling with no blocking or priority inversion.
+it does not mix the two models silently. A fixed-priority result normally
+assumes preemptive fixed-priority scheduling with no blocking or priority
+inversion.
+
+Setting `blocking_model = "priority-ceiling"` enables a blocking-time layer.
+Locks are declared under `[system.locks]`; each task lists its maximum hold
+time per critical section under `locks`:
+
+```toml
+[system]
+blocking_model = "priority-ceiling"
+
+[[system.locks]]
+name = "uart"
+
+[[system.tasks]]
+target = "monitor_task"
+priority = 2
+locks = { uart = 900 }       # ns, including nested critical sections
+```
+
+The lock ceiling is the maximum priority of modeled tasks that use the lock. A
+task can be blocked by at most one lower-priority critical section whose lock
+ceiling is at least the target's priority; `B_i` is the largest such hold time.
+Response time includes `B_i` once. The report also lists direct priority
+inversions: every lock shared by a higher- and a lower-priority task, with the
+lower task's hold time. Blocking analysis requires a distinct priority for every
+contributing task and every lock user to be in the modeled task set. It assumes
+the immediate priority ceiling protocol; priority inheritance, chained blocking,
+spinlocks and non-preemptive sections are not modeled.
 
 The state-equation ILP treats each task's activation bound as an upper bound
 and adds:
@@ -607,11 +643,12 @@ order or deadlines. A fork link means each source activation enables at most
 at most `count` source joins. Discovered CFG concurrency annotations remain
 metadata; only explicit links become ILP constraints.
 
-Resource places are **cumulative per-window budgets**, not lock or bus-hold
-semantics. An over-committed budget reduces the modeled firing counts rather
-than adding waiting or arbitration time. Unknown/ambiguous task targets, undeclared
-resources, zero capacities/units and duplicate declarations are configuration
-errors. See [layered-model.md](layered-model.md).
+`[system.resources]` places are **cumulative per-window budgets**, not lock or
+bus-hold semantics. An over-committed budget reduces the modeled firing counts
+rather than adding waiting or arbitration time. `[system.locks]` is the separate
+mutex/blocking model. Unknown/ambiguous task targets, undeclared resources or
+locks, zero capacities/units/hold times and duplicate declarations are
+configuration errors. See [layered-model.md](layered-model.md).
 
 ### Instruction-cost overrides
 

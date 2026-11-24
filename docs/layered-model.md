@@ -156,9 +156,10 @@ because the same-priority tie-break order is not modeled.
 Both models evaluate:
 
 ```text
-R_i = C_i + sum(j != i) N_j(R_i) * C_j + M_i(R_i) * C_i
+R_i = B_i + C_i + sum(j != i) N_j(R_i) * C_j + M_i(R_i) * C_i
 ```
 
+`B_i` is the configured blocking bound and is zero without a blocking model.
 The sum runs over the tasks selected by the interference model. For a periodic
 task `k`, both terms count one carry-in activation plus every release that can
 fall inside a window of length `R`:
@@ -205,16 +206,63 @@ Assumptions:
 - periodic releases follow the configured period and jitter;
 - non-periodic activation bounds are true total bounds;
 - jobs may queue, so same-task self-interference is included;
-- no blocking, priority inversion or inheritance, fork/join ordering, locks,
-  resources, interrupts, other cores, caches, CRPD or preemption overhead;
+- without a blocking model, no blocking, priority inversion or inheritance,
+  fork/join ordering, locks, resources, interrupts, other cores, caches, CRPD
+  or preemption overhead;
 - partial local WCET inputs make the response result `partial`.
 
 Both results are safe upper bounds only under their stated assumptions and are
 deliberately conservative. A fixed-priority result is valid only when the
-target scheduler is actually preemptive fixed-priority and no blocking or
-priority inversion occurs; otherwise the work-conserving model is the safer
-choice. The next tightening steps are timed state-class analysis and explicit
-priority-inversion/blocking terms.
+target scheduler is actually preemptive fixed-priority. A configured blocking
+model adds the assumptions in the next section.
+
+## Blocking and priority inversion
+
+`blocking_model = "priority-ceiling"` enables a blocking layer for
+fixed-priority systems. Locks and per-task hold times are explicit:
+
+```toml
+[system]
+blocking_model = "priority-ceiling"
+
+[[system.locks]]
+name = "uart"
+
+[[system.tasks]]
+target = "sensor_task"
+priority = 3
+locks = { uart = 200 }
+
+[[system.tasks]]
+target = "monitor_task"
+priority = 2
+locks = { uart = 900 }
+```
+
+The ceiling of a lock is the maximum priority of the modeled tasks that use
+it. Under the immediate priority ceiling protocol, a task activation can be
+blocked by at most one lower-priority critical section whose lock ceiling is at
+least the target's priority:
+
+```text
+B_i = max { hold(j, r) | priority(j) < priority(i),
+                         ceiling(r) >= priority(i) }
+```
+
+`B_i` is added once to the response fixed point. It is conservative for a task
+that does not itself lock a resource, because a ceiling-boosted lower-priority
+holder can still delay it. The blocking report also lists every direct priority
+inversion on a shared lock: higher-priority blocked task, lower-priority
+blocking task, and the blocker's hold time.
+
+Blocking analysis requires every contributing task to have a distinct priority
+and every lock user to be in the modeled task set. Each `hold_ns` must
+upper-bound one contiguous acquisition, including any nested critical sections.
+Priority inheritance, chained/multiple blocking, spinlocks, non-preemptive
+sections, interrupt masking and unmodeled lock users are not modeled. The
+blocking bound is valid only if the target RTOS implements the immediate
+priority ceiling protocol as configured; using it for a plain mutex or priority
+inheritance system would be unsound.
 
 ## Fork/join links
 
@@ -291,8 +339,10 @@ again.
 - Release instants, deadlines or ordering. Activation bounds are static
   per-window counts; release jitter only shifts the first-release count
   conservatively.
-- Lock/semaphore hold semantics, waiting and priority inversion. Resources are
-  cumulative budgets only.
+- Lock/semaphore hold semantics, waiting and priority inversion are not part
+  of the state-equation bound. The separate response layer supports configured
+  priority-ceiling blocking; `[system.resources]` here remain cumulative
+  budgets only.
 - Preemption, interrupt nesting and interrupt latency.
 - Other cores' actual workloads, bus arbitration or shared caches. Other cores
   are represented only by the explicit `[multicore]` access budget.
@@ -321,6 +371,7 @@ layered model is a composition IR, not an additional certification gate yet.
         "status": "bounded",
         "cycles": 87.0,
         "priority": 3,
+        "locks": { "uart": 200 },
         "activation_bound": 3
       }
     ],
@@ -362,6 +413,29 @@ layered model is a composition IR, not an additional certification gate yet.
         "count": 2
       }
     ],
+    "blocking": {
+      "model": "priority-ceiling",
+      "tasks": [
+        {
+          "task": "t1",
+          "status": "bounded",
+          "time_ns": 900.0,
+          "blocker": "t2",
+          "lock": "uart"
+        }
+      ],
+      "inversions": [
+        {
+          "lock": "uart",
+          "blocked": "t1",
+          "blocker": "t2",
+          "blocked_priority": 3,
+          "blocker_priority": 2,
+          "hold_ns": 900
+        }
+      ],
+      "caveats": ["..."]
+    },
     "response": {
       "model": "fixed-priority-busy-period",
       "tasks": [
@@ -369,7 +443,8 @@ layered model is a composition IR, not an additional certification gate yet.
           "task": "t1",
           "function": "fn:0x800085c",
           "status": "bounded",
-          "time_ns": 6375.0,
+          "time_ns": 1507.2,
+          "blocking_ns": 900.0,
           "deadline_ns": 2000000,
           "deadline_missed": false
         }
@@ -413,11 +488,12 @@ layered model is a composition IR, not an additional certification gate yet.
 The state-equation solver and static activation/resource budgets are in place.
 The next steps tighten them:
 
-1. add timed state-class response analysis and explicit priority-inversion,
-   blocking and deadline-overrun terms;
+1. add timed state-class response analysis and explicit deadline-overrun and
+   same-task backlog terms;
 2. derive fork/join links from concurrency annotations when per-activation
    execution bounds are proven, and add temporal ordering;
 3. include fork/join links and resource budgets in the timed model;
-4. add lock/bus hold semantics and arbitration-aware resource places;
+4. add priority-inheritance, chained-blocking, spinlock and bus-hold semantics,
+   plus arbitration-aware resource places;
 5. add the system bounds to the safe gate only after the model and solver are
    validated.

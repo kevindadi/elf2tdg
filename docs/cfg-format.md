@@ -362,11 +362,13 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.14`.
+`cfg_schema_version` is `2.15`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.14 adds per-task priorities and fixed-priority
-response-time bounds. Version 2.13 adds per-task work-conserving response-time
-bounds. Version 2.12 adds the discrete-time-expanded feasibility result.
+functions. Version 2.15 adds priority-ceiling blocking, per-task lock hold
+times and direct priority-inversion records. Version 2.14 adds per-task
+priorities and fixed-priority response-time bounds. Version 2.13 adds per-task
+work-conserving response-time bounds. Version 2.12 adds the
+discrete-time-expanded feasibility result.
 Version 2.11 adds explicit fork/join link constraints. Version 2.10 adds
 periodic release bounds (`horizon_ns`, `period_ns`, release offset/jitter).
 Version 2.9 adds the Petri state-equation solution,
@@ -402,7 +404,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.14",
+  "cfg_schema_version": "2.15",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -629,7 +631,8 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `wcet` | WCET model (`cfg-longest-path` or `cfg-ipet`), backend/solver, flow facts, per-root results and caveats |
 | `system_model` | layered task/place/transition model, concurrency dependencies, activation/periodic/resource budgets, explicit fork/join links, coarse system bound and optional timed feasibility |
 | `system_model.timed` | discrete-time-expanded slot model: status, horizon slots, activation/execution-slot counts and caveats |
-| `system_model.response` | per-task work-conserving or fixed-priority busy-window response bound, deadline/miss flags and caveats |
+| `system_model.blocking` | priority-ceiling blocking bounds, direct priority inversions and caveats |
+| `system_model.response` | per-task work-conserving or fixed-priority busy-window response bound, included blocking time, deadline/miss flags and caveats |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
@@ -694,10 +697,13 @@ task, records spawn/join/await/callback dependencies, and reports a coarse
 `analyzed-core-activation-bounds` bound. It solves the state-equation ILP
 relaxation with `microlp`; the total-work bound is separate from
 `system_model.response`, which carries per-task work-conserving or
-fixed-priority response bounds. Exact reachability and a full timed state-class
-model are not solved yet. With `[system]`,
-task activation bounds and cumulative resource-budget constraints are included.
-See [layered-model.md](layered-model.md) for the model and assumptions.
+fixed-priority response bounds. Configured `[system]` locks add
+`system_model.blocking` with priority-ceiling bounds and direct
+priority-inversion records; response entries then include `blocking_ns`.
+Exact reachability and a full timed state-class model are not solved yet. With
+`[system]`, task activation bounds and cumulative resource-budget constraints
+are included. See [layered-model.md](layered-model.md) for the model and
+assumptions.
 
 These fields are CFG-native. They are populated from function CFGs and runtime
 analysis facts; serializing the CFG JSON is self-contained. `calls`,

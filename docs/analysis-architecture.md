@@ -52,7 +52,7 @@ Rust `dylib` interface.
 | P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, per-function IPET, pure-Rust `microlp`; automatic inference and non-loop facts are next |
 | P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
 | P3 | Context-sensitive summaries, recursion, SMT infeasible paths | planned |
-| P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/link constraints, work-conserving and fixed-priority per-task response bounds, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, blocking/priority-inversion terms, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
+| P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
 
 The IPET first version is available with:
@@ -124,9 +124,10 @@ from summed local estimates.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.
 - The layered system model solves the state-equation relaxation and computes
-  work-conserving or fixed-priority busy-window response bounds. It does not
-  model exact reachability, blocking/priority inversion or timed-state order;
-  spawn/join annotations are recorded separately from explicit link
+  work-conserving or fixed-priority busy-window response bounds, plus optional
+  priority-ceiling blocking and direct priority inversions. It does not model
+  exact reachability, priority inheritance/chained blocking or timed-state
+  order; spawn/join annotations are recorded separately from explicit link
   constraints.
 - Cortex-M7, generic RISC-V, generic AArch64 and x86-64 models are statistical.
   Opt-in bounded abstract AArch64/RISC-V models (`aarch64-bounded`,

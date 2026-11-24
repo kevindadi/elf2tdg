@@ -35,8 +35,9 @@ The report is deterministic and uses plain text only.
    cycles/nanoseconds and the analysis caveats.
 7. **Layered system model** — when a WCET profile is active: task/place/
    transition counts, state-equation ILP solver/status/objective, firing
-   counts, horizon/period/activation bounds, resource budgets, fork/join
-   links, per-task response bounds/deadline misses, discrete-time-expanded
+   counts, horizon/period/activation bounds, resource budgets, priorities,
+   lock hold times, fork/join links, per-task response bounds/deadline misses,
+   priority-ceiling blocking and inversion records, discrete-time-expanded
    feasibility status, task costs and the model assumptions.
 8. **Interprocedural call graph** — caller, callee, call site, flags and
    bounded candidate sets.
@@ -101,7 +102,8 @@ unsound model.
 
 When a WCET profile is active, the report also includes the layered system
 model, its state-equation ILP solution and work-conserving or fixed-priority
-per-task response bounds. The `analyzed-core-activation-bounds` relaxation is a
-coarse total-work bound; `system_model.response` carries the separate per-task
-bound. See
+per-task response bounds. Configured priority-ceiling locking adds per-task
+blocking times and direct priority-inversion lines. The
+`analyzed-core-activation-bounds` relaxation is a coarse total-work bound;
+`system_model.response` carries the separate per-task bound. See
 [layered-model.md](layered-model.md).
