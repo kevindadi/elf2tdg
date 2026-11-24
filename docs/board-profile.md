@@ -518,12 +518,14 @@ bound 1 and no shared resource budgets.
 ```toml
 [system]
 horizon_ns = 5_000_000       # required when any task has period_ns
+slot_ns = 100_000            # enables the discrete-time-expanded model
 
 [[system.tasks]]
 target = "sensor_task"       # function name, symbol, task name or 0x address
 period_ns = 1_000_000        # derives a release upper bound
 release_offset_ns = 0        # default: 0
 release_jitter_ns = 0        # default: 0
+deadline_ns = 2_000_000      # relative deadline, when timed analysis is enabled
 resources = { bus = 1 }      # units consumed per activation
 
 [[system.resources]]
@@ -539,12 +541,14 @@ count = 2                    # default: 1
 
 | Field | Required | Meaning |
 |---|---|---|
-| `[system].horizon_ns` | with period | Bound window in nanoseconds; required when any task has `period_ns`. |
+| `[system].horizon_ns` | with period | Bound window in nanoseconds; required when any task has `period_ns` or `slot_ns`. |
+| `[system].slot_ns` | no | Positive time-slot width; enables discrete-time-expanded feasibility analysis and requires `horizon_ns`. |
 | `[[system.tasks]].target` | yes | Function/task selector: full name, last `::` segment, symbol, or `0x` address. It must resolve to exactly one concurrent execution root. |
 | `[[system.tasks]].activations` | no | Explicit activation upper bound; positive. Ignored for the default only when a period is supplied. |
 | `[[system.tasks]].period_ns` | no | Release period in nanoseconds; positive. Derives the activation bound from `horizon_ns`. |
 | `[[system.tasks]].release_offset_ns` | no | First-release offset from the window start; default `0`; requires `period_ns`. |
 | `[[system.tasks]].release_jitter_ns` | no | Conservative first-release jitter; default `0`; requires `period_ns`. |
+| `[[system.tasks]].deadline_ns` | no | Relative deadline from each release for the timed feasibility model; positive. |
 | `[[system.tasks]].resources` | no | Inline map of resource name to units consumed per activation. |
 | `[[system.resources]].name` | yes | Resource budget name. |
 | `[[system.resources]].capacity` | yes | Positive units available in the bound window. |
@@ -561,9 +565,13 @@ releases = floor((horizon_ns - earliest) / period_ns) + 1
 ```
 
 If both `activations` and `period_ns` are present, the smaller bound is used.
-Periodic releases currently constrain the **number** of activations only;
-release instants, deadlines and ordering require a timed Petri net. Offset or
-jitter without a period is a configuration error, and a period without
+Periodic releases constrain the **number** of activations. When `slot_ns` is
+set, a discrete-time-expanded Petri-net model also checks release/deadline
+feasibility over `horizon_ns`. It rounds local WCET up to whole slots, allows
+preemption only at slot boundaries, excludes releases at or after the horizon,
+and does not yet include fork/join links or resource budgets. It is a
+model-dependent feasibility check, not a per-task response-time bound. Offset or
+jitter without a period is a configuration error, and a period or slot without
 `horizon_ns` is rejected.
 
 The state-equation ILP treats each task's activation bound as an upper bound

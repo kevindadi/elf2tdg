@@ -59,8 +59,8 @@ Implemented:
 - Layered system model (`system_model`): per-root local WCET becomes tasks,
   Petri-net-shaped places/transitions, concurrency dependencies, optional
   `[system]` activation, periodic-release, resource and explicit fork/join
-  link constraints plus a state-equation ILP relaxation of the analyzed-core
-  workload. See
+  link constraints plus a state-equation ILP relaxation and optional
+  discrete-time-expanded feasibility check. See
   [docs/layered-model.md](docs/layered-model.md).
 - Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
 - Compile-time analysis pass plan (`--list-passes`) with explicit pass
@@ -257,11 +257,12 @@ Still deferred:
 - Fully computed pointer targets beyond the bounded patterns above, such as
   values transformed through arbitrary arithmetic, indirect callees, or
   pointer state that crosses more than a few call levels.
-- Tightening the layered Petri-net model: release instants/deadlines,
-  automatic fork/join derivation and ordering, lock/bus hold and arbitration
-  semantics, bounded reachability/timed PN and per-task response-time bounds.
-  The current system model supports static activation bounds, periodic release
-  counts, cumulative resource budgets and explicit fork/join count links.
+- Tightening the layered Petri-net model: finer timed-PN state semantics and
+  per-task response-time bounds, automatic fork/join derivation and ordering,
+  lock/bus hold and arbitration semantics, and bounded reachability. The
+  current system model supports static activation bounds, periodic release
+  counts, cumulative resource budgets, explicit fork/join count links and a
+  slot-based deadline feasibility check.
 - General `.await` lowering beyond recognized runtime handle poll functions.
 - Full DWARF type/location coverage beyond the bounded extraction above:
   location lists, split-DWARF cross-unit references, nested anonymous

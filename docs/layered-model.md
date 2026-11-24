@@ -8,13 +8,14 @@ conservative, and it is exported in CFG JSON as `system_model`.
 ```text
 Layer 1  root/local WCET        cfg-longest-path or cfg-ipet per execution root
 Layer 2  layered system model  tasks, places, transitions, dependencies
-Layer 3  state-equation ILP    current coarse reachability relaxation
-Layer 4  future timed PN       exact reachability / response-time analysis
+Layer 3  state-equation ILP    coarse reachability relaxation
+Layer 4  discrete-time PN      slot-based deadline feasibility
+Layer 5  future timed PN       exact reachability / response-time analysis
 ```
 
-The current implementation builds Layer 2 and solves its state-equation ILP
-relaxation with the pure-Rust `microlp` backend. It does not solve exact
-reachability or a timed Petri net yet.
+The current implementation builds Layers 2-4 with the pure-Rust `microlp`
+backend. It does not solve exact reachability or produce per-task timed
+response-time bounds yet.
 
 ## What is modeled
 
@@ -106,6 +107,24 @@ They constrain total modeled usage and can reduce firing counts; the ILP
 maximizes total work, so a task with a positive activation bound may receive
 fewer (even zero) modeled firings when another task consumes the budget. They
 do not add resource waiting time or arbitration delay.
+
+## Timed feasibility
+
+Setting `[system].slot_ns` enables a discrete-time-expanded Petri-net model.
+It uses `horizon_ns`, each task's release count, optional `deadline_ns` and
+local `time_ns`:
+
+- local WCET is rounded up to whole `slot_ns` slots;
+- execution is preemptible only at slot boundaries;
+- each activation needs that many execution slots before its deadline;
+- the analyzed core can execute at most one slot at a time;
+- releases at or after `horizon_ns` are excluded.
+
+The result is a feasibility status (`feasible`, `infeasible`, `unsupported` or
+`no-local-time`), not a worst-case response-time bound. The model is
+model-dependent: slot rounding and slot-boundary preemption can both miss or
+reject real schedules. Fork/join links and cumulative resource budgets are not
+part of the timed feasibility model yet.
 
 ## Fork/join links
 
@@ -251,6 +270,16 @@ layered model is a composition IR, not an additional certification gate yet.
         "count": 2
       }
     ],
+    "timed": {
+      "model": "discrete-time-expanded-petri",
+      "slot_ns": 100000,
+      "horizon_slots": 50,
+      "status": "feasible",
+      "activations": 8,
+      "execution_slots": 8,
+      "variables": 392,
+      "caveats": ["..."]
+    },
     "petri": {
       "solver": "microlp",
       "relaxation": "state-equation",
@@ -278,11 +307,11 @@ layered model is a composition IR, not an additional certification gate yet.
 The state-equation solver and static activation/resource budgets are in place.
 The next steps tighten them:
 
-1. add release instants, deadlines and per-release ordering to the task net;
+1. replace slot-boundary preemption with finer timed-PN state semantics and
+   produce per-task response-time bounds;
 2. derive fork/join links from concurrency annotations when per-activation
    execution bounds are proven, and add temporal ordering;
-3. add lock/bus hold semantics and arbitration-aware resource places;
-4. add bounded reachability or timed-Petri-net analysis for per-task response
-   time;
+3. include fork/join links and resource budgets in the timed model;
+4. add lock/bus hold semantics and arbitration-aware resource places;
 5. add the system bound to the safe gate only after the model and solver are
    validated.

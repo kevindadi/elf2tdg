@@ -36,7 +36,8 @@ The report is deterministic and uses plain text only.
 7. **Layered system model** — when a WCET profile is active: task/place/
    transition counts, state-equation ILP solver/status/objective, firing
    counts, horizon/period/activation bounds, resource budgets, fork/join
-   links, task costs and the model assumptions.
+   links, discrete-time-expanded feasibility status, task costs and the model
+   assumptions.
 8. **Interprocedural call graph** — caller, callee, call site, flags and
    bounded candidate sets.
 9. **Concurrency annotations** — spawn/join/await/callback/scope sites.
