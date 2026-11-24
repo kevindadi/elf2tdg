@@ -7,24 +7,46 @@
 //! task/place/transition/dependency structure for a later timed-Petri-net
 //! solver.
 
+use std::collections::BTreeMap;
+
 use good_lp::{
     Expression, ProblemVariables, Solution, SolutionStatus, SolverModel, Variable, constraint,
 };
 
+use crate::board_profile::BoardProfile;
 use crate::cfg::{
     CfgConcurrencyKind, CfgSystemBound, CfgSystemDependency, CfgSystemFiring, CfgSystemModelInfo,
     CfgSystemPetriSolution, CfgSystemPlace, CfgSystemTask, CfgSystemTransition, CfgWcetRoot,
     CfgWcetStatus, ProgramCfg,
 };
+use crate::rules::normalize_crate_hashes;
 use crate::wcet::frequency_hz;
+
+#[derive(Clone, Debug)]
+struct TaskConfig {
+    activations: u32,
+    resources: BTreeMap<String, u32>,
+}
 
 /// Builds the layered system model from the completed per-root WCET layer.
 ///
-/// Returns `None` when no `[wcet]` analysis was configured.
-#[must_use]
+/// Returns `Ok(None)` when no `[wcet]` analysis was configured. Profile task
+/// selectors are resolved against the recovered execution roots; an unknown or
+/// ambiguous selector is a configuration error.
+///
+/// # Errors
+///
+/// Returns an error when a `[system]` task target cannot be resolved to exactly
+/// one execution root, or when a configured resource has no matching place.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
-    let wcet = program.wcet.as_ref()?;
+pub(crate) fn analyze(
+    program: &ProgramCfg,
+    board: Option<&BoardProfile>,
+) -> Result<Option<CfgSystemModelInfo>, String> {
+    let Some(wcet) = program.wcet.as_ref() else {
+        return Ok(None);
+    };
+    let system = board.and_then(BoardProfile::system);
     let cores = program
         .multicore
         .as_ref()
@@ -58,14 +80,49 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
     } else {
         concurrent
     };
+    let mut configs: Vec<TaskConfig> = roots
+        .iter()
+        .map(|_| TaskConfig {
+            activations: 1,
+            resources: BTreeMap::new(),
+        })
+        .collect();
+    let mut matched = vec![false; roots.len()];
+    if let Some(system) = system {
+        for entry in system.tasks() {
+            let index = resolve_task(program, &roots, entry.target())?;
+            if matched[index] {
+                return Err(format!(
+                    "board profile system target {:?} resolves to an execution root already configured",
+                    entry.target()
+                ));
+            }
+            matched[index] = true;
+            configs[index].activations = entry.activations();
+            configs[index].resources.clone_from(entry.resources());
+        }
+    }
 
-    let mut tasks = Vec::with_capacity(roots.len());
     let mut places = vec![CfgSystemPlace {
         id: core_place.clone(),
         kind: "core".to_owned(),
         tokens: 1,
         capacity: 1,
     }];
+    let mut resource_places: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(system) = system {
+        for resource in system.resources() {
+            let id = format!("budget:{}", resource.name());
+            places.push(CfgSystemPlace {
+                id: id.clone(),
+                kind: "budget".to_owned(),
+                tokens: resource.capacity(),
+                capacity: resource.capacity(),
+            });
+            resource_places.insert(resource.name().to_owned(), id);
+        }
+    }
+    let mut tasks = Vec::with_capacity(roots.len());
     let mut transitions = Vec::with_capacity(wcet.roots.len());
     let mut all_cycles = true;
     let mut all_time = true;
@@ -76,7 +133,8 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
         let task_id = format!("t{index}");
         let ready_place = format!("ready:{task_id}");
         let done_place = format!("done:{task_id}");
-        let task = system_task(&task_id, root);
+        let config = &configs[index];
+        let task = system_task(&task_id, root, config.activations);
         if let Some(value) = task.cycles {
             cycles += value;
         } else {
@@ -101,18 +159,35 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
             tokens: 0,
             capacity: activation_bound,
         });
+        let mut inputs = vec![ready_place, core_place.clone()];
+        for (name, units) in &config.resources {
+            let Some(resource) = resource_places.get(name) else {
+                return Err(format!(
+                    "board profile system task {:?} references resource {name:?} without a place",
+                    root.name.as_deref().unwrap_or(root.function.as_str())
+                ));
+            };
+            for _ in 0..*units {
+                inputs.push(resource.clone());
+            }
+        }
         transitions.push(CfgSystemTransition {
             id: format!("execute:{task_id}"),
             kind: "execute".to_owned(),
             task: task_id.clone(),
             cost_cycles: task.cycles,
             activations: activation_bound,
-            inputs: vec![ready_place, core_place.clone()],
+            inputs,
             outputs: vec![done_place, core_place.clone()],
         });
         tasks.push(task);
     }
 
+    let max_activations = configs
+        .iter()
+        .map(|config| config.activations)
+        .max()
+        .unwrap_or(1);
     let aggregate = aggregate_status(&tasks);
     let petri = solve_state_equation(&places, &transitions);
     let (bound_status, bound_cycles, bound_time_ns) = bound_from_solution(
@@ -123,7 +198,7 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
         frequency_hz(program),
     );
     let mut caveats = vec![
-        "The layered bound is a coarse total-work bound over one activation per execution root, not a per-task response-time bound."
+        "The layered bound is a coarse total-work bound over the configured activation bounds, not a per-task response-time bound."
             .to_owned(),
         "The state equation M_final = M0 + C*x is a necessary-condition relaxation of Petri-net reachability; infeasible interleavings may remain, so the result is conservative."
             .to_owned(),
@@ -131,9 +206,26 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
             .to_owned(),
         "Lock/semaphore waiting, periodic activations, preemption and scheduling order are not modeled in this first layer."
             .to_owned(),
-        "The model requires an exact final marking for ready/done/core places; transition firing counts are solved by the pure-Rust microlp backend."
+        "Activation bounds are upper bounds; ready/done markings stay within [0, capacity], the core marking is exact, and firing counts are solved by the pure-Rust microlp backend."
             .to_owned(),
     ];
+    if let Some(system) = system {
+        caveats.push(format!(
+            "Task activation bounds and cumulative resource budgets come from [system] ({} task(s), {} resource(s)).",
+            system.tasks().len(),
+            system.resources().len()
+        ));
+        caveats.push(
+            "Resource places are cumulative per-window budgets; lock/bus hold semantics, arbitration and resource waiting time are not modeled."
+                .to_owned(),
+        );
+        if !system.resources().is_empty() {
+            caveats.push(
+                "A cumulative budget may reduce modeled firing counts; a task with a positive activation bound can receive fewer (even zero) firings when another task consumes the budget."
+                    .to_owned(),
+            );
+        }
+    }
     if fallback_to_boot_roots {
         caveats.push(
             "No task/ISR/callback roots were available; startup/main roots are used as the fallback task set."
@@ -169,7 +261,7 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
         ));
     }
 
-    Some(CfgSystemModelInfo {
+    Ok(Some(CfgSystemModelInfo {
         model: "layered-petri-state-equation".to_owned(),
         cores,
         core_id,
@@ -181,25 +273,27 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
         dependencies: dependencies(program),
         petri,
         bound: CfgSystemBound {
-            scope: "analyzed-core-single-activation".to_owned(),
+            scope: "analyzed-core-activation-bounds".to_owned(),
             status: bound_status,
             cycles: bound_cycles,
             time_ns: bound_time_ns,
             tasks: u32::try_from(roots.len()).unwrap_or(u32::MAX),
+            max_activations,
             assumptions: vec![
-                "Each modeled execution root runs at most once in the bound window.".to_owned(),
+                "Each modeled execution root runs at most its activation bound in the bound window."
+                    .to_owned(),
                 "All modeled roots execute on the analyzed core; other cores are represented only by the configured [multicore] budget."
                     .to_owned(),
                 "Local root costs already include configured cache, pipeline, data-memory and multicore block costs; this layer does not add them again."
                     .to_owned(),
                 "The state equation is a reachability relaxation; the solver may accept firing-count combinations that no concrete schedule can realize."
                     .to_owned(),
-                "No periodic activation, preemption, scheduling order or lock-wait model is applied in this first layer."
+                "No periodic release, preemption, scheduling order or lock-wait model is applied in this first layer."
                     .to_owned(),
             ],
         },
         caveats,
-    })
+    }))
 }
 
 #[allow(
@@ -238,11 +332,6 @@ fn solve_state_equation(
     let mut constraints = Vec::new();
     for place in places {
         let initial = f64::from(place.tokens);
-        let final_tokens = match place.kind.as_str() {
-            "ready" => 0.0,
-            "done" => f64::from(place.capacity),
-            _ => initial,
-        };
         let mut delta = Expression::from(0.0);
         for (transition, variable) in transitions.iter().zip(&firing) {
             let inputs = transition
@@ -261,7 +350,15 @@ fn solve_state_equation(
                 delta += Expression::from(*variable) * f64::from(coefficient);
             }
         }
-        constraints.push(constraint::eq(delta, final_tokens - initial));
+        match place.kind.as_str() {
+            // Activation bounds are upper bounds: a task may fire fewer times
+            // when a shared budget or another constraint prevents the maximum.
+            "ready" | "done" | "budget" => {
+                constraints.push(constraint::geq(delta.clone(), -initial));
+                constraints.push(constraint::leq(delta, f64::from(place.capacity) - initial));
+            }
+            _ => constraints.push(constraint::eq(delta, 0.0)),
+        }
     }
 
     let mut model = vars.maximise(objective.clone()).using(good_lp::microlp);
@@ -359,7 +456,7 @@ fn bound_from_solution(
     (aggregate, Some(objective), time)
 }
 
-fn system_task(id: &str, root: &CfgWcetRoot) -> CfgSystemTask {
+fn system_task(id: &str, root: &CfgWcetRoot, activation_bound: u32) -> CfgSystemTask {
     CfgSystemTask {
         id: id.to_owned(),
         function: root.function.clone(),
@@ -368,8 +465,64 @@ fn system_task(id: &str, root: &CfgWcetRoot) -> CfgSystemTask {
         status: root.status,
         cycles: root.cycles,
         time_ns: root.time_ns,
-        activation_bound: 1,
+        activation_bound,
     }
+}
+
+fn resolve_task(
+    program: &ProgramCfg,
+    roots: &[&CfgWcetRoot],
+    target: &str,
+) -> Result<usize, String> {
+    let target = target.trim();
+    let address = parse_address(target);
+    let matches: Vec<usize> = roots
+        .iter()
+        .enumerate()
+        .filter(|(_, root)| {
+            root.function.as_str() == target
+                || root
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name_matches(name, target))
+                || program.function(&root.function).is_some_and(|function| {
+                    name_matches(&function.primary_name, target)
+                        || function
+                            .demangled_name
+                            .as_deref()
+                            .is_some_and(|name| name_matches(name, target))
+                        || function.symbols.iter().any(|name| name == target)
+                        || address == Some(function.address)
+                })
+        })
+        .map(|(index, _)| index)
+        .collect();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(format!(
+            "board profile system target {target:?} does not match an execution root"
+        )),
+        _ => Err(format!(
+            "board profile system target {target:?} matches {} execution roots",
+            matches.len()
+        )),
+    }
+}
+
+fn name_matches(candidate: &str, target: &str) -> bool {
+    let candidate = normalize_crate_hashes(candidate);
+    candidate == target
+        || candidate
+            .rsplit("::")
+            .next()
+            .is_some_and(|last| last == target)
+}
+
+fn parse_address(target: &str) -> Option<u64> {
+    let hex = target
+        .strip_prefix("0x")
+        .or_else(|| target.strip_prefix("0X"))?;
+    u64::from_str_radix(hex, 16).ok()
 }
 
 fn aggregate_status(tasks: &[CfgSystemTask]) -> CfgWcetStatus {
@@ -488,6 +641,33 @@ mod tests {
         assert_eq!(solution.firing.len(), 1);
         assert_eq!(solution.firing[0].fires, 2);
         assert_eq!(solution.objective, Some(20.0));
+    }
+
+    #[test]
+    fn state_equation_respects_budget_capacity() {
+        let places = vec![
+            place("core:0", "core", 1, 1),
+            place("ready:t0", "ready", 2, 2),
+            place("done:t0", "done", 0, 2),
+            place("budget:bus", "budget", 1, 1),
+        ];
+        let transitions = vec![CfgSystemTransition {
+            id: "execute:t0".to_owned(),
+            kind: "execute".to_owned(),
+            task: "t0".to_owned(),
+            cost_cycles: Some(10.0),
+            activations: 2,
+            inputs: vec![
+                "ready:t0".to_owned(),
+                "core:0".to_owned(),
+                "budget:bus".to_owned(),
+            ],
+            outputs: vec!["done:t0".to_owned(), "core:0".to_owned()],
+        }];
+        let solution = solve_state_equation(&places, &transitions).expect("solution");
+        assert_eq!(solution.status, "optimal");
+        assert_eq!(solution.firing[0].fires, 1);
+        assert_eq!(solution.objective, Some(10.0));
     }
 
     #[test]

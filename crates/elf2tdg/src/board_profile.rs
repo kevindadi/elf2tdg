@@ -9,7 +9,7 @@
 //! the SHA-256 of the loaded file so the CFG can name the exact timing input that
 //! produced its cycle estimates.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -54,6 +54,10 @@ const fn default_max_branch_states() -> usize {
 
 const fn default_wcet_max_states() -> usize {
     100_000
+}
+
+const fn default_system_activations() -> u32 {
+    1
 }
 
 fn default_multicore_model() -> String {
@@ -115,6 +119,70 @@ impl MulticoreProfile {
     }
 }
 
+/// Task activation bounds and cumulative resource budgets for the layered
+/// system model.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemProfile {
+    #[serde(default)]
+    tasks: Vec<SystemTaskProfile>,
+    #[serde(default)]
+    resources: Vec<SystemResourceProfile>,
+}
+
+impl SystemProfile {
+    pub(crate) fn tasks(&self) -> &[SystemTaskProfile] {
+        &self.tasks
+    }
+
+    pub(crate) fn resources(&self) -> &[SystemResourceProfile] {
+        &self.resources
+    }
+}
+
+/// One execution root in a `[system]` profile.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemTaskProfile {
+    target: String,
+    #[serde(default = "default_system_activations")]
+    activations: u32,
+    #[serde(default)]
+    resources: BTreeMap<String, u32>,
+}
+
+impl SystemTaskProfile {
+    pub(crate) fn target(&self) -> &str {
+        &self.target
+    }
+
+    pub(crate) fn activations(&self) -> u32 {
+        self.activations
+    }
+
+    pub(crate) fn resources(&self) -> &BTreeMap<String, u32> {
+        &self.resources
+    }
+}
+
+/// One cumulative resource budget for the layered system model.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemResourceProfile {
+    name: String,
+    capacity: u32,
+}
+
+impl SystemResourceProfile {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn capacity(&self) -> u32 {
+        self.capacity
+    }
+}
+
 /// A versioned description of one board's timing-relevant configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -143,6 +211,8 @@ pub struct BoardProfile {
     multicore: Option<MulticoreProfile>,
     #[serde(default)]
     wcet: Option<WcetProfile>,
+    #[serde(default)]
+    system: Option<SystemProfile>,
     #[serde(default)]
     caveats: Vec<String>,
     #[serde(default)]
@@ -743,6 +813,7 @@ impl BoardProfile {
         self.validate_branch_prediction()?;
         self.validate_multicore()?;
         self.validate_wcet()?;
+        self.validate_system()?;
         for caveat in &self.caveats {
             validate_text("caveats", caveat)?;
         }
@@ -1122,6 +1193,76 @@ impl BoardProfile {
         Ok(())
     }
 
+    fn validate_system(&self) -> Result<()> {
+        let Some(system) = &self.system else {
+            return Ok(());
+        };
+        if self.schema_version < 2 {
+            return Err(Error::Config(
+                "board profile system requires schema_version 2".to_owned(),
+            ));
+        }
+        if self.wcet.is_none() {
+            return Err(Error::Config(
+                "board profile system requires a [wcet] section".to_owned(),
+            ));
+        }
+        let mut resources = BTreeMap::new();
+        for (index, resource) in system.resources.iter().enumerate() {
+            validate_text("system.resources.name", &resource.name)?;
+            if resource.capacity == 0 {
+                return Err(Error::Config(format!(
+                    "board profile system.resources[{index}].capacity must be positive"
+                )));
+            }
+            if resources
+                .insert(resource.name.as_str(), resource.capacity)
+                .is_some()
+            {
+                return Err(Error::Config(format!(
+                    "board profile system resource {:?} is declared twice",
+                    resource.name
+                )));
+            }
+        }
+        let mut targets = BTreeSet::new();
+        for (index, task) in system.tasks.iter().enumerate() {
+            validate_text("system.tasks.target", &task.target)?;
+            if task.activations == 0 {
+                return Err(Error::Config(format!(
+                    "board profile system.tasks[{index}].activations must be positive"
+                )));
+            }
+            if !targets.insert(task.target.as_str()) {
+                return Err(Error::Config(format!(
+                    "board profile system task target {:?} is declared twice",
+                    task.target
+                )));
+            }
+            for (resource, units) in &task.resources {
+                let Some(capacity) = resources.get(resource.as_str()) else {
+                    return Err(Error::Config(format!(
+                        "board profile system task {:?} uses undeclared resource {:?}",
+                        task.target, resource
+                    )));
+                };
+                if *units == 0 {
+                    return Err(Error::Config(format!(
+                        "board profile system task {:?} resource {:?} units must be positive",
+                        task.target, resource
+                    )));
+                }
+                if units > capacity {
+                    return Err(Error::Config(format!(
+                        "board profile system task {:?} needs {units} unit(s) of resource {:?}, capacity is {capacity}",
+                        task.target, resource
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_instruction_costs(&self) -> Result<()> {
         let mut selectors = BTreeSet::new();
         for (index, override_) in self.instruction_costs.iter().enumerate() {
@@ -1289,6 +1430,11 @@ impl BoardProfile {
 
     pub(crate) fn wcet(&self) -> Option<&WcetProfile> {
         self.wcet.as_ref()
+    }
+
+    /// Optional layered system-model activation and resource configuration.
+    pub(crate) fn system(&self) -> Option<&SystemProfile> {
+        self.system.as_ref()
     }
 
     /// Largest fetch wait-state count on an executable Flash region.
@@ -1558,6 +1704,54 @@ confidence = "low"
         assert!(BoardProfile::parse_toml(&bad_core).is_err());
         let bad_model = valid.replace("[multicore]", "[multicore]\nmodel = \"round-robin\"");
         assert!(BoardProfile::parse_toml(&bad_model).is_err());
+    }
+
+    #[test]
+    fn validates_system_activation_and_resource_profiles() {
+        let valid = VALID.replace("schema_version = 1", "schema_version = 2")
+            + r#"
+[wcet]
+default_loop_bound = 4
+
+[system]
+
+[[system.tasks]]
+target = "sensor_task"
+activations = 3
+resources = { bus = 1 }
+
+[[system.resources]]
+name = "bus"
+capacity = 4
+"#;
+        let profile = BoardProfile::parse_toml(&valid).expect("valid system profile");
+        let system = profile.system().expect("system profile");
+        assert_eq!(system.tasks().len(), 1);
+        assert_eq!(system.tasks()[0].target(), "sensor_task");
+        assert_eq!(system.tasks()[0].activations(), 3);
+        assert_eq!(system.tasks()[0].resources().get("bus"), Some(&1));
+        assert_eq!(system.resources().len(), 1);
+        assert_eq!(system.resources()[0].name(), "bus");
+        assert_eq!(system.resources()[0].capacity(), 4);
+
+        let no_wcet = valid.replace("[wcet]\ndefault_loop_bound = 4\n", "");
+        assert!(BoardProfile::parse_toml(&no_wcet).is_err());
+        let duplicate_resource = valid.replace(
+            "[[system.resources]]\nname = \"bus\"",
+            "[[system.resources]]\nname = \"bus\"\ncapacity = 2\n\n[[system.resources]]\nname = \"bus\"",
+        );
+        assert!(BoardProfile::parse_toml(&duplicate_resource).is_err());
+        let unknown_resource = valid.replace("resources = { bus = 1 }", "resources = { dma = 1 }");
+        assert!(BoardProfile::parse_toml(&unknown_resource).is_err());
+        let zero_activation = valid.replace("activations = 3", "activations = 0");
+        assert!(BoardProfile::parse_toml(&zero_activation).is_err());
+        let too_many_units = valid.replace("resources = { bus = 1 }", "resources = { bus = 5 }");
+        assert!(BoardProfile::parse_toml(&too_many_units).is_err());
+        let duplicate_target = valid.replace(
+            "[[system.resources]]",
+            "[[system.tasks]]\ntarget = \"sensor_task\"\nactivations = 2\n\n[[system.resources]]",
+        );
+        assert!(BoardProfile::parse_toml(&duplicate_target).is_err());
     }
 
     #[test]

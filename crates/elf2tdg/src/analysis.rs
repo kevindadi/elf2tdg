@@ -3295,7 +3295,9 @@ impl<'a> Analyzer<'a> {
             };
             program_cfg.wcet = Some(info);
         }
-        program_cfg.system_model = crate::system_model::analyze(&program_cfg);
+        let board_profile = self.timing.as_ref().and_then(TimingCostModel::profile);
+        program_cfg.system_model =
+            crate::system_model::analyze(&program_cfg, board_profile).map_err(Error::Config)?;
         if self.options.require_safe {
             enforce_safe_wcet(&program_cfg)?;
         }

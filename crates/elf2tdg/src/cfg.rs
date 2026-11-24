@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.8";
+pub const CFG_SCHEMA_VERSION: &str = "2.9";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -443,6 +443,8 @@ pub struct CfgSystemBound {
     pub time_ns: Option<f64>,
     /// Number of modeled tasks.
     pub tasks: u32,
+    /// Largest activation bound across modeled tasks.
+    pub max_activations: u32,
     /// Assumptions required by this bound.
     pub assumptions: Vec<String>,
 }
