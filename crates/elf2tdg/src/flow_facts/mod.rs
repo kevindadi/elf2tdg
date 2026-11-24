@@ -19,8 +19,8 @@ use petgraph::visit::EdgeRef;
 
 use crate::board_profile::WcetProfile;
 use crate::cfg::{
-    CfgBranchFactInfo, CfgCallFactInfo, CfgFlowFactsInfo, CfgFunction, CfgInfeasibleElementInfo,
-    CfgInfeasiblePathInfo, CfgLoopBoundInfo, ProgramCfg,
+    CfgBranchFactInfo, CfgCallFactInfo, CfgFlowFactsInfo, CfgFunction, CfgInfeasibleCallInfo,
+    CfgInfeasibleElementInfo, CfgInfeasiblePathInfo, CfgLoopBoundInfo, ProgramCfg,
 };
 use crate::loop_bounds::InferredLoopBound;
 use crate::rules::normalize_crate_hashes;
@@ -135,6 +135,33 @@ pub(crate) struct FlowFacts {
     calls: Vec<CallConstraint>,
     infeasible_paths: Vec<InfeasiblePathConstraint>,
     warnings: Vec<String>,
+}
+
+fn conflict_element_info(
+    element: &InfeasibleElement,
+    function: Option<&FunctionId>,
+) -> CfgInfeasibleElementInfo {
+    let function = function.cloned();
+    match element {
+        InfeasibleElement::Edge {
+            source,
+            target,
+            site,
+        } => CfgInfeasibleElementInfo {
+            kind: "edge".to_owned(),
+            function,
+            source: Some(source.clone()),
+            target: Some(target.clone()),
+            site: Some(Addr::new(*site)),
+        },
+        InfeasibleElement::Block { block } => CfgInfeasibleElementInfo {
+            kind: "block".to_owned(),
+            function,
+            source: Some(block.clone()),
+            target: None,
+            site: None,
+        },
+    }
 }
 
 impl FlowFacts {
@@ -304,6 +331,7 @@ impl FlowFacts {
     }
 
     /// Builds the JSON metadata object for the WCET document.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn info(&self) -> CfgFlowFactsInfo {
         let mut loops: Vec<CfgLoopBoundInfo> = self
             .loops()
@@ -360,7 +388,30 @@ impl FlowFacts {
                         Some(InfeasibleScope::Loop { header }) => {
                             (Some("loop".to_owned()), Some(header.clone()))
                         }
+                        Some(InfeasibleScope::CrossFunction) => {
+                            (Some("cross-function".to_owned()), None)
+                        }
                         None => (None, None),
+                    };
+                    let elements = if let Some(cross) = &conflict.cross_function {
+                        cross
+                            .pattern
+                            .iter()
+                            .map(|slot| match slot {
+                                CrossFunctionSlot::Caller(element) => {
+                                    conflict_element_info(element, Some(&cross.caller))
+                                }
+                                CrossFunctionSlot::Callee(element) => {
+                                    conflict_element_info(element, Some(&cross.callee))
+                                }
+                            })
+                            .collect()
+                    } else {
+                        conflict
+                            .elements
+                            .iter()
+                            .map(|element| conflict_element_info(element, None))
+                            .collect()
                     };
                     CfgInfeasiblePathInfo {
                         function: conflict.function.clone(),
@@ -369,36 +420,25 @@ impl FlowFacts {
                         mode: conflict.applied.then(|| {
                             match conflict.enforcement {
                                 InfeasibleEnforcement::Aggregate => "aggregate",
-                                InfeasibleEnforcement::Automaton { .. } => "automaton",
+                                InfeasibleEnforcement::Automaton { .. }
+                                | InfeasibleEnforcement::CrossFunctionAutomaton => "automaton",
                             }
                             .to_owned()
                         }),
                         reason: conflict.reason.clone(),
                         scope,
                         loop_header,
+                        call: conflict
+                            .cross_function
+                            .as_ref()
+                            .map(|cross| CfgInfeasibleCallInfo {
+                                callee: cross.callee.clone(),
+                                block: cross.call_block.clone(),
+                                site: Addr::new(cross.call_site),
+                                continuation: cross.continuation.clone(),
+                            }),
                         context: conflict.context_names.clone(),
-                        elements: conflict
-                            .elements
-                            .iter()
-                            .map(|element| match element {
-                                InfeasibleElement::Edge {
-                                    source,
-                                    target,
-                                    site,
-                                } => CfgInfeasibleElementInfo {
-                                    kind: "edge".to_owned(),
-                                    source: Some(source.clone()),
-                                    target: Some(target.clone()),
-                                    site: Some(Addr::new(*site)),
-                                },
-                                InfeasibleElement::Block { block } => CfgInfeasibleElementInfo {
-                                    kind: "block".to_owned(),
-                                    source: Some(block.clone()),
-                                    target: None,
-                                    site: None,
-                                },
-                            })
-                            .collect(),
+                        elements,
                         source: conflict.source.clone(),
                     }
                 })
@@ -807,8 +847,19 @@ pub(crate) struct ConflictFact {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ConflictElementFact {
-    Edge { src: u64, dst: u64 },
-    Block { location: LocationTarget },
+    Edge {
+        src: u64,
+        dst: u64,
+    },
+    Block {
+        location: LocationTarget,
+    },
+    /// A direct callee invocation selected by name, containing elements that
+    /// must all match inside one invocation of that call.
+    Call {
+        name: String,
+        elements: Vec<ConflictElementFact>,
+    },
 }
 
 /// One resolved conflict element.
@@ -832,6 +883,8 @@ pub(crate) enum InfeasibleScope {
     /// All elements touch one non-nested natural loop; the constraint is
     /// valid per loop iteration.
     Loop { header: BlockId },
+    /// Elements span the declaring function and one directly called callee.
+    CrossFunction,
 }
 
 /// How an infeasible-path conflict is enforced.
@@ -841,6 +894,8 @@ pub(crate) enum InfeasibleEnforcement {
     Aggregate,
     /// Product IPET with a sequence-progress automaton.
     Automaton { reset: OrderedReset },
+    /// Product IPET with the selected callee inlined for the conflict.
+    CrossFunctionAutomaton,
 }
 
 /// Where an ordered-conflict automaton resets its progress.
@@ -866,7 +921,36 @@ pub(crate) struct InfeasiblePathConstraint {
     pub(crate) scope: Option<InfeasibleScope>,
     pub(crate) applied: bool,
     pub(crate) enforcement: InfeasibleEnforcement,
+    pub(crate) cross_function: Option<CrossFunctionConstraint>,
     pub(crate) reason: Option<String>,
+}
+
+/// A resolved ordered conflict whose elements span one call boundary.
+///
+/// The declaring function executes the caller-side elements and the selected
+/// call. The callee-side elements must all appear inside one invocation of
+/// that call; their relative order is preserved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CrossFunctionConstraint {
+    pub(crate) caller: FunctionId,
+    pub(crate) callee: FunctionId,
+    pub(crate) call_block: BlockId,
+    pub(crate) call_site: u64,
+    pub(crate) continuation: BlockId,
+    /// The caller's call-return edge, matched as a caller-side event.
+    pub(crate) call_return: InfeasibleElement,
+    /// Conflict elements in declaration order.
+    pub(crate) pattern: Vec<CrossFunctionSlot>,
+}
+
+/// One element of a cross-function ordered conflict.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CrossFunctionSlot {
+    /// An element in the declaring function.
+    Caller(InfeasibleElement),
+    /// An element in the selected callee; all callee slots are contiguous and
+    /// must match within one invocation.
+    Callee(InfeasibleElement),
 }
 
 #[derive(Clone, Debug)]
@@ -1011,6 +1095,7 @@ fn resolve_conflict(
         scope: None,
         applied: false,
         enforcement: InfeasibleEnforcement::Aggregate,
+        cross_function: None,
         reason: None,
     };
     let Some(scope_name) = &fact.scope else {
@@ -1035,6 +1120,13 @@ fn resolve_conflict(
     };
     record.context = context;
     record.context_names = context_names;
+    if fact
+        .elements
+        .iter()
+        .any(|element| matches!(element, ConflictElementFact::Call { .. }))
+    {
+        return resolve_cross_function_conflict(program, function, fact, record, origin, warnings);
+    }
     let mut elements = Vec::new();
     for element in &fact.elements {
         let Some(resolved) = resolve_conflict_element(program, function, element, origin, warnings)
@@ -1112,6 +1204,231 @@ fn resolve_conflict(
         }
     }
     Ok(record)
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedConflictCallSite {
+    block: NodeIndex,
+    block_id: BlockId,
+    site: u64,
+}
+
+#[allow(clippy::too_many_lines)]
+fn resolve_cross_function_conflict(
+    program: &ProgramCfg,
+    function: &CfgFunction,
+    fact: &ConflictFact,
+    mut record: InfeasiblePathConstraint,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Result<InfeasiblePathConstraint, String> {
+    if !fact.ordered {
+        record.reason = Some(format!(
+            "{origin}: cross-function conflicts are supported only with ordered=\"yes\"; conflict ignored"
+        ));
+        return Ok(record);
+    }
+    if fact.loop_context.is_some() || fact.all_iterations {
+        record.reason = Some(format!(
+            "{origin}: loop- or iteration-scoped cross-function conflicts are not supported; conflict ignored"
+        ));
+        return Ok(record);
+    }
+    let groups = fact
+        .elements
+        .iter()
+        .filter(|element| matches!(element, ConflictElementFact::Call { .. }))
+        .count();
+    if groups != 1 {
+        record.reason = Some(format!(
+            "{origin}: a cross-function conflict must contain exactly one <call> group; conflict ignored"
+        ));
+        return Ok(record);
+    }
+
+    let mut pattern = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut cross: Option<CrossFunctionConstraint> = None;
+    for element in &fact.elements {
+        match element {
+            ConflictElementFact::Call { name, elements } => {
+                let callee = find_function(program, name, origin)?;
+                if callee.id == function.id {
+                    record.reason = Some(format!(
+                        "{origin}: cross-function conflict call group targets the declaring function; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+                if callee.cfg.entry.is_none() {
+                    record.reason = Some(format!(
+                        "{origin}: cross-function conflict callee {name:?} has no CFG entry; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+                let Some(site) = resolve_conflict_call_site(function, callee, origin, warnings)
+                else {
+                    record.reason = Some(format!(
+                        "{origin}: cross-function conflict call group has no unique call site; conflict ignored"
+                    ));
+                    return Ok(record);
+                };
+                let Some((call_return, continuation)) =
+                    resolve_conflict_call_return(function, &site)
+                else {
+                    record.reason = Some(format!(
+                        "{origin}: cross-function conflict call site 0x{:x} has no unique call-return edge; conflict ignored",
+                        site.site
+                    ));
+                    return Ok(record);
+                };
+                for nested in elements {
+                    let Some(resolved) =
+                        resolve_conflict_element(program, callee, nested, origin, warnings)
+                    else {
+                        record.elements = flatten_pattern(&pattern);
+                        record.reason = Some(format!(
+                            "{origin}: cross-function conflict callee element could not be resolved; conflict ignored"
+                        ));
+                        return Ok(record);
+                    };
+                    if !seen.insert(resolved.clone()) {
+                        record.elements = flatten_pattern(&pattern);
+                        record.reason = Some(format!(
+                            "{origin}: ordered conflict repeats an element; conflict ignored"
+                        ));
+                        return Ok(record);
+                    }
+                    pattern.push(CrossFunctionSlot::Callee(resolved));
+                }
+                cross = Some(CrossFunctionConstraint {
+                    caller: function.id.clone(),
+                    callee: callee.id.clone(),
+                    call_block: site.block_id.clone(),
+                    call_site: site.site,
+                    continuation,
+                    call_return,
+                    pattern: Vec::new(),
+                });
+            }
+            ConflictElementFact::Block { .. } | ConflictElementFact::Edge { .. } => {
+                let Some(resolved) =
+                    resolve_conflict_element(program, function, element, origin, warnings)
+                else {
+                    record.elements = flatten_pattern(&pattern);
+                    record.reason = Some(format!(
+                        "{origin}: cross-function conflict caller element could not be resolved; conflict ignored"
+                    ));
+                    return Ok(record);
+                };
+                if !seen.insert(resolved.clone()) {
+                    record.elements = flatten_pattern(&pattern);
+                    record.reason = Some(format!(
+                        "{origin}: ordered conflict repeats an element; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+                pattern.push(CrossFunctionSlot::Caller(resolved));
+            }
+        }
+    }
+    let Some(mut cross) = cross else {
+        record.reason = Some(format!(
+            "{origin}: cross-function conflict has no call group; conflict ignored"
+        ));
+        return Ok(record);
+    };
+    cross.pattern.clone_from(&pattern);
+    record.elements = flatten_pattern(&pattern);
+    record.scope = Some(InfeasibleScope::CrossFunction);
+    record.enforcement = InfeasibleEnforcement::CrossFunctionAutomaton;
+    record.cross_function = Some(cross);
+    record.applied = true;
+    Ok(record)
+}
+
+fn flatten_pattern(pattern: &[CrossFunctionSlot]) -> Vec<InfeasibleElement> {
+    pattern
+        .iter()
+        .map(|slot| match slot {
+            CrossFunctionSlot::Caller(element) | CrossFunctionSlot::Callee(element) => {
+                element.clone()
+            }
+        })
+        .collect()
+}
+
+fn resolve_conflict_call_site(
+    function: &CfgFunction,
+    callee: &CfgFunction,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Option<ResolvedConflictCallSite> {
+    let analysis = crate::cfg_graph::analyze(&function.cfg);
+    let reachable: BTreeSet<BlockId> = analysis.reachable.into_iter().collect();
+    let mut sites: BTreeMap<u64, NodeIndex> = BTreeMap::new();
+    for node in function.cfg.blocks_by_address.values() {
+        let block = &function.cfg.graph[*node];
+        if !reachable.contains(&block.id) {
+            continue;
+        }
+        for call in &block.calls {
+            let targets_callee = call.target_function.as_ref() == Some(&callee.id)
+                || call
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.target_function.as_ref() == Some(&callee.id));
+            if targets_callee {
+                sites.entry(call.site).or_insert(*node);
+            }
+        }
+    }
+    match sites.len() {
+        0 => {
+            warnings.push(format!(
+                "{origin}: cross-function conflict <call> target has no call site; conflict ignored"
+            ));
+            None
+        }
+        1 => {
+            let (&site, &node) = sites.iter().next()?;
+            let block = &function.cfg.graph[node];
+            checked_call_site(function, block, site, origin, warnings).map(|(_, block_id, site)| {
+                ResolvedConflictCallSite {
+                    block: node,
+                    block_id,
+                    site,
+                }
+            })
+        }
+        _ => {
+            warnings.push(format!(
+                "{origin}: cross-function conflict <call> target is ambiguous: multiple call sites; conflict ignored"
+            ));
+            None
+        }
+    }
+}
+
+fn resolve_conflict_call_return(
+    function: &CfgFunction,
+    site: &ResolvedConflictCallSite,
+) -> Option<(InfeasibleElement, BlockId)> {
+    let mut edges = function
+        .cfg
+        .graph
+        .edges_directed(site.block, petgraph::Direction::Outgoing)
+        .filter(|edge| edge.weight().kind == crate::cfg::CfgEdgeKind::CallReturn);
+    let edge = edges.next()?;
+    if edges.next().is_some() {
+        return None;
+    }
+    let target = function.cfg.graph[edge.target()].id.clone();
+    let element = InfeasibleElement::Edge {
+        source: site.block_id.clone(),
+        target: target.clone(),
+        site: edge.weight().site,
+    };
+    Some((element, target))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1327,7 +1644,9 @@ fn ordered_sequence_support(
                 .collect();
             (Some(blocks), backedges)
         }
-        InfeasibleScope::Loop { .. } => return OrderedSequenceSupport::Unsupported,
+        InfeasibleScope::Loop { .. } | InfeasibleScope::CrossFunction => {
+            return OrderedSequenceSupport::Unsupported;
+        }
     };
     if all_iterations
         && elements.iter().any(|element| match element {
@@ -1472,6 +1791,10 @@ fn resolve_conflict_element(
                 target: target.id.clone(),
                 site: edge.weight().site,
             })
+        }
+        ConflictElementFact::Call { .. } => {
+            // A call group is resolved separately against its callee.
+            None
         }
     }
 }
@@ -2546,6 +2869,7 @@ bound = 10
             scope: None,
             applied: true,
             enforcement: InfeasibleEnforcement::Aggregate,
+            cross_function: None,
             reason: None,
         });
         assert!(facts.has_contextual_facts());

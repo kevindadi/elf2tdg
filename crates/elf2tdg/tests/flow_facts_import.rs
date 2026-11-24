@@ -772,6 +772,71 @@ fn infeasible_path_conflicts_are_recorded_and_reported() {
 }
 
 #[test]
+fn cross_function_ordered_conflicts_are_recorded_and_reported() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let ffx = temp_file(
+        "cross-function-conflict.ffx",
+        r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x0800_0138"/>
+      <call name="delay">
+        <block address="0x0800_00d8"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+    );
+    let output = analyze(vec![ffx.clone()], profile(""), PathAnalysis::Ipet);
+    let wcet = output.cfg.wcet.as_ref().expect("WCET");
+    let facts = wcet.flow_facts.as_ref().expect("flow facts");
+    let conflict = facts.conflicts.first().expect("conflict record");
+    assert!(conflict.ordered);
+    assert!(conflict.applied);
+    assert_eq!(conflict.scope.as_deref(), Some("cross-function"));
+    assert_eq!(conflict.mode.as_deref(), Some("automaton"));
+    assert_eq!(conflict.elements.len(), 2);
+    assert_eq!(
+        conflict.elements[0]
+            .function
+            .as_ref()
+            .expect("caller function")
+            .as_str(),
+        "fn:0x8000138"
+    );
+    assert_eq!(
+        conflict.elements[1]
+            .function
+            .as_ref()
+            .expect("callee function")
+            .as_str(),
+        "fn:0x80000d8"
+    );
+    let call = conflict.call.as_ref().expect("call boundary");
+    assert_eq!(call.callee.as_str(), "fn:0x80000d8");
+    assert_eq!(call.block.as_str(), "bb:0x800013e");
+    assert_eq!(call.continuation.as_str(), "bb:0x8000144");
+    let json = cfg::render_json(&output.cfg, None, false).expect("CFG JSON");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(
+        value["wcet"]["flow_facts"]["conflicts"][0]["scope"],
+        "cross-function"
+    );
+    assert_eq!(
+        value["wcet"]["flow_facts"]["conflicts"][0]["call"]["callee"],
+        "fn:0x80000d8"
+    );
+    let text = text_report::render_text(&output.cfg, None, false).expect("text report");
+    assert!(text.contains("scope cross-function"));
+    assert!(text.contains("call fn:0x80000d8"));
+    let _ = std::fs::remove_file(ffx);
+}
+
+#[test]
 fn longest_path_reports_ignored_non_loop_facts() {
     let Some(_) = fixture_elf() else {
         return;

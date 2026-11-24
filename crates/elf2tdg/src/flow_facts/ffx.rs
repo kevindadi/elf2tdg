@@ -348,7 +348,7 @@ fn parse_conditional(node: &Node<'_, '_>, state: &mut State, origin: &str) -> Re
 
 fn parse_conflict(
     node: &Node<'_, '_>,
-    state: &State,
+    state: &mut State,
     origin: &str,
     default_ordered: bool,
     iteration_context: bool,
@@ -367,6 +367,8 @@ fn parse_conflict(
             Vec::new(),
         )));
     };
+    let context = state.context();
+    let loop_context = state.loops.last().cloned();
     let ordered = attribute(node, "ordered")
         .map(parse_bool)
         .transpose()
@@ -375,46 +377,15 @@ fn parse_conflict(
     let mut elements = Vec::new();
     let mut warnings = Vec::new();
     for child in node.children().filter(Node::is_element) {
-        match child.tag_name().name() {
-            "edge" => {
-                let (Some(src), Some(dst)) = (attribute(&child, "src"), attribute(&child, "dst"))
-                else {
-                    warnings.push(format!(
-                        "{origin}: conflict <edge> needs src and dst; conflict ignored"
-                    ));
-                    return Ok(None);
-                };
-                elements.push(ConflictElementFact::Edge {
-                    src: parse_number(src)?,
-                    dst: parse_number(dst)?,
-                });
-            }
-            "block" => {
-                let Some(location) = parse_location(&child, state, origin)? else {
-                    warnings.push(format!(
-                        "{origin}: conflict <block> needs address, offset or source/line; conflict ignored"
-                    ));
-                    return Ok(None);
-                };
-                elements.push(ConflictElementFact::Block { location });
-            }
-            "call" | "loop" | "iteration" => {
-                warnings.push(format!(
-                    "{origin}: nested <{}> inside <conflict> is not supported; conflict ignored",
-                    child.tag_name().name()
-                ));
-                return Ok(None);
-            }
-            other => {
-                warnings.push(format!(
-                    "{origin}: unsupported <conflict> child <{other}>; conflict ignored"
-                ));
-                return Ok(None);
-            }
-        }
+        let Some(element) = parse_conflict_element(child, state, origin, &mut warnings)? else {
+            state.document.warnings.append(&mut warnings);
+            return Ok(None);
+        };
+        elements.push(element);
     }
     if elements.is_empty() {
         warnings.push(format!("{origin}: empty <conflict> is ignored"));
+        state.document.warnings.append(&mut warnings);
         return Ok(None);
     }
     Ok(Some((
@@ -422,13 +393,137 @@ fn parse_conflict(
             elements,
             ordered,
             scope: Some(scope),
-            context: state.context(),
+            context,
             context_kind: ContextKind::FfxCall,
-            loop_context: state.loops.last().cloned(),
+            loop_context,
             all_iterations: iteration_context,
         },
         warnings,
     )))
+}
+
+fn parse_conflict_element(
+    node: Node<'_, '_>,
+    state: &mut State,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Option<ConflictElementFact>, String> {
+    match node.tag_name().name() {
+        "edge" => {
+            let (Some(src), Some(dst)) = (attribute(&node, "src"), attribute(&node, "dst")) else {
+                warnings.push(format!(
+                    "{origin}: conflict <edge> needs src and dst; conflict ignored"
+                ));
+                return Ok(None);
+            };
+            Ok(Some(ConflictElementFact::Edge {
+                src: parse_number(src)?,
+                dst: parse_number(dst)?,
+            }))
+        }
+        "block" => {
+            let Some(location) = parse_location(&node, state, origin)? else {
+                warnings.push(format!(
+                    "{origin}: conflict <block> needs address, offset or source/line; conflict ignored"
+                ));
+                return Ok(None);
+            };
+            Ok(Some(ConflictElementFact::Block { location }))
+        }
+        "call" => parse_conflict_call(node, state, origin, warnings),
+        "loop" | "iteration" => {
+            warnings.push(format!(
+                "{origin}: nested <{}> inside <conflict> is not supported; conflict ignored",
+                node.tag_name().name()
+            ));
+            Ok(None)
+        }
+        other => {
+            warnings.push(format!(
+                "{origin}: unsupported <conflict> child <{other}>; conflict ignored"
+            ));
+            Ok(None)
+        }
+    }
+}
+
+fn parse_conflict_call(
+    node: Node<'_, '_>,
+    state: &mut State,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Option<ConflictElementFact>, String> {
+    let Some(name) = attribute(&node, "name") else {
+        warnings.push(format!(
+            "{origin}: <call> inside <conflict> needs a name; conflict ignored"
+        ));
+        return Ok(None);
+    };
+    if ["address", "offset", "source", "line"]
+        .iter()
+        .any(|attribute_name| attribute(&node, attribute_name).is_some())
+    {
+        warnings.push(format!(
+            "{origin}: <call> inside <conflict> is selected by name only; conflict ignored"
+        ));
+        return Ok(None);
+    }
+    // Resolve relative locations against the callee while parsing this group.
+    state.functions.push(name.to_owned());
+    let result = parse_conflict_call_elements(node, state, origin, warnings);
+    state.functions.pop();
+    let Some(elements) = result? else {
+        return Ok(None);
+    };
+    if elements.is_empty() {
+        warnings.push(format!(
+            "{origin}: empty call group in <conflict> is ignored"
+        ));
+        return Ok(None);
+    }
+    Ok(Some(ConflictElementFact::Call {
+        name: name.to_owned(),
+        elements,
+    }))
+}
+
+fn parse_conflict_call_elements(
+    node: Node<'_, '_>,
+    state: &mut State,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Option<Vec<ConflictElementFact>>, String> {
+    let mut elements = Vec::new();
+    for child in node.children().filter(Node::is_element) {
+        match child.tag_name().name() {
+            "edge" | "block" => {
+                let Some(element) = parse_conflict_element(child, state, origin, warnings)? else {
+                    return Ok(None);
+                };
+                elements.push(element);
+            }
+            "call" => {
+                warnings.push(format!(
+                    "{origin}: nested <call> inside a conflict call group is not supported; conflict ignored"
+                ));
+                return Ok(None);
+            }
+            "loop" | "iteration" => {
+                warnings.push(format!(
+                    "{origin}: <{}> inside a conflict call group is not supported; conflict ignored",
+                    child.tag_name().name()
+                ));
+                return Ok(None);
+            }
+            other => {
+                warnings.push(format!(
+                    "{origin}: unsupported <conflict> child <{other}> in a call group; conflict ignored"
+                ));
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(elements))
 }
 
 fn parse_location(
@@ -627,7 +722,9 @@ mod tests {
 #[cfg(test)]
 mod non_loop_tests {
     use super::parse;
-    use crate::flow_facts::{BranchOutcome, CallTarget, LocationTarget, LoopTarget};
+    use crate::flow_facts::{
+        BranchOutcome, CallTarget, ConflictElementFact, LocationTarget, LoopTarget,
+    };
 
     #[test]
     fn parses_branch_cases_and_never_executed_conditionals() {
@@ -737,6 +834,66 @@ mod non_loop_tests {
         assert_eq!(document.conflicts[0].elements.len(), 2);
         assert!(document.conflicts[1].ordered);
         assert!(document.conflicts[2].ordered);
+    }
+
+    #[test]
+    fn parses_conflict_call_groups() {
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x1000"/>
+      <call name="helper">
+        <block address="0x2000"/>
+        <edge src="0x2002" dst="0x2004"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "cross.ffx",
+        )
+        .expect("parse");
+        assert_eq!(document.conflicts.len(), 1);
+        let conflict = &document.conflicts[0];
+        assert!(conflict.ordered);
+        assert_eq!(conflict.elements.len(), 2);
+        let ConflictElementFact::Call { name, elements } = &conflict.elements[1] else {
+            panic!("call group");
+        };
+        assert_eq!(name, "helper");
+        assert_eq!(elements.len(), 2);
+        assert!(matches!(elements[0], ConflictElementFact::Block { .. }));
+        assert!(matches!(elements[1], ConflictElementFact::Edge { .. }));
+    }
+
+    #[test]
+    fn rejects_nested_conflict_call_groups() {
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <call name="outer">
+        <call name="inner">
+          <block address="0x2000"/>
+        </call>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "nested.ffx",
+        )
+        .expect("parse");
+        assert!(document.conflicts.is_empty());
+        assert!(
+            document
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("nested <call>"))
+        );
     }
 
     #[test]

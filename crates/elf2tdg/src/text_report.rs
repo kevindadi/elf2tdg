@@ -491,6 +491,7 @@ fn context_suffix(context: &[String]) -> String {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
     kv_indent(out, "model", &wcet.model);
     if let Some(solver) = &wcet.solver {
@@ -561,6 +562,11 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 .map(|mode| format!(", mode {mode}"))
                 .unwrap_or_default();
             let context = context_suffix(&conflict.context);
+            let call = conflict
+                .call
+                .as_ref()
+                .map(|call| format!(", call {} @ {}", call.callee, call.site))
+                .unwrap_or_default();
             let reason = conflict
                 .reason
                 .as_ref()
@@ -570,7 +576,7 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 out,
                 "infeasible path",
                 &format!(
-                    "{status} {} element(s), scope {scope}{mode}{context} ({}){reason}",
+                    "{status} {} element(s), scope {scope}{mode}{call}{context} ({}){reason}",
                     conflict.elements.len(),
                     conflict.source
                 ),

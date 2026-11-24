@@ -31,8 +31,8 @@ use crate::cfg::{
     FunctionCfg, ProgramCfg,
 };
 use crate::flow_facts::{
-    BranchOutcome, FactScope, FlowFacts, InfeasibleElement, InfeasibleEnforcement, InfeasibleScope,
-    OrderedReset,
+    BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
+    InfeasibleElement, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
 };
 use crate::wcet::{
     CallContext, VersionSummaries, aggregate_context_summaries, build_call_info_with,
@@ -139,6 +139,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                     callee_context: callee_context(&function.id, context),
                 };
                 let summary = analyze_function(
+                    program,
                     function,
                     |target| resolver.summary(target),
                     facts,
@@ -153,6 +154,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
             }
         } else {
             summaries[index] = Some(analyze_function(
+                program,
                 function,
                 |target| {
                     index_by_id
@@ -242,7 +244,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope; cross-function, specific-iteration and duplicate-edge conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. Cross-function ordered conflicts with one direct call group inline the selected callee in the product and require the callee elements to match within one invocation; the callee summary remains the cost bound. Specific-iteration, duplicate-edge, multi-group and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -271,6 +273,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
 }
 
 fn analyze_function<'a, F>(
+    program: &ProgramCfg,
     function: &CfgFunction,
     summary_for: F,
     facts: &FlowFacts,
@@ -313,6 +316,7 @@ where
         || call_info.partial
         || !function.cfg.recovered_calls.is_empty();
     let outcome = match solve_function(
+        program,
         &function.cfg,
         entry,
         &analysis,
@@ -357,6 +361,7 @@ where
     }
 }
 
+#[derive(Debug)]
 enum IpetError {
     Unbounded(String),
     Unknown(String),
@@ -374,6 +379,7 @@ struct IpetOutcome {
     clippy::too_many_lines
 )]
 fn solve_function(
+    program: &ProgramCfg,
     cfg: &FunctionCfg,
     entry: NodeIndex,
     analysis: &crate::cfg_graph::CfgGraphAnalysis,
@@ -385,6 +391,22 @@ fn solve_function(
 ) -> Result<IpetOutcome, IpetError> {
     let loops = build_loops(cfg, entry, analysis, facts, scope)?;
     let automata = ordered_automata(facts, function_id, scope);
+    let cross = cross_function_constraints(facts, function_id, scope);
+    if !cross.is_empty() {
+        return solve_function_with_cross_function_automata(
+            program,
+            cfg,
+            entry,
+            reachable_nodes,
+            call_cycles,
+            facts,
+            function_id,
+            scope,
+            &loops,
+            &automata,
+            &cross,
+        );
+    }
     if !automata.is_empty() {
         return solve_function_with_automata(
             cfg,
@@ -731,6 +753,7 @@ fn infeasible_path_constraints(
         .iter()
         .filter(|conflict| {
             conflict.applied
+                && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
                 && conflict
                     .function
                     .as_ref()
@@ -771,6 +794,7 @@ fn infeasible_path_constraints(
                     let rhs = Expression::from(*header) * bound;
                     Some(constraint::leq(lhs - rhs, 0.0))
                 }
+                InfeasibleScope::CrossFunction => None,
             }
         })
         .collect()
@@ -809,6 +833,31 @@ fn ordered_automata(
                 pattern: conflict.elements.clone(),
                 reset: reset.clone(),
             })
+        })
+        .collect()
+}
+
+fn cross_function_constraints<'a>(
+    facts: &'a FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+) -> Vec<&'a CrossFunctionConstraint> {
+    facts
+        .infeasible_paths()
+        .iter()
+        .filter_map(|conflict| {
+            if !conflict.applied
+                || !conflict.ordered
+                || !matches!(
+                    conflict.enforcement,
+                    InfeasibleEnforcement::CrossFunctionAutomaton
+                )
+                || conflict.function.as_ref() != Some(function_id)
+                || !scope.matches(&conflict.context)
+            {
+                return None;
+            }
+            conflict.cross_function.as_ref()
         })
         .collect()
 }
@@ -1264,7 +1313,7 @@ fn solve_function_with_automata(
                 let header_expression = block_expression(header);
                 constraints.push(constraint::leq(sum - header_expression * bound, 0.0));
             }
-            None => {}
+            Some(InfeasibleScope::CrossFunction) | None => {}
         }
     }
 
@@ -1302,6 +1351,1092 @@ fn solve_function_with_automata(
             ));
         }
         let entry = counts.entry(node.original).or_default();
+        *entry = entry
+            .checked_add(count)
+            .ok_or_else(|| IpetError::Unbounded("ipet-solver-bound-saturated".to_owned()))?;
+        if *entry >= u64::from(i32::MAX as u32) {
+            return Err(IpetError::Unbounded(
+                "ipet-solver-bound-saturated".to_owned(),
+            ));
+        }
+    }
+    let objective = solution.eval(&objective);
+    if !objective.is_finite() || objective < 0.0 {
+        return Err(IpetError::Unknown("ipet-objective-not-finite".to_owned()));
+    }
+    let blocks = counts
+        .into_iter()
+        .filter(|(_, executions)| *executions > 0)
+        .map(|(node, executions)| CfgIpetBlockCount {
+            block: cfg.graph[node].id.clone(),
+            executions,
+        })
+        .collect();
+    Ok(IpetOutcome {
+        solution: CfgIpetSolution {
+            solver: SOLVER_NAME.to_owned(),
+            status: status.to_owned(),
+            objective,
+            blocks,
+        },
+        partial,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelEdgeKind {
+    Caller,
+    EnterCall,
+    CalleeEdge,
+    ReturnCall,
+}
+
+struct ModelNode {
+    block: BlockId,
+    caller: Option<NodeIndex>,
+    cost: f64,
+}
+
+struct ModelEdge {
+    source: usize,
+    target: usize,
+    kind: ModelEdgeKind,
+    /// Caller edge for `Caller`/`ReturnCall`, callee edge for `CalleeEdge`, and
+    /// the replaced call-return edge for `EnterCall`.
+    original: EdgeIndex,
+    call: Option<usize>,
+}
+
+struct InlineCallSpec {
+    id: usize,
+    caller_block: NodeIndex,
+    continuation: NodeIndex,
+    call_return_edge: EdgeIndex,
+    callee_index: usize,
+    callee_entry: NodeIndex,
+    callee_reachable: BTreeSet<NodeIndex>,
+    callee_loops: Vec<LoopModel>,
+}
+
+struct ModelGraph {
+    nodes: Vec<ModelNode>,
+    edges: Vec<ModelEdge>,
+    entry: usize,
+    specs: Vec<InlineCallSpec>,
+    caller_nodes: BTreeMap<NodeIndex, usize>,
+    callee_nodes: Vec<BTreeMap<NodeIndex, usize>>,
+    caller_edge_models: BTreeMap<EdgeIndex, Vec<usize>>,
+    callee_edge_models: Vec<BTreeMap<EdgeIndex, Vec<usize>>>,
+    enter_edges: Vec<usize>,
+    constraint_specs: Vec<usize>,
+    outgoing: Vec<Vec<usize>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CrossState {
+    slot: usize,
+    sub: usize,
+}
+
+struct CrossAutomatonModel {
+    call: usize,
+    slots: Vec<CrossFunctionSlot>,
+    group_start: usize,
+    group_len: usize,
+}
+
+fn caller_node_by_block(cfg: &FunctionCfg, block: &BlockId) -> Option<NodeIndex> {
+    cfg.blocks_by_address
+        .values()
+        .copied()
+        .find(|node| &cfg.graph[*node].id == block)
+}
+
+fn inline_call_return(
+    cfg: &FunctionCfg,
+    caller_block: NodeIndex,
+    constraint: &CrossFunctionConstraint,
+) -> Result<(EdgeIndex, NodeIndex), IpetError> {
+    let InfeasibleElement::Edge { target, site, .. } = &constraint.call_return else {
+        return Err(IpetError::Unknown("cross-function-call-return".to_owned()));
+    };
+    let mut candidates = cfg
+        .graph
+        .edges_directed(caller_block, petgraph::Direction::Outgoing)
+        .filter(|edge| {
+            edge.weight().kind == crate::cfg::CfgEdgeKind::CallReturn
+                && cfg.graph[edge.target()].id == *target
+                && edge.weight().site == *site
+        });
+    let edge = candidates
+        .next()
+        .ok_or_else(|| IpetError::Unknown("cross-function-call-return-missing".to_owned()))?;
+    if candidates.next().is_some() {
+        return Err(IpetError::Unknown(
+            "cross-function-call-return-ambiguous".to_owned(),
+        ));
+    }
+    Ok((edge.id(), edge.target()))
+}
+
+#[allow(
+    clippy::similar_names,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+fn build_cross_model(
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    entry: NodeIndex,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    call_cycles: &BTreeMap<NodeIndex, f64>,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+    cross: &[&CrossFunctionConstraint],
+) -> Result<ModelGraph, IpetError> {
+    let callee_chain = match scope {
+        FactScope::Context(context) => Some(callee_context(function_id, context)),
+        FactScope::Insensitive => None,
+    };
+    let callee_scope = match &callee_chain {
+        Some(chain) => FactScope::Context(chain),
+        None => FactScope::Insensitive,
+    };
+
+    let mut specs: Vec<InlineCallSpec> = Vec::new();
+    let mut spec_by_key: BTreeMap<(NodeIndex, EdgeIndex, FunctionId), usize> = BTreeMap::new();
+    let mut constraint_specs = Vec::with_capacity(cross.len());
+    for constraint in cross {
+        let caller_block = caller_node_by_block(cfg, &constraint.call_block)
+            .ok_or_else(|| IpetError::Unknown("cross-function-call-block-missing".to_owned()))?;
+        let callee_index = program
+            .functions
+            .iter()
+            .position(|function| function.id == constraint.callee)
+            .ok_or_else(|| IpetError::Unknown("cross-function-callee-missing".to_owned()))?;
+        let callee = &program.functions[callee_index];
+        let callee_entry = callee
+            .cfg
+            .entry
+            .ok_or_else(|| IpetError::Unknown("cross-function-callee-entry".to_owned()))?;
+        let analysis = crate::cfg_graph::analyze(&callee.cfg);
+        let reachable_ids: BTreeSet<BlockId> = analysis.reachable.iter().cloned().collect();
+        let callee_reachable: BTreeSet<NodeIndex> = callee
+            .cfg
+            .blocks_by_address
+            .values()
+            .copied()
+            .filter(|node| reachable_ids.contains(&callee.cfg.graph[*node].id))
+            .collect();
+        if callee_reachable.is_empty() {
+            return Err(IpetError::Unknown(
+                "cross-function-callee-unreachable".to_owned(),
+            ));
+        }
+        let callee_loops = build_loops(&callee.cfg, callee_entry, &analysis, facts, callee_scope)
+            .map_err(|error| match error {
+            IpetError::Unbounded(reason) | IpetError::Unknown(reason) => {
+                IpetError::Unknown(format!("cross-function-callee-{reason}"))
+            }
+        })?;
+        let (call_return_edge, continuation) = inline_call_return(cfg, caller_block, constraint)?;
+        let key = (caller_block, call_return_edge, callee.id.clone());
+        let spec_id = if let Some(&id) = spec_by_key.get(&key) {
+            id
+        } else {
+            let id = specs.len();
+            specs.push(InlineCallSpec {
+                id,
+                caller_block,
+                continuation,
+                call_return_edge,
+                callee_index,
+                callee_entry,
+                callee_reachable,
+                callee_loops,
+            });
+            spec_by_key.insert(key, id);
+            id
+        };
+        constraint_specs.push(spec_id);
+    }
+
+    let mut nodes = Vec::new();
+    let mut caller_nodes = BTreeMap::new();
+    let mut caller_order: Vec<NodeIndex> = reachable_nodes.iter().copied().collect();
+    caller_order.sort_by_key(|node| (cfg.graph[*node].address, node.index()));
+    for node in caller_order {
+        let block = &cfg.graph[node];
+        let base = block.cycles.map_or(0.0, |cycles| cycles.max);
+        let call = call_cycles.get(&node).copied().unwrap_or(0.0);
+        let index = nodes.len();
+        nodes.push(ModelNode {
+            block: block.id.clone(),
+            caller: Some(node),
+            cost: base + call,
+        });
+        caller_nodes.insert(node, index);
+    }
+    let entry_model = *caller_nodes
+        .get(&entry)
+        .ok_or_else(|| IpetError::Unknown("entry-unreachable".to_owned()))?;
+
+    let mut callee_nodes = Vec::with_capacity(specs.len());
+    for spec in &specs {
+        let callee = &program.functions[spec.callee_index];
+        let mut order: Vec<NodeIndex> = spec.callee_reachable.iter().copied().collect();
+        order.sort_by_key(|node| (callee.cfg.graph[*node].address, node.index()));
+        let mut map = BTreeMap::new();
+        for node in order {
+            let index = nodes.len();
+            nodes.push(ModelNode {
+                block: callee.cfg.graph[node].id.clone(),
+                caller: None,
+                cost: 0.0,
+            });
+            map.insert(node, index);
+        }
+        callee_nodes.push(map);
+    }
+
+    let removed: BTreeSet<EdgeIndex> = specs.iter().map(|spec| spec.call_return_edge).collect();
+    let mut edges = Vec::new();
+    let mut caller_edge_models: BTreeMap<EdgeIndex, Vec<usize>> = BTreeMap::new();
+    let mut caller_edges: Vec<(EdgeIndex, NodeIndex, NodeIndex, u64)> = cfg
+        .graph
+        .edge_references()
+        .filter(|edge| {
+            reachable_nodes.contains(&edge.source())
+                && reachable_nodes.contains(&edge.target())
+                && !removed.contains(&edge.id())
+        })
+        .map(|edge| (edge.id(), edge.source(), edge.target(), edge.weight().site))
+        .collect();
+    caller_edges.sort_by_key(|(_, source, target, site)| {
+        (
+            cfg.graph[*source].address,
+            cfg.graph[*target].address,
+            *site,
+            source.index(),
+            target.index(),
+        )
+    });
+    for (id, source, target, _) in caller_edges {
+        let index = edges.len();
+        edges.push(ModelEdge {
+            source: caller_nodes[&source],
+            target: caller_nodes[&target],
+            kind: ModelEdgeKind::Caller,
+            original: id,
+            call: None,
+        });
+        caller_edge_models.entry(id).or_default().push(index);
+    }
+
+    let mut callee_edge_models: Vec<BTreeMap<EdgeIndex, Vec<usize>>> =
+        vec![BTreeMap::new(); specs.len()];
+    let mut enter_edges = vec![0; specs.len()];
+    for spec in &specs {
+        let callee = &program.functions[spec.callee_index];
+        let enter_index = edges.len();
+        edges.push(ModelEdge {
+            source: caller_nodes[&spec.caller_block],
+            target: callee_nodes[spec.id][&spec.callee_entry],
+            kind: ModelEdgeKind::EnterCall,
+            original: spec.call_return_edge,
+            call: Some(spec.id),
+        });
+        enter_edges[spec.id] = enter_index;
+
+        let mut callee_edges: Vec<(EdgeIndex, NodeIndex, NodeIndex, u64)> = callee
+            .cfg
+            .graph
+            .edge_references()
+            .filter(|edge| {
+                spec.callee_reachable.contains(&edge.source())
+                    && spec.callee_reachable.contains(&edge.target())
+            })
+            .map(|edge| (edge.id(), edge.source(), edge.target(), edge.weight().site))
+            .collect();
+        callee_edges.sort_by_key(|(_, source, target, site)| {
+            (
+                callee.cfg.graph[*source].address,
+                callee.cfg.graph[*target].address,
+                *site,
+                source.index(),
+                target.index(),
+            )
+        });
+        for (id, source, target, _) in callee_edges {
+            let index = edges.len();
+            edges.push(ModelEdge {
+                source: callee_nodes[spec.id][&source],
+                target: callee_nodes[spec.id][&target],
+                kind: ModelEdgeKind::CalleeEdge,
+                original: id,
+                call: Some(spec.id),
+            });
+            callee_edge_models[spec.id]
+                .entry(id)
+                .or_default()
+                .push(index);
+        }
+
+        let mut exit_nodes: BTreeSet<NodeIndex> = spec
+            .callee_reachable
+            .iter()
+            .copied()
+            .filter(|node| {
+                !callee
+                    .cfg
+                    .graph
+                    .edges_directed(*node, petgraph::Direction::Outgoing)
+                    .any(|edge| spec.callee_reachable.contains(&edge.target()))
+            })
+            .collect();
+        for loop_ in &spec.callee_loops {
+            if !loop_.has_exit && spec.callee_reachable.contains(&loop_.header) {
+                exit_nodes.insert(loop_.header);
+            }
+        }
+        let mut exit_nodes: Vec<NodeIndex> = exit_nodes.into_iter().collect();
+        exit_nodes.sort_by_key(|node| (callee.cfg.graph[*node].address, node.index()));
+        for node in exit_nodes {
+            edges.push(ModelEdge {
+                source: callee_nodes[spec.id][&node],
+                target: caller_nodes[&spec.continuation],
+                kind: ModelEdgeKind::ReturnCall,
+                original: spec.call_return_edge,
+                call: Some(spec.id),
+            });
+        }
+    }
+
+    let mut outgoing = vec![Vec::new(); nodes.len()];
+    for (index, edge) in edges.iter().enumerate() {
+        outgoing[edge.source].push(index);
+    }
+
+    Ok(ModelGraph {
+        nodes,
+        edges,
+        entry: entry_model,
+        specs,
+        caller_nodes,
+        callee_nodes,
+        caller_edge_models,
+        callee_edge_models,
+        enter_edges,
+        constraint_specs,
+        outgoing,
+    })
+}
+
+fn cross_automaton_models(
+    model: &ModelGraph,
+    cross: &[&CrossFunctionConstraint],
+) -> Result<Vec<CrossAutomatonModel>, IpetError> {
+    if model.constraint_specs.len() != cross.len() {
+        return Err(IpetError::Unknown("cross-function-model".to_owned()));
+    }
+    cross
+        .iter()
+        .zip(&model.constraint_specs)
+        .map(|(constraint, &call)| {
+            let slots = constraint.pattern.clone();
+            let group_start = slots
+                .iter()
+                .position(|slot| matches!(slot, CrossFunctionSlot::Callee(_)))
+                .ok_or_else(|| IpetError::Unknown("cross-function-pattern".to_owned()))?;
+            let group_len = slots
+                .iter()
+                .filter(|slot| matches!(slot, CrossFunctionSlot::Callee(_)))
+                .count();
+            if group_len == 0
+                || slots[group_start..group_start + group_len]
+                    .iter()
+                    .any(|slot| matches!(slot, CrossFunctionSlot::Caller(_)))
+                || slots[group_start + group_len..]
+                    .iter()
+                    .any(|slot| matches!(slot, CrossFunctionSlot::Callee(_)))
+            {
+                return Err(IpetError::Unknown(
+                    "cross-function-pattern-order".to_owned(),
+                ));
+            }
+            Ok(CrossAutomatonModel {
+                call,
+                slots,
+                group_start,
+                group_len,
+            })
+        })
+        .collect()
+}
+
+fn caller_edge_element(cfg: &FunctionCfg, edge: EdgeIndex) -> InfeasibleElement {
+    let (source, target) = cfg
+        .graph
+        .edge_endpoints(edge)
+        .expect("model graph edge endpoint");
+    InfeasibleElement::Edge {
+        source: cfg.graph[source].id.clone(),
+        target: cfg.graph[target].id.clone(),
+        site: cfg.graph[edge].site,
+    }
+}
+
+fn callee_edge_element(cfg: &FunctionCfg, edge: EdgeIndex) -> InfeasibleElement {
+    caller_edge_element(cfg, edge)
+}
+
+fn advance_caller_pattern(
+    slots: &[CrossFunctionSlot],
+    mut slot: usize,
+    edge: Option<&InfeasibleElement>,
+    block: Option<&BlockId>,
+) -> Option<usize> {
+    if let Some(element) = edge
+        && slot < slots.len()
+        && matches!(&slots[slot], CrossFunctionSlot::Caller(candidate) if candidate == element)
+    {
+        slot += 1;
+        if slot == slots.len() {
+            return None;
+        }
+    }
+    if let Some(block) = block {
+        let element = InfeasibleElement::Block {
+            block: block.clone(),
+        };
+        if slot < slots.len()
+            && matches!(&slots[slot], CrossFunctionSlot::Caller(candidate) if candidate == &element)
+        {
+            slot += 1;
+            if slot == slots.len() {
+                return None;
+            }
+        }
+    }
+    Some(slot)
+}
+
+fn slot_matches_callee_edge(slot: &CrossFunctionSlot, edge: &InfeasibleElement) -> bool {
+    matches!(slot, CrossFunctionSlot::Callee(candidate) if candidate == edge)
+}
+
+fn slot_matches_callee_block(slot: &CrossFunctionSlot, block: &BlockId) -> bool {
+    matches!(
+        slot,
+        CrossFunctionSlot::Callee(InfeasibleElement::Block { block: candidate })
+            if candidate == block
+    )
+}
+
+fn initial_cross_state(
+    automaton: &CrossAutomatonModel,
+    entry_block: &BlockId,
+) -> Option<CrossState> {
+    if let Some(CrossFunctionSlot::Caller(InfeasibleElement::Block { block })) =
+        automaton.slots.first()
+        && block == entry_block
+    {
+        let slot = 1;
+        if slot == automaton.slots.len() {
+            return None;
+        }
+        return Some(CrossState { slot, sub: 0 });
+    }
+    Some(CrossState { slot: 0, sub: 0 })
+}
+
+fn advance_cross_state(
+    model: &ModelGraph,
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    automaton: &CrossAutomatonModel,
+    state: CrossState,
+    edge: &ModelEdge,
+) -> Option<CrossState> {
+    match edge.kind {
+        ModelEdgeKind::Caller => {
+            let element = caller_edge_element(cfg, edge.original);
+            let target = &model.nodes[edge.target].block;
+            let slot =
+                advance_caller_pattern(&automaton.slots, state.slot, Some(&element), Some(target))?;
+            Some(CrossState { slot, sub: 0 })
+        }
+        ModelEdgeKind::EnterCall => {
+            if edge.call != Some(automaton.call) {
+                return Some(state);
+            }
+            let mut sub = 0;
+            if state.slot == automaton.group_start
+                && slot_matches_callee_block(
+                    &automaton.slots[automaton.group_start],
+                    &model.nodes[edge.target].block,
+                )
+            {
+                sub = 1;
+            }
+            Some(CrossState {
+                slot: state.slot,
+                sub,
+            })
+        }
+        ModelEdgeKind::CalleeEdge => {
+            if edge.call != Some(automaton.call) || state.slot != automaton.group_start {
+                return Some(state);
+            }
+            let spec = &model.specs[automaton.call];
+            let callee = &program.functions[spec.callee_index];
+            let element = callee_edge_element(&callee.cfg, edge.original);
+            let target = &model.nodes[edge.target].block;
+            let mut sub = state.sub;
+            if sub < automaton.group_len {
+                if slot_matches_callee_edge(&automaton.slots[automaton.group_start + sub], &element)
+                {
+                    sub += 1;
+                }
+                if sub < automaton.group_len
+                    && slot_matches_callee_block(
+                        &automaton.slots[automaton.group_start + sub],
+                        target,
+                    )
+                {
+                    sub += 1;
+                }
+            }
+            Some(CrossState {
+                slot: state.slot,
+                sub,
+            })
+        }
+        ModelEdgeKind::ReturnCall => {
+            let same_call = edge.call == Some(automaton.call);
+            let mut slot = state.slot;
+            let mut sub = state.sub;
+            if slot == automaton.group_start {
+                if same_call && sub == automaton.group_len {
+                    slot = automaton.group_start + automaton.group_len;
+                    if slot == automaton.slots.len() {
+                        return None;
+                    }
+                }
+                sub = 0;
+            } else {
+                sub = 0;
+            }
+            let element = caller_edge_element(cfg, edge.original);
+            let target = &model.nodes[edge.target].block;
+            let slot =
+                advance_caller_pattern(&automaton.slots, slot, Some(&element), Some(target))?;
+            Some(CrossState { slot, sub })
+        }
+    }
+}
+
+fn advance_existing_on_model(
+    cfg: &FunctionCfg,
+    runtimes: &[AutomatonRuntime],
+    progress: &[usize],
+    edge: &ModelEdge,
+) -> Option<Vec<usize>> {
+    match edge.kind {
+        ModelEdgeKind::Caller | ModelEdgeKind::ReturnCall => {
+            let (source, target) = cfg
+                .graph
+                .edge_endpoints(edge.original)
+                .expect("model graph caller edge endpoint");
+            let element = caller_edge_element(cfg, edge.original);
+            advance_progress(
+                runtimes,
+                progress,
+                &cfg.graph[source].id,
+                &cfg.graph[target].id,
+                &element,
+            )
+        }
+        ModelEdgeKind::EnterCall | ModelEdgeKind::CalleeEdge => Some(progress.to_vec()),
+    }
+}
+
+struct CrossProductNode {
+    model: usize,
+    existing: Vec<usize>,
+    cross: Vec<CrossState>,
+}
+
+struct CrossProductEdge {
+    model_edge: usize,
+    from: usize,
+    to: usize,
+}
+
+fn build_cross_product_graph(
+    model: &ModelGraph,
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    runtimes: &[AutomatonRuntime],
+    automata: &[CrossAutomatonModel],
+) -> Result<(Vec<CrossProductNode>, Vec<CrossProductEdge>), IpetError> {
+    let entry_block = model.nodes[model.entry].block.clone();
+    let Some(start_existing) = initial_progress(runtimes, &entry_block) else {
+        return Err(IpetError::Unknown("infeasible-ordered-entry".to_owned()));
+    };
+    let mut start_cross = Vec::with_capacity(automata.len());
+    for automaton in automata {
+        let Some(state) = initial_cross_state(automaton, &entry_block) else {
+            return Err(IpetError::Unknown("infeasible-ordered-entry".to_owned()));
+        };
+        start_cross.push(state);
+    }
+    let mut index_by_key: BTreeMap<(usize, Vec<usize>, Vec<CrossState>), usize> = BTreeMap::new();
+    let mut nodes = vec![CrossProductNode {
+        model: model.entry,
+        existing: start_existing.clone(),
+        cross: start_cross.clone(),
+    }];
+    index_by_key.insert((model.entry, start_existing, start_cross), 0);
+    let mut edges = Vec::new();
+    let mut queue = VecDeque::from([0usize]);
+    while let Some(from) = queue.pop_front() {
+        let source_model = nodes[from].model;
+        let existing = nodes[from].existing.clone();
+        let cross = nodes[from].cross.clone();
+        for &model_edge in &model.outgoing[source_model] {
+            let edge = &model.edges[model_edge];
+            let Some(next_existing) = advance_existing_on_model(cfg, runtimes, &existing, edge)
+            else {
+                continue;
+            };
+            let mut next_cross = Vec::with_capacity(automata.len());
+            let mut allowed = true;
+            for (index, automaton) in automata.iter().enumerate() {
+                let Some(state) =
+                    advance_cross_state(model, program, cfg, automaton, cross[index], edge)
+                else {
+                    allowed = false;
+                    break;
+                };
+                next_cross.push(state);
+            }
+            if !allowed {
+                continue;
+            }
+            let key = (edge.target, next_existing.clone(), next_cross.clone());
+            let to = if let Some(&index) = index_by_key.get(&key) {
+                index
+            } else {
+                if nodes.len() >= MAX_AUTOMATON_NODES {
+                    return Err(IpetError::Unknown("ipet-automaton-too-large".to_owned()));
+                }
+                let index = nodes.len();
+                nodes.push(CrossProductNode {
+                    model: edge.target,
+                    existing: next_existing,
+                    cross: next_cross,
+                });
+                index_by_key.insert(key, index);
+                queue.push_back(index);
+                index
+            };
+            if edges.len() >= MAX_AUTOMATON_EDGES {
+                return Err(IpetError::Unknown("ipet-automaton-too-large".to_owned()));
+            }
+            edges.push(CrossProductEdge {
+                model_edge,
+                from,
+                to,
+            });
+        }
+    }
+    Ok((nodes, edges))
+}
+
+struct ModelLoop {
+    header: usize,
+    bound: u32,
+    constant_entry: f64,
+    entry_edges: Vec<usize>,
+}
+
+fn build_model_loops(model: &ModelGraph, caller_loops: &[LoopModel]) -> Vec<ModelLoop> {
+    let mut loops = Vec::with_capacity(caller_loops.len());
+    for loop_ in caller_loops {
+        let Some(&header) = model.caller_nodes.get(&loop_.header) else {
+            continue;
+        };
+        let mut entry_edges = Vec::new();
+        for edge in &loop_.entry_edges {
+            if let Some(indices) = model.caller_edge_models.get(edge) {
+                entry_edges.extend(indices.iter().copied());
+            }
+        }
+        entry_edges.sort_unstable();
+        entry_edges.dedup();
+        loops.push(ModelLoop {
+            header,
+            bound: loop_.bound,
+            constant_entry: if loop_.is_entry { 1.0 } else { 0.0 },
+            entry_edges,
+        });
+    }
+    for spec in &model.specs {
+        let callee_nodes = &model.callee_nodes[spec.id];
+        for loop_ in &spec.callee_loops {
+            let Some(&header) = callee_nodes.get(&loop_.header) else {
+                continue;
+            };
+            let mut entry_edges = Vec::new();
+            for edge in &loop_.entry_edges {
+                if let Some(indices) = model.callee_edge_models[spec.id].get(edge) {
+                    entry_edges.extend(indices.iter().copied());
+                }
+            }
+            if loop_.header == spec.callee_entry {
+                entry_edges.push(model.enter_edges[spec.id]);
+            }
+            entry_edges.sort_unstable();
+            entry_edges.dedup();
+            loops.push(ModelLoop {
+                header,
+                bound: loop_.bound,
+                constant_entry: 0.0,
+                entry_edges,
+            });
+        }
+    }
+    loops
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+fn solve_function_with_cross_function_automata(
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    entry: NodeIndex,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    call_cycles: &BTreeMap<NodeIndex, f64>,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+    loops: &[LoopModel],
+    automata: &[OrderedAutomaton],
+    cross: &[&CrossFunctionConstraint],
+) -> Result<IpetOutcome, IpetError> {
+    let model = build_cross_model(
+        program,
+        cfg,
+        entry,
+        reachable_nodes,
+        call_cycles,
+        facts,
+        function_id,
+        scope,
+        cross,
+    )?;
+    let runtimes = automaton_runtimes(cfg, automata)?;
+    let cross_automata = cross_automaton_models(&model, cross)?;
+    let model_loops = build_model_loops(&model, loops);
+    let (product_nodes, product_edges) =
+        build_cross_product_graph(&model, program, cfg, &runtimes, &cross_automata)?;
+
+    let nonexit_headers: BTreeSet<usize> = loops
+        .iter()
+        .filter(|loop_| !loop_.has_exit)
+        .filter_map(|loop_| model.caller_nodes.get(&loop_.header).copied())
+        .collect();
+    let mut vars = ProblemVariables::new();
+    let node_variables: Vec<Variable> = product_nodes
+        .iter()
+        .map(|_| vars.add(good_lp::variable().integer().min(0.0)))
+        .collect();
+    let edge_variables: Vec<Variable> = product_edges
+        .iter()
+        .map(|_| vars.add(good_lp::variable().integer().min(0.0)))
+        .collect();
+    let mut exit_variables: BTreeMap<usize, Variable> = BTreeMap::new();
+    for (index, node) in product_nodes.iter().enumerate() {
+        if nonexit_headers.contains(&node.model) {
+            exit_variables.insert(index, vars.add(good_lp::variable().integer().min(0.0)));
+        }
+    }
+    if node_variables
+        .len()
+        .saturating_add(edge_variables.len())
+        .saturating_add(exit_variables.len())
+        > MAX_MODEL_VARIABLES
+    {
+        return Err(IpetError::Unknown("ipet-model-too-large".to_owned()));
+    }
+
+    let mut nodes_by_caller: BTreeMap<NodeIndex, Vec<usize>> = BTreeMap::new();
+    let mut product_nodes_by_model: Vec<Vec<usize>> = vec![Vec::new(); model.nodes.len()];
+    for (index, node) in product_nodes.iter().enumerate() {
+        product_nodes_by_model[node.model].push(index);
+        if let Some(caller) = model.nodes[node.model].caller {
+            nodes_by_caller.entry(caller).or_default().push(index);
+        }
+    }
+    let mut edges_by_caller: BTreeMap<EdgeIndex, Vec<usize>> = BTreeMap::new();
+    let mut product_edges_by_model: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (index, edge) in product_edges.iter().enumerate() {
+        product_edges_by_model
+            .entry(edge.model_edge)
+            .or_default()
+            .push(index);
+        let model_edge = &model.edges[edge.model_edge];
+        if matches!(
+            model_edge.kind,
+            ModelEdgeKind::Caller | ModelEdgeKind::ReturnCall
+        ) {
+            edges_by_caller
+                .entry(model_edge.original)
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut incoming = vec![Vec::new(); product_nodes.len()];
+    let mut outgoing = vec![Vec::new(); product_nodes.len()];
+    for (index, edge) in product_edges.iter().enumerate() {
+        incoming[edge.to].push(index);
+        outgoing[edge.from].push(index);
+    }
+
+    let block_expression = |block: &BlockId| -> Expression {
+        let mut expression = Expression::from(0.0);
+        for candidate in cfg.blocks_by_address.values() {
+            if cfg.graph[*candidate].id == *block {
+                if let Some(indices) = nodes_by_caller.get(candidate) {
+                    for index in indices {
+                        expression += node_variables[*index];
+                    }
+                }
+                break;
+            }
+        }
+        expression
+    };
+    let edge_expression = |edge: EdgeIndex| -> Expression {
+        let mut expression = Expression::from(0.0);
+        if let Some(indices) = edges_by_caller.get(&edge) {
+            for index in indices {
+                expression += edge_variables[*index];
+            }
+        }
+        expression
+    };
+    let node_by_block_id: BTreeMap<BlockId, NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+
+    let mut constraints = Vec::new();
+    let structural_outgoing: Vec<bool> = model
+        .outgoing
+        .iter()
+        .map(|edges| !edges.is_empty())
+        .collect();
+    for (index, product) in product_nodes.iter().enumerate() {
+        let variable = node_variables[index];
+        let mut incoming_flow = Expression::from(0.0);
+        for edge in &incoming[index] {
+            incoming_flow += edge_variables[*edge];
+        }
+        constraints.push(constraint::eq(
+            Expression::from(variable) - incoming_flow,
+            if index == 0 { 1.0 } else { 0.0 },
+        ));
+        let mut outgoing_flow = Expression::from(0.0);
+        let mut has_outgoing = false;
+        for edge in &outgoing[index] {
+            outgoing_flow += edge_variables[*edge];
+            has_outgoing = true;
+        }
+        if let Some(exit) = exit_variables.get(&index) {
+            outgoing_flow += *exit;
+            has_outgoing = true;
+        }
+        if has_outgoing {
+            constraints.push(constraint::eq(
+                Expression::from(variable) - outgoing_flow,
+                0.0,
+            ));
+        } else if structural_outgoing[product.model] {
+            constraints.push(constraint::leq(Expression::from(variable), 0.0));
+        }
+    }
+
+    for loop_ in &model_loops {
+        let header_nodes = &product_nodes_by_model[loop_.header];
+        if header_nodes.is_empty() {
+            continue;
+        }
+        let mut header = Expression::from(0.0);
+        for index in header_nodes {
+            header += node_variables[*index];
+        }
+        let mut entries = Expression::from(loop_.constant_entry);
+        for model_edge in &loop_.entry_edges {
+            if let Some(indices) = product_edges_by_model.get(model_edge) {
+                for index in indices {
+                    entries += edge_variables[*index];
+                }
+            }
+        }
+        constraints.push(constraint::leq(
+            header - entries * f64::from(loop_.bound),
+            0.0,
+        ));
+    }
+
+    for branch in facts
+        .branches()
+        .iter()
+        .filter(|branch| &branch.function == function_id && scope.matches(&branch.context))
+    {
+        match branch.outcome {
+            BranchOutcome::Both => {
+                constraints.push(constraint::leq(block_expression(&branch.block), 0.0));
+            }
+            BranchOutcome::Taken | BranchOutcome::NotTaken => {
+                let Some(&node) = node_by_block_id.get(&branch.block) else {
+                    continue;
+                };
+                let kind = if branch.outcome == BranchOutcome::Taken {
+                    crate::cfg::CfgEdgeKind::Branch
+                } else {
+                    crate::cfg::CfgEdgeKind::Fallthrough
+                };
+                let edge = cfg
+                    .graph
+                    .edges_directed(node, petgraph::Direction::Outgoing)
+                    .find(|edge| edge.weight().site == branch.site && edge.weight().kind == kind);
+                if let Some(edge) = edge {
+                    constraints.push(constraint::leq(
+                        edge_expression(edge.id()),
+                        f64::from(branch.max_count),
+                    ));
+                }
+            }
+        }
+    }
+    for call in facts
+        .calls()
+        .iter()
+        .filter(|call| &call.function == function_id && scope.matches(&call.context))
+    {
+        constraints.push(constraint::leq(
+            block_expression(&call.block),
+            f64::from(call.max_count),
+        ));
+    }
+    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
+        conflict.applied
+            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
+            && conflict
+                .function
+                .as_ref()
+                .is_some_and(|function| function == function_id)
+            && scope.matches(&conflict.context)
+    }) {
+        let mut sum = Expression::from(0.0);
+        for element in &conflict.elements {
+            match element {
+                InfeasibleElement::Block { block } => sum += block_expression(block),
+                InfeasibleElement::Edge {
+                    source,
+                    target,
+                    site,
+                } => {
+                    let Some(&source) = node_by_block_id.get(source) else {
+                        continue;
+                    };
+                    let Some(&target) = node_by_block_id.get(target) else {
+                        continue;
+                    };
+                    if let Some(edge) = cfg
+                        .graph
+                        .edges_directed(source, petgraph::Direction::Outgoing)
+                        .find(|edge| edge.target() == target && edge.weight().site == *site)
+                    {
+                        sum += edge_expression(edge.id());
+                    }
+                }
+            }
+        }
+        let Ok(count) = u32::try_from(conflict.elements.len()) else {
+            continue;
+        };
+        let bound = f64::from(count.saturating_sub(1));
+        match conflict.scope.as_ref() {
+            Some(InfeasibleScope::Function) => {
+                constraints.push(constraint::leq(sum, bound));
+            }
+            Some(InfeasibleScope::Loop { header }) => {
+                let header_expression = block_expression(header);
+                constraints.push(constraint::leq(sum - header_expression * bound, 0.0));
+            }
+            Some(InfeasibleScope::CrossFunction) | None => {}
+        }
+    }
+
+    let mut objective = Expression::from(0.0);
+    for (index, product) in product_nodes.iter().enumerate() {
+        let cost = model.nodes[product.model].cost;
+        if cost != 0.0 {
+            objective += node_variables[index] * cost;
+        }
+    }
+
+    let problem = vars.maximise(objective.clone()).using(good_lp::microlp);
+    let solution = problem
+        .with_all(constraints)
+        .solve()
+        .map_err(|error| match error {
+            good_lp::ResolutionError::Unbounded => {
+                IpetError::Unbounded("ipet-unbounded".to_owned())
+            }
+            other => IpetError::Unknown(format!("ipet-solver: {other}")),
+        })?;
+    let status = match solution.status() {
+        SolutionStatus::Optimal => "optimal",
+        SolutionStatus::TimeLimit => "time-limit",
+        SolutionStatus::GapLimit => "gap-limit",
+    };
+    let mut partial = status != "optimal" || loops.iter().any(|loop_| !loop_.has_exit);
+    for spec in &model.specs {
+        partial |= spec.callee_loops.iter().any(|loop_| !loop_.has_exit);
+    }
+    let mut counts: BTreeMap<NodeIndex, u64> = BTreeMap::new();
+    for (index, product) in product_nodes.iter().enumerate() {
+        let Some(caller) = model.nodes[product.model].caller else {
+            continue;
+        };
+        let value = solution.value(node_variables[index]);
+        let rounded = value.round();
+        if (value - rounded).abs() > 1e-4 {
+            partial = true;
+        }
+        if rounded < 0.0 {
+            partial = true;
+            continue;
+        }
+        let count = rounded as u64;
+        if count >= u64::from(i32::MAX as u32) {
+            return Err(IpetError::Unbounded(
+                "ipet-solver-bound-saturated".to_owned(),
+            ));
+        }
+        let entry = counts.entry(caller).or_default();
         *entry = entry
             .checked_add(count)
             .ok_or_else(|| IpetError::Unbounded("ipet-solver-bound-saturated".to_owned()))?;
@@ -1406,8 +2541,8 @@ mod tests {
     use super::analyze_program;
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
-        CfgBlockDraft, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction, CfgTerminator,
-        FunctionCfg, ProgramCfg,
+        CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
+        CfgTerminator, FunctionCfg, ProgramCfg,
     };
     use crate::flow_facts::{
         FlowFactDocument, FlowFacts, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
@@ -1575,6 +2710,226 @@ auto_loop_bounds = false
                 Some(0x2000),
             ),
         )])
+    }
+
+    fn named_function(address: u64, name: &str, cfg: FunctionCfg) -> CfgFunction {
+        let mut function = function(address, cfg);
+        function.primary_name = name.to_owned();
+        function
+    }
+
+    fn call_site(site: u64, target: u64) -> CfgCallSite {
+        CfgCallSite {
+            site,
+            target: Some(target),
+            target_function: Some(FunctionId::new(format!("fn:0x{target:x}"))),
+            direct: true,
+            tail: false,
+            conditional: false,
+            heuristic: false,
+            unresolved: false,
+            null_target: false,
+            noreturn: false,
+            candidates: Vec::new(),
+        }
+    }
+
+    fn call_block(address: u64, cycles: f64, target: u64) -> CfgBlockDraft {
+        let mut instruction = instruction(address, CfgTerminator::Call, cycles);
+        instruction.is_call = true;
+        CfgBlockDraft {
+            address,
+            size: 2,
+            instructions: vec![instruction],
+            calls: vec![call_site(address, target)],
+            cycles: Some(CostRange::exact(cycles)),
+            terminator: CfgTerminator::Call,
+        }
+    }
+
+    fn straight_callee_program(caller: FunctionCfg) -> ProgramCfg {
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x2000, CfgTerminator::Fallthrough, 1.0),
+                block(0x2002, CfgTerminator::Fallthrough, 1.0),
+                block(0x2004, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x2000, 0x2002, CfgEdgeKind::Fallthrough),
+                edge(0x2002, 0x2004, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x2000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0x1000, "main", caller),
+            named_function(0x2000, "helper", helper_cfg),
+        ])
+    }
+
+    fn branching_callee_program(caller: FunctionCfg) -> ProgramCfg {
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x2000, CfgTerminator::Fallthrough, 1.0),
+                block(0x2002, CfgTerminator::Branch, 1.0),
+                block(0x2004, CfgTerminator::Fallthrough, 1.0),
+                block(0x2006, CfgTerminator::Fallthrough, 1.0),
+                block(0x2008, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x2000, 0x2002, CfgEdgeKind::Fallthrough),
+                edge(0x2002, 0x2004, CfgEdgeKind::Branch),
+                edge(0x2002, 0x2006, CfgEdgeKind::Fallthrough),
+                edge(0x2004, 0x2008, CfgEdgeKind::Fallthrough),
+                edge(0x2006, 0x2008, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x2000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0x1000, "main", caller),
+            named_function(0x2000, "helper", helper_cfg),
+        ])
+    }
+
+    fn branch_caller_program() -> ProgramCfg {
+        let caller = FunctionCfg::build(
+            vec![
+                block(0x1000, CfgTerminator::Fallthrough, 1.0),
+                block(0x1002, CfgTerminator::Branch, 1.0),
+                block(0x1004, CfgTerminator::Fallthrough, 50.0),
+                call_block(0x1006, 2.0, 0x2000),
+                block(0x1008, CfgTerminator::Fallthrough, 5.0),
+                block(0x100a, CfgTerminator::Return, 1.0),
+                block(0x100c, CfgTerminator::Fallthrough, 1.0),
+                block(0x100e, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x1000, 0x1002, CfgEdgeKind::Fallthrough),
+                edge(0x1002, 0x1004, CfgEdgeKind::Branch),
+                edge(0x1002, 0x100c, CfgEdgeKind::Fallthrough),
+                edge(0x1004, 0x1006, CfgEdgeKind::Fallthrough),
+                edge(0x1006, 0x1008, CfgEdgeKind::CallReturn),
+                edge(0x1008, 0x100a, CfgEdgeKind::Fallthrough),
+                edge(0x100c, 0x100e, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x1000),
+        );
+        straight_callee_program(caller)
+    }
+
+    fn loop_caller_program(branching: bool) -> ProgramCfg {
+        let caller = FunctionCfg::build(
+            vec![
+                block(0x3000, CfgTerminator::Fallthrough, 1.0),
+                block(0x3002, CfgTerminator::Branch, 1.0),
+                call_block(0x3004, 1.0, 0x2000),
+                block(0x3006, CfgTerminator::Fallthrough, 1.0),
+                block(0x3008, CfgTerminator::Branch, 1.0),
+                block(0x300a, CfgTerminator::Fallthrough, 50.0),
+                block(0x300c, CfgTerminator::Fallthrough, 1.0),
+                block(0x300e, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x3000, 0x3002, CfgEdgeKind::Fallthrough),
+                edge(0x3002, 0x3004, CfgEdgeKind::Branch),
+                edge(0x3002, 0x3008, CfgEdgeKind::Fallthrough),
+                edge(0x3004, 0x3006, CfgEdgeKind::CallReturn),
+                edge(0x3006, 0x3002, CfgEdgeKind::Branch),
+                edge(0x3008, 0x300a, CfgEdgeKind::Branch),
+                edge(0x3008, 0x300c, CfgEdgeKind::Fallthrough),
+                edge(0x300a, 0x300e, CfgEdgeKind::Fallthrough),
+                edge(0x300c, 0x300e, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x3000),
+        );
+        if branching {
+            branching_callee_program(caller)
+        } else {
+            let helper_cfg = FunctionCfg::build(
+                vec![
+                    block(0x2000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x2002, CfgTerminator::Fallthrough, 1.0),
+                    block(0x2004, CfgTerminator::Fallthrough, 1.0),
+                    block(0x2006, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x2000, 0x2002, CfgEdgeKind::Fallthrough),
+                    edge(0x2002, 0x2004, CfgEdgeKind::Fallthrough),
+                    edge(0x2004, 0x2006, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x2000),
+            );
+            ProgramCfg::new(vec![
+                named_function(0x1000, "main", caller),
+                named_function(0x2000, "helper", helper_cfg),
+            ])
+        }
+    }
+
+    fn dominating_caller_cfg() -> FunctionCfg {
+        FunctionCfg::build(
+            vec![
+                block(0x5000, CfgTerminator::Fallthrough, 1.0),
+                call_block(0x5002, 1.0, 0x2000),
+                block(0x5004, CfgTerminator::Branch, 1.0),
+                block(0x5006, CfgTerminator::Fallthrough, 50.0),
+                block(0x5008, CfgTerminator::Fallthrough, 1.0),
+                block(0x500a, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x5000, 0x5002, CfgEdgeKind::Fallthrough),
+                edge(0x5002, 0x5004, CfgEdgeKind::CallReturn),
+                edge(0x5004, 0x5006, CfgEdgeKind::Branch),
+                edge(0x5004, 0x5008, CfgEdgeKind::Fallthrough),
+                edge(0x5006, 0x500a, CfgEdgeKind::Fallthrough),
+                edge(0x5008, 0x500a, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x5000),
+        )
+    }
+
+    fn dominating_call_program() -> ProgramCfg {
+        let caller = dominating_caller_cfg();
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x2000, CfgTerminator::Fallthrough, 1.0),
+                block(0x2002, CfgTerminator::Fallthrough, 1.0),
+                block(0x2004, CfgTerminator::Fallthrough, 1.0),
+                block(0x2006, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x2000, 0x2002, CfgEdgeKind::Fallthrough),
+                edge(0x2002, 0x2004, CfgEdgeKind::Fallthrough),
+                edge(0x2004, 0x2006, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x2000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0x1000, "main", caller),
+            named_function(0x2000, "helper", helper_cfg),
+        ])
+    }
+
+    fn loop_callee_program() -> ProgramCfg {
+        let caller = dominating_caller_cfg();
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x2000, CfgTerminator::Branch, 1.0),
+                block(0x2002, CfgTerminator::Fallthrough, 1.0),
+                block(0x2004, CfgTerminator::Fallthrough, 1.0),
+                block(0x2006, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x2000, 0x2002, CfgEdgeKind::Branch),
+                edge(0x2000, 0x2006, CfgEdgeKind::Fallthrough),
+                edge(0x2002, 0x2004, CfgEdgeKind::Fallthrough),
+                edge(0x2004, 0x2000, CfgEdgeKind::Branch),
+            ],
+            Some(0x2000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0x1000, "main", caller),
+            named_function(0x2000, "helper", helper_cfg),
+        ])
     }
 
     #[test]
@@ -1920,5 +3275,391 @@ auto_loop_bounds = false
                 reset: OrderedReset::Function
             }
         ));
+    }
+
+    #[test]
+    fn cross_function_conflict_prunes_a_caller_branch() {
+        let program = branch_caller_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x1004"/>
+      <call name="helper">
+        <block address="0x2002"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(baseline, 63.0);
+        assert_eq!(constrained, 4.0);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::CrossFunction));
+        assert_eq!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossFunctionAutomaton
+        );
+        assert_eq!(conflict.elements.len(), 2);
+        let info = facts.info();
+        assert_eq!(info.conflicts[0].scope.as_deref(), Some("cross-function"));
+        assert_eq!(info.conflicts[0].mode.as_deref(), Some("automaton"));
+        let call = info.conflicts[0].call.as_ref().expect("call boundary");
+        assert_eq!(call.callee.as_str(), "fn:0x2000");
+        assert_eq!(call.block.as_str(), "bb:0x1006");
+        assert_eq!(call.continuation.as_str(), "bb:0x1008");
+        assert_eq!(
+            info.conflicts[0].elements[0]
+                .function
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "fn:0x1000"
+        );
+        assert_eq!(
+            info.conflicts[0].elements[1]
+                .function
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "fn:0x2000"
+        );
+    }
+
+    #[test]
+    fn cross_function_group_completes_within_one_call() {
+        let program = dominating_call_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <call name="helper">
+        <block address="0x2002"/>
+        <block address="0x2004"/>
+      </call>
+      <block address="0x5006"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(baseline, 58.0);
+        assert_eq!(constrained, 9.0);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::CrossFunction));
+    }
+
+    #[test]
+    fn cross_function_callee_loops_stay_bounded() {
+        let program = loop_callee_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <call name="helper">
+        <block address="0x2002"/>
+      </call>
+      <block address="0x5006"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(baseline.is_finite());
+        assert!(constrained.is_finite());
+        assert!(
+            constrained <= baseline,
+            "the inlined callee must not add caller paths: {constrained} <= {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::CrossFunction));
+    }
+
+    #[test]
+    fn cross_function_group_does_not_span_call_invocations() {
+        let program = loop_caller_program(true);
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <call name="helper">
+        <block address="0x2004"/>
+        <block address="0x2006"/>
+      </call>
+      <block address="0x300a"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(baseline, 75.0);
+        assert_eq!(constrained, baseline);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn cross_function_group_progress_rolls_back_at_return() {
+        let program = loop_caller_program(true);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <call name="helper">
+        <block address="0x2004"/>
+        <block address="0x2006"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "rollback.ffx",
+        )
+        .expect("parse");
+        facts
+            .apply_document(document, &program)
+            .expect("apply conflict");
+        let caller = &program.functions[0];
+        let analysis = crate::cfg_graph::analyze(&caller.cfg);
+        let reachable: std::collections::BTreeSet<_> = caller
+            .cfg
+            .blocks_by_address
+            .values()
+            .copied()
+            .filter(|node| analysis.reachable.contains(&caller.cfg.graph[*node].id))
+            .collect();
+        let scope = crate::flow_facts::FactScope::Insensitive;
+        let cross = super::cross_function_constraints(&facts, &caller.id, scope);
+        let model = super::build_cross_model(
+            &program,
+            &caller.cfg,
+            caller.cfg.entry.expect("entry"),
+            &reachable,
+            &std::collections::BTreeMap::new(),
+            &facts,
+            &caller.id,
+            scope,
+            &cross,
+        )
+        .expect("cross model");
+        let automata = super::cross_automaton_models(&model, &cross).expect("automata");
+        let automaton = &automata[0];
+        let find_edge = |predicate: &dyn Fn(&super::ModelEdge) -> bool| {
+            model.edges.iter().position(predicate).expect("model edge")
+        };
+        let enter = find_edge(&|edge| edge.kind == super::ModelEdgeKind::EnterCall);
+        let b_edge = find_edge(&|edge| {
+            edge.kind == super::ModelEdgeKind::CalleeEdge
+                && model.nodes[edge.target].block.as_str() == "bb:0x2004"
+        });
+        let c_edge = find_edge(&|edge| {
+            edge.kind == super::ModelEdgeKind::CalleeEdge
+                && model.nodes[edge.target].block.as_str() == "bb:0x2006"
+        });
+        let return_edge = find_edge(&|edge| edge.kind == super::ModelEdgeKind::ReturnCall);
+        let mut state = super::initial_cross_state(automaton, &model.nodes[model.entry].block)
+            .expect("initial state");
+        state = super::advance_cross_state(
+            &model,
+            &program,
+            &caller.cfg,
+            automaton,
+            state,
+            &model.edges[enter],
+        )
+        .expect("enter");
+        state = super::advance_cross_state(
+            &model,
+            &program,
+            &caller.cfg,
+            automaton,
+            state,
+            &model.edges[b_edge],
+        )
+        .expect("first group element");
+        assert_eq!(state.sub, 1);
+        state = super::advance_cross_state(
+            &model,
+            &program,
+            &caller.cfg,
+            automaton,
+            state,
+            &model.edges[return_edge],
+        )
+        .expect("return");
+        assert_eq!(state.slot, automaton.group_start);
+        assert_eq!(state.sub, 0);
+        state = super::advance_cross_state(
+            &model,
+            &program,
+            &caller.cfg,
+            automaton,
+            state,
+            &model.edges[enter],
+        )
+        .expect("re-enter");
+        state = super::advance_cross_state(
+            &model,
+            &program,
+            &caller.cfg,
+            automaton,
+            state,
+            &model.edges[c_edge],
+        )
+        .expect("second invocation");
+        assert_eq!(
+            state.sub, 0,
+            "the group must not continue across call invocations"
+        );
+    }
+
+    #[test]
+    fn ambiguous_cross_function_call_sites_are_ignored() {
+        let caller = FunctionCfg::build(
+            vec![
+                block(0x4000, CfgTerminator::Fallthrough, 1.0),
+                call_block(0x4002, 1.0, 0x2000),
+                call_block(0x4004, 1.0, 0x2000),
+                block(0x4006, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x4000, 0x4002, CfgEdgeKind::Fallthrough),
+                edge(0x4002, 0x4004, CfgEdgeKind::CallReturn),
+                edge(0x4004, 0x4006, CfgEdgeKind::CallReturn),
+            ],
+            Some(0x4000),
+        );
+        let program = straight_callee_program(caller);
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x4000"/>
+      <call name="helper">
+        <block address="0x2002"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(constrained, baseline);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("no unique call site"))
+        );
+    }
+
+    #[test]
+    fn unsupported_cross_function_shapes_are_ignored() {
+        let program = branch_caller_program();
+        let (loop_scoped, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x1002">
+      <conflict ordered="yes">
+        <block address="0x1004"/>
+        <call name="helper">
+          <block address="0x2002"/>
+        </call>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(loop_scoped, 63.0);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("loop- or iteration-scoped"))
+        );
+
+        let (multi_group, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <call name="helper">
+        <block address="0x2002"/>
+      </call>
+      <call name="helper">
+        <block address="0x2004"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(multi_group, 63.0);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("exactly one <call> group"))
+        );
+    }
+
+    #[test]
+    fn unordered_cross_function_conflicts_are_ignored() {
+        let program = branch_caller_program();
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0x1004"/>
+      <call name="helper">
+        <block address="0x2002"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(constrained, 63.0);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("ordered=\"yes\""))
+        );
     }
 }

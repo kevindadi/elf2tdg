@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.19";
+pub const CFG_SCHEMA_VERSION: &str = "2.20";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1145,7 +1145,7 @@ pub struct CfgFlowFactsInfo {
 /// One resolved infeasible-path conflict.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgInfeasiblePathInfo {
-    /// Function containing all resolved elements, when known.
+    /// Declaring function; for a cross-function conflict, the caller.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function: Option<FunctionId>,
     /// Whether the FFX conflict declared an edge order.
@@ -1158,12 +1158,15 @@ pub struct CfgInfeasiblePathInfo {
     /// Why the conflict was not applied.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// Constraint scope: `function` or `loop`.
+    /// Constraint scope: `function`, `loop` or `cross-function`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// Loop header for a per-iteration constraint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loop_header: Option<BlockId>,
+    /// Selected call boundary for a cross-function constraint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<CfgInfeasibleCallInfo>,
     /// Caller context (immediate caller first), when contextual.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<String>,
@@ -1173,11 +1176,27 @@ pub struct CfgInfeasiblePathInfo {
     pub source: String,
 }
 
+/// The direct call boundary selected by a cross-function conflict.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgInfeasibleCallInfo {
+    /// Callee function.
+    pub callee: FunctionId,
+    /// Caller block containing the unique call site.
+    pub block: BlockId,
+    /// Call instruction address.
+    pub site: Addr,
+    /// Caller continuation block after the call returns.
+    pub continuation: BlockId,
+}
+
 /// One edge or block in an infeasible-path conflict.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgInfeasibleElementInfo {
     /// `edge` or `block`.
     pub kind: String,
+    /// Function containing the element, when the conflict spans a call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<FunctionId>,
     /// Source block for an edge, or the block itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<BlockId>,
