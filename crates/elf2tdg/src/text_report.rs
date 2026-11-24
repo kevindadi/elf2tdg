@@ -613,6 +613,38 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
             );
         }
     }
+    kv(out, "response model", &model.response.model);
+    for response in model.response.tasks.iter().take(16) {
+        let deadline = response
+            .deadline_ns
+            .map_or_else(|| "none".to_owned(), |deadline| format!("{deadline} ns"));
+        let time = response
+            .time_ns
+            .map_or_else(|| "-".to_owned(), |time| format!("{time:.1} ns"));
+        let missed = if response.deadline_missed {
+            " DEADLINE-MISS"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            out,
+            "  * response {} {} time {time}, deadline {deadline}{missed}",
+            response.task, response.status
+        );
+        if let Some(reason) = &response.reason {
+            let _ = writeln!(out, "    reason: {reason}");
+        }
+    }
+    if model.response.tasks.len() > 16 {
+        let _ = writeln!(
+            out,
+            "  ... {} more response result(s)",
+            model.response.tasks.len().saturating_sub(16)
+        );
+    }
+    for caveat in &model.response.caveats {
+        let _ = writeln!(out, "    caveat: {caveat}");
+    }
     if let Some(timed) = &model.timed {
         kv(out, "timed model", &timed.model);
         kv(out, "timed slot", &format!("{} ns", timed.slot_ns));
