@@ -362,12 +362,13 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.12`.
+`cfg_schema_version` is `2.13`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.12 adds the discrete-time-expanded feasibility result.
-Version 2.11 adds explicit fork/join link constraints. Version 2.10 adds
-periodic release bounds (`horizon_ns`, `period_ns`, release offset/jitter).
-Version 2.9 adds the Petri state-equation solution,
+functions. Version 2.13 adds per-task work-conserving response-time bounds.
+Version 2.12 adds the discrete-time-expanded feasibility result. Version 2.11
+adds explicit fork/join link constraints. Version 2.10 adds periodic release
+bounds (`horizon_ns`, `period_ns`, release offset/jitter). Version 2.9 adds the
+Petri state-equation solution,
 task activation bounds, cumulative resource budgets and `max_activations`.
 Version 2.8 adds the layered `system_model` and its coarse system bound.
 Version 2.7 adds multicore
@@ -400,7 +401,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.12",
+  "cfg_schema_version": "2.13",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -627,6 +628,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `wcet` | WCET model (`cfg-longest-path` or `cfg-ipet`), backend/solver, flow facts, per-root results and caveats |
 | `system_model` | layered task/place/transition model, concurrency dependencies, activation/periodic/resource budgets, explicit fork/join links, coarse system bound and optional timed feasibility |
 | `system_model.timed` | discrete-time-expanded slot model: status, horizon slots, activation/execution-slot counts and caveats |
+| `system_model.response` | per-task work-conserving busy-period response bound, deadline/miss flags and caveats |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
@@ -689,8 +691,10 @@ When a WCET profile is active, the document also carries a layered
 one analyzed-core place plus ready/done places and one `execute` transition per
 task, records spawn/join/await/callback dependencies, and reports a coarse
 `analyzed-core-activation-bounds` bound. It solves the state-equation ILP
-relaxation with `microlp`; the bound is not a per-task response-time bound and
-does not yet solve exact reachability or a timed Petri net. With `[system]`,
+relaxation with `microlp`; the total-work bound is separate from
+`system_model.response`, which carries per-task work-conserving response
+bounds. Exact reachability and a full timed state-class model are not solved
+yet. With `[system]`,
 task activation bounds and cumulative resource-budget constraints are included.
 See [layered-model.md](layered-model.md) for the model and assumptions.
 

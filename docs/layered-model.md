@@ -9,13 +9,14 @@ conservative, and it is exported in CFG JSON as `system_model`.
 Layer 1  root/local WCET        cfg-longest-path or cfg-ipet per execution root
 Layer 2  layered system model  tasks, places, transitions, dependencies
 Layer 3  state-equation ILP    coarse reachability relaxation
-Layer 4  discrete-time PN      slot-based deadline feasibility
-Layer 5  future timed PN       exact reachability / response-time analysis
+Layer 4  response bounds       work-conserving busy-period RTA
+Layer 5  discrete-time PN      slot-based deadline feasibility
+Layer 6  future timed PN       exact reachability / tighter response analysis
 ```
 
-The current implementation builds Layers 2-4 with the pure-Rust `microlp`
-backend. It does not solve exact reachability or produce per-task timed
-response-time bounds yet.
+The current implementation builds Layers 2-5 with the pure-Rust `microlp`
+backend. It does not solve exact reachability or a full timed state-class
+response analysis yet.
 
 ## What is modeled
 
@@ -126,6 +127,64 @@ model-dependent: slot rounding and slot-boundary preemption can both miss or
 reject real schedules. Fork/join links and cumulative resource budgets are not
 part of the timed feasibility model yet.
 
+## Per-task response bounds
+
+The system model also derives a work-conserving busy-period response bound for
+each task:
+
+```text
+R_i = C_i + sum(j != i) N_j(R_i) * C_j + M_i(R_i) * C_i
+```
+
+For a periodic task `k`, both terms count one carry-in activation plus every
+release that can fall inside a window of length `R`:
+
+```text
+N_k(R) = floor((R + J_k) / T_k) + 1
+M_i(R) = N_i(R) for a periodic target
+```
+
+`J_k` is the configured release jitter and `T_k` the period. The carry-in
+accounts for work released just before the window; the `+1` is needed because
+an arbitrary work-conserving scheduler may not have completed that activation.
+The target's own term covers queued earlier activations and, conservatively,
+releases that occur while the analyzed activation is still pending.
+
+For a non-periodic task, the activation bound is a total activation budget:
+`N_j = B_j` for another task and `M_i = B_i - 1` for the target.
+
+Periodic activation bounds derived from `horizon_ns` are **per-horizon** counts,
+not lifetime totals. They are therefore not used to cap releases when the busy
+window extends past the horizon; `floor((R + J)/T) + 1` is evaluated directly
+for the full window. This is essential for a safe bound: capping at a horizon
+count would undercount interference in a response window longer than the
+horizon. An explicit periodic `activations` bound is likewise ignored here;
+not capping it only makes the response more conservative.
+
+The fixed point is computed with a bounded, monotone iteration that stops as
+soon as `f(R) <= R`; such a post-fixed point is already a safe upper bound, so
+no floating-point tolerance is used that could understate it. Exceeding
+`1e15 ns` reports `unbounded`. Reaching the iteration limit without a
+post-fixed point reports `unknown`; the partial bound is never presented as a
+conclusion. A configured `deadline_ns` produces a `deadline_missed` flag when
+the finite bound exceeds it.
+
+Assumptions:
+
+- one analyzed core;
+- work-conserving scheduling with arbitrary preemption order;
+- periodic releases follow the configured period and jitter;
+- non-periodic activation bounds are true total bounds;
+- jobs may queue, so same-task self-interference is included;
+- no priority model, blocking, fork/join ordering, locks, resources,
+  interrupts, other cores, caches, CRPD or preemption overhead;
+- partial local WCET inputs make the response result `partial`.
+
+This is a safe upper bound only under those assumptions; it is deliberately
+conservative, independent of a particular priority assignment, and can reject
+a feasible system. A priority-aware response analysis is the next tightening
+step.
+
 ## Fork/join links
 
 Explicit fork/join count constraints are configured under `[system.links]`:
@@ -196,7 +255,8 @@ again.
 
 ## What the bound does not cover
 
-- Per-task response time or scheduling order.
+- The state-equation total-work bound does not itself provide per-task
+  response time; use the separate work-conserving response section.
 - Release instants, deadlines or ordering. Activation bounds are static
   per-window counts; release jitter only shifts the first-release count
   conservatively.
@@ -270,6 +330,20 @@ layered model is a composition IR, not an additional certification gate yet.
         "count": 2
       }
     ],
+    "response": {
+      "model": "work-conserving-busy-period",
+      "tasks": [
+        {
+          "task": "t1",
+          "function": "fn:0x800085c",
+          "status": "bounded",
+          "time_ns": 6375.0,
+          "deadline_ns": 2000000,
+          "deadline_missed": false
+        }
+      ],
+      "caveats": ["..."]
+    },
     "timed": {
       "model": "discrete-time-expanded-petri",
       "slot_ns": 100000,
@@ -307,11 +381,11 @@ layered model is a composition IR, not an additional certification gate yet.
 The state-equation solver and static activation/resource budgets are in place.
 The next steps tighten them:
 
-1. replace slot-boundary preemption with finer timed-PN state semantics and
-   produce per-task response-time bounds;
+1. replace the work-conserving busy-period bound with priority-aware or timed
+   state-class response analysis and tighter blocking models;
 2. derive fork/join links from concurrency annotations when per-activation
    execution bounds are proven, and add temporal ordering;
 3. include fork/join links and resource budgets in the timed model;
 4. add lock/bus hold semantics and arbitration-aware resource places;
-5. add the system bound to the safe gate only after the model and solver are
+5. add the system bounds to the safe gate only after the model and solver are
    validated.

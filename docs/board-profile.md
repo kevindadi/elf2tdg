@@ -548,7 +548,7 @@ count = 2                    # default: 1
 | `[[system.tasks]].period_ns` | no | Release period in nanoseconds; positive. Derives the activation bound from `horizon_ns`. |
 | `[[system.tasks]].release_offset_ns` | no | First-release offset from the window start; default `0`; requires `period_ns`. |
 | `[[system.tasks]].release_jitter_ns` | no | Conservative first-release jitter; default `0`; requires `period_ns`. |
-| `[[system.tasks]].deadline_ns` | no | Relative deadline from each release for the timed feasibility model; positive. |
+| `[[system.tasks]].deadline_ns` | no | Relative deadline from each release for timed feasibility and the response-time deadline check; positive. |
 | `[[system.tasks]].resources` | no | Inline map of resource name to units consumed per activation. |
 | `[[system.resources]].name` | yes | Resource budget name. |
 | `[[system.resources]].capacity` | yes | Positive units available in the bound window. |
@@ -573,6 +573,13 @@ and does not yet include fork/join links or resource budgets. It is a
 model-dependent feasibility check, not a per-task response-time bound. Offset or
 jitter without a period is a configuration error, and a period or slot without
 `horizon_ns` is rejected.
+
+The separate per-task response layer also uses `period_ns`,
+`release_jitter_ns` and `deadline_ns`. It evaluates periodic release counts for
+the full busy window rather than capping them at the horizon-derived activation
+bound; such a cap would undercount interference once the response window
+extends past `horizon_ns`. Non-periodic `activations` bounds are treated as
+total budgets. See [layered-model.md](layered-model.md).
 
 The state-equation ILP treats each task's activation bound as an upper bound
 and adds:
