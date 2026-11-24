@@ -548,6 +548,29 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 ),
             );
         }
+        for conflict in &facts.conflicts {
+            let status = if conflict.applied {
+                "applied"
+            } else {
+                "ignored"
+            };
+            let scope = conflict.scope.as_deref().unwrap_or("unresolved");
+            let context = context_suffix(&conflict.context);
+            let reason = conflict
+                .reason
+                .as_ref()
+                .map(|reason| format!("; {reason}"))
+                .unwrap_or_default();
+            kv_indent(
+                out,
+                "infeasible path",
+                &format!(
+                    "{status} {} element(s), scope {scope}{context} ({}){reason}",
+                    conflict.elements.len(),
+                    conflict.source
+                ),
+            );
+        }
     }
     kv_indent(
         out,

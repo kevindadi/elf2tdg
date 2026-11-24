@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.17";
+pub const CFG_SCHEMA_VERSION: &str = "2.18";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1137,6 +1137,53 @@ pub struct CfgFlowFactsInfo {
     /// Non-loop call execution facts.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<CfgCallFactInfo>,
+    /// Infeasible-path conflicts, including ignored or unsupported records.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<CfgInfeasiblePathInfo>,
+}
+
+/// One resolved infeasible-path conflict.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgInfeasiblePathInfo {
+    /// Function containing all resolved elements, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<FunctionId>,
+    /// Whether the FFX conflict declared an edge order.
+    pub ordered: bool,
+    /// Whether the constraint was added to the IPET model.
+    pub applied: bool,
+    /// Why the conflict was not applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Constraint scope: `function` or `loop`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Loop header for a per-iteration constraint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_header: Option<BlockId>,
+    /// Caller context (immediate caller first), when contextual.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<String>,
+    /// Conflict elements in declaration order.
+    pub elements: Vec<CfgInfeasibleElementInfo>,
+    /// Source of the conflict.
+    pub source: String,
+}
+
+/// One edge or block in an infeasible-path conflict.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgInfeasibleElementInfo {
+    /// `edge` or `block`.
+    pub kind: String,
+    /// Source block for an edge, or the block itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<BlockId>,
+    /// Target block for an edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<BlockId>,
+    /// CFG control instruction location of an edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<Addr>,
 }
 
 /// One resolved branch/edge execution fact.

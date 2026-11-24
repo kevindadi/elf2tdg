@@ -30,7 +30,7 @@ use crate::cfg::{
     CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus,
     FunctionCfg, ProgramCfg,
 };
-use crate::flow_facts::{BranchOutcome, FactScope, FlowFacts};
+use crate::flow_facts::{BranchOutcome, FactScope, FlowFacts, InfeasibleElement, InfeasibleScope};
 use crate::wcet::{
     CallContext, VersionSummaries, aggregate_context_summaries, build_call_info_with,
     callee_context, frequency_hz, function_call_targets, plan_contexts, root_results, time_ns,
@@ -237,6 +237,12 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 .to_owned(),
         );
     }
+    if facts.has_infeasible_paths() {
+        info.caveats.push(
+            "Infeasible-path conflicts are enforced only for unordered conflicts whose elements share one function and are outside loops or within one non-nested loop; ordered, cross-function and nested-loop conflicts are skipped with warnings."
+                .to_owned(),
+        );
+    }
     info.caveats.extend(facts.warnings().iter().cloned());
     for (index, summary) in summaries.into_iter().enumerate() {
         let Some(summary) = summary else {
@@ -427,6 +433,14 @@ fn solve_function(
     let mut model_constraints =
         constraints(cfg, entry, &loops, &block_vars, &edge_vars, &loop_exit_vars);
     model_constraints.extend(non_loop_constraints(
+        cfg,
+        &block_vars,
+        &edge_vars,
+        facts,
+        function_id,
+        scope,
+    ));
+    model_constraints.extend(infeasible_path_constraints(
         cfg,
         &block_vars,
         &edge_vars,
@@ -682,6 +696,69 @@ fn constraints(
     constraints
 }
 
+fn infeasible_path_constraints(
+    cfg: &FunctionCfg,
+    block_vars: &BTreeMap<NodeIndex, Variable>,
+    edge_vars: &BTreeMap<EdgeIndex, Variable>,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+) -> Vec<good_lp::Constraint> {
+    let node_by_id: BTreeMap<_, _> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    facts
+        .infeasible_paths()
+        .iter()
+        .filter(|conflict| {
+            conflict.applied
+                && conflict
+                    .function
+                    .as_ref()
+                    .is_some_and(|function| function == function_id)
+                && scope.matches(&conflict.context)
+        })
+        .filter_map(|conflict| {
+            let mut lhs = Expression::from(0.0);
+            for element in &conflict.elements {
+                let variable = match element {
+                    InfeasibleElement::Block { block } => {
+                        let node = node_by_id.get(block)?;
+                        *block_vars.get(node)?
+                    }
+                    InfeasibleElement::Edge {
+                        source,
+                        target,
+                        site,
+                    } => {
+                        let source = node_by_id.get(source)?;
+                        let target = node_by_id.get(target)?;
+                        let edge = cfg
+                            .graph
+                            .edges_directed(*source, petgraph::Direction::Outgoing)
+                            .find(|edge| edge.target() == *target && edge.weight().site == *site)?;
+                        *edge_vars.get(&edge.id())?
+                    }
+                };
+                lhs += variable;
+            }
+            let count = u32::try_from(conflict.elements.len()).ok()?;
+            let bound = f64::from(count.saturating_sub(1));
+            match conflict.scope.as_ref()? {
+                InfeasibleScope::Function => Some(constraint::leq(lhs, bound)),
+                InfeasibleScope::Loop { header } => {
+                    let node = node_by_id.get(header)?;
+                    let header = block_vars.get(node)?;
+                    let rhs = Expression::from(*header) * bound;
+                    Some(constraint::leq(lhs - rhs, 0.0))
+                }
+            }
+        })
+        .collect()
+}
+
 fn non_loop_constraints(
     cfg: &FunctionCfg,
     block_vars: &BTreeMap<NodeIndex, Variable>,
@@ -747,4 +824,319 @@ fn non_loop_constraints(
         ));
     }
     constraints
+}
+
+#[cfg(test)]
+mod tests {
+    use super::analyze_program;
+    use crate::board_profile::BoardProfile;
+    use crate::cfg::{
+        CfgBlockDraft, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction, CfgTerminator,
+        FunctionCfg, ProgramCfg,
+    };
+    use crate::flow_facts::{FlowFactDocument, FlowFacts, InfeasibleScope};
+    use elf2tdg_schema::{CostRange, FunctionId, FunctionKind, Language};
+
+    fn profile() -> BoardProfile {
+        BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:ipet-conflict-test"
+arch = "thumb"
+cpu = "cortex-m7"
+
+[clocks.core]
+hz = 1_000_000
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+"#,
+        )
+        .expect("valid profile")
+    }
+
+    fn facts() -> FlowFacts {
+        let board = profile();
+        FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"))
+    }
+
+    fn instruction(address: u64, terminator: CfgTerminator, cycles: f64) -> CfgInstruction {
+        CfgInstruction {
+            address,
+            size: 2,
+            bytes: vec![0; 2],
+            mnemonic: "nop".to_owned(),
+            operands: String::new(),
+            text: "nop".to_owned(),
+            is_call: false,
+            is_jump: matches!(terminator, CfgTerminator::Branch | CfgTerminator::Jump),
+            is_return: terminator == CfgTerminator::Return,
+            is_conditional: terminator == CfgTerminator::Branch,
+            direct_target: None,
+            indirect: None,
+            memory_accesses: Vec::new(),
+            cycles: Some(CostRange::exact(cycles)),
+            source: None,
+        }
+    }
+
+    fn block(address: u64, terminator: CfgTerminator, cycles: f64) -> CfgBlockDraft {
+        CfgBlockDraft {
+            address,
+            size: 2,
+            instructions: vec![instruction(address, terminator, cycles)],
+            calls: Vec::new(),
+            cycles: Some(CostRange::exact(cycles)),
+            terminator,
+        }
+    }
+
+    fn edge(from: u64, to: u64, kind: CfgEdgeKind) -> CfgEdgeDraft {
+        CfgEdgeDraft {
+            from,
+            to,
+            kind,
+            site: from,
+            conditional: kind == CfgEdgeKind::Branch,
+        }
+    }
+
+    fn function(address: u64, cfg: FunctionCfg) -> CfgFunction {
+        CfgFunction {
+            id: FunctionId::new(format!("fn:0x{address:x}")),
+            primary_name: "main".to_owned(),
+            demangled_name: None,
+            symbols: Vec::new(),
+            language: Language::C,
+            kind: FunctionKind::Normal,
+            address,
+            size: 0x40,
+            section: ".text".to_owned(),
+            source: None,
+            inline_frames: Vec::new(),
+            noreturn: None,
+            cfg,
+            wcet: None,
+        }
+    }
+
+    fn analyze_with(program: &ProgramCfg, text: &str) -> (f64, FlowFacts) {
+        let mut constrained = program.clone();
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(text, "conflict.ffx").expect("parse");
+        facts
+            .apply_document(document, program)
+            .expect("apply conflict");
+        let _ = analyze_program(&mut constrained, &facts);
+        let cycles = constrained.functions[0]
+            .wcet
+            .as_ref()
+            .expect("function WCET")
+            .cycles
+            .expect("finite cycles");
+        (cycles, facts)
+    }
+
+    fn analyze_baseline(program: &ProgramCfg) -> f64 {
+        let mut program = program.clone();
+        let _ = analyze_program(&mut program, &facts());
+        program.functions[0]
+            .wcet
+            .as_ref()
+            .expect("function WCET")
+            .cycles
+            .expect("finite cycles")
+    }
+
+    #[test]
+    fn edge_conflict_removes_a_feasible_high_cost_path() {
+        let program = ProgramCfg::new(vec![function(
+            0x1000,
+            FunctionCfg::build(
+                vec![
+                    block(0x1000, CfgTerminator::Branch, 1.0),
+                    block(0x1002, CfgTerminator::Fallthrough, 10.0),
+                    block(0x1004, CfgTerminator::Fallthrough, 20.0),
+                    block(0x1006, CfgTerminator::Return, 1.0),
+                    block(0x1008, CfgTerminator::Fallthrough, 5.0),
+                ],
+                vec![
+                    edge(0x1000, 0x1002, CfgEdgeKind::Branch),
+                    edge(0x1000, 0x1008, CfgEdgeKind::Fallthrough),
+                    edge(0x1002, 0x1004, CfgEdgeKind::Fallthrough),
+                    edge(0x1004, 0x1006, CfgEdgeKind::Fallthrough),
+                    edge(0x1008, 0x1006, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x1000),
+            ),
+        )]);
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <edge src="0x1002" dst="0x1004"/>
+      <edge src="0x1004" dst="0x1006"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(baseline, 32.0);
+        assert_eq!(constrained, 7.0);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::Function));
+        assert_eq!(conflict.elements.len(), 2);
+    }
+
+    #[test]
+    fn loop_conflict_uses_the_header_iteration_budget() {
+        let program = ProgramCfg::new(vec![function(
+            0x2000,
+            FunctionCfg::build(
+                vec![
+                    block(0x2000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x2002, CfgTerminator::Branch, 1.0),
+                    block(0x2004, CfgTerminator::Fallthrough, 10.0),
+                    block(0x2006, CfgTerminator::Fallthrough, 20.0),
+                    block(0x2008, CfgTerminator::Fallthrough, 5.0),
+                    block(0x200a, CfgTerminator::Branch, 1.0),
+                    block(0x200c, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x2000, 0x2002, CfgEdgeKind::Fallthrough),
+                    edge(0x2002, 0x2004, CfgEdgeKind::Branch),
+                    edge(0x2002, 0x2008, CfgEdgeKind::Fallthrough),
+                    edge(0x2004, 0x2006, CfgEdgeKind::Fallthrough),
+                    edge(0x2006, 0x200a, CfgEdgeKind::Fallthrough),
+                    edge(0x2008, 0x200a, CfgEdgeKind::Fallthrough),
+                    edge(0x200a, 0x2002, CfgEdgeKind::Branch),
+                    edge(0x200a, 0x200c, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x2000),
+            ),
+        )]);
+        let baseline = analyze_baseline(&program);
+        let (constrained, applied_facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="*">
+        <conflict>
+          <block address="0x2004"/>
+          <block address="0x2006"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(constrained < baseline, "{constrained} < {baseline}");
+        assert!(constrained > 0.0);
+        let conflict = &applied_facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0x2002"
+        ));
+
+        let mut exit_facts = facts();
+        let exit_document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="*">
+        <conflict>
+          <block address="0x2004"/>
+          <edge src="0x200a" dst="0x200c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "exit-conflict.ffx",
+        )
+        .expect("parse");
+        exit_facts
+            .apply_document(exit_document, &program)
+            .expect("apply conflict");
+        let conflict = &exit_facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("outside the loop"))
+        );
+    }
+
+    #[test]
+    fn ordered_conflicts_are_recorded_but_not_applied() {
+        let program = ProgramCfg::new(vec![function(
+            0x1000,
+            FunctionCfg::build(
+                vec![
+                    block(0x1000, CfgTerminator::Branch, 1.0),
+                    block(0x1002, CfgTerminator::Fallthrough, 10.0),
+                    block(0x1004, CfgTerminator::Fallthrough, 20.0),
+                    block(0x1006, CfgTerminator::Return, 1.0),
+                    block(0x1008, CfgTerminator::Fallthrough, 5.0),
+                ],
+                vec![
+                    edge(0x1000, 0x1002, CfgEdgeKind::Branch),
+                    edge(0x1000, 0x1008, CfgEdgeKind::Fallthrough),
+                    edge(0x1002, 0x1004, CfgEdgeKind::Fallthrough),
+                    edge(0x1004, 0x1006, CfgEdgeKind::Fallthrough),
+                    edge(0x1008, 0x1006, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x1000),
+            ),
+        )]);
+        let baseline = analyze_baseline(&program);
+        let mut constrained = program;
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <edge src="0x1002" dst="0x1004"/>
+      <edge src="0x1004" dst="0x1006"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "ordered.ffx",
+        )
+        .expect("parse");
+        facts
+            .apply_document(document, &constrained)
+            .expect("apply conflict");
+        let _ = analyze_program(&mut constrained, &facts);
+        assert_eq!(
+            constrained.functions[0]
+                .wcet
+                .as_ref()
+                .and_then(|wcet| wcet.cycles),
+            Some(baseline)
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(conflict.ordered);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("ordered"))
+        );
+    }
 }

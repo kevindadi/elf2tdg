@@ -185,7 +185,7 @@ pub const BUILTIN_PASSES: &[PassInfo] = &[
     },
     PassInfo {
         id: "flow.facts",
-        title: "Loop bounds, inferred counts and context-sensitive flow facts",
+        title: "Loop bounds, inferred counts, context and infeasible-path facts",
         kind: PassKind::Analysis,
         requires: &["ir.cfg"],
         provides: &["flow.facts"],

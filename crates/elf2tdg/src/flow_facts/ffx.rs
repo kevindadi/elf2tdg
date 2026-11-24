@@ -21,8 +21,8 @@
 use roxmltree::{Document, Node};
 
 use super::{
-    BranchFact, BranchOutcome, CallFact, CallTarget, ContextKind, FlowFactDocument, LocationTarget,
-    LoopFact, LoopTarget,
+    BranchFact, BranchOutcome, CallFact, CallTarget, ConflictElementFact, ConflictFact,
+    ContextKind, FlowFactDocument, LocationTarget, LoopFact, LoopTarget,
 };
 
 pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String> {
@@ -42,9 +42,11 @@ pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String
             loops: Vec::new(),
             branches: Vec::new(),
             calls: Vec::new(),
+            conflicts: Vec::new(),
             warnings: Vec::new(),
         },
         functions: Vec::new(),
+        loops: Vec::new(),
     };
     process_children(root, &mut state, origin)?;
     Ok(state.document)
@@ -55,6 +57,8 @@ struct State {
     /// Enclosing function names from the outermost `<function>` scope to the
     /// current function. A nested `<call name="...">` adds its callee name.
     functions: Vec<String>,
+    /// Enclosing `<loop>` contexts, outermost first.
+    loops: Vec<LoopTarget>,
 }
 
 impl State {
@@ -105,22 +109,96 @@ fn process_children(node: Node<'_, '_>, state: &mut State, origin: &str) -> Resu
                 }
             }
             "loop" => {
-                let (fact, warnings) = parse_loop(&child, state, origin)?;
-                state.document.loops.push(fact);
+                let (fact, target, warnings) = parse_loop(&child, state, origin)?;
+                if let Some(fact) = fact {
+                    state.document.loops.push(fact);
+                }
                 state.document.warnings.extend(warnings);
+                state.loops.push(target);
                 process_children(child, state, origin)?;
+                state.loops.pop();
             }
             "conditional" => {
                 parse_conditional(&child, state, origin)?;
             }
+            "conflict" => {
+                if let Some((fact, warnings)) = parse_conflict(&child, state, origin, false, false)?
+                {
+                    state.document.conflicts.push(fact);
+                    state.document.warnings.extend(warnings);
+                }
+            }
+            "not-all" => {
+                parse_not_all(&child, state, origin, false)?;
+            }
             "iteration" => {
-                state.document.warnings.push(format!(
-                    "{origin}: iteration-specific FFX facts are ignored because the analysis is not iteration-sensitive"
-                ));
+                let all_iterations =
+                    attribute(&child, "number").is_some_and(|number| number.trim() == "*");
+                if all_iterations && !state.loops.is_empty() {
+                    process_iteration_children(&child, state, origin)?;
+                } else {
+                    state.document.warnings.push(format!(
+                        "{origin}: iteration-specific FFX facts are ignored because the analysis is not iteration-sensitive"
+                    ));
+                }
             }
             other => {
                 state.document.warnings.push(format!(
                     "{origin}: unsupported FFX element <{other}> and its descendants ignored"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_not_all(
+    node: &Node<'_, '_>,
+    state: &mut State,
+    origin: &str,
+    iteration_context: bool,
+) -> Result<(), String> {
+    let sequential = attribute(node, "seq")
+        .map(parse_bool)
+        .transpose()
+        .map_err(|error| format!("{origin}: not-all seq attribute: {error}"))?
+        .unwrap_or(false);
+    if !sequential {
+        state.document.warnings.push(format!(
+            "{origin}: <not-all> without seq=\"true\" is ignored"
+        ));
+        return Ok(());
+    }
+    if let Some((mut fact, warnings)) =
+        parse_conflict(node, state, origin, true, iteration_context)?
+    {
+        // OTAWA's not-all form is a sequence; never let an ordered attribute
+        // downgrade it to an unordered conflict.
+        fact.ordered = true;
+        state.document.conflicts.push(fact);
+        state.document.warnings.extend(warnings);
+    }
+    Ok(())
+}
+
+fn process_iteration_children(
+    node: &Node<'_, '_>,
+    state: &mut State,
+    origin: &str,
+) -> Result<(), String> {
+    for child in node.children().filter(Node::is_element) {
+        match child.tag_name().name() {
+            "conflict" => {
+                if let Some((fact, warnings)) = parse_conflict(&child, state, origin, false, true)?
+                {
+                    state.document.conflicts.push(fact);
+                    state.document.warnings.extend(warnings);
+                }
+            }
+            "not-all" => parse_not_all(&child, state, origin, true)?,
+            other => {
+                state.document.warnings.push(format!(
+                    "{origin}: iteration-specific <{other}> is ignored because the analysis is not iteration-sensitive"
                 ));
             }
         }
@@ -268,6 +346,91 @@ fn parse_conditional(node: &Node<'_, '_>, state: &mut State, origin: &str) -> Re
     Ok(())
 }
 
+fn parse_conflict(
+    node: &Node<'_, '_>,
+    state: &State,
+    origin: &str,
+    default_ordered: bool,
+    iteration_context: bool,
+) -> Result<Option<(ConflictFact, Vec<String>)>, String> {
+    let Some(scope) = state.current_function() else {
+        return Ok(Some((
+            ConflictFact {
+                elements: Vec::new(),
+                ordered: default_ordered,
+                scope: None,
+                context: state.context(),
+                context_kind: ContextKind::FfxCall,
+                loop_context: state.loops.last().cloned(),
+                all_iterations: iteration_context,
+            },
+            Vec::new(),
+        )));
+    };
+    let ordered = attribute(node, "ordered")
+        .map(parse_bool)
+        .transpose()
+        .map_err(|error| format!("{origin}: conflict ordered attribute: {error}"))?
+        .unwrap_or(default_ordered);
+    let mut elements = Vec::new();
+    let mut warnings = Vec::new();
+    for child in node.children().filter(Node::is_element) {
+        match child.tag_name().name() {
+            "edge" => {
+                let (Some(src), Some(dst)) = (attribute(&child, "src"), attribute(&child, "dst"))
+                else {
+                    warnings.push(format!(
+                        "{origin}: conflict <edge> needs src and dst; conflict ignored"
+                    ));
+                    return Ok(None);
+                };
+                elements.push(ConflictElementFact::Edge {
+                    src: parse_number(src)?,
+                    dst: parse_number(dst)?,
+                });
+            }
+            "block" => {
+                let Some(location) = parse_location(&child, state, origin)? else {
+                    warnings.push(format!(
+                        "{origin}: conflict <block> needs address, offset or source/line; conflict ignored"
+                    ));
+                    return Ok(None);
+                };
+                elements.push(ConflictElementFact::Block { location });
+            }
+            "call" | "loop" | "iteration" => {
+                warnings.push(format!(
+                    "{origin}: nested <{}> inside <conflict> is not supported; conflict ignored",
+                    child.tag_name().name()
+                ));
+                return Ok(None);
+            }
+            other => {
+                warnings.push(format!(
+                    "{origin}: unsupported <conflict> child <{other}>; conflict ignored"
+                ));
+                return Ok(None);
+            }
+        }
+    }
+    if elements.is_empty() {
+        warnings.push(format!("{origin}: empty <conflict> is ignored"));
+        return Ok(None);
+    }
+    Ok(Some((
+        ConflictFact {
+            elements,
+            ordered,
+            scope: Some(scope),
+            context: state.context(),
+            context_kind: ContextKind::FfxCall,
+            loop_context: state.loops.last().cloned(),
+            all_iterations: iteration_context,
+        },
+        warnings,
+    )))
+}
+
 fn parse_location(
     node: &Node<'_, '_>,
     state: &State,
@@ -299,8 +462,8 @@ fn parse_location(
 
 fn parse_bool(value: &str) -> Result<bool, String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" => Ok(true),
-        "false" | "0" => Ok(false),
+        "true" | "yes" | "1" => Ok(true),
+        "false" | "no" | "0" => Ok(false),
         _ => Err(format!("invalid boolean {value:?}")),
     }
 }
@@ -309,23 +472,8 @@ fn parse_loop(
     node: &Node<'_, '_>,
     state: &State,
     origin: &str,
-) -> Result<(LoopFact, Vec<String>), String> {
+) -> Result<(Option<LoopFact>, LoopTarget, Vec<String>), String> {
     let mut warnings = Vec::new();
-    let max = if let Some(value) = attribute(node, "maxcount").or_else(|| attribute(node, "max")) {
-        parse_u32(value)?
-    } else {
-        let Some(total) = attribute(node, "totalcount").or_else(|| attribute(node, "total")) else {
-            return Err(format!(
-                "{origin}: <loop> lacks maxcount/max and totalcount/total"
-            ));
-        };
-        warnings.push("loop has only a total count; using it as the per-entry bound".to_owned());
-        parse_u32(total)?
-    };
-    if max == 0 {
-        return Err(format!("{origin}: loop max bound must be positive"));
-    }
-
     let offset = attribute(node, "offset");
     let source = attribute(node, "source");
     let line = attribute(node, "line");
@@ -355,13 +503,32 @@ fn parse_loop(
         ));
     };
 
+    let max = if let Some(value) = attribute(node, "maxcount").or_else(|| attribute(node, "max")) {
+        Some(parse_u32(value)?)
+    } else if let Some(total) = attribute(node, "totalcount").or_else(|| attribute(node, "total")) {
+        warnings.push("loop has only a total count; using it as the per-entry bound".to_owned());
+        Some(parse_u32(total)?)
+    } else {
+        warnings.push(
+            "<loop> has no maxcount/max or totalcount/total; treating it as a context only"
+                .to_owned(),
+        );
+        None
+    };
+    let Some(max) = max else {
+        return Ok((None, target, warnings));
+    };
+    if max == 0 {
+        return Err(format!("{origin}: loop max bound must be positive"));
+    }
     Ok((
-        LoopFact {
-            target,
+        Some(LoopFact {
+            target: target.clone(),
             max,
             context: state.context(),
             context_kind: ContextKind::FfxCall,
-        },
+        }),
+        target,
         warnings,
     ))
 }
@@ -460,7 +627,7 @@ mod tests {
 #[cfg(test)]
 mod non_loop_tests {
     use super::parse;
-    use crate::flow_facts::{BranchOutcome, CallTarget, LocationTarget};
+    use crate::flow_facts::{BranchOutcome, CallTarget, LocationTarget, LoopTarget};
 
     #[test]
     fn parses_branch_cases_and_never_executed_conditionals() {
@@ -537,6 +704,102 @@ mod non_loop_tests {
         assert_eq!(document.calls[0].context, vec!["main"]);
         assert_eq!(document.calls[0].scope.as_deref(), Some("g"));
         assert_eq!(document.calls[0].max, 2);
+    }
+
+    #[test]
+    fn parses_conflict_and_not_all_elements() {
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <edge src="0x1000" dst="0x1002"/>
+      <block address="0x1004"/>
+    </conflict>
+    <conflict ordered="yes">
+      <edge src="0x1000" dst="0x1002"/>
+      <edge src="0x1002" dst="0x1004"/>
+    </conflict>
+    <not-all seq="true">
+      <edge src="0x1000" dst="0x1002"/>
+      <edge src="0x1002" dst="0x1004"/>
+    </not-all>
+  </function>
+</flowfacts>
+"#,
+            "conflicts.ffx",
+        )
+        .expect("parse");
+        assert_eq!(document.conflicts.len(), 3);
+        assert!(!document.conflicts[0].ordered);
+        assert_eq!(document.conflicts[0].scope.as_deref(), Some("main"));
+        assert_eq!(document.conflicts[0].context, Vec::<String>::new());
+        assert_eq!(document.conflicts[0].elements.len(), 2);
+        assert!(document.conflicts[1].ordered);
+        assert!(document.conflicts[2].ordered);
+    }
+
+    #[test]
+    fn parses_context_only_loop_and_all_iterations_conflict() {
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x1000">
+      <iteration number="*">
+        <conflict>
+          <block address="0x1002"/>
+          <block address="0x1004"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "iteration.ffx",
+        )
+        .expect("parse");
+        assert!(document.loops.is_empty());
+        assert_eq!(document.conflicts.len(), 1);
+        assert!(matches!(
+            document.conflicts[0].loop_context,
+            Some(LoopTarget::Address(0x1000))
+        ));
+        assert!(
+            document
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("context only"))
+        );
+    }
+
+    #[test]
+    fn ignores_specific_iteration_conflicts() {
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x1000">
+      <iteration number="-1">
+        <conflict>
+          <block address="0x1002"/>
+          <block address="0x1004"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "last-iteration.ffx",
+        )
+        .expect("parse");
+        assert!(document.conflicts.is_empty());
+        assert!(
+            document
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("iteration-specific"))
+        );
     }
 
     #[test]

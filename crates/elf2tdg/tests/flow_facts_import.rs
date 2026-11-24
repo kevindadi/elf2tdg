@@ -725,6 +725,53 @@ fn unmatched_context_facts_do_not_change_results() {
 }
 
 #[test]
+fn infeasible_path_conflicts_are_recorded_and_reported() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let ffx = temp_file(
+        "ordered-conflict.ffx",
+        r#"
+<flowfacts>
+  <function name="sensor_task">
+    <conflict ordered="yes">
+      <block address="0x0800_0120"/>
+      <block address="0x0800_0128"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+    );
+    let output = analyze(vec![ffx.clone()], profile(""), PathAnalysis::Ipet);
+    let wcet = output.cfg.wcet.as_ref().expect("WCET");
+    let facts = wcet.flow_facts.as_ref().expect("flow facts");
+    let conflict = facts.conflicts.first().expect("conflict record");
+    assert!(conflict.ordered);
+    assert!(!conflict.applied);
+    assert!(
+        conflict
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("ordered"))
+    );
+    assert_eq!(conflict.elements.len(), 2);
+    assert!(
+        wcet.caveats
+            .iter()
+            .any(|caveat| caveat.contains("Infeasible-path conflicts"))
+    );
+    let json = cfg::render_json(&output.cfg, None, false).expect("CFG JSON");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(
+        value["wcet"]["flow_facts"]["conflicts"][0]["applied"],
+        false
+    );
+    let text = text_report::render_text(&output.cfg, None, false).expect("text report");
+    assert!(text.contains("infeasible path"));
+    let _ = std::fs::remove_file(ffx);
+}
+
+#[test]
 fn longest_path_reports_ignored_non_loop_facts() {
     let Some(_) = fixture_elf() else {
         return;

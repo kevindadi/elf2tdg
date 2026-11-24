@@ -258,6 +258,12 @@ pub(crate) fn analyze_program_with_facts(
                 .to_owned(),
         );
     }
+    if facts.has_infeasible_paths() {
+        info.caveats.push(
+            "Infeasible-path conflicts are enforced only by the IPET backend; longest-path ignores them and remains a conservative overestimate."
+                .to_owned(),
+        );
+    }
     info.caveats.extend(facts.warnings().iter().cloned());
     for (index, summary) in summaries.into_iter().enumerate() {
         let Some(summary) = summary else {

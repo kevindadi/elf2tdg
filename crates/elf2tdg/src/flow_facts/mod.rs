@@ -14,10 +14,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use elf2tdg_schema::{Addr, BlockId, FunctionId};
+use petgraph::visit::EdgeRef;
 
 use crate::board_profile::WcetProfile;
 use crate::cfg::{
-    CfgBranchFactInfo, CfgCallFactInfo, CfgFlowFactsInfo, CfgFunction, CfgLoopBoundInfo, ProgramCfg,
+    CfgBranchFactInfo, CfgCallFactInfo, CfgFlowFactsInfo, CfgFunction, CfgInfeasibleElementInfo,
+    CfgInfeasiblePathInfo, CfgLoopBoundInfo, ProgramCfg,
 };
 use crate::loop_bounds::InferredLoopBound;
 use crate::rules::normalize_crate_hashes;
@@ -130,6 +132,7 @@ pub(crate) struct FlowFacts {
     contextual_loops: Vec<ContextualLoopBound>,
     branches: Vec<BranchConstraint>,
     calls: Vec<CallConstraint>,
+    infeasible_paths: Vec<InfeasiblePathConstraint>,
     warnings: Vec<String>,
 }
 
@@ -155,6 +158,7 @@ impl FlowFacts {
             contextual_loops: Vec::new(),
             branches: Vec::new(),
             calls: Vec::new(),
+            infeasible_paths: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -255,6 +259,10 @@ impl FlowFacts {
                 .iter()
                 .any(|branch| !branch.context.is_empty())
             || self.calls.iter().any(|call| !call.context.is_empty())
+            || self
+                .infeasible_paths
+                .iter()
+                .any(|conflict| conflict.applied && !conflict.context.is_empty())
     }
 
     /// Resolved loop bounds keyed by header address, with provenance.
@@ -272,6 +280,16 @@ impl FlowFacts {
     /// Resolved call-site constraints.
     pub(crate) fn calls(&self) -> &[CallConstraint] {
         &self.calls
+    }
+
+    /// Resolved infeasible-path constraints and ignored conflict records.
+    pub(crate) fn infeasible_paths(&self) -> &[InfeasiblePathConstraint] {
+        &self.infeasible_paths
+    }
+
+    /// Whether any infeasible-path conflict was imported.
+    pub(crate) fn has_infeasible_paths(&self) -> bool {
+        !self.infeasible_paths.is_empty()
     }
 
     /// Whether any non-loop constraint was resolved.
@@ -332,6 +350,51 @@ impl FlowFacts {
                     source: call.source.clone(),
                 })
                 .collect(),
+            conflicts: self
+                .infeasible_paths
+                .iter()
+                .map(|conflict| {
+                    let (scope, loop_header) = match &conflict.scope {
+                        Some(InfeasibleScope::Function) => (Some("function".to_owned()), None),
+                        Some(InfeasibleScope::Loop { header }) => {
+                            (Some("loop".to_owned()), Some(header.clone()))
+                        }
+                        None => (None, None),
+                    };
+                    CfgInfeasiblePathInfo {
+                        function: conflict.function.clone(),
+                        ordered: conflict.ordered,
+                        applied: conflict.applied,
+                        reason: conflict.reason.clone(),
+                        scope,
+                        loop_header,
+                        context: conflict.context_names.clone(),
+                        elements: conflict
+                            .elements
+                            .iter()
+                            .map(|element| match element {
+                                InfeasibleElement::Edge {
+                                    source,
+                                    target,
+                                    site,
+                                } => CfgInfeasibleElementInfo {
+                                    kind: "edge".to_owned(),
+                                    source: Some(source.clone()),
+                                    target: Some(target.clone()),
+                                    site: Some(Addr::new(*site)),
+                                },
+                                InfeasibleElement::Block { block } => CfgInfeasibleElementInfo {
+                                    kind: "block".to_owned(),
+                                    source: Some(block.clone()),
+                                    target: None,
+                                    site: None,
+                                },
+                            })
+                            .collect(),
+                        source: conflict.source.clone(),
+                    }
+                })
+                .collect(),
         }
     }
 
@@ -373,6 +436,7 @@ impl FlowFacts {
         self.apply_loop_facts(&document, program)?;
         self.apply_branch_facts(&document, program)?;
         self.apply_call_facts(&document, program)?;
+        self.apply_conflict_facts(&document, program)?;
         Ok(())
     }
 
@@ -515,6 +579,21 @@ impl FlowFacts {
         Ok(())
     }
 
+    fn apply_conflict_facts(
+        &mut self,
+        document: &FlowFactDocument,
+        program: &ProgramCfg,
+    ) -> Result<(), String> {
+        for fact in &document.conflicts {
+            let constraint = resolve_conflict(program, fact, &document.origin, &mut self.warnings)?;
+            if let Some(reason) = &constraint.reason {
+                self.warnings.push(reason.clone());
+            }
+            self.infeasible_paths.push(constraint);
+        }
+        Ok(())
+    }
+
     fn insert_contextual_loop(&mut self, candidate: ContextualLoopBound) {
         if let Some(existing) = self.contextual_loops.iter_mut().find(|existing| {
             existing.header == candidate.header && existing.context == candidate.context
@@ -637,10 +716,21 @@ pub(crate) struct FlowFactDocument {
     loops: Vec<LoopFact>,
     branches: Vec<BranchFact>,
     calls: Vec<CallFact>,
+    conflicts: Vec<ConflictFact>,
     warnings: Vec<String>,
 }
 
 impl FlowFactDocument {
+    /// Parses flow-fact text. Test-only helper for synthetic programs.
+    #[cfg(test)]
+    pub(crate) fn parse_text(text: &str, origin: &str) -> Result<Self, String> {
+        if text.trim_start().starts_with('<') {
+            ffx::parse(text, origin)
+        } else {
+            f4::parse(text, origin)
+        }
+    }
+
     /// Parses a file, detecting FFX XML by content (and F4 otherwise).
     pub(crate) fn parse_file(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|error| {
@@ -691,6 +781,63 @@ pub(crate) struct BranchFact {
     max: u32,
     context: Vec<String>,
     context_kind: ContextKind,
+}
+
+/// One parsed infeasible-path conflict.
+#[derive(Clone, Debug)]
+pub(crate) struct ConflictFact {
+    elements: Vec<ConflictElementFact>,
+    ordered: bool,
+    scope: Option<String>,
+    context: Vec<String>,
+    context_kind: ContextKind,
+    /// Innermost enclosing `<loop>` context, when present.
+    loop_context: Option<LoopTarget>,
+    /// Whether the conflict was declared inside `<iteration number="*">`.
+    all_iterations: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ConflictElementFact {
+    Edge { src: u64, dst: u64 },
+    Block { location: LocationTarget },
+}
+
+/// One resolved conflict element.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum InfeasibleElement {
+    Edge {
+        source: BlockId,
+        target: BlockId,
+        site: u64,
+    },
+    Block {
+        block: BlockId,
+    },
+}
+
+/// Structural scope of a conflict constraint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InfeasibleScope {
+    /// All elements execute at most once per function invocation.
+    Function,
+    /// All elements touch one non-nested natural loop; the constraint is
+    /// valid per loop iteration.
+    Loop { header: BlockId },
+}
+
+/// One resolved infeasible-path conflict.
+#[derive(Clone, Debug)]
+pub(crate) struct InfeasiblePathConstraint {
+    pub(crate) function: Option<FunctionId>,
+    pub(crate) elements: Vec<InfeasibleElement>,
+    pub(crate) ordered: bool,
+    pub(crate) context: Vec<FunctionId>,
+    pub(crate) context_names: Vec<String>,
+    pub(crate) source: String,
+    pub(crate) scope: Option<InfeasibleScope>,
+    pub(crate) applied: bool,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -816,6 +963,351 @@ fn function_for_block<'a>(
         .iter()
         .find(|function| function.cfg.blocks_by_address.contains_key(&address))
         .ok_or_else(|| format!("{origin}: no function contains block 0x{address:x}"))
+}
+
+#[allow(clippy::too_many_lines)]
+fn resolve_conflict(
+    program: &ProgramCfg,
+    fact: &ConflictFact,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Result<InfeasiblePathConstraint, String> {
+    let mut record = InfeasiblePathConstraint {
+        function: None,
+        elements: Vec::new(),
+        ordered: fact.ordered,
+        context: Vec::new(),
+        context_names: fact.context.clone(),
+        source: origin.to_owned(),
+        scope: None,
+        applied: false,
+        reason: None,
+    };
+    let Some(scope_name) = &fact.scope else {
+        record.reason = Some(format!(
+            "{origin}: conflict outside a <function> or <call> is ignored"
+        ));
+        return Ok(record);
+    };
+    let function = find_function(program, scope_name, origin)?;
+    record.function = Some(function.id.clone());
+    let Some((context, context_names)) = resolve_context(
+        program,
+        &fact.context,
+        fact.context_kind,
+        &function.id,
+        origin,
+        warnings,
+    )?
+    else {
+        record.reason = Some(format!("{origin}: conflict caller context is ambiguous"));
+        return Ok(record);
+    };
+    record.context = context;
+    record.context_names = context_names;
+    let mut elements = Vec::new();
+    for element in &fact.elements {
+        let Some(resolved) = resolve_conflict_element(program, function, element, origin, warnings)
+        else {
+            record.elements = elements;
+            record.reason = Some(format!(
+                "{origin}: conflict element could not be resolved; conflict ignored"
+            ));
+            return Ok(record);
+        };
+        elements.push(resolved);
+    }
+    let mut seen = BTreeSet::new();
+    elements.retain(|element| seen.insert(element.clone()));
+    record.elements = elements;
+    if fact.ordered {
+        record.reason = Some(format!(
+            "{origin}: ordered conflicts are not supported; conflict ignored"
+        ));
+        return Ok(record);
+    }
+    match conflict_scope(function, &record.elements) {
+        Ok(scope) => {
+            if let Some(target) = &fact.loop_context {
+                let header_address = resolve_target(program, target, origin)?;
+                let context_function = function_for_block(program, header_address, origin)?;
+                let Some(&node) = function.cfg.blocks_by_address.get(&header_address) else {
+                    record.reason = Some(format!(
+                        "{origin}: conflict loop context is not a block in {:?}; conflict ignored",
+                        function.primary_name
+                    ));
+                    return Ok(record);
+                };
+                let expected = InfeasibleScope::Loop {
+                    header: function.cfg.graph[node].id.clone(),
+                };
+                if context_function.id != function.id || scope != expected {
+                    record.reason = Some(format!(
+                        "{origin}: conflict loop context does not match its structural scope; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+            }
+            if fact.loop_context.is_some() || fact.all_iterations {
+                let InfeasibleScope::Loop { header } = &scope else {
+                    record.reason = Some(format!(
+                        "{origin}: loop-scoped conflict has no matching loop; conflict ignored"
+                    ));
+                    return Ok(record);
+                };
+                let analysis = crate::cfg_graph::analyze(&function.cfg);
+                let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == *header)
+                else {
+                    record.reason = Some(format!(
+                        "{origin}: conflict loop is not a natural loop; conflict ignored"
+                    ));
+                    return Ok(record);
+                };
+                let loop_blocks: BTreeSet<&BlockId> = loop_.blocks.iter().collect();
+                let outside = record.elements.iter().any(|element| match element {
+                    InfeasibleElement::Edge { source, target, .. } => {
+                        !loop_blocks.contains(source) || !loop_blocks.contains(target)
+                    }
+                    InfeasibleElement::Block { block } => !loop_blocks.contains(block),
+                });
+                if outside {
+                    record.reason = Some(format!(
+                        "{origin}: loop-scoped conflict has an element outside the loop; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+            }
+            record.scope = Some(scope);
+            record.applied = true;
+        }
+        Err(reason) => {
+            record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
+        }
+    }
+    Ok(record)
+}
+
+fn resolve_conflict_element(
+    program: &ProgramCfg,
+    function: &CfgFunction,
+    element: &ConflictElementFact,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Option<InfeasibleElement> {
+    match element {
+        ConflictElementFact::Block { location } => {
+            let block = resolve_conflict_block(program, function, location, origin, warnings)?;
+            Some(InfeasibleElement::Block {
+                block: block.id.clone(),
+            })
+        }
+        ConflictElementFact::Edge { src, dst } => {
+            let Some(source) = block_at(&function.cfg, *src) else {
+                warnings.push(format!(
+                    "{origin}: conflict edge source 0x{src:x} is not in function {:?}",
+                    function.primary_name
+                ));
+                return None;
+            };
+            let Some(target) = block_at(&function.cfg, *dst) else {
+                warnings.push(format!(
+                    "{origin}: conflict edge target 0x{dst:x} is not in function {:?}",
+                    function.primary_name
+                ));
+                return None;
+            };
+            let &source_node = function.cfg.blocks_by_address.get(&source.address)?;
+            let &target_node = function.cfg.blocks_by_address.get(&target.address)?;
+            let candidates: Vec<_> = function
+                .cfg
+                .graph
+                .edges_directed(source_node, petgraph::Direction::Outgoing)
+                .filter(|edge| edge.target() == target_node)
+                .collect();
+            let edge = match candidates.as_slice() {
+                [edge] => *edge,
+                [] => {
+                    warnings.push(format!(
+                        "{origin}: conflict edge 0x{src:x} -> 0x{dst:x} is not a CFG edge"
+                    ));
+                    return None;
+                }
+                _ => {
+                    let matching: Vec<_> = candidates
+                        .iter()
+                        .filter(|edge| edge.weight().site == *src)
+                        .collect();
+                    if let [edge] = matching.as_slice() {
+                        **edge
+                    } else {
+                        warnings.push(format!(
+                            "{origin}: conflict edge 0x{src:x} -> 0x{dst:x} is ambiguous"
+                        ));
+                        return None;
+                    }
+                }
+            };
+            Some(InfeasibleElement::Edge {
+                source: source.id.clone(),
+                target: target.id.clone(),
+                site: edge.weight().site,
+            })
+        }
+    }
+}
+
+fn resolve_conflict_block(
+    program: &ProgramCfg,
+    function: &CfgFunction,
+    location: &LocationTarget,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Option<crate::cfg::CfgBlock> {
+    match location {
+        LocationTarget::Address(address) => {
+            let Some(block) = block_at(&function.cfg, *address) else {
+                warnings.push(format!(
+                    "{origin}: conflict block 0x{address:x} is not in function {:?}",
+                    function.primary_name
+                ));
+                return None;
+            };
+            Some(block.clone())
+        }
+        LocationTarget::FunctionOffset {
+            function: name,
+            offset,
+        } => {
+            let resolved = find_function(program, name, origin).ok()?;
+            if resolved.id != function.id {
+                warnings.push(format!(
+                    "{origin}: conflict block offset names a different function"
+                ));
+                return None;
+            }
+            let address = function.address.checked_add(*offset)?;
+            let Some(&node) = function.cfg.blocks_by_address.get(&address) else {
+                warnings.push(format!(
+                    "{origin}: conflict block offset 0x{offset:x} is not a block in {:?}",
+                    function.primary_name
+                ));
+                return None;
+            };
+            Some(function.cfg.graph[node].clone())
+        }
+        LocationTarget::SourceLine {
+            function: name,
+            file,
+            line,
+        } => {
+            if let Some(name) = name {
+                let resolved = find_function(program, name, origin).ok()?;
+                if resolved.id != function.id {
+                    warnings.push(format!(
+                        "{origin}: conflict block source names a different function"
+                    ));
+                    return None;
+                }
+            }
+            let matches: Vec<&crate::cfg::CfgBlock> = function
+                .cfg
+                .blocks_by_address
+                .values()
+                .map(|node| &function.cfg.graph[*node])
+                .filter(|block| {
+                    block.instructions.iter().any(|instruction| {
+                        instruction.source.as_ref().is_some_and(|source| {
+                            source.line == *line && file_matches(file, &source.file)
+                        })
+                    })
+                })
+                .collect();
+            match matches.as_slice() {
+                [block] => Some((*block).clone()),
+                [] => {
+                    warnings.push(format!(
+                        "{origin}: no conflict block matches source {file}:{line}"
+                    ));
+                    None
+                }
+                _ => {
+                    warnings.push(format!(
+                        "{origin}: conflict block source {file}:{line} is ambiguous"
+                    ));
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn conflict_scope(
+    function: &CfgFunction,
+    elements: &[InfeasibleElement],
+) -> Result<InfeasibleScope, String> {
+    let analysis = crate::cfg_graph::analyze(&function.cfg);
+    let loop_sets: Vec<BTreeSet<BlockId>> = analysis
+        .loops
+        .iter()
+        .map(|loop_| loop_.blocks.iter().cloned().collect())
+        .collect();
+    let element_blocks: Vec<Vec<BlockId>> = elements
+        .iter()
+        .map(|element| match element {
+            InfeasibleElement::Edge { source, target, .. } => {
+                vec![source.clone(), target.clone()]
+            }
+            InfeasibleElement::Block { block } => vec![block.clone()],
+        })
+        .collect();
+    let touches: Vec<BTreeSet<usize>> = element_blocks
+        .iter()
+        .map(|blocks| {
+            loop_sets
+                .iter()
+                .enumerate()
+                .filter(|(_, loop_set)| blocks.iter().any(|block| loop_set.contains(block)))
+                .map(|(index, _)| index)
+                .collect()
+        })
+        .collect();
+    if touches.iter().all(BTreeSet::is_empty) {
+        return Ok(InfeasibleScope::Function);
+    }
+    if touches.iter().any(BTreeSet::is_empty) {
+        return Err("conflict mixes loop and non-loop elements".to_owned());
+    }
+    let mut common = touches[0].clone();
+    for touched in &touches[1..] {
+        common.retain(|index| touched.contains(index));
+    }
+    if common.is_empty() {
+        return Err("conflict elements do not share a natural loop".to_owned());
+    }
+    let mut best: Option<usize> = None;
+    for index in common {
+        let loop_set = &loop_sets[index];
+        let nested = loop_sets.iter().enumerate().any(|(other, inner)| {
+            other != index
+                && inner.len() < loop_set.len()
+                && inner.is_subset(loop_set)
+                && element_blocks
+                    .iter()
+                    .any(|blocks| blocks.iter().any(|block| inner.contains(block)))
+        });
+        if nested {
+            continue;
+        }
+        if best.is_none_or(|best| loop_set.len() < loop_sets[best].len()) {
+            best = Some(index);
+        }
+    }
+    let Some(index) = best else {
+        return Err("conflict elements span nested loops".to_owned());
+    };
+    Ok(InfeasibleScope::Loop {
+        header: analysis.loops[index].header.clone(),
+    })
 }
 
 fn resolve_context_function<'a>(
@@ -1361,8 +1853,8 @@ fn file_matches(expected: &str, actual: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextKind, ContextualLoopBound, FactScope, FlowFacts, LoopBound, block_at,
-        checked_call_site, resolve_context,
+        ContextKind, ContextualLoopBound, FactScope, FlowFacts, InfeasiblePathConstraint,
+        LoopBound, block_at, checked_call_site, resolve_context,
     };
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
@@ -1718,6 +2210,24 @@ bound = 10
         )
         .expect("resolve");
         assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn contextual_infeasible_paths_request_context_analysis() {
+        let mut facts = FlowFacts::default();
+        assert!(!facts.has_contextual_facts());
+        facts.infeasible_paths.push(InfeasiblePathConstraint {
+            function: Some(caller("fn:target")),
+            elements: Vec::new(),
+            ordered: false,
+            context: vec![caller("fn:main")],
+            context_names: vec!["main".to_owned()],
+            source: "conflict.ffx".to_owned(),
+            scope: None,
+            applied: true,
+            reason: None,
+        });
+        assert!(facts.has_contextual_facts());
     }
 
     #[test]
