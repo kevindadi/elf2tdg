@@ -45,8 +45,14 @@ struct Cli {
 
     /// List the compile-time analysis pass plan and exit. If --board-profile is
     /// supplied, optional passes enabled by that profile are marked as such.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "print_default_profile")]
     list_passes: bool,
+
+    /// Print a complete, safe-default TOML board profile for --cpu and exit.
+    /// Board-specific sections are commented examples and stay disabled unless
+    /// enabled explicitly.
+    #[arg(long, conflicts_with = "list_passes")]
+    print_default_profile: bool,
 
     /// Core frequency, e.g. 168MHz or 168000000. Enables wall-clock times and
     /// overrides the board profile's core clock.
@@ -221,6 +227,16 @@ fn write_rendered(cli: &Cli, rendered: &str) -> Result<()> {
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.print_default_profile {
+        let Some(cpu) = cli.cpu.as_deref() else {
+            anyhow::bail!("--print-default-profile requires --cpu");
+        };
+        let rendered = BoardProfile::default_profile_template(cpu)
+            .map_err(|error| anyhow::Error::msg(error.to_string()))?;
+        write_rendered(&cli, &rendered)?;
+        return Ok(());
+    }
 
     let board_profile = cli
         .board_profile

@@ -28,6 +28,14 @@ pub const MIN_BOARD_PROFILE_SCHEMA_VERSION: u32 = 1;
 
 const DEFAULT_FETCH_WIDTH_BYTES: u32 = 4;
 
+const fn default_profile_schema_version() -> u32 {
+    BOARD_PROFILE_SCHEMA_VERSION
+}
+
+fn default_profile_id() -> String {
+    "board:default".to_owned()
+}
+
 const fn default_fetch_width() -> u32 {
     DEFAULT_FETCH_WIDTH_BYTES
 }
@@ -63,6 +71,108 @@ const fn default_link_count() -> u32 {
 fn default_multicore_model() -> String {
     "access-budget".to_owned()
 }
+
+const DEFAULT_PROFILE_TEMPLATE: &str = r#"# elf2tdg board profile template for __CPU__ (__ARCH__).
+#
+# Only `cpu` is required. Omitted optional models are disabled by default.
+# Board-specific clock, memory, cache and pipeline values are never guessed:
+# uncomment a section and replace the example values with verified board data.
+# See docs/board-profile.md for field semantics and safety notes.
+schema_version = 2
+id = "board:__ID__"
+name = "Default profile for __CPU__"
+arch = "__ARCH__"
+cpu = "__CPU__"
+# confidence = "medium"
+# unknown_instructions = "warn"
+# caveats = ["Replace example values with verified board data."]
+
+# Clock domains. Required for wall-clock nanoseconds and frequency metadata.
+# [clocks.core]
+# hz = 100_000_000
+# confidence = "high"
+
+# Memory regions. Required to charge fetch and data wait states.
+# [[memory]]
+# name = "flash"
+# start = 0x0800_0000
+# size = 0x0010_0000
+# kind = "flash"                     # flash, ram, peripheral or other
+# executable = true
+# fetch_wait_states = 0
+# fetch_width_bytes = 4
+# data_width_bytes = 4
+# data_read_wait_states = 0
+# data_write_wait_states = 0
+
+# Per-instruction timing overrides on top of the built-in CPU table.
+# [[instruction_costs]]
+# class = "load"                     # class and/or mnemonic
+# mnemonic = "ldr"
+# cycles = { min = 2, max = 3 }      # or a single number
+# note = "measured on target"
+
+# Cortex-M4 in-order resource/dependency pipeline; currently Cortex-M4 only.
+# [pipeline]
+# issue_width = 1
+# branch_penalty = { min = 1, max = 3 }
+# [[pipeline.instructions]]
+# mnemonic = "ldr"
+# resources = ["load_store"]
+# latency = 2
+# occupancy = 2
+
+# Instruction cache.
+# [instruction_cache]
+# size = 32768
+# line_bytes = 32
+# ways = 4
+# replacement = "lru"
+# miss_penalty = 10
+# invalidate_on_call = true
+# max_states = 128
+
+# Data cache.
+# [data_cache]
+# size = 32768
+# line_bytes = 32
+# ways = 4
+# replacement = "lru"
+# miss_penalty = 10
+# write_allocate = true
+# invalidate_on_call = true
+# max_states = 128
+
+# Branch prediction.
+# [branch_prediction]
+# model = "bimodal"                  # static-not-taken, static-taken, btfn, bimodal
+# mispredict_penalty = 3
+# initial_state = "weakly-not-taken"
+# max_states = 128
+
+# Multicore contention budget.
+# [multicore]
+# model = "access-budget"
+# cores = 2
+# core_id = 0
+# data_read_interference_cycles = 0
+# data_write_interference_cycles = 0
+# instruction_fetch_interference_cycles = 0
+# confidence = "medium"
+# caveats = []
+
+# WCET analysis configuration.
+# [wcet]
+# default_loop_bound = 4
+# max_states = 100_000
+# bound_nonterminating_loops = false
+# [[wcet.loop_bounds]]
+# header = 0x0800_0100
+# bound = 4
+
+# Scheduler/system model sections ([system]) are documented in
+# docs/board-profile.md and docs/layered-model.md.
+"#;
 
 /// Multicore interference budget for one core.
 #[derive(Clone, Debug, Deserialize)]
@@ -329,10 +439,13 @@ impl SystemBlockingModel {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardProfile {
+    #[serde(default = "default_profile_schema_version")]
     schema_version: u32,
+    #[serde(default = "default_profile_id")]
     id: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
     arch: String,
     cpu: String,
     #[serde(default)]
@@ -912,6 +1025,26 @@ impl BoardProfile {
         Ok(profile)
     }
 
+    /// Returns a complete, safe-default TOML profile template for `cpu`.
+    ///
+    /// Only `cpu` is active. Board-specific models are included as commented
+    /// examples because guessing them would make a WCET bound unsound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when `cpu` is not a known timing model.
+    pub fn default_profile_template(cpu: &str) -> Result<String> {
+        let model = TimingModel::from_name(cpu).ok_or_else(|| {
+            Error::Config(format!(
+                "board profile CPU {cpu:?} is not a known timing model"
+            ))
+        })?;
+        Ok(DEFAULT_PROFILE_TEMPLATE
+            .replace("__CPU__", model.id())
+            .replace("__ARCH__", model.arch())
+            .replace("__ID__", model.id()))
+    }
+
     /// Parses and validates a TOML profile.
     ///
     /// # Errors
@@ -920,6 +1053,7 @@ impl BoardProfile {
     pub fn parse_toml(text: &str) -> Result<Self> {
         let mut profile: Self = toml::from_str(text)
             .map_err(|error| Error::Config(format!("invalid board profile TOML: {error}")))?;
+        profile.resolve_defaults()?;
         profile.sha256 = Some(sha256_hex(text.as_bytes()));
         profile.validate()?;
         Ok(profile)
@@ -933,9 +1067,23 @@ impl BoardProfile {
     pub fn parse_json(text: &str) -> Result<Self> {
         let mut profile: Self = serde_json::from_str(text)
             .map_err(|error| Error::Config(format!("invalid board profile JSON: {error}")))?;
+        profile.resolve_defaults()?;
         profile.sha256 = Some(sha256_hex(text.as_bytes()));
         profile.validate()?;
         Ok(profile)
+    }
+
+    fn resolve_defaults(&mut self) -> Result<()> {
+        if self.arch.trim().is_empty() {
+            let Some(model) = TimingModel::from_name(&self.cpu) else {
+                return Err(Error::Config(format!(
+                    "board profile CPU {:?} is not a known timing model",
+                    self.cpu
+                )));
+            };
+            model.arch().clone_into(&mut self.arch);
+        }
+        Ok(())
     }
 
     /// Validates profile structure and cross-field invariants.
@@ -1794,7 +1942,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoardProfile, SystemBlockingModel, UnknownInstructionPolicy};
+    use super::{
+        BOARD_PROFILE_SCHEMA_VERSION, BoardProfile, SystemBlockingModel, UnknownInstructionPolicy,
+    };
 
     const VALID: &str = r#"
 schema_version = 1
@@ -1939,6 +2089,43 @@ confidence = "low"
         assert!(BoardProfile::parse_toml(&bad_core).is_err());
         let bad_model = valid.replace("[multicore]", "[multicore]\nmodel = \"round-robin\"");
         assert!(BoardProfile::parse_toml(&bad_model).is_err());
+    }
+
+    #[test]
+    fn defaults_identity_and_emits_safe_profile_template() {
+        let minimal = BoardProfile::parse_toml(r#"cpu = "cortex-m7""#).expect("minimal profile");
+        assert_eq!(minimal.schema_version(), BOARD_PROFILE_SCHEMA_VERSION);
+        assert_eq!(minimal.id(), "board:default");
+        assert_eq!(minimal.arch(), "thumb");
+        assert_eq!(minimal.cpu(), "cortex-m7");
+
+        let template =
+            BoardProfile::default_profile_template("cortex-m4").expect("profile template");
+        for marker in [
+            "# [clocks.core]",
+            "# [[memory]]",
+            "# [[instruction_costs]]",
+            "# [pipeline]",
+            "# [instruction_cache]",
+            "# [data_cache]",
+            "# [branch_prediction]",
+            "# [multicore]",
+            "# [wcet]",
+        ] {
+            assert!(template.contains(marker), "template lacks {marker}");
+        }
+        let parsed = BoardProfile::parse_toml(&template).expect("template must parse");
+        assert_eq!(parsed.cpu(), "cortex-m4");
+        assert_eq!(parsed.arch(), "thumb");
+        assert_eq!(parsed.id(), "board:cortex-m4");
+        assert!(parsed.pipeline().is_none());
+        assert!(parsed.instruction_cache().is_none());
+        assert!(parsed.data_cache().is_none());
+        assert!(parsed.branch_prediction().is_none());
+        assert!(parsed.multicore().is_none());
+        assert!(parsed.wcet().is_none());
+
+        assert!(BoardProfile::default_profile_template("unknown-cpu").is_err());
     }
 
     #[test]

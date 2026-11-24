@@ -18,6 +18,36 @@ fn output_path(name: &str) -> PathBuf {
 }
 
 #[test]
+fn cli_prints_safe_default_profile_template() {
+    let output = Command::new(env!("CARGO_BIN_EXE_elf2tdg"))
+        .args(["--print-default-profile", "--cpu", "cortex-m4"])
+        .output()
+        .expect("print default profile");
+    assert!(
+        output.status.success(),
+        "template CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let template = String::from_utf8(output.stdout).expect("template UTF-8");
+    assert!(template.contains("schema_version = 2"));
+    assert!(template.contains("cpu = \"cortex-m4\""));
+    assert!(template.contains("# [pipeline]"));
+    assert!(template.contains("# [instruction_cache]"));
+    assert!(template.contains("# [multicore]"));
+
+    let missing_cpu = Command::new(env!("CARGO_BIN_EXE_elf2tdg"))
+        .arg("--print-default-profile")
+        .output()
+        .expect("print default profile without CPU");
+    assert!(!missing_cpu.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_cpu.stderr).contains("requires --cpu"),
+        "missing-CPU stderr: {}",
+        String::from_utf8_lossy(&missing_cpu.stderr)
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn cli_applies_board_profile_and_rejects_cpu_conflict() {
     let Some((elf, profile)) = example_paths() else {
