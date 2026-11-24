@@ -1,0 +1,74 @@
+# OTAWA parity roadmap
+
+This document fixes the scope for matching OTAWA's analysis capabilities while
+keeping the elf2tdg system model and its future Petri-net/multicore scheduling
+layer.
+
+## Parity target
+
+The target is equivalent **analysis capability on AArch64, RISC-V and
+Thumb**, expressed through elf2tdg's own typed schema and pass architecture:
+
+1. architecture/resource/timing description with safe defaults;
+2. binary CFG, call graph and data-flow/abstract-interpretation infrastructure;
+3. automatic loop bounds, non-loop flow facts, context-sensitive facts and
+   infeasible-path constraints;
+4. instruction/data cache analysis, including persistence and cache constraints
+   in IPET;
+5. general pipeline/resource-dependency analysis and branch prediction, with
+   pipeline constraints in IPET;
+6. scalable IPET/ILP with cache/pipeline/flow constraints and CFG partitioning;
+7. validation and benchmarks against OTAWA and reference WCET results.
+
+## Confirmed exclusions
+
+The following OTAWA implementation mechanisms or non-target capabilities are
+deliberately not implemented:
+
+- **XML/SimNML/GLISS2/ADL architecture descriptions and generated ISS.**
+  Capstone already provides decoding. A second ISA description plus a generated
+  instruction-set simulator would duplicate the front-end, add a large
+  maintenance surface, and contribute nothing to a static safe upper bound.
+  The replacement is a typed TOML hardware profile with safe defaults and a
+  generated complete template.
+- **C++ plugin ABI, OWL scripting and lp_solve coupling.**
+  Rust has no stable cross-`cdylib` ABI. Analyses stay compile-time passes over
+  typed facts, and `microlp` remains the first solver. An external solver can
+  be added later through an explicit file exchange, not an OTAWA-compatible
+  plugin ABI.
+- **Full timing/pipeline support for non-target ISAs** such as PowerPC or
+  TriCore. The product target is AArch64/RISC-V/Thumb; x86-64 retains only the
+  incidental ELF/CFG decode path.
+- **OTAWA CLI/API/XML compatibility.** elf2tdg keeps its own JSON/text schema
+  and F4/FFX import. It does not emulate OTAWA commands, OWL files or XML
+  architecture descriptions.
+- **Host language/runtime analysis** (Rust std, C++ standard library, pthread,
+  OpenMP and other host runtimes) remains outside the global no_std profile
+  established for the project.
+
+## Hardware configuration contract
+
+- Hardware configuration is typed TOML/JSON, never XML.
+- `--print-default-profile --cpu <model>` emits a complete, safe-default
+  template with every currently supported hardware attribute.
+- The minimum valid profile is `cpu = "..."`:
+  - `schema_version` defaults to `2`;
+  - `id` defaults to `board:default`;
+  - `arch` is inferred from `cpu`.
+- Omitted optional sections disable that model. Board-specific clock, memory,
+  cache, pipeline, branch-prediction and multicore values are never guessed
+  from a CPU name; they must come from verified board data.
+- As parity features are added, the template and its tests must be extended in
+  the same change.
+
+## Phases
+
+| Phase | Scope | Status |
+|---|---|---|
+| A | Typed hardware profile, safe defaults, complete template, resolved values | in progress |
+| B | Data-flow/abstract interpretation, automatic loop bounds, non-loop flow facts, context-sensitive facts, infeasible paths | planned |
+| C | Cache persistence/line splitting, general pipeline/resource model, branch prediction, constraints in IPET | planned |
+| D | IPET scalability, CFG partitioning, context-sensitive summaries, benchmarks against OTAWA | planned |
+
+The layered system model remains available throughout; parity work must not
+regress its response, blocking, timed-feasibility or future Petri-net hooks.

@@ -2,7 +2,9 @@
 
 This document records the intended analysis architecture. It separates what is
 implemented today from the planned multicore and precision work;
-`--list-passes` is the authoritative status report for a build/profile.
+`--list-passes` is the authoritative status report for a build/profile. The
+OTAWA capability roadmap and confirmed scope exclusions are in
+[otawa-parity.md](otawa-parity.md).
 
 ## Goals
 
