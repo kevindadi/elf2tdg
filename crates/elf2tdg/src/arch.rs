@@ -218,7 +218,8 @@ pub struct DecodedInsn {
     pub is_jump: bool,
     /// Return/interrupt-return instruction.
     pub is_return: bool,
-    /// Conditional branch (only meaningful for jumps).
+    /// Conditionally executed branch or call. For calls this is set only for
+    /// ARM/Thumb instructions that carry an explicit condition code.
     pub is_conditional: bool,
     /// Direct branch/call target, when statically known.
     pub direct_target: Option<u64>,
@@ -387,7 +388,7 @@ impl Decoder {
         });
         let is_return = group_return || is_return_mnemonic(self.arch, &mnemonic, &operands);
         let mut is_jump = (is_jump_group || riscv_jump_pseudo) && !is_call && !is_return;
-        let mut is_conditional = is_jump && is_conditional_mnemonic(self.arch, &mnemonic);
+        let mut is_conditional = self.conditional(&detail, &mnemonic, is_call, is_jump);
         let mut direct_target = if is_call || is_jump {
             direct_target(self.arch, &detail, &mnemonic, &operands, address)
         } else {
@@ -447,6 +448,27 @@ impl Decoder {
             compare_registers,
         }))
     }
+
+    fn conditional(
+        &self,
+        detail: &capstone::InsnDetail<'_>,
+        mnemonic: &str,
+        is_call: bool,
+        is_jump: bool,
+    ) -> bool {
+        (is_jump && is_conditional_mnemonic(self.arch, mnemonic))
+            || (is_call && arm_conditional(detail))
+    }
+}
+
+fn arm_conditional(detail: &capstone::InsnDetail<'_>) -> bool {
+    let ArchDetail::ArmDetail(detail) = detail.arch_detail() else {
+        return false;
+    };
+    !matches!(
+        detail.cc(),
+        arm::ArmCC::ARM_CC_AL | arm::ArmCC::ARM_CC_INVALID
+    )
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -2294,6 +2316,26 @@ mod tests {
         assert!(insn.is_jump);
         assert!(insn.is_conditional);
         assert_eq!(insn.direct_target, Some(0x1007));
+    }
+
+    #[test]
+    fn a32_conditional_call_flags() {
+        let decoder = Decoder::new(ArchKind::Arm).unwrap();
+        let insn = decoder
+            .decode_one(&[0x3e, 0x00, 0x00, 0x1b], 0x1000)
+            .unwrap()
+            .expect("blne must decode");
+        assert!(insn.is_call);
+        assert!(insn.is_conditional);
+        assert_eq!(insn.mnemonic, "blne");
+        assert_eq!(insn.direct_target, Some(0x1100));
+
+        let unconditional = decoder
+            .decode_one(&[0x3e, 0x00, 0x00, 0xeb], 0x1000)
+            .unwrap()
+            .expect("bl must decode");
+        assert!(unconditional.is_call);
+        assert!(!unconditional.is_conditional);
     }
 
     #[test]

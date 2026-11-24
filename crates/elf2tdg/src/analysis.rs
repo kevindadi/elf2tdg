@@ -937,7 +937,7 @@ impl<'a> Analyzer<'a> {
                 } else {
                     unresolved_indirect_calls.push((current, insn_text(&insn)));
                 }
-                if !direct_noreturn && !insn.is_conditional && next < end {
+                if (!direct_noreturn || insn.is_conditional) && next < end {
                     starts.insert(next);
                     work.push_back(next);
                 }
