@@ -76,6 +76,54 @@ fn assert_loop(output: &AnalysisOutput, header: u64, bound: u32, source_fragment
     assert!(loop_.source.contains(source_fragment), "{:?}", loop_.source);
 }
 
+fn function_cycles(output: &AnalysisOutput, name: &str) -> f64 {
+    output
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name == name)
+        .and_then(|function| function.wcet.as_ref())
+        .and_then(|wcet| wcet.cycles)
+        .unwrap_or_else(|| panic!("{name} WCET"))
+}
+
+fn root_cycles(output: &AnalysisOutput, kind: cfg::CfgRootKind) -> f64 {
+    output
+        .cfg
+        .wcet
+        .as_ref()
+        .expect("WCET")
+        .roots
+        .iter()
+        .find(|root| root.kind == kind)
+        .and_then(|root| root.cycles)
+        .expect("root cycles")
+}
+
+const CONTEXT_LOOPS: &str = r#"
+<flowfacts>
+  <function name="main">
+    <call name="delay">
+      <loop address="0x0800_00d8" maxcount="1"/>
+      <loop address="0x0800_00e8" maxcount="1"/>
+    </call>
+  </function>
+  <function name="sensor_task">
+    <call name="delay">
+      <loop address="0x0800_00d8" maxcount="8"/>
+      <loop address="0x0800_00e8" maxcount="8"/>
+    </call>
+  </function>
+</flowfacts>
+"#;
+
+const GLOBAL_LOOPS: &str = r#"
+<flowfacts>
+  <loop address="0x0800_00d8" maxcount="8"/>
+  <loop address="0x0800_00e8" maxcount="8"/>
+</flowfacts>
+"#;
+
 #[test]
 fn imports_f4_address_function_offset_and_source_line() {
     let Some(_) = fixture_elf() else {
@@ -178,35 +226,104 @@ bound = 10
 }
 
 #[test]
-fn context_specific_facts_are_reported() {
+fn context_specific_loop_facts_are_reported() {
     let Some(_) = fixture_elf() else {
         return;
     };
-    let ffx = temp_file(
-        "context.ffx",
-        r#"
-<flowfacts>
-  <function name="main">
-    <call name="main">
-      <loop source="main.c" line="29" maxcount="2"/>
-    </call>
-  </function>
-</flowfacts>
-"#,
-    );
+    let ffx = temp_file("reported-context.ffx", CONTEXT_LOOPS);
     let output = analyze(vec![ffx.clone()], profile(""), PathAnalysis::Ipet);
-    assert_loop(&output, 0x0800_013e, 2, "context.ffx");
+    let wcet = output.cfg.wcet.as_ref().expect("WCET");
+    let facts = wcet.flow_facts.as_ref().expect("flow facts");
+    let main_bound = facts
+        .loops
+        .iter()
+        .find(|fact| fact.header.get() == 0x0800_00d8 && fact.context == ["main"])
+        .expect("main-context loop fact");
+    assert_eq!(main_bound.bound, 1);
+    let sensor_bound = facts
+        .loops
+        .iter()
+        .find(|fact| fact.header.get() == 0x0800_00d8 && fact.context == ["sensor_task"])
+        .expect("sensor-context loop fact");
+    assert_eq!(sensor_bound.bound, 8);
     assert!(
-        output
-            .cfg
-            .wcet
-            .as_ref()
-            .expect("WCET")
-            .caveats
+        wcet.caveats
             .iter()
-            .any(|caveat| caveat.contains("context-insensitively"))
+            .any(|caveat| caveat.contains("Context-sensitive"))
+    );
+    let text = text_report::render_text(&output.cfg, None, false).expect("text report");
+    assert!(text.contains("context: main"));
+    let _ = std::fs::remove_file(ffx);
+}
+
+#[test]
+fn context_sensitive_loop_bounds_tighten_both_backends() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let context = temp_file("tighten-context.ffx", CONTEXT_LOOPS);
+    let global = temp_file("tighten-global.ffx", GLOBAL_LOOPS);
+    for backend in [PathAnalysis::Ipet, PathAnalysis::LongestPath] {
+        let contextual = analyze(vec![context.clone()], profile(""), backend);
+        let insensitive = analyze(vec![global.clone()], profile(""), backend);
+        let contextual_main = function_cycles(&contextual, "main");
+        let insensitive_main = function_cycles(&insensitive, "main");
+        assert!(
+            contextual_main < insensitive_main,
+            "{backend:?}: context-sensitive main {contextual_main} must be below global {insensitive_main}"
+        );
+        assert_eq!(
+            function_cycles(&contextual, "delay"),
+            function_cycles(&insensitive, "delay"),
+            "{backend:?}: the expensive sensor context bounds delay"
+        );
+    }
+    let _ = std::fs::remove_file(context);
+    let _ = std::fs::remove_file(global);
+}
+
+#[test]
+fn f4_contexts_match_ffx_contexts() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let ffx = temp_file("f4-context.ffx", CONTEXT_LOOPS);
+    let f4 = temp_file(
+        "context.ff",
+        "loop 0x80000d8 1 in \"main\";\nloop 0x80000e8 1 in \"main\";\nloop 0x80000d8 8 in \"sensor_task\";\nloop 0x80000e8 8 in \"sensor_task\";\n",
+    );
+    let ffx_output = analyze(vec![ffx.clone()], profile(""), PathAnalysis::Ipet);
+    let f4_output = analyze(vec![f4.clone()], profile(""), PathAnalysis::Ipet);
+    assert_eq!(
+        function_cycles(&ffx_output, "main"),
+        function_cycles(&f4_output, "main")
+    );
+    let f4_addresses = temp_file(
+        "context-addresses.ff",
+        "loop 0x80000d8 1 in 0x8000138;\nloop 0x80000e8 1 in 0x8000138;\nloop 0x80000d8 8 in 0x8000120;\nloop 0x80000e8 8 in 0x8000120;\n",
+    );
+    let address_output = analyze(vec![f4_addresses.clone()], profile(""), PathAnalysis::Ipet);
+    assert_eq!(
+        function_cycles(&ffx_output, "main"),
+        function_cycles(&address_output, "main")
+    );
+    let facts = f4_output
+        .cfg
+        .wcet
+        .as_ref()
+        .expect("WCET")
+        .flow_facts
+        .as_ref()
+        .expect("flow facts");
+    assert!(
+        facts
+            .loops
+            .iter()
+            .any(|fact| fact.context == ["sensor_task"] && fact.bound == 8)
     );
     let _ = std::fs::remove_file(ffx);
+    let _ = std::fs::remove_file(f4);
+    let _ = std::fs::remove_file(f4_addresses);
 }
 
 #[allow(clippy::too_many_lines)]
@@ -329,17 +446,52 @@ fn imports_ffx_branch_and_call_facts() {
 }
 
 #[test]
-fn context_specific_non_loop_facts_are_ignored_conservatively() {
+fn callee_wide_call_facts_resolve_inside_the_enclosing_function() {
     let Some(_) = fixture_elf() else {
         return;
     };
     let ffx = temp_file(
+        "scoped-call.ffx",
+        r#"
+<flowfacts>
+  <function name="sensor_task">
+    <call name="delay" numcall="2"/>
+  </function>
+</flowfacts>
+"#,
+    );
+    let output = analyze(vec![ffx.clone()], profile(""), PathAnalysis::Ipet);
+    let facts = output
+        .cfg
+        .wcet
+        .as_ref()
+        .expect("WCET")
+        .flow_facts
+        .as_ref()
+        .expect("flow facts");
+    let call = facts
+        .calls
+        .iter()
+        .find(|fact| fact.site.get() == 0x0800_0124)
+        .expect("sensor_task call fact");
+    assert_eq!(call.max_count, 2);
+    assert_eq!(call.context, Vec::<String>::new());
+    let _ = std::fs::remove_file(ffx);
+}
+
+#[test]
+fn context_specific_branch_facts_apply_only_in_their_context() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let loops = temp_file("branch-loops.ffx", CONTEXT_LOOPS);
+    let branch = temp_file(
         "context-branch.ffx",
         r#"
 <flowfacts>
-  <function name="main">
+  <function name="sensor_task">
     <call name="delay">
-      <conditional address="0x0800_00e4">
+      <conditional address="0x0800_00f6">
         <case cond="1" executed="false"/>
       </conditional>
     </call>
@@ -347,16 +499,229 @@ fn context_specific_non_loop_facts_are_ignored_conservatively() {
 </flowfacts>
 "#,
     );
-    let output = analyze(vec![ffx.clone()], profile(""), PathAnalysis::Ipet);
-    let wcet = output.cfg.wcet.as_ref().expect("WCET");
-    let facts = wcet.flow_facts.as_ref().expect("flow facts");
-    assert!(facts.branches.is_empty());
+    let base = analyze(vec![loops.clone()], profile(""), PathAnalysis::Ipet);
+    let constrained = analyze(
+        vec![loops.clone(), branch.clone()],
+        profile(""),
+        PathAnalysis::Ipet,
+    );
     assert!(
-        wcet.caveats
+        function_cycles(&constrained, "main") < function_cycles(&base, "main"),
+        "sensor-context branch fact must reduce the caller cost"
+    );
+    assert!(
+        function_cycles(&constrained, "delay") < function_cycles(&base, "delay"),
+        "the sensor context bounds the delay summary"
+    );
+    let facts = constrained
+        .cfg
+        .wcet
+        .as_ref()
+        .expect("WCET")
+        .flow_facts
+        .as_ref()
+        .expect("flow facts");
+    let branch_fact = facts
+        .branches
+        .iter()
+        .find(|fact| fact.site.get() == 0x0800_00f6)
+        .expect("contextual branch fact");
+    assert_eq!(branch_fact.context, ["sensor_task"]);
+    let _ = std::fs::remove_file(loops);
+    let _ = std::fs::remove_file(branch);
+}
+
+#[test]
+fn deeper_context_bounds_only_the_matching_root_path() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let ffx = temp_file(
+        "deeper-context.ffx",
+        r#"
+<flowfacts>
+  <function name="Reset_Handler">
+    <call name="main">
+      <call name="delay">
+        <loop address="0x0800_00d8" maxcount="2"/>
+        <loop address="0x0800_00e8" maxcount="2"/>
+      </call>
+    </call>
+  </function>
+</flowfacts>
+"#,
+    );
+    let baseline = analyze(Vec::new(), profile(""), PathAnalysis::Ipet);
+    let constrained = analyze(vec![ffx.clone()], profile(""), PathAnalysis::Ipet);
+    assert!(
+        root_cycles(&constrained, cfg::CfgRootKind::Startup)
+            < root_cycles(&baseline, cfg::CfgRootKind::Startup),
+        "the two-step context must bound the startup path"
+    );
+    assert_eq!(
+        root_cycles(&constrained, cfg::CfgRootKind::Main),
+        root_cycles(&baseline, cfg::CfgRootKind::Main),
+        "the standalone main root has no Reset_Handler caller"
+    );
+    let facts = constrained
+        .cfg
+        .wcet
+        .as_ref()
+        .expect("WCET")
+        .flow_facts
+        .as_ref()
+        .expect("flow facts");
+    assert!(
+        facts
+            .loops
             .iter()
-            .any(|caveat| caveat.contains("context-specific branch fact"))
+            .any(|fact| fact.context == ["main", "Reset_Handler"])
     );
     let _ = std::fs::remove_file(ffx);
+}
+
+#[test]
+fn context_specific_call_facts_apply_only_in_their_context() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let loops = temp_file("call-loops.ffx", CONTEXT_LOOPS);
+    let call = temp_file(
+        "context-call.ffx",
+        r#"
+<flowfacts>
+  <function name="Reset_Handler">
+    <call name="main">
+      <call name="delay" address="0x0800_0140" numcall="1"/>
+    </call>
+  </function>
+</flowfacts>
+"#,
+    );
+    let base = analyze(vec![loops.clone()], profile(""), PathAnalysis::Ipet);
+    let constrained = analyze(
+        vec![loops.clone(), call.clone()],
+        profile(""),
+        PathAnalysis::Ipet,
+    );
+    assert!(
+        root_cycles(&constrained, cfg::CfgRootKind::Startup)
+            < root_cycles(&base, cfg::CfgRootKind::Startup),
+        "the call fact must constrain the startup invocation of main"
+    );
+    assert_eq!(
+        root_cycles(&constrained, cfg::CfgRootKind::Main),
+        root_cycles(&base, cfg::CfgRootKind::Main),
+        "the standalone main root must keep the unconstrained call count"
+    );
+    let facts = constrained
+        .cfg
+        .wcet
+        .as_ref()
+        .expect("WCET")
+        .flow_facts
+        .as_ref()
+        .expect("flow facts");
+    let call_fact = facts
+        .calls
+        .iter()
+        .find(|fact| fact.site.get() == 0x0800_0140)
+        .expect("contextual call fact");
+    assert_eq!(call_fact.context, ["Reset_Handler"]);
+    let _ = std::fs::remove_file(loops);
+    let _ = std::fs::remove_file(call);
+}
+
+#[test]
+fn contextual_bounds_without_a_global_fallback_stay_unbounded() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let board = BoardProfile::parse_toml(
+        r#"
+schema_version = 2
+id = "board:context-no-fallback"
+arch = "thumb"
+cpu = "cortex-m0"
+
+[clocks.core]
+hz = 48_000_000
+
+[wcet]
+auto_loop_bounds = false
+"#,
+    )
+    .expect("valid profile");
+    let ffx = temp_file(
+        "partial-context.ffx",
+        r#"
+<flowfacts>
+  <function name="main">
+    <call name="delay">
+      <loop address="0x0800_00d8" maxcount="1"/>
+      <loop address="0x0800_00e8" maxcount="1"/>
+    </call>
+  </function>
+</flowfacts>
+"#,
+    );
+    let output = analyze(vec![ffx.clone()], board, PathAnalysis::Ipet);
+    let delay = output
+        .cfg
+        .functions
+        .iter()
+        .find(|function| function.primary_name == "delay")
+        .and_then(|function| function.wcet.as_ref())
+        .expect("delay WCET");
+    assert_eq!(
+        delay.status,
+        elf2tdg::cfg::CfgWcetStatus::Unbounded,
+        "a main-only bound must not bound delay in other contexts"
+    );
+    assert!(
+        delay
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("loop-unbounded"))
+    );
+    let _ = std::fs::remove_file(ffx);
+}
+
+#[test]
+fn unmatched_context_facts_do_not_change_results() {
+    let Some(_) = fixture_elf() else {
+        return;
+    };
+    let loops = temp_file("branch-loops.ffx", CONTEXT_LOOPS);
+    let branch = temp_file(
+        "unmatched-context.ffx",
+        r#"
+<flowfacts>
+  <function name="USART1_IRQHandler">
+    <call name="delay">
+      <conditional address="0x0800_00f6">
+        <case cond="1" executed="false"/>
+      </conditional>
+    </call>
+  </function>
+</flowfacts>
+"#,
+    );
+    let base = analyze(vec![loops.clone()], profile(""), PathAnalysis::Ipet);
+    let unmatched = analyze(
+        vec![loops.clone(), branch.clone()],
+        profile(""),
+        PathAnalysis::Ipet,
+    );
+    for function in ["delay", "main", "sensor_task"] {
+        assert_eq!(
+            function_cycles(&unmatched, function),
+            function_cycles(&base, function),
+            "unmatched context must not constrain {function}"
+        );
+    }
+    let _ = std::fs::remove_file(loops);
+    let _ = std::fs::remove_file(branch);
 }
 
 #[test]

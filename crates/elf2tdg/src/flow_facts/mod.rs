@@ -4,6 +4,8 @@
 //! (`.ff`) or FFX (`.ffx`) files. F4/FFX facts are parsed into a symbolic
 //! document first and resolved against the recovered `ProgramCfg`, so a fact
 //! can name a loop by address, by function + offset, or by source file/line.
+//! F4 `in ...` chains and FFX `<call>` nesting become resolved caller contexts;
+//! the WCET backends analyze a function version per caller chain.
 
 mod f4;
 mod ffx;
@@ -24,6 +26,28 @@ use crate::rules::normalize_crate_hashes;
 struct LoopBound {
     bound: u32,
     source: String,
+}
+
+/// A loop bound restricted to a caller context.
+#[derive(Clone, Debug)]
+struct ContextualLoopBound {
+    header: u64,
+    bound: u32,
+    /// Resolved caller chain, immediate caller first.
+    context: Vec<FunctionId>,
+    /// Declared caller names for reports.
+    context_names: Vec<String>,
+    source: String,
+}
+
+/// Granularity of a declared caller context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContextKind {
+    /// F4 `in ...`: the fact applies to every call from that caller function.
+    Function,
+    /// FFX nested `<call>`: OTAWA scopes the fact to a call instruction. The
+    /// current analysis can honor this only when the call edge is unambiguous.
+    FfxCall,
 }
 
 /// Which conditional outcome a branch fact constrains.
@@ -55,6 +79,9 @@ pub(crate) struct BranchConstraint {
     pub(crate) site: u64,
     pub(crate) outcome: BranchOutcome,
     pub(crate) max_count: u32,
+    /// Resolved caller chain, immediate caller first.
+    pub(crate) context: Vec<FunctionId>,
+    pub(crate) context_names: Vec<String>,
     pub(crate) source: String,
 }
 
@@ -65,10 +92,33 @@ pub(crate) struct CallConstraint {
     pub(crate) block: BlockId,
     pub(crate) site: u64,
     pub(crate) max_count: u32,
+    /// Resolved caller chain, immediate caller first.
+    pub(crate) context: Vec<FunctionId>,
+    pub(crate) context_names: Vec<String>,
     pub(crate) source: String,
 }
 
 type CallSiteRef = (FunctionId, BlockId, u64);
+type ResolvedContext = (Vec<FunctionId>, Vec<String>);
+
+/// Selects how contextual facts are matched during one analysis.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FactScope<'a> {
+    /// One caller chain, immediate caller first.
+    Context(&'a [FunctionId]),
+    /// Context-insensitive fallback; only context-free facts apply.
+    Insensitive,
+}
+
+impl FactScope<'_> {
+    /// Whether a fact declared for `fact_context` applies in this scope.
+    pub(crate) fn matches(self, fact_context: &[FunctionId]) -> bool {
+        match self {
+            Self::Context(context) => context.starts_with(fact_context),
+            Self::Insensitive => fact_context.is_empty(),
+        }
+    }
+}
 
 /// Bounds and assumptions used by the WCET analyses for one analysis run.
 #[derive(Clone, Debug, Default)]
@@ -77,6 +127,7 @@ pub(crate) struct FlowFacts {
     default_loop_bound: Option<u32>,
     bound_nonterminating_loops: bool,
     loop_bounds: BTreeMap<u64, LoopBound>,
+    contextual_loops: Vec<ContextualLoopBound>,
     branches: Vec<BranchConstraint>,
     calls: Vec<CallConstraint>,
     warnings: Vec<String>,
@@ -101,6 +152,7 @@ impl FlowFacts {
                     )
                 })
                 .collect(),
+            contextual_loops: Vec::new(),
             branches: Vec::new(),
             calls: Vec::new(),
             warnings: Vec::new(),
@@ -122,12 +174,87 @@ impl FlowFacts {
         self.bound_nonterminating_loops
     }
 
-    /// Returns the bound for a loop header, preferring an explicit entry.
+    /// Returns a context-insensitive bound for a loop header.
+    ///
+    /// Contextual facts are folded in with their maximum because a
+    /// context-insensitive analysis must cover every caller. A loop with only
+    /// contextual facts and no global/default bound cannot be bounded safely
+    /// and returns `None`.
     pub(crate) fn bound_for(&self, header: u64) -> Option<u32> {
+        let baseline = self
+            .loop_bounds
+            .get(&header)
+            .map(|entry| entry.bound)
+            .or(self.default_loop_bound);
+        let contextual = self
+            .contextual_loops
+            .iter()
+            .filter(|entry| entry.header == header)
+            .map(|entry| entry.bound)
+            .max();
+        match (baseline, contextual) {
+            (Some(baseline), Some(contextual)) => Some(baseline.max(contextual)),
+            (Some(baseline), None) => Some(baseline),
+            (None, _) => None,
+        }
+    }
+
+    /// Returns the bound for a loop in one caller context.
+    ///
+    /// The most specific matching caller chain wins. Within that specificity,
+    /// conflicting facts keep the larger bound. A global fact is the fallback
+    /// when no contextual fact matches, followed by the default bound.
+    pub(crate) fn bound_for_context(&self, header: u64, context: &[FunctionId]) -> Option<u32> {
+        let mut best_length = 0;
+        let mut best: Option<u32> = None;
+        for entry in &self.contextual_loops {
+            if entry.header != header || !context.starts_with(&entry.context) {
+                continue;
+            }
+            let length = entry.context.len();
+            if best.is_none() || length > best_length {
+                best_length = length;
+                best = Some(entry.bound);
+            } else if length == best_length {
+                best = Some(best.map_or(entry.bound, |bound| bound.max(entry.bound)));
+            }
+        }
+        if best.is_some() {
+            return best;
+        }
         self.loop_bounds
             .get(&header)
             .map(|entry| entry.bound)
             .or(self.default_loop_bound)
+    }
+
+    /// Resolved contextual loop bounds with provenance.
+    pub(crate) fn contextual_loops(
+        &self,
+    ) -> impl Iterator<Item = (u64, u32, &[String], &str)> + '_ {
+        self.contextual_loops.iter().map(|entry| {
+            (
+                entry.header,
+                entry.bound,
+                entry.context_names.as_slice(),
+                entry.source.as_str(),
+            )
+        })
+    }
+
+    /// Whether any loop bound is restricted to a caller context.
+    pub(crate) fn has_contextual_loops(&self) -> bool {
+        !self.contextual_loops.is_empty()
+    }
+
+    /// Whether any imported fact is restricted to a caller context.
+    pub(crate) fn has_contextual_facts(&self) -> bool {
+        self.has_contextual_loops()
+            || self
+                .branches
+                .iter()
+                .any(|branch| !branch.context.is_empty())
+            || self.calls.iter().any(|call| !call.context.is_empty())
     }
 
     /// Resolved loop bounds keyed by header address, with provenance.
@@ -159,18 +286,29 @@ impl FlowFacts {
 
     /// Builds the JSON metadata object for the WCET document.
     pub(crate) fn info(&self) -> CfgFlowFactsInfo {
+        let mut loops: Vec<CfgLoopBoundInfo> = self
+            .loops()
+            .map(|(header, bound, source)| CfgLoopBoundInfo {
+                header: Addr::new(header),
+                bound,
+                context: Vec::new(),
+                source: source.to_owned(),
+            })
+            .collect();
+        loops.extend(
+            self.contextual_loops()
+                .map(|(header, bound, context, source)| CfgLoopBoundInfo {
+                    header: Addr::new(header),
+                    bound,
+                    context: context.to_vec(),
+                    source: source.to_owned(),
+                }),
+        );
         CfgFlowFactsInfo {
             source: self.source().to_owned(),
             default_loop_bound: self.default_loop_bound,
             bound_nonterminating_loops: self.bound_nonterminating_loops,
-            loops: self
-                .loops()
-                .map(|(header, bound, source)| CfgLoopBoundInfo {
-                    header: Addr::new(header),
-                    bound,
-                    source: source.to_owned(),
-                })
-                .collect(),
+            loops,
             branches: self
                 .branches
                 .iter()
@@ -179,6 +317,7 @@ impl FlowFacts {
                     site: Addr::new(branch.site),
                     outcome: branch.outcome.name().to_owned(),
                     max_count: branch.max_count,
+                    context: branch.context_names.clone(),
                     source: branch.source.clone(),
                 })
                 .collect(),
@@ -189,6 +328,7 @@ impl FlowFacts {
                     function: call.function.clone(),
                     site: Addr::new(call.site),
                     max_count: call.max_count,
+                    context: call.context_names.clone(),
                     source: call.source.clone(),
                 })
                 .collect(),
@@ -210,12 +350,12 @@ impl FlowFacts {
 
     /// Resolves and merges one parsed flow-fact document.
     ///
-    /// Conflicting bounds for the same loop keep the larger value, which is
-    /// conservative. Context-specific facts are applied context-insensitively
-    /// and produce a warning.
+    /// Conflicting bounds for the same loop and caller context keep the larger
+    /// value, which is conservative. Contextual facts are stored with their
+    /// resolved caller chain and applied per function version.
     pub(crate) fn apply_document(
         &mut self,
-        document: FlowFactDocument,
+        mut document: FlowFactDocument,
         program: &ProgramCfg,
     ) -> Result<(), String> {
         if document.checksum.is_some() {
@@ -229,74 +369,135 @@ impl FlowFacts {
         } else if !self.source.contains(&document.origin) {
             self.source = format!("{} + {}", self.source, document.origin);
         }
-        self.warnings.extend(document.warnings);
+        self.warnings.append(&mut document.warnings);
+        self.apply_loop_facts(&document, program)?;
+        self.apply_branch_facts(&document, program)?;
+        self.apply_call_facts(&document, program)?;
+        Ok(())
+    }
+
+    fn apply_loop_facts(
+        &mut self,
+        document: &FlowFactDocument,
+        program: &ProgramCfg,
+    ) -> Result<(), String> {
         for fact in &document.loops {
-            if !fact.context.is_empty() {
-                self.warnings.push(format!(
-                    "{}: context-specific flow fact [{}] is applied context-insensitively",
-                    document.origin,
-                    fact.context.join(" / ")
-                ));
-            }
             let header = resolve_target(program, &fact.target, &document.origin)?;
-            let candidate = LoopBound {
-                bound: fact.max,
-                source: document.origin.clone(),
+            let function = function_for_block(program, header, &document.origin)?;
+            let Some((context, context_names)) = resolve_context(
+                program,
+                &fact.context,
+                fact.context_kind,
+                &function.id,
+                &document.origin,
+                &mut self.warnings,
+            )?
+            else {
+                continue;
             };
-            match self.loop_bounds.get_mut(&header) {
-                Some(existing) => {
-                    if candidate.bound > existing.bound {
-                        self.warnings.push(format!(
-                            "{}: loop 0x{header:x} bound {} replaces {} from {}; using the larger bound",
-                            document.origin, candidate.bound, existing.bound, existing.source
-                        ));
-                        *existing = candidate;
-                    } else if candidate.bound < existing.bound {
-                        self.warnings.push(format!(
-                            "{}: loop 0x{header:x} bound {} is below {} from {}; keeping the larger bound",
-                            document.origin, candidate.bound, existing.bound, existing.source
-                        ));
-                    } else if !existing.source.contains(&document.origin) {
-                        existing.source = format!("{} + {}", existing.source, document.origin);
-                    }
-                }
-                None => {
-                    self.loop_bounds.insert(header, candidate);
-                }
-            }
-        }
-        for fact in &document.branches {
-            if !fact.context.is_empty() {
-                self.warnings.push(format!(
-                    "{}: context-specific branch fact [{}] ignored because the analysis is context-insensitive",
-                    document.origin,
-                    fact.context.join(" / ")
-                ));
+            if !context.is_empty() {
+                self.insert_contextual_loop(ContextualLoopBound {
+                    header,
+                    bound: fact.max,
+                    context,
+                    context_names,
+                    source: document.origin.clone(),
+                });
                 continue;
             }
+            self.insert_global_loop(
+                header,
+                LoopBound {
+                    bound: fact.max,
+                    source: document.origin.clone(),
+                },
+                &document.origin,
+            );
+        }
+        Ok(())
+    }
+
+    fn insert_global_loop(&mut self, header: u64, candidate: LoopBound, origin: &str) {
+        match self.loop_bounds.get_mut(&header) {
+            Some(existing) => {
+                if candidate.bound > existing.bound {
+                    self.warnings.push(format!(
+                        "{origin}: loop 0x{header:x} bound {} replaces {} from {}; using the larger bound",
+                        candidate.bound, existing.bound, existing.source
+                    ));
+                    *existing = candidate;
+                } else if candidate.bound < existing.bound {
+                    self.warnings.push(format!(
+                        "{origin}: loop 0x{header:x} bound {} is below {} from {}; keeping the larger bound",
+                        candidate.bound, existing.bound, existing.source
+                    ));
+                } else if !existing.source.contains(origin) {
+                    existing.source = format!("{} + {origin}", existing.source);
+                }
+            }
+            None => {
+                self.loop_bounds.insert(header, candidate);
+            }
+        }
+    }
+
+    fn apply_branch_facts(
+        &mut self,
+        document: &FlowFactDocument,
+        program: &ProgramCfg,
+    ) -> Result<(), String> {
+        for fact in &document.branches {
             let (function, block, site) =
                 resolve_branch_target(program, &fact.target, &document.origin)?;
+            let Some((context, context_names)) = resolve_context(
+                program,
+                &fact.context,
+                fact.context_kind,
+                &function,
+                &document.origin,
+                &mut self.warnings,
+            )?
+            else {
+                continue;
+            };
             self.insert_branch(BranchConstraint {
                 function,
                 block,
                 site,
                 outcome: fact.outcome,
                 max_count: fact.max,
+                context,
+                context_names,
                 source: document.origin.clone(),
             });
         }
+        Ok(())
+    }
+
+    fn apply_call_facts(
+        &mut self,
+        document: &FlowFactDocument,
+        program: &ProgramCfg,
+    ) -> Result<(), String> {
         for fact in &document.calls {
-            if !fact.context.is_empty() {
-                self.warnings.push(format!(
-                    "{}: context-specific call fact [{}] ignored because the analysis is context-insensitive",
-                    document.origin,
-                    fact.context.join(" / ")
-                ));
-                continue;
-            }
-            for (function, block, site) in
-                resolve_call_target(program, &fact.target, &document.origin, &mut self.warnings)?
-            {
+            for (function, block, site) in resolve_call_target(
+                program,
+                &fact.target,
+                fact.scope.as_deref(),
+                &document.origin,
+                &mut self.warnings,
+            )? {
+                let Some((context, context_names)) = resolve_context(
+                    program,
+                    &fact.context,
+                    fact.context_kind,
+                    &function,
+                    &document.origin,
+                    &mut self.warnings,
+                )?
+                else {
+                    continue;
+                };
                 if let Some(callee) = &fact.callee {
                     verify_call_callee(program, &function, site, callee, &document.origin)?;
                 }
@@ -305,6 +506,8 @@ impl FlowFacts {
                     block,
                     site,
                     max_count: fact.max,
+                    context,
+                    context_names,
                     source: document.origin.clone(),
                 });
             }
@@ -312,11 +515,45 @@ impl FlowFacts {
         Ok(())
     }
 
+    fn insert_contextual_loop(&mut self, candidate: ContextualLoopBound) {
+        if let Some(existing) = self.contextual_loops.iter_mut().find(|existing| {
+            existing.header == candidate.header && existing.context == candidate.context
+        }) {
+            if candidate.bound > existing.bound {
+                self.warnings.push(format!(
+                    "{}: loop 0x{:x} bound {} in context [{}] replaces {} from {}; using the larger bound",
+                    candidate.source,
+                    candidate.header,
+                    candidate.bound,
+                    candidate.context_names.join(" / "),
+                    existing.bound,
+                    existing.source
+                ));
+                *existing = candidate;
+            } else if candidate.bound < existing.bound {
+                self.warnings.push(format!(
+                    "{}: loop 0x{:x} bound {} in context [{}] is below {} from {}; keeping the larger bound",
+                    candidate.source,
+                    candidate.header,
+                    candidate.bound,
+                    candidate.context_names.join(" / "),
+                    existing.bound,
+                    existing.source
+                ));
+            } else if !existing.source.contains(&candidate.source) {
+                existing.source = format!("{} + {}", existing.source, candidate.source);
+            }
+        } else {
+            self.contextual_loops.push(candidate);
+        }
+    }
+
     fn insert_branch(&mut self, candidate: BranchConstraint) {
         if let Some(existing) = self.branches.iter_mut().find(|existing| {
             existing.function == candidate.function
                 && existing.site == candidate.site
                 && existing.outcome == candidate.outcome
+                && existing.context == candidate.context
         }) {
             if candidate.max_count < existing.max_count {
                 existing.max_count = candidate.max_count;
@@ -331,7 +568,9 @@ impl FlowFacts {
 
     fn insert_call(&mut self, candidate: CallConstraint) {
         if let Some(existing) = self.calls.iter_mut().find(|existing| {
-            existing.function == candidate.function && existing.site == candidate.site
+            existing.function == candidate.function
+                && existing.site == candidate.site
+                && existing.context == candidate.context
         }) {
             if candidate.max_count < existing.max_count {
                 existing.max_count = candidate.max_count;
@@ -428,6 +667,7 @@ pub(crate) struct LoopFact {
     target: LoopTarget,
     max: u32,
     context: Vec<String>,
+    context_kind: ContextKind,
 }
 
 #[derive(Clone, Debug)]
@@ -450,14 +690,18 @@ pub(crate) struct BranchFact {
     outcome: BranchOutcome,
     max: u32,
     context: Vec<String>,
+    context_kind: ContextKind,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct CallFact {
     target: CallTarget,
     callee: Option<String>,
+    /// Function containing the call site, when declared inside a function.
+    scope: Option<String>,
     max: u32,
     context: Vec<String>,
+    context_kind: ContextKind,
 }
 
 #[derive(Clone, Debug)]
@@ -478,6 +722,132 @@ pub(crate) enum LocationTarget {
 pub(crate) enum CallTarget {
     Location(LocationTarget),
     Callee(String),
+}
+
+fn resolve_context(
+    program: &ProgramCfg,
+    names: &[String],
+    kind: ContextKind,
+    target: &FunctionId,
+    origin: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Option<ResolvedContext>, String> {
+    if names.is_empty() {
+        return Ok(Some((Vec::new(), Vec::new())));
+    }
+    let mut functions = Vec::with_capacity(names.len());
+    for name in names {
+        functions.push(resolve_context_function(program, name, origin)?.id.clone());
+    }
+    let mut callee = target.clone();
+    for caller in &functions {
+        let sites = call_sites_between(program, caller, &callee);
+        if kind == ContextKind::FfxCall && sites.len() > 1 {
+            warnings.push(format!(
+                "{origin}: FFX caller context [{}] is ambiguous because {:?} calls {:?} from multiple sites; fact ignored",
+                names.join(" / "),
+                function_name(program, caller),
+                function_name(program, &callee)
+            ));
+            return Ok(None);
+        }
+        if sites.is_empty() {
+            warnings.push(format!(
+                "{origin}: caller context [{}] has no {:?} -> {:?} call site; fact has no effect",
+                names.join(" / "),
+                function_name(program, caller),
+                function_name(program, &callee)
+            ));
+        }
+        callee = caller.clone();
+    }
+    Ok(Some((functions, names.to_vec())))
+}
+
+fn call_sites_between(
+    program: &ProgramCfg,
+    caller: &FunctionId,
+    target: &FunctionId,
+) -> BTreeSet<u64> {
+    let Some(function) = program
+        .functions
+        .iter()
+        .find(|function| &function.id == caller)
+    else {
+        return BTreeSet::new();
+    };
+    let analysis = crate::cfg_graph::analyze(&function.cfg);
+    let reachable: BTreeSet<BlockId> = analysis.reachable.into_iter().collect();
+    let mut sites = BTreeSet::new();
+    for node in function.cfg.blocks_by_address.values() {
+        let block = &function.cfg.graph[*node];
+        if !reachable.contains(&block.id) {
+            continue;
+        }
+        for call in &block.calls {
+            let targets = call.target_function.as_ref().into_iter().chain(
+                call.candidates
+                    .iter()
+                    .filter_map(|candidate| candidate.target_function.as_ref()),
+            );
+            if targets.into_iter().any(|candidate| candidate == target) {
+                sites.insert(call.site);
+            }
+        }
+    }
+    sites
+}
+
+fn function_name<'a>(program: &'a ProgramCfg, function: &FunctionId) -> &'a str {
+    program
+        .functions
+        .iter()
+        .find(|candidate| &candidate.id == function)
+        .map_or("<unknown>", |function| function.primary_name.as_str())
+}
+
+fn function_for_block<'a>(
+    program: &'a ProgramCfg,
+    address: u64,
+    origin: &str,
+) -> Result<&'a CfgFunction, String> {
+    program
+        .functions
+        .iter()
+        .find(|function| function.cfg.blocks_by_address.contains_key(&address))
+        .ok_or_else(|| format!("{origin}: no function contains block 0x{address:x}"))
+}
+
+fn resolve_context_function<'a>(
+    program: &'a ProgramCfg,
+    name: &str,
+    origin: &str,
+) -> Result<&'a CfgFunction, String> {
+    let Some(address) = parse_context_address(name) else {
+        return find_function(program, name, origin);
+    };
+    let candidates: Vec<&CfgFunction> = program
+        .functions
+        .iter()
+        .filter(|function| function.address == address)
+        .collect();
+    match candidates.as_slice() {
+        [function] => Ok(function),
+        [] => Err(format!(
+            "{origin}: context function address 0x{address:x} was not found"
+        )),
+        _ => Err(format!(
+            "{origin}: context function address 0x{address:x} is ambiguous"
+        )),
+    }
+}
+
+fn parse_context_address(value: &str) -> Option<u64> {
+    let cleaned = value.trim().replace('_', "");
+    let hex = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))?;
+    u64::from_str_radix(hex, 16).ok()
 }
 
 fn resolve_target(program: &ProgramCfg, target: &LoopTarget, origin: &str) -> Result<u64, String> {
@@ -699,13 +1069,16 @@ fn resolve_branch_target(
 fn resolve_call_target(
     program: &ProgramCfg,
     target: &CallTarget,
+    scope: Option<&str>,
     origin: &str,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<CallSiteRef>, String> {
     match target {
-        CallTarget::Callee(name) => resolve_callee_call_sites(program, name, origin, warnings),
+        CallTarget::Callee(name) => {
+            resolve_callee_call_sites(program, name, scope, origin, warnings)
+        }
         CallTarget::Location(location) => {
-            resolve_location_call_sites(program, location, origin, warnings)
+            resolve_location_call_sites(program, location, scope, origin, warnings)
         }
     }
 }
@@ -713,13 +1086,20 @@ fn resolve_call_target(
 fn resolve_callee_call_sites(
     program: &ProgramCfg,
     name: &str,
+    scope: Option<&str>,
     origin: &str,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<CallSiteRef>, String> {
     let callee = find_function(program, name, origin)?;
+    let scope = scope
+        .map(|name| find_function(program, name, origin))
+        .transpose()?;
     let mut sites = Vec::new();
     let mut matched = false;
     for function in &program.functions {
+        if scope.is_some_and(|scope| scope.id != function.id) {
+            continue;
+        }
         for block in function
             .cfg
             .blocks_by_address
@@ -750,20 +1130,31 @@ fn resolve_callee_call_sites(
 fn resolve_location_call_sites(
     program: &ProgramCfg,
     location: &LocationTarget,
+    scope: Option<&str>,
     origin: &str,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<CallSiteRef>, String> {
+    let scope = scope
+        .map(|name| find_function(program, name, origin))
+        .transpose()?;
+    let scope_id = scope.as_ref().map(|function| &function.id);
     let (matched, found) = match location {
         LocationTarget::Address(address) => {
-            collect_call_sites_at(program, *address, origin, warnings)
+            collect_call_sites_at(program, *address, scope_id, origin, warnings)
         }
         LocationTarget::FunctionOffset { function, offset } => {
             let function = find_function(program, function, origin)?;
+            if scope_id.is_some_and(|scope| scope != &function.id) {
+                return Err(format!(
+                    "{origin}: call location function {:?} does not match the enclosing function",
+                    function.primary_name
+                ));
+            }
             let address = function
                 .address
                 .checked_add(*offset)
                 .ok_or_else(|| format!("{origin}: call offset overflows the address space"))?;
-            collect_call_sites_at(program, address, origin, warnings)
+            collect_call_sites_at(program, address, scope_id, origin, warnings)
         }
         LocationTarget::SourceLine {
             function,
@@ -774,6 +1165,7 @@ fn resolve_location_call_sites(
             function.as_deref(),
             file,
             *line,
+            scope_id,
             origin,
             warnings,
         )?,
@@ -784,12 +1176,16 @@ fn resolve_location_call_sites(
 fn collect_call_sites_at(
     program: &ProgramCfg,
     address: u64,
+    scope: Option<&FunctionId>,
     origin: &str,
     warnings: &mut Vec<String>,
 ) -> (bool, Vec<CallSiteRef>) {
     let mut found = Vec::new();
     let mut matched = false;
     for function in &program.functions {
+        if scope.is_some_and(|scope| scope != &function.id) {
+            continue;
+        }
         if let Some(block) = block_at(&function.cfg, address)
             && let Some(call) = block.calls.iter().find(|call| call.site == address)
         {
@@ -807,6 +1203,7 @@ fn collect_call_sites_at_source(
     function_name: Option<&str>,
     file: &str,
     line: u32,
+    scope: Option<&FunctionId>,
     origin: &str,
     warnings: &mut Vec<String>,
 ) -> Result<(bool, Vec<CallSiteRef>), String> {
@@ -814,6 +1211,10 @@ fn collect_call_sites_at_source(
         Some(name) => vec![find_function(program, name, origin)?],
         None => program.functions.iter().collect(),
     };
+    let functions: Vec<&CfgFunction> = functions
+        .into_iter()
+        .filter(|function| scope.is_none_or(|scope| scope == &function.id))
+        .collect();
     let mut found = Vec::new();
     let mut matched = false;
     for function in functions {
@@ -959,11 +1360,14 @@ fn file_matches(expected: &str, actual: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FlowFacts, block_at, checked_call_site};
+    use super::{
+        ContextKind, ContextualLoopBound, FactScope, FlowFacts, LoopBound, block_at,
+        checked_call_site, resolve_context,
+    };
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgFunction, CfgInstruction, CfgTerminator,
-        FunctionCfg,
+        FunctionCfg, ProgramCfg,
     };
     use crate::loop_bounds::InferredLoopBound;
     use elf2tdg_schema::{FunctionId, FunctionKind, Language};
@@ -1161,5 +1565,168 @@ bound = 10
                 .iter()
                 .any(|warning| warning.contains("conditional call"))
         );
+    }
+    fn caller(id: &str) -> FunctionId {
+        FunctionId::new(id)
+    }
+
+    #[test]
+    fn contextual_bounds_use_the_most_specific_call_chain() {
+        let mut facts = FlowFacts {
+            default_loop_bound: Some(4),
+            ..FlowFacts::default()
+        };
+        facts.loop_bounds.insert(
+            0x100,
+            LoopBound {
+                bound: 6,
+                source: "profile".to_owned(),
+            },
+        );
+        for (context, bound) in [
+            (vec!["fn:main"], 2),
+            (vec!["fn:main", "fn:reset"], 3),
+            (vec!["fn:sensor"], 8),
+        ] {
+            facts.contextual_loops.push(ContextualLoopBound {
+                header: 0x100,
+                bound,
+                context: context.iter().map(|name| caller(name)).collect(),
+                context_names: context.iter().map(ToString::to_string).collect(),
+                source: "facts.ffx".to_owned(),
+            });
+        }
+        assert_eq!(
+            facts.bound_for_context(0x100, &[caller("fn:main")]),
+            Some(2)
+        );
+        assert_eq!(
+            facts.bound_for_context(0x100, &[caller("fn:main"), caller("fn:reset")]),
+            Some(3)
+        );
+        assert_eq!(
+            facts.bound_for_context(0x100, &[caller("fn:sensor")]),
+            Some(8)
+        );
+        assert_eq!(
+            facts.bound_for_context(0x100, &[caller("fn:other")]),
+            Some(6)
+        );
+        assert_eq!(facts.bound_for(0x100), Some(8));
+    }
+
+    #[test]
+    fn contextual_bounds_without_a_global_fallback_are_unbounded_when_insensitive() {
+        let mut facts = FlowFacts::default();
+        facts.contextual_loops.push(ContextualLoopBound {
+            header: 0x100,
+            bound: 2,
+            context: vec![caller("fn:main")],
+            context_names: vec!["main".to_owned()],
+            source: "facts.ffx".to_owned(),
+        });
+        assert_eq!(
+            facts.bound_for_context(0x100, &[caller("fn:main")]),
+            Some(2)
+        );
+        assert_eq!(facts.bound_for_context(0x100, &[caller("fn:other")]), None);
+        assert_eq!(facts.bound_for(0x100), None);
+    }
+
+    #[test]
+    fn ambiguous_ffx_contexts_are_ignored() {
+        let target = FunctionId::new("fn:0x2000");
+        let call = |site| CfgCallSite {
+            site,
+            target: Some(0x2000),
+            target_function: Some(target.clone()),
+            direct: true,
+            tail: false,
+            conditional: false,
+            heuristic: false,
+            unresolved: false,
+            null_target: false,
+            noreturn: false,
+            candidates: Vec::new(),
+        };
+        let instruction = CfgInstruction {
+            address: 0x1000,
+            size: 2,
+            bytes: vec![0; 2],
+            mnemonic: "bl".to_owned(),
+            operands: String::new(),
+            text: "bl".to_owned(),
+            is_call: true,
+            is_jump: false,
+            is_return: false,
+            is_conditional: false,
+            direct_target: Some(0x2000),
+            indirect: None,
+            memory_accesses: Vec::new(),
+            cycles: None,
+            source: None,
+        };
+        let cfg = FunctionCfg::build(
+            vec![CfgBlockDraft {
+                address: 0x1000,
+                size: 4,
+                instructions: vec![instruction],
+                calls: vec![call(0x1000), call(0x1002)],
+                cycles: None,
+                terminator: CfgTerminator::Call,
+            }],
+            Vec::<CfgEdgeDraft>::new(),
+            Some(0x1000),
+        );
+        let caller_fn = CfgFunction {
+            id: FunctionId::new("fn:0x1000"),
+            primary_name: "caller".to_owned(),
+            demangled_name: None,
+            symbols: Vec::new(),
+            language: Language::C,
+            kind: FunctionKind::Normal,
+            address: 0x1000,
+            size: 4,
+            section: ".text".to_owned(),
+            source: None,
+            inline_frames: Vec::new(),
+            noreturn: None,
+            cfg,
+            wcet: None,
+        };
+        let program = ProgramCfg::new(vec![caller_fn]);
+        let names = vec!["caller".to_owned()];
+        let mut warnings = Vec::new();
+        let resolved = resolve_context(
+            &program,
+            &names,
+            ContextKind::FfxCall,
+            &target,
+            "test.ffx",
+            &mut warnings,
+        )
+        .expect("resolve");
+        assert!(resolved.is_none());
+        assert!(warnings.iter().any(|warning| warning.contains("ambiguous")));
+        let resolved = resolve_context(
+            &program,
+            &names,
+            ContextKind::Function,
+            &target,
+            "test.ff",
+            &mut warnings,
+        )
+        .expect("resolve");
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn fact_scope_matches_prefixes_and_insensitive_scopes() {
+        let context = [caller("fn:main")];
+        assert!(FactScope::Context(&context).matches(&[caller("fn:main")]));
+        assert!(!FactScope::Context(&context).matches(&[caller("fn:sensor")]));
+        assert!(FactScope::Context(&context).matches(&[]));
+        assert!(FactScope::Insensitive.matches(&[]));
+        assert!(!FactScope::Insensitive.matches(&[caller("fn:main")]));
     }
 }

@@ -7,7 +7,7 @@
 //! Interprocedural call costs are computed bottom-up over call-graph SCCs.
 //! Recursive SCCs are reported as unbounded.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::DiGraph;
@@ -22,9 +22,29 @@ use crate::cfg::{
     FunctionCfg, ProgramCfg,
 };
 use crate::cfg_graph::CfgGraphAnalysis;
-use crate::flow_facts::FlowFacts;
+use crate::flow_facts::{FactScope, FlowFacts};
 
 const MODEL_NAME: &str = "cfg-longest-path";
+
+/// Maximum caller-chain depth analyzed for one function version.
+const MAX_CONTEXT_DEPTH: usize = 16;
+/// Maximum number of function versions for one function.
+const MAX_CONTEXTS_PER_FUNCTION: usize = 64;
+/// Maximum number of function versions in one program analysis.
+const MAX_CONTEXTS_TOTAL: usize = 4096;
+
+/// Caller chain in F4 order: immediate caller first.
+pub(crate) type CallContext = Vec<FunctionId>;
+
+/// Function versions needed by a context-sensitive analysis.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ContextPlan {
+    /// Versions per function. A function without contextual constraints that
+    /// is reachable from a root still receives one version per caller chain.
+    pub(crate) versions: BTreeMap<FunctionId, BTreeSet<CallContext>>,
+    /// Context enumeration exceeded a safety limit.
+    pub(crate) overflowed: bool,
+}
 
 /// Convenience wrapper used by the unit tests.
 #[cfg(test)]
@@ -75,16 +95,40 @@ pub(crate) fn analyze_program_with_facts(
     }
 
     let components = tarjan_scc(&call_graph);
-    let mut summaries: Vec<Option<CfgFunctionWcet>> = vec![None; program.functions.len()];
-    for component in components {
+    let mut recursive_functions = BTreeSet::new();
+    for component in &components {
         let recursive = component.len() > 1
             || component
                 .first()
                 .is_some_and(|node| call_graph.find_edge(*node, *node).is_some());
         if recursive {
             for node in component {
-                let index = call_graph[node];
-                summaries[index] = Some(unbounded_summary("recursive-call-cycle", 0, 0));
+                recursive_functions.insert(program.functions[call_graph[*node]].id.clone());
+            }
+        }
+    }
+
+    let context_requested = facts.has_contextual_loops();
+    let context_plan = context_requested.then(|| plan_contexts(program, &recursive_functions));
+    let use_contexts = context_plan.as_ref().is_some_and(|plan| !plan.overflowed);
+    let fallback_partial = context_requested && !use_contexts;
+    let mut summaries: Vec<Option<CfgFunctionWcet>> = vec![None; program.functions.len()];
+    let mut aggregates: BTreeMap<FunctionId, CfgFunctionWcet> = BTreeMap::new();
+    let mut versions: BTreeMap<(FunctionId, CallContext), CfgFunctionWcet> = BTreeMap::new();
+    let mut recursive_summaries: BTreeMap<FunctionId, CfgFunctionWcet> = BTreeMap::new();
+
+    for component in &components {
+        let recursive = component.len() > 1
+            || component
+                .first()
+                .is_some_and(|node| call_graph.find_edge(*node, *node).is_some());
+        if recursive {
+            for node in component {
+                let index = call_graph[*node];
+                let summary = unbounded_summary("recursive-call-cycle", 0, 0);
+                recursive_summaries.insert(program.functions[index].id.clone(), summary.clone());
+                aggregates.insert(program.functions[index].id.clone(), summary.clone());
+                summaries[index] = Some(summary);
             }
             continue;
         }
@@ -92,17 +136,82 @@ pub(crate) fn analyze_program_with_facts(
             continue;
         };
         let index = call_graph[node];
-        summaries[index] = Some(analyze_function(
-            &program.functions[index],
-            &index_by_id,
-            &summaries,
-            facts,
-            profile.max_states(),
-            frequency_hz,
-        ));
+        let function = &program.functions[index];
+        if use_contexts {
+            let empty = BTreeSet::from([CallContext::new()]);
+            let contexts = context_plan
+                .as_ref()
+                .and_then(|plan| plan.versions.get(&function.id))
+                .filter(|contexts| !contexts.is_empty())
+                .unwrap_or(&empty)
+                .clone();
+            let mut context_summaries = Vec::new();
+            for context in &contexts {
+                let resolver = VersionSummaries {
+                    versions: &versions,
+                    recursive: &recursive_summaries,
+                    callee_context: callee_context(&function.id, context),
+                };
+                let summary = analyze_function(
+                    function,
+                    |target| resolver.summary(target),
+                    facts,
+                    FactScope::Context(context),
+                    profile.max_states(),
+                    frequency_hz,
+                );
+                versions.insert((function.id.clone(), context.clone()), summary.clone());
+                context_summaries.push(summary);
+            }
+            if let Some(summary) = aggregate_context_summaries(&context_summaries) {
+                aggregates.insert(function.id.clone(), summary);
+            }
+        } else {
+            summaries[index] = Some(analyze_function(
+                function,
+                |target| {
+                    index_by_id
+                        .get(target)
+                        .and_then(|index| summaries.get(*index))
+                        .and_then(Option::as_ref)
+                },
+                facts,
+                FactScope::Insensitive,
+                profile.max_states(),
+                frequency_hz,
+            ));
+        }
     }
 
-    let roots = root_results(&program.roots, &index_by_id, &summaries);
+    if use_contexts {
+        for (index, function) in program.functions.iter().enumerate() {
+            summaries[index] = aggregates.get(&function.id).cloned();
+        }
+    } else if fallback_partial {
+        for summary in summaries.iter_mut().flatten() {
+            if summary.status == CfgWcetStatus::Bounded {
+                summary.status = CfgWcetStatus::Partial;
+                summary.reason = Some("context-limit".to_owned());
+            } else if summary.status == CfgWcetStatus::Partial && summary.reason.is_none() {
+                summary.reason = Some("context-limit".to_owned());
+            }
+        }
+    }
+
+    let roots = if use_contexts {
+        let mut root_summaries: Vec<Option<CfgFunctionWcet>> = vec![None; program.functions.len()];
+        for root in &program.roots {
+            if let Some(&index) = index_by_id.get(&root.function) {
+                root_summaries[index] = versions
+                    .get(&(root.function.clone(), Vec::new()))
+                    .cloned()
+                    .or_else(|| aggregates.get(&root.function).cloned());
+            }
+        }
+        root_results(&program.roots, &index_by_id, &root_summaries)
+    } else {
+        root_results(&program.roots, &index_by_id, &summaries)
+    };
     let mut info = CfgWcetInfo {
         model: MODEL_NAME.to_owned(),
         default_loop_bound: facts.default_loop_bound(),
@@ -124,7 +233,7 @@ pub(crate) fn analyze_program_with_facts(
                 .to_owned(),
             "Unresolved calls, calls to functions without local code, unresolved control flow or missing block timing produce partial results."
                 .to_owned(),
-            "Loop bounds are not path-sensitive; inner-loop counters reset on outer backedges, but loops re-entered without an outer backedge share one visit budget."
+            "Loop counters are path-insensitive within one function analysis; inner-loop counters reset on outer backedges, but loops re-entered without an outer backedge share one visit budget."
                 .to_owned(),
             "Cache, branch-prediction and data-memory results are local and not context-sensitive across call paths."
                 .to_owned(),
@@ -132,6 +241,17 @@ pub(crate) fn analyze_program_with_facts(
                 .to_owned(),
         ],
     };
+    if use_contexts {
+        info.caveats.push(
+            "Context-sensitive loop bounds are analyzed per caller chain; function-level WCET is the maximum over analyzed contexts."
+                .to_owned(),
+        );
+    } else if fallback_partial {
+        info.caveats.push(
+            "Context enumeration exceeded the analysis limit; loop bounds were merged conservatively across call contexts and the affected results are partial."
+                .to_owned(),
+        );
+    }
     if facts.has_non_loop_facts() {
         info.caveats.push(
             "Branch and call flow facts are enforced only by the IPET backend; longest-path ignores them and remains a conservative overestimate."
@@ -198,14 +318,247 @@ fn collect_call_targets(call: &CfgCallSite, targets: &mut BTreeSet<FunctionId>) 
     }
 }
 
-fn analyze_function(
+/// Builds the caller-context versions needed for context-sensitive flow facts.
+///
+/// Root functions start with an empty caller chain. Every resolved call adds
+/// the caller to the chain. Non-root-reachable functions are also analyzed
+/// standalone so per-function results remain available. Recursive functions are
+/// skipped because existing analysis reports recursive SCCs as unbounded.
+pub(crate) fn plan_contexts(program: &ProgramCfg, recursive: &BTreeSet<FunctionId>) -> ContextPlan {
+    let mut known = BTreeSet::new();
+    let mut adjacency: BTreeMap<FunctionId, BTreeSet<FunctionId>> = BTreeMap::new();
+    for function in &program.functions {
+        if function.cfg.blocks_by_address.is_empty() {
+            continue;
+        }
+        known.insert(function.id.clone());
+        adjacency.insert(function.id.clone(), function_call_targets(&function.cfg));
+    }
+    let mut reachable = BTreeSet::new();
+    let mut queue: VecDeque<FunctionId> = VecDeque::new();
+    for root in &program.roots {
+        if known.contains(&root.function) && reachable.insert(root.function.clone()) {
+            queue.push_back(root.function.clone());
+        }
+    }
+    while let Some(function) = queue.pop_front() {
+        if let Some(callees) = adjacency.get(&function) {
+            for callee in callees {
+                if known.contains(callee) && reachable.insert(callee.clone()) {
+                    queue.push_back(callee.clone());
+                }
+            }
+        }
+    }
+
+    let mut plan = ContextPlan::default();
+    let mut pending: VecDeque<(FunctionId, CallContext)> = VecDeque::new();
+    for function in &known {
+        if recursive.contains(function) {
+            continue;
+        }
+        let is_root = program.roots.iter().any(|root| &root.function == function);
+        if is_root || !reachable.contains(function) {
+            match add_context_version(&mut plan.versions, function, Vec::new()) {
+                Ok(true) => pending.push_back((function.clone(), Vec::new())),
+                Ok(false) => {}
+                Err(()) => {
+                    plan.overflowed = true;
+                    return plan;
+                }
+            }
+        }
+    }
+
+    loop {
+        if !expand_contexts(
+            &known,
+            &adjacency,
+            recursive,
+            &mut plan.versions,
+            &mut pending,
+        ) {
+            plan.overflowed = true;
+            return plan;
+        }
+        let missing: Vec<FunctionId> = known
+            .iter()
+            .filter(|function| {
+                !recursive.contains(*function)
+                    && plan.versions.get(*function).is_none_or(BTreeSet::is_empty)
+            })
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            break;
+        }
+        for function in missing {
+            match add_context_version(&mut plan.versions, &function, Vec::new()) {
+                Ok(true) => pending.push_back((function, Vec::new())),
+                Ok(false) => {}
+                Err(()) => {
+                    plan.overflowed = true;
+                    return plan;
+                }
+            }
+        }
+    }
+    plan
+}
+
+fn expand_contexts(
+    known: &BTreeSet<FunctionId>,
+    adjacency: &BTreeMap<FunctionId, BTreeSet<FunctionId>>,
+    recursive: &BTreeSet<FunctionId>,
+    versions: &mut BTreeMap<FunctionId, BTreeSet<CallContext>>,
+    pending: &mut VecDeque<(FunctionId, CallContext)>,
+) -> bool {
+    while let Some((function, context)) = pending.pop_front() {
+        let Some(callees) = adjacency.get(&function) else {
+            continue;
+        };
+        for callee in callees {
+            if !known.contains(callee) || recursive.contains(callee) {
+                continue;
+            }
+            let mut callee_context = Vec::with_capacity(context.len().saturating_add(1));
+            callee_context.push(function.clone());
+            callee_context.extend(context.iter().cloned());
+            if callee_context.len() > MAX_CONTEXT_DEPTH {
+                return false;
+            }
+            match add_context_version(versions, callee, callee_context.clone()) {
+                Ok(true) => pending.push_back((callee.clone(), callee_context)),
+                Ok(false) => {}
+                Err(()) => return false,
+            }
+        }
+    }
+    true
+}
+
+fn add_context_version(
+    versions: &mut BTreeMap<FunctionId, BTreeSet<CallContext>>,
+    function: &FunctionId,
+    context: CallContext,
+) -> Result<bool, ()> {
+    if versions
+        .get(function)
+        .is_some_and(|existing| existing.contains(&context))
+    {
+        return Ok(false);
+    }
+    if versions
+        .get(function)
+        .is_some_and(|existing| existing.len() >= MAX_CONTEXTS_PER_FUNCTION)
+    {
+        return Err(());
+    }
+    let total: usize = versions.values().map(BTreeSet::len).sum();
+    if total >= MAX_CONTEXTS_TOTAL {
+        return Err(());
+    }
+    Ok(versions
+        .entry(function.clone())
+        .or_default()
+        .insert(context))
+}
+
+pub(crate) fn callee_context(caller: &FunctionId, caller_context: &[FunctionId]) -> CallContext {
+    let mut context = Vec::with_capacity(caller_context.len().saturating_add(1));
+    context.push(caller.clone());
+    context.extend(caller_context.iter().cloned());
+    context
+}
+
+pub(crate) struct VersionSummaries<'a> {
+    pub(crate) versions: &'a BTreeMap<(FunctionId, CallContext), CfgFunctionWcet>,
+    pub(crate) recursive: &'a BTreeMap<FunctionId, CfgFunctionWcet>,
+    pub(crate) callee_context: CallContext,
+}
+
+impl VersionSummaries<'_> {
+    pub(crate) fn summary(&self, target: &FunctionId) -> Option<&CfgFunctionWcet> {
+        self.versions
+            .get(&(target.clone(), self.callee_context.clone()))
+            .or_else(|| self.recursive.get(target))
+    }
+}
+
+/// Merges per-context summaries into one safe function summary.
+///
+/// The result is the maximum over analyzed contexts. Unbounded or unknown
+/// versions dominate because they invalidate a finite claim for the function.
+pub(crate) fn aggregate_context_summaries<'a>(
+    summaries: impl IntoIterator<Item = &'a CfgFunctionWcet>,
+) -> Option<CfgFunctionWcet> {
+    let summaries: Vec<&CfgFunctionWcet> = summaries.into_iter().collect();
+    if summaries.is_empty() {
+        return None;
+    }
+    let unresolved_calls = summaries
+        .iter()
+        .map(|summary| summary.unresolved_calls)
+        .max()
+        .unwrap_or(0);
+    let external_calls = summaries
+        .iter()
+        .map(|summary| summary.external_calls)
+        .max()
+        .unwrap_or(0);
+    if let Some(summary) = summaries
+        .iter()
+        .find(|summary| summary.status == CfgWcetStatus::Unbounded)
+    {
+        return Some(unbounded_summary(
+            summary.reason.as_deref().unwrap_or("context-unbounded"),
+            unresolved_calls,
+            external_calls,
+        ));
+    }
+    if let Some(summary) = summaries
+        .iter()
+        .find(|summary| summary.status == CfgWcetStatus::Unknown)
+    {
+        return Some(unknown_summary(
+            summary.reason.as_deref().unwrap_or("context-unknown"),
+            unresolved_calls,
+            external_calls,
+        ));
+    }
+    let partial = summaries
+        .iter()
+        .any(|summary| summary.status == CfgWcetStatus::Partial);
+    let best = summaries.iter().max_by(|left, right| {
+        left.cycles
+            .unwrap_or(0.0)
+            .total_cmp(&right.cycles.unwrap_or(0.0))
+    })?;
+    let mut result = (*best).clone();
+    result.status = if partial {
+        CfgWcetStatus::Partial
+    } else {
+        CfgWcetStatus::Bounded
+    };
+    if result.status == CfgWcetStatus::Partial && result.reason.is_none() {
+        result.reason = Some("partial-context".to_owned());
+    }
+    result.unresolved_calls = unresolved_calls;
+    result.external_calls = external_calls;
+    Some(result)
+}
+
+fn analyze_function<'a, F>(
     function: &CfgFunction,
-    index_by_id: &BTreeMap<FunctionId, usize>,
-    summaries: &[Option<CfgFunctionWcet>],
+    summary_for: F,
     facts: &FlowFacts,
+    scope: FactScope<'_>,
     max_states: usize,
     frequency_hz: Option<u64>,
-) -> CfgFunctionWcet {
+) -> CfgFunctionWcet
+where
+    F: FnMut(&FunctionId) -> Option<&'a CfgFunctionWcet>,
+{
     let Some(entry) = function.cfg.entry else {
         return unknown_summary("no-entry", 0, 0);
     };
@@ -225,11 +578,11 @@ fn analyze_function(
     {
         partial = true;
     }
-    let loops = match build_loop_context(&function.cfg, &analysis, facts) {
+    let loops = match build_loop_context(&function.cfg, &analysis, facts, scope) {
         Ok(context) => context,
         Err(reason) => return unbounded_summary(&reason, 0, 0),
     };
-    let call_info = match build_call_info(&function.cfg, &reachable_nodes, index_by_id, summaries) {
+    let call_info = match build_call_info_with(&function.cfg, &reachable_nodes, summary_for) {
         Ok(info) => info,
         Err(reason) => return unbounded_summary(&reason, 0, 0),
     };
@@ -309,6 +662,7 @@ fn build_loop_context(
     cfg: &FunctionCfg,
     analysis: &CfgGraphAnalysis,
     facts: &FlowFacts,
+    scope: FactScope<'_>,
 ) -> Result<LoopContext, String> {
     let node_by_id: BTreeMap<BlockId, NodeIndex> = cfg
         .blocks_by_address
@@ -326,9 +680,11 @@ fn build_loop_context(
             return Err("loop-header-missing".to_owned());
         };
         let header_address = cfg.graph[header_node].address;
-        let bound = facts
-            .bound_for(header_address)
-            .ok_or_else(|| format!("loop-unbounded:0x{header_address:x}"))?;
+        let bound = match scope {
+            FactScope::Context(context) => facts.bound_for_context(header_address, context),
+            FactScope::Insensitive => facts.bound_for(header_address),
+        }
+        .ok_or_else(|| format!("loop-unbounded:0x{header_address:x}"))?;
         let loop_set: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
         let has_exit = cfg.graph.edge_references().any(|edge| {
             loop_set.contains(&cfg.graph[edge.source()].id)
@@ -484,12 +840,15 @@ pub(crate) struct CallInfo {
     pub(crate) external_calls: u32,
 }
 
-pub(crate) fn build_call_info(
+/// Builds call costs with a caller-selected summary for each target function.
+pub(crate) fn build_call_info_with<'a, F>(
     cfg: &FunctionCfg,
     reachable_nodes: &BTreeSet<NodeIndex>,
-    index_by_id: &BTreeMap<FunctionId, usize>,
-    summaries: &[Option<CfgFunctionWcet>],
-) -> Result<CallInfo, String> {
+    mut summary_for: F,
+) -> Result<CallInfo, String>
+where
+    F: FnMut(&FunctionId) -> Option<&'a CfgFunctionWcet>,
+{
     let mut block_cycles = BTreeMap::new();
     let mut partial = !cfg.recovered_calls.is_empty();
     let mut unresolved_calls = u32::try_from(cfg.recovered_calls.len()).unwrap_or(u32::MAX);
@@ -507,12 +866,8 @@ pub(crate) fn build_call_info(
             let mut missing = false;
             let mut call_total = 0.0_f64;
             for target in targets {
-                let Some(&callee_index) = index_by_id.get(&target) else {
-                    missing = true;
-                    continue;
-                };
                 local_count += 1;
-                let Some(Some(summary)) = summaries.get(callee_index) else {
+                let Some(summary) = summary_for(&target) else {
                     missing = true;
                     continue;
                 };
@@ -634,11 +989,14 @@ pub(crate) fn root_results(
 
 #[cfg(test)]
 mod tests {
-    use super::analyze_program;
+    use std::collections::BTreeSet;
+
+    use super::{aggregate_context_summaries, analyze_program, plan_contexts};
     use crate::board_profile::{BoardProfile, WcetProfile};
     use crate::cfg::{
-        CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
-        CfgRoot, CfgRootKind, CfgTerminator, CfgWcetStatus, FunctionCfg, ProgramCfg,
+        CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgFunctionWcet,
+        CfgInstruction, CfgRoot, CfgRootKind, CfgTerminator, CfgWcetStatus, FunctionCfg,
+        ProgramCfg,
     };
     use elf2tdg_schema::{Confidence, CostRange, FunctionId, FunctionKind, Language};
 
@@ -880,6 +1238,119 @@ max_states = 1000
             .and_then(|function| function.wcet.as_ref())
             .expect("caller WCET");
         assert_eq!(root.cycles, Some(41.0));
+    }
+
+    #[test]
+    fn context_plan_follows_resolved_call_chains() {
+        let leaf = function(
+            0x3000,
+            FunctionCfg::build(
+                vec![block(0x3000, CfgTerminator::Return, 20.0, Vec::new())],
+                Vec::new(),
+                Some(0x3000),
+            ),
+        );
+        let main = function(
+            0x2800,
+            FunctionCfg::build(
+                vec![block(
+                    0x2800,
+                    CfgTerminator::Return,
+                    1.0,
+                    vec![call(&leaf, 0x2800)],
+                )],
+                Vec::new(),
+                Some(0x2800),
+            ),
+        );
+        let mut program = ProgramCfg::new(vec![main, leaf]);
+        program.roots.push(CfgRoot {
+            function: FunctionId::new("fn:0x2800"),
+            kind: CfgRootKind::Startup,
+            name: None,
+            vector: None,
+            irq: None,
+            confidence: Confidence::High,
+        });
+        let plan = plan_contexts(&program, &BTreeSet::new());
+        assert!(!plan.overflowed);
+        assert!(
+            plan.versions
+                .get(&FunctionId::new("fn:0x2800"))
+                .is_some_and(|contexts| contexts.contains(&Vec::new()))
+        );
+        assert!(
+            plan.versions
+                .get(&FunctionId::new("fn:0x3000"))
+                .is_some_and(|contexts| {
+                    contexts.contains(&vec![FunctionId::new("fn:0x2800")])
+                        && !contexts.contains(&Vec::new())
+                })
+        );
+    }
+
+    #[test]
+    fn context_plan_overflow_is_reported() {
+        let mut functions = Vec::new();
+        let mut callee: Option<CfgFunction> = None;
+        for index in (0..=super::MAX_CONTEXT_DEPTH + 1).rev() {
+            let address = 0x1000 + (index as u64) * 0x10;
+            let calls = callee
+                .as_ref()
+                .map(|callee| vec![call(callee, address)])
+                .unwrap_or_default();
+            let cfg = FunctionCfg::build(
+                vec![block(address, CfgTerminator::Return, 1.0, calls)],
+                Vec::new(),
+                Some(address),
+            );
+            let function = super::tests::function(address, cfg);
+            callee = Some(function.clone());
+            functions.push(function);
+        }
+        let mut program = ProgramCfg::new(functions);
+        program.roots.push(CfgRoot {
+            function: FunctionId::new("fn:0x1000"),
+            kind: CfgRootKind::Startup,
+            name: None,
+            vector: None,
+            irq: None,
+            confidence: Confidence::High,
+        });
+        let plan = plan_contexts(&program, &BTreeSet::new());
+        assert!(plan.overflowed);
+    }
+
+    #[test]
+    fn context_summaries_merge_conservatively() {
+        let summary = |status, cycles| CfgFunctionWcet {
+            status,
+            cycles,
+            time_ns: None,
+            path: Vec::new(),
+            reason: (status != CfgWcetStatus::Bounded).then(|| "test".to_owned()),
+            unresolved_calls: 0,
+            external_calls: 0,
+            ipet: None,
+        };
+        let bounded = summary(CfgWcetStatus::Bounded, Some(10.0));
+        let larger = summary(CfgWcetStatus::Bounded, Some(20.0));
+        let merged = aggregate_context_summaries([&bounded, &larger]).expect("merged");
+        assert_eq!(merged.status, CfgWcetStatus::Bounded);
+        assert_eq!(merged.cycles, Some(20.0));
+
+        let partial = summary(CfgWcetStatus::Partial, Some(15.0));
+        let merged = aggregate_context_summaries([&bounded, &partial]).expect("merged");
+        assert_eq!(merged.status, CfgWcetStatus::Partial);
+        assert_eq!(merged.cycles, Some(15.0));
+
+        let unbounded = CfgFunctionWcet {
+            status: CfgWcetStatus::Unbounded,
+            cycles: None,
+            ..summary(CfgWcetStatus::Unbounded, None)
+        };
+        let merged = aggregate_context_summaries([&bounded, &unbounded]).expect("merged");
+        assert_eq!(merged.status, CfgWcetStatus::Unbounded);
     }
 
     #[test]

@@ -13,15 +13,16 @@
 //! </flowfacts>
 //! ```
 //!
-//! `<call name="...">` nesting is retained as context. Because the current
-//! WCET analysis is context-insensitive, context-specific facts are merged
-//! conservatively and reported as warnings.
+//! `<call name="...">` nesting is retained as a caller context. The context is
+//! normalized to F4 order: immediate caller first, excluding the function that
+//! contains the fact. Context-sensitive loop facts are applied by the WCET
+//! backends; contextual branch/call facts are enforced by IPET.
 
 use roxmltree::{Document, Node};
 
 use super::{
-    BranchFact, BranchOutcome, CallFact, CallTarget, FlowFactDocument, LocationTarget, LoopFact,
-    LoopTarget,
+    BranchFact, BranchOutcome, CallFact, CallTarget, ContextKind, FlowFactDocument, LocationTarget,
+    LoopFact, LoopTarget,
 };
 
 pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String> {
@@ -43,8 +44,7 @@ pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String
             calls: Vec::new(),
             warnings: Vec::new(),
         },
-        function: None,
-        calls: Vec::new(),
+        functions: Vec::new(),
     };
     process_children(root, &mut state, origin)?;
     Ok(state.document)
@@ -52,8 +52,31 @@ pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String
 
 struct State {
     document: FlowFactDocument,
-    function: Option<String>,
-    calls: Vec<String>,
+    /// Enclosing function names from the outermost `<function>` scope to the
+    /// current function. A nested `<call name="...">` adds its callee name.
+    functions: Vec<String>,
+}
+
+impl State {
+    fn current_function(&self) -> Option<String> {
+        self.functions.last().cloned()
+    }
+
+    /// Caller chain in F4 order: immediate caller first, excluding the
+    /// current function.
+    fn context(&self) -> Vec<String> {
+        let mut context = self.functions[..self.functions.len().saturating_sub(1)].to_vec();
+        context.reverse();
+        context
+    }
+
+    fn push_function(&mut self, name: &str) -> bool {
+        if self.functions.last().is_some_and(|last| last == name) {
+            return false;
+        }
+        self.functions.push(name.to_owned());
+        true
+    }
 }
 
 fn process_children(node: Node<'_, '_>, state: &mut State, origin: &str) -> Result<(), String> {
@@ -62,11 +85,11 @@ fn process_children(node: Node<'_, '_>, state: &mut State, origin: &str) -> Resu
             "function" => {
                 let name = attribute(&child, "name")
                     .ok_or_else(|| format!("{origin}: <function> lacks a name"))?;
-                let old_function = state.function.replace(name.to_owned());
-                let old_calls = std::mem::take(&mut state.calls);
+                let pushed = state.push_function(name);
                 process_children(child, state, origin)?;
-                state.function = old_function;
-                state.calls = old_calls;
+                if pushed {
+                    state.functions.pop();
+                }
             }
             "call" => {
                 let name = attribute(&child, "name")
@@ -75,11 +98,11 @@ fn process_children(node: Node<'_, '_>, state: &mut State, origin: &str) -> Resu
                     state.document.calls.push(fact);
                     state.document.warnings.extend(warnings);
                 }
-                let old_function = state.function.replace(name.to_owned());
-                state.calls.push(name.to_owned());
+                let pushed = state.push_function(name);
                 process_children(child, state, origin)?;
-                state.calls.pop();
-                state.function = old_function;
+                if pushed {
+                    state.functions.pop();
+                }
             }
             "loop" => {
                 let (fact, warnings) = parse_loop(&child, state, origin)?;
@@ -144,8 +167,10 @@ fn parse_call(
         CallFact {
             target,
             callee: Some(name.to_owned()),
+            scope: state.current_function(),
             max,
-            context: state.calls.clone(),
+            context: state.context(),
+            context_kind: ContextKind::FfxCall,
         },
         warnings,
     )))
@@ -184,7 +209,8 @@ fn parse_conditional(node: &Node<'_, '_>, state: &mut State, origin: &str) -> Re
             target: location,
             outcome: BranchOutcome::Both,
             max: 0,
-            context: state.calls.clone(),
+            context: state.context(),
+            context_kind: ContextKind::FfxCall,
         });
     }
     let mut location: Option<LocationTarget> = None;
@@ -232,7 +258,8 @@ fn parse_conditional(node: &Node<'_, '_>, state: &mut State, origin: &str) -> Re
                 target: case_location.clone(),
                 outcome,
                 max,
-                context: state.calls.clone(),
+                context: state.context(),
+                context_kind: ContextKind::FfxCall,
             });
             location = Some(case_location);
         }
@@ -250,7 +277,7 @@ fn parse_location(
         return Ok(Some(LocationTarget::Address(parse_number(address)?)));
     }
     if let Some(offset) = attribute(node, "offset") {
-        let function = state.function.clone().ok_or_else(|| {
+        let function = state.current_function().ok_or_else(|| {
             format!("{origin}: offset location requires an enclosing <function> or <call>")
         })?;
         return Ok(Some(LocationTarget::FunctionOffset {
@@ -262,7 +289,7 @@ fn parse_location(
         let line = attribute(node, "line")
             .ok_or_else(|| format!("{origin}: source location requires line"))?;
         return Ok(Some(LocationTarget::SourceLine {
-            function: state.function.clone(),
+            function: state.current_function(),
             file: source.to_owned(),
             line: parse_u32(line)?,
         }));
@@ -306,7 +333,7 @@ fn parse_loop(
         if source.is_some() {
             warnings.push("loop has both offset and source/line; using offset".to_owned());
         }
-        let function = state.function.clone().ok_or_else(|| {
+        let function = state.current_function().ok_or_else(|| {
             format!("{origin}: <loop offset=...> requires an enclosing <function> or <call>")
         })?;
         LoopTarget::FunctionOffset {
@@ -318,7 +345,7 @@ fn parse_loop(
     } else if let Some(source) = source {
         let line = line.ok_or_else(|| format!("{origin}: <loop source=...> requires a line"))?;
         LoopTarget::SourceLine {
-            function: state.function.clone(),
+            function: state.current_function(),
             file: source.to_owned(),
             line: parse_u32(line)?,
         }
@@ -332,7 +359,8 @@ fn parse_loop(
         LoopFact {
             target,
             max,
-            context: state.calls.clone(),
+            context: state.context(),
+            context_kind: ContextKind::FfxCall,
         },
         warnings,
     ))
@@ -364,7 +392,7 @@ fn parse_number(value: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use crate::flow_facts::LoopTarget;
+    use crate::flow_facts::{ContextKind, LoopTarget};
 
     #[test]
     fn parses_function_source_and_nested_loops() {
@@ -414,7 +442,8 @@ mod tests {
                 if function == "f" && *offset == 0x24
         ));
         assert_eq!(document.loops[0].max, 10);
-        assert_eq!(document.loops[0].context, vec!["g1", "f"]);
+        assert_eq!(document.loops[0].context, vec!["g1", "main"]);
+        assert_eq!(document.loops[0].context_kind, ContextKind::FfxCall);
     }
 
     #[test]
@@ -487,6 +516,27 @@ mod non_loop_tests {
             document.calls[1].target,
             CallTarget::Callee(ref name) if name == "monitor"
         ));
+    }
+
+    #[test]
+    fn normalizes_nested_call_fact_scope_and_context() {
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <call name="g">
+      <call name="delay" numcall="2"/>
+    </call>
+  </function>
+</flowfacts>
+"#,
+            "scope.ffx",
+        )
+        .expect("parse");
+        assert_eq!(document.calls.len(), 1);
+        assert_eq!(document.calls[0].context, vec!["main"]);
+        assert_eq!(document.calls[0].scope.as_deref(), Some("g"));
+        assert_eq!(document.calls[0].max, 2);
     }
 
     #[test]

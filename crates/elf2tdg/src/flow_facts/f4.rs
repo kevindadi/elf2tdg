@@ -8,7 +8,7 @@
 //! loop "source.c":12 max 10 total 15 in "f" / "g1" / "main";
 //! ```
 
-use super::{FlowFactDocument, LoopFact, LoopTarget};
+use super::{ContextKind, FlowFactDocument, LoopFact, LoopTarget};
 
 pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String> {
     let mut document = FlowFactDocument {
@@ -125,6 +125,7 @@ fn parse_loop(tokens: &[Token]) -> Result<(LoopFact, Vec<String>), String> {
             target,
             max,
             context,
+            context_kind: ContextKind::Function,
         },
         warnings,
     ))
@@ -348,7 +349,7 @@ fn statements(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use crate::flow_facts::LoopTarget;
+    use crate::flow_facts::{ContextKind, LoopTarget};
 
     #[test]
     fn parses_address_and_standard_bounds() {
@@ -385,6 +386,7 @@ mod tests {
             LoopTarget::SourceLine { function: None, file, line } if file == "main.c" && *line == 29
         ));
         assert_eq!(document.loops[1].context, vec!["main"]);
+        assert_eq!(document.loops[1].context_kind, ContextKind::Function);
     }
 
     #[test]

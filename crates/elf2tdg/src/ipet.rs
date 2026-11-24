@@ -6,10 +6,13 @@
 //! block upper bounds plus resolved callee summaries. The pure-Rust `microlp`
 //! backend solves the model.
 //!
-//! The analysis is modular and context-insensitive: callee summaries are
-//! computed bottom-up over call-graph SCCs. Recursive SCCs are unbounded.
-//! Unresolved calls, unresolved control flow and incomplete callee summaries
-//! mark the result `partial`; a partial numeric objective is not a safe bound.
+//! The analysis is modular: callee summaries are computed bottom-up over
+//! call-graph SCCs. When contextual flow facts are present, each function is
+//! analyzed once per caller chain and callee summaries are selected by the
+//! caller context; otherwise a single context-insensitive summary is used.
+//! Recursive SCCs are unbounded. Unresolved calls, unresolved control flow and
+//! incomplete callee summaries mark the result `partial`; a partial numeric
+//! objective is not a safe bound.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,10 +30,11 @@ use crate::cfg::{
     CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus,
     FunctionCfg, ProgramCfg,
 };
-use crate::flow_facts::{BranchOutcome, FlowFacts};
+use crate::flow_facts::{BranchOutcome, FactScope, FlowFacts};
 use crate::wcet::{
-    build_call_info, frequency_hz, function_call_targets, root_results, time_ns, unbounded_summary,
-    unknown_summary,
+    CallContext, VersionSummaries, aggregate_context_summaries, build_call_info_with,
+    callee_context, frequency_hz, function_call_targets, plan_contexts, root_results, time_ns,
+    unbounded_summary, unknown_summary,
 };
 
 pub(crate) const MODEL_NAME: &str = "cfg-ipet";
@@ -74,16 +78,40 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
     }
 
     let components = tarjan_scc(&call_graph);
-    let mut summaries: Vec<Option<CfgFunctionWcet>> = vec![None; program.functions.len()];
-    for component in components {
+    let mut recursive_functions = BTreeSet::new();
+    for component in &components {
         let recursive = component.len() > 1
             || component
                 .first()
                 .is_some_and(|node| call_graph.find_edge(*node, *node).is_some());
         if recursive {
             for node in component {
-                let index = call_graph[node];
-                summaries[index] = Some(unbounded_summary("recursive-call-cycle", 0, 0));
+                recursive_functions.insert(program.functions[call_graph[*node]].id.clone());
+            }
+        }
+    }
+
+    let context_requested = facts.has_contextual_facts();
+    let context_plan = context_requested.then(|| plan_contexts(program, &recursive_functions));
+    let use_contexts = context_plan.as_ref().is_some_and(|plan| !plan.overflowed);
+    let fallback_partial = context_requested && !use_contexts;
+    let mut summaries: Vec<Option<CfgFunctionWcet>> = vec![None; program.functions.len()];
+    let mut aggregates: BTreeMap<FunctionId, CfgFunctionWcet> = BTreeMap::new();
+    let mut versions: BTreeMap<(FunctionId, CallContext), CfgFunctionWcet> = BTreeMap::new();
+    let mut recursive_summaries: BTreeMap<FunctionId, CfgFunctionWcet> = BTreeMap::new();
+
+    for component in &components {
+        let recursive = component.len() > 1
+            || component
+                .first()
+                .is_some_and(|node| call_graph.find_edge(*node, *node).is_some());
+        if recursive {
+            for node in component {
+                let index = call_graph[*node];
+                let summary = unbounded_summary("recursive-call-cycle", 0, 0);
+                recursive_summaries.insert(program.functions[index].id.clone(), summary.clone());
+                aggregates.insert(program.functions[index].id.clone(), summary.clone());
+                summaries[index] = Some(summary);
             }
             continue;
         }
@@ -91,16 +119,80 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
             continue;
         };
         let index = call_graph[node];
-        summaries[index] = Some(analyze_function(
-            &program.functions[index],
-            &index_by_id,
-            &summaries,
-            facts,
-            frequency_hz,
-        ));
+        let function = &program.functions[index];
+        if use_contexts {
+            let empty = BTreeSet::from([CallContext::new()]);
+            let contexts = context_plan
+                .as_ref()
+                .and_then(|plan| plan.versions.get(&function.id))
+                .filter(|contexts| !contexts.is_empty())
+                .unwrap_or(&empty)
+                .clone();
+            let mut context_summaries = Vec::new();
+            for context in &contexts {
+                let resolver = VersionSummaries {
+                    versions: &versions,
+                    recursive: &recursive_summaries,
+                    callee_context: callee_context(&function.id, context),
+                };
+                let summary = analyze_function(
+                    function,
+                    |target| resolver.summary(target),
+                    facts,
+                    FactScope::Context(context),
+                    frequency_hz,
+                );
+                versions.insert((function.id.clone(), context.clone()), summary.clone());
+                context_summaries.push(summary);
+            }
+            if let Some(summary) = aggregate_context_summaries(&context_summaries) {
+                aggregates.insert(function.id.clone(), summary);
+            }
+        } else {
+            summaries[index] = Some(analyze_function(
+                function,
+                |target| {
+                    index_by_id
+                        .get(target)
+                        .and_then(|index| summaries.get(*index))
+                        .and_then(Option::as_ref)
+                },
+                facts,
+                FactScope::Insensitive,
+                frequency_hz,
+            ));
+        }
     }
 
-    let roots = root_results(&program.roots, &index_by_id, &summaries);
+    if use_contexts {
+        for (index, function) in program.functions.iter().enumerate() {
+            summaries[index] = aggregates.get(&function.id).cloned();
+        }
+    } else if fallback_partial {
+        for summary in summaries.iter_mut().flatten() {
+            if summary.status == CfgWcetStatus::Bounded {
+                summary.status = CfgWcetStatus::Partial;
+                summary.reason = Some("context-limit".to_owned());
+            } else if summary.status == CfgWcetStatus::Partial && summary.reason.is_none() {
+                summary.reason = Some("context-limit".to_owned());
+            }
+        }
+    }
+
+    let roots = if use_contexts {
+        let mut root_summaries: Vec<Option<CfgFunctionWcet>> = vec![None; program.functions.len()];
+        for root in &program.roots {
+            if let Some(&index) = index_by_id.get(&root.function) {
+                root_summaries[index] = versions
+                    .get(&(root.function.clone(), Vec::new()))
+                    .cloned()
+                    .or_else(|| aggregates.get(&root.function).cloned());
+            }
+        }
+        root_results(&program.roots, &index_by_id, &root_summaries)
+    } else {
+        root_results(&program.roots, &index_by_id, &summaries)
+    };
     let mut info = CfgWcetInfo {
         model: MODEL_NAME.to_owned(),
         default_loop_bound: facts.default_loop_bound(),
@@ -118,9 +210,9 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 .to_owned(),
             "Loop bounds come from the board profile, imported flow-fact files or conservative counted-loop inference; inferred patterns are not a general proof of loop termination."
                 .to_owned(),
-            "Branch and call flow facts constrain IPET edge/block counts; context-specific facts, conditional/multi-target call sites and blocks with multiple calls are ignored with warnings."
+            "Branch and call flow facts constrain IPET edge/block counts in their matching caller contexts; conditional/multi-target call sites and blocks with multiple calls are skipped with warnings."
                 .to_owned(),
-            "Callee summaries are context-insensitive and computed bottom-up per function."
+            "Callee summaries are computed bottom-up; when contextual facts are present they are computed per caller context."
                 .to_owned(),
             "Block execution counts describe one optimal solution; alternate optima may distribute counts differently while producing the same objective."
                 .to_owned(),
@@ -134,6 +226,17 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 .to_owned(),
         ],
     };
+    if use_contexts {
+        info.caveats.push(
+            "Context-sensitive facts are analyzed per caller chain; function-level WCET is the maximum over analyzed contexts."
+                .to_owned(),
+        );
+    } else if fallback_partial {
+        info.caveats.push(
+            "Context enumeration exceeded the analysis limit; contextual loop bounds were merged conservatively and contextual branch/call facts were not applied to the fallback model. Affected results are partial."
+                .to_owned(),
+        );
+    }
     info.caveats.extend(facts.warnings().iter().cloned());
     for (index, summary) in summaries.into_iter().enumerate() {
         let Some(summary) = summary else {
@@ -158,13 +261,16 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
     info
 }
 
-fn analyze_function(
+fn analyze_function<'a, F>(
     function: &CfgFunction,
-    index_by_id: &BTreeMap<FunctionId, usize>,
-    summaries: &[Option<CfgFunctionWcet>],
+    summary_for: F,
     facts: &FlowFacts,
+    scope: FactScope<'_>,
     frequency_hz: Option<u64>,
-) -> CfgFunctionWcet {
+) -> CfgFunctionWcet
+where
+    F: FnMut(&FunctionId) -> Option<&'a CfgFunctionWcet>,
+{
     let Some(entry) = function.cfg.entry else {
         return unknown_summary("no-entry", 0, 0);
     };
@@ -180,7 +286,7 @@ fn analyze_function(
     if reachable_nodes.is_empty() {
         return unknown_summary("no-reachable-blocks", 0, 0);
     }
-    let call_info = match build_call_info(&function.cfg, &reachable_nodes, index_by_id, summaries) {
+    let call_info = match build_call_info_with(&function.cfg, &reachable_nodes, summary_for) {
         Ok(info) => info,
         Err(reason) => return unbounded_summary(&reason, 0, 0),
     };
@@ -205,6 +311,7 @@ fn analyze_function(
         &call_info.block_cycles,
         facts,
         &function.id,
+        scope,
     ) {
         Ok(outcome) => outcome,
         Err(IpetError::Unbounded(reason)) => {
@@ -254,6 +361,7 @@ struct IpetOutcome {
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
+    clippy::too_many_arguments,
     clippy::too_many_lines
 )]
 fn solve_function(
@@ -264,8 +372,9 @@ fn solve_function(
     call_cycles: &BTreeMap<NodeIndex, f64>,
     facts: &FlowFacts,
     function_id: &FunctionId,
+    scope: FactScope<'_>,
 ) -> Result<IpetOutcome, IpetError> {
-    let loops = build_loops(cfg, entry, analysis, facts)?;
+    let loops = build_loops(cfg, entry, analysis, facts, scope)?;
 
     let mut nodes: Vec<NodeIndex> = reachable_nodes.iter().copied().collect();
     nodes.sort_by_key(|node| (cfg.graph[*node].address, node.index()));
@@ -323,6 +432,7 @@ fn solve_function(
         &edge_vars,
         facts,
         function_id,
+        scope,
     ));
     let model = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = model
@@ -402,6 +512,7 @@ fn build_loops(
     entry: NodeIndex,
     analysis: &crate::cfg_graph::CfgGraphAnalysis,
     facts: &FlowFacts,
+    scope: FactScope<'_>,
 ) -> Result<Vec<LoopModel>, IpetError> {
     let loop_blocks: BTreeSet<BlockId> = analysis
         .loops
@@ -436,7 +547,11 @@ fn build_loops(
             return Err(IpetError::Unknown("loop-header-missing".to_owned()));
         };
         let header_address = cfg.graph[header].address;
-        let Some(bound) = facts.bound_for(header_address) else {
+        let bound = match scope {
+            FactScope::Context(context) => facts.bound_for_context(header_address, context),
+            FactScope::Insensitive => facts.bound_for(header_address),
+        };
+        let Some(bound) = bound else {
             return Err(IpetError::Unbounded(format!(
                 "loop-unbounded:0x{header_address:x}"
             )));
@@ -573,6 +688,7 @@ fn non_loop_constraints(
     edge_vars: &BTreeMap<EdgeIndex, Variable>,
     facts: &FlowFacts,
     function_id: &FunctionId,
+    scope: FactScope<'_>,
 ) -> Vec<good_lp::Constraint> {
     let node_by_id: BTreeMap<_, _> = cfg
         .blocks_by_address
@@ -583,7 +699,7 @@ fn non_loop_constraints(
     for branch in facts
         .branches()
         .iter()
-        .filter(|branch| &branch.function == function_id)
+        .filter(|branch| &branch.function == function_id && scope.matches(&branch.context))
     {
         let Some(&node) = node_by_id.get(&branch.block) else {
             continue;
@@ -617,7 +733,7 @@ fn non_loop_constraints(
     for call in facts
         .calls()
         .iter()
-        .filter(|call| &call.function == function_id)
+        .filter(|call| &call.function == function_id && scope.matches(&call.context))
     {
         let Some(&node) = node_by_id.get(&call.block) else {
             continue;

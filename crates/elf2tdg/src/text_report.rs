@@ -483,6 +483,14 @@ fn render_wcet(out: &mut String, program: &ProgramCfg) {
     out.push('\n');
 }
 
+fn context_suffix(context: &[String]) -> String {
+    if context.is_empty() {
+        String::new()
+    } else {
+        format!(" [context: {}]", context.join(" / "))
+    }
+}
+
 fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
     kv_indent(out, "model", &wcet.model);
     if let Some(solver) = &wcet.solver {
@@ -508,28 +516,34 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
             ),
         );
         for loop_ in &facts.loops {
+            let context = context_suffix(&loop_.context);
             kv_indent(
                 out,
                 "loop bound",
-                &format!("{} = {} ({})", loop_.header, loop_.bound, loop_.source),
+                &format!(
+                    "{} = {}{context} ({})",
+                    loop_.header, loop_.bound, loop_.source
+                ),
             );
         }
         for branch in &facts.branches {
+            let context = context_suffix(&branch.context);
             kv_indent(
                 out,
                 "branch fact",
                 &format!(
-                    "{} {} {} <= {} ({})",
+                    "{} {} {} <= {}{context} ({})",
                     branch.function, branch.site, branch.outcome, branch.max_count, branch.source
                 ),
             );
         }
         for call in &facts.calls {
+            let context = context_suffix(&call.context);
             kv_indent(
                 out,
                 "call fact",
                 &format!(
-                    "{} {} <= {} ({})",
+                    "{} {} <= {}{context} ({})",
                     call.function, call.site, call.max_count, call.source
                 ),
             );

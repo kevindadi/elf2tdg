@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.16";
+pub const CFG_SCHEMA_VERSION: &str = "2.17";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1128,7 +1128,7 @@ pub struct CfgFlowFactsInfo {
     pub default_loop_bound: Option<u32>,
     /// Whether loops without a static exit were explicitly bounded.
     pub bound_nonterminating_loops: bool,
-    /// Resolved loop bounds keyed by header block address.
+    /// Resolved loop bounds. Contextual entries may repeat a header.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<CfgLoopBoundInfo>,
     /// Non-loop branch execution facts.
@@ -1150,6 +1150,9 @@ pub struct CfgBranchFactInfo {
     pub outcome: String,
     /// Maximum executions of that edge/block.
     pub max_count: u32,
+    /// Caller context (immediate caller first), when contextual.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<String>,
     /// Source of the fact.
     pub source: String,
 }
@@ -1163,6 +1166,9 @@ pub struct CfgCallFactInfo {
     pub site: Addr,
     /// Maximum calls from this site.
     pub max_count: u32,
+    /// Caller context (immediate caller first), when contextual.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<String>,
     /// Source of the fact.
     pub source: String,
 }
@@ -1174,6 +1180,9 @@ pub struct CfgLoopBoundInfo {
     pub header: Addr,
     /// Maximum loop header iterations per external entry.
     pub bound: u32,
+    /// Caller context (immediate caller first), when contextual.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<String>,
     /// Source of the bound (board profile, F4/FFX file, inference or a merge).
     pub source: String,
 }
