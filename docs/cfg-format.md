@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.7`.
+`cfg_schema_version` is `2.8`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.7 adds multicore access-budget interference metadata at
-program and block level. Version 2.6 records the source of each explicit loop
+functions. Version 2.8 adds the layered `system_model` and its coarse
+single-activation system bound. Version 2.7 adds multicore access-budget
+interference metadata at program and block level. Version 2.6 records the source of each explicit loop
 bound, including bounds imported from F4/FFX files. Version 2.5 adds IPET solver results, the
 backend name and the flow facts used by the model. Version 2.4 adds per-function
 and per-root WCET metadata. Version 2.3 adds region-based data-memory latency metadata. Version
@@ -394,7 +395,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.7",
+  "cfg_schema_version": "2.8",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -619,6 +620,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
 | `multicore` | access-budget interference model, core topology, charged events, total cycles and caveats |
 | `wcet` | WCET model (`cfg-longest-path` or `cfg-ipet`), backend/solver, flow facts, per-root results and caveats |
+| `system_model` | layered task/place/transition model, concurrency dependencies and coarse system bound |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |
@@ -675,6 +677,14 @@ object records the model configuration, aggregate function counts and one
 result per execution root. A partial result has a finite estimate but
 incomplete inputs; an unbounded result has no finite estimate. Paths contain
 local block IDs, including repeated blocks for loop iterations.
+
+When a WCET profile is active, the document also carries a layered
+`system_model`. It converts each concurrent execution root into a task, emits
+one analyzed-core place plus ready/done places and one `execute` transition per
+task, records spawn/join/await/callback dependencies, and reports a coarse
+`analyzed-core-single-activation` bound. The bound sums local root costs once;
+it is not a per-task response-time bound and does not yet solve the Petri net.
+See [layered-model.md](layered-model.md) for the model and assumptions.
 
 These fields are CFG-native. They are populated from function CFGs and runtime
 analysis facts; serializing the CFG JSON is self-contained. `calls`,
@@ -838,4 +848,5 @@ asserts that the CFG validates.
   unbounded, non-terminating bounded loops are `partial`, and a `partial`
   objective is not a safe upper bound. Multicore interference uses an explicit
   access budget; arbitration schedules, shared caches, DMA and concurrency are
-  not modeled.
+  not modeled. The layered `system_model` is a single-activation workload
+  relaxation, not a scheduler or response-time analysis.

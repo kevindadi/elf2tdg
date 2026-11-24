@@ -56,6 +56,10 @@ Implemented:
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
   [docs/flow-facts.md](docs/flow-facts.md).
+- Layered system model (`system_model`): per-root local WCET becomes tasks,
+  Petri-net-shaped places/transitions, concurrency dependencies and a coarse
+  single-activation analyzed-core workload bound. See
+  [docs/layered-model.md](docs/layered-model.md).
 - Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
 - Compile-time analysis pass plan (`--list-passes`) with explicit pass
   dependencies and soundness labels; no runtime dynamic-library ABI.
@@ -251,6 +255,10 @@ Still deferred:
 - Fully computed pointer targets beyond the bounded patterns above, such as
   values transformed through arbitrary arithmetic, indirect callees, or
   pointer state that crosses more than a few call levels.
+- Solving the layered Petri-net model: state-equation ILP, bounded task
+  activations/periods, fork/join arcs, lock/bus resource places and per-task
+  response-time bounds. The current system model uses a coarse
+  single-activation relaxation.
 - General `.await` lowering beyond recognized runtime handle poll functions.
 - Full DWARF type/location coverage beyond the bounded extraction above:
   location lists, split-DWARF cross-unit references, nested anonymous
@@ -489,6 +497,7 @@ docs/text-report.md       readable CFG/WCET report sections and semantics
 docs/flow-facts.md        F4/FFX import, resolution and merge rules
 docs/timing-models.md     timing-model classes, bounded assumptions and --cpu names
 docs/analysis-architecture.md  pass model, soundness contract and precision roadmap
+docs/layered-model.md     local WCET -> layered system model and coarse bound
 docs/board-profile.md     board clocks, memory fetch costs and cycle overrides
 docs/analysis-profile.md  recommended firmware build flags and inline DWARF
 docs/elf-view.md          loader-backed ELF layout, colors and disassembly limits
@@ -503,6 +512,7 @@ See [docs/cfg-format.md](docs/cfg-format.md) for the CFG model,
 [docs/timing-models.md](docs/timing-models.md) for timing-model classes and
 bounded assumptions, [docs/analysis-architecture.md](docs/analysis-architecture.md)
 for the pass model and precision roadmap,
+[docs/layered-model.md](docs/layered-model.md) for the layered system model,
 [docs/analysis-profile.md](docs/analysis-profile.md)
 for the recommended firmware build profile, and
 [docs/elf-view.md](docs/elf-view.md) for the loader-backed ELF layout view.

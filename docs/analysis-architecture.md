@@ -52,7 +52,7 @@ Rust `dylib` interface.
 | P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, per-function IPET, pure-Rust `microlp`; automatic inference and non-loop facts are next |
 | P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
 | P3 | Context-sensitive summaries, recursion, SMT infeasible paths | planned |
-| P4 | Interrupt/CRPD and multicore shared-resource interference | first version implemented: `[multicore]` per-access/per-fetch budget; arbitration schedules, shared caches, CRPD and interrupt effects are next |
+| P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget and a layered task/place/transition model with a coarse single-activation bound; Petri-net ILP, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
 
 The IPET first version is available with:
@@ -100,8 +100,11 @@ run fails before emitting a CFG.
 
 The current `[multicore]` access-budget model is a conservative, auditable first
 step: it charges explicit per-access/per-fetch budgets and records every
-charged event. It is not the final interference model. The next step is a
-resource-aware interference pass with explicit models:
+charged event. The layered `system_model` then converts per-root WCET results
+into tasks, Petri-net-shaped places/transitions and a coarse
+single-activation analyzed-core bound; the bound is intentionally only a
+total-work relaxation. It is not the final interference model. The next step is
+a resource-aware interference pass with explicit models:
 
 - shared bus/memory arbitration (TDMA, round-robin, priority);
 - cache sharing, cache coloring and CRPD;
@@ -119,6 +122,9 @@ from summed local estimates.
 - Cache/branch/data-memory analyses are per-function and not path-sensitive.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.
+- The layered system model is a single-activation workload relaxation. It does
+  not solve the Petri net, model task periods, or produce per-task response
+  times; spawn/join dependencies are recorded but not constrained.
 - Cortex-M7, generic RISC-V, generic AArch64 and x86-64 models are statistical.
   Opt-in bounded abstract AArch64/RISC-V models (`aarch64-bounded`,
   `riscv32-bounded`, `riscv64-bounded`) are available, but they require a board

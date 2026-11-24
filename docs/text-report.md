@@ -33,13 +33,16 @@ The report is deterministic and uses plain text only.
    data-memory latency and multicore interference summaries when enabled.
 6. **WCET** — model name, loop-bound configuration, result counts, per-root
    cycles/nanoseconds and the analysis caveats.
-7. **Interprocedural call graph** — caller, callee, call site, flags and
+7. **Layered system model** — when a WCET profile is active: task/place/
+   transition counts, the coarse single-activation bound, task costs and the
+   model assumptions.
+8. **Interprocedural call graph** — caller, callee, call site, flags and
    bounded candidate sets.
-8. **Concurrency annotations** — spawn/join/await/callback/scope sites.
-9. **Lock events** — acquire/try-acquire/release events with API provenance.
-10. **Diagnostics** — scoped to the selected functions, with omitted image-wide
+9. **Concurrency annotations** — spawn/join/await/callback/scope sites.
+10. **Lock events** — acquire/try-acquire/release events with API provenance.
+11. **Diagnostics** — scoped to the selected functions, with omitted image-wide
     diagnostics counted.
-11. **Function sections** — metadata, WCET result, then every basic block with
+12. **Function sections** — metadata, WCET result, then every basic block with
     instructions, calls, typed edges and per-block analysis annotations.
 
 ## Example
@@ -93,3 +96,8 @@ function marked `partial` has unresolved inputs; `unbounded` means no finite
 estimate was produced. A partial IPET objective is not a safe upper bound.
 Irreducible cycles are reported as `unbounded` rather than producing an
 unsound model.
+
+When a WCET profile is active, the report also includes the layered system
+model. Its current `analyzed-core-single-activation` bound sums one local cost
+per concurrent root; it is a coarse total-work bound, not a per-task response
+time. See [layered-model.md](layered-model.md).
