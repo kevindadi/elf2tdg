@@ -200,6 +200,54 @@ Semantics and limits:
 - F4 non-loop directives are not implemented; unknown F4 directives are
   reported and ignored. Use FFX for branch/call facts.
 
+## Infeasible-path conflicts
+
+FFX `<conflict>` elements declare a set of edges or blocks that cannot all
+appear in one execution sub-trace:
+
+```xml
+<function name="sensor_task">
+  <conflict>
+    <edge src="0x0800_0120" dst="0x0800_0128"/>
+    <block address="0x0800_012a"/>
+  </conflict>
+</function>
+```
+
+- `<edge src="..." dst="..."/>` identifies a CFG edge by source and target
+  addresses. `<block address="..."/>` identifies a basic block; block locations
+  also accept `offset`, or `source`/`line`.
+- A conflict must be declared inside a `<function>` or `<call>` scope. It is
+  interpreted per function invocation; top-level conflicts are ignored because
+  their whole-program scope cannot be guaranteed per invocation.
+- Conflicts are also recognized through the OTAWA `<not-all seq="true">`
+  form. Both that form and `<conflict ordered="yes">` are ordered conflicts and
+  are currently recorded but **not applied**, because aggregate edge counts
+  cannot safely express order without path variables.
+- Caller contexts follow the same rules as other FFX facts. Loop contexts are
+  accepted: a `<loop ...>` may omit its bound and acts as a context only; a
+  missing bound produces a warning and falls back to the profile/default or
+  inference. `<iteration number="*">` conflicts are supported. Conflicts for a
+  specific iteration number, nested `<call>`/`<loop>` elements inside a
+  conflict, and conflicts spanning nested loops are ignored with warnings.
+- All elements must resolve inside one function. For a conflict declared inside
+  a `<loop>` or `<iteration>` context, every edge endpoint and block must be
+  inside that loop; entry/exit edges are rejected with a warning. Two structural
+  forms are enforced by IPET:
+  - all elements are outside every natural loop: `sum(executions) <= n - 1`
+    per function invocation;
+  - all elements touch one common natural loop and none lies in a nested loop:
+    `sum(executions) <= (n - 1) * loop_header_executions`. This is a
+    conservative per-iteration relaxation and also covers whole-loop conflicts.
+- Mixed loop/non-loop sets, nested-loop elements and cross-function conflicts
+  are ignored with warnings. Unsupported or unresolvable conflicts only lose
+  precision and never tighten the bound incorrectly.
+- Infeasible-path constraints are enforced by IPET only. `longest-path`
+  records them but remains a conservative overestimate and emits a caveat.
+  A conflict that contradicts the CFG or other facts can make the IPET model
+  infeasible; the affected function is then `unknown`, not a claimed bound.
+- F4 has no infeasible-path directive in this implementation.
+
 ## Resolution failures
 
 An imported fact that cannot be resolved is a fatal configuration error:
@@ -216,7 +264,11 @@ An imported fact that cannot be resolved is a fatal configuration error:
 An FFX caller context that names an ambiguous multi-site edge is not a fatal
 error: the fact is ignored with a warning because its call-site scope cannot be
 represented safely at function granularity. A context edge with no call site
-produces a warning and has no effect.
+produces a warning and has no effect. Conflict element-level resolution
+failures and unsupported conflict shapes are also non-fatal: the conflict is
+recorded as ignored and the analysis remains conservative. An unresolvable
+conflict enclosing function name or loop-context target is fatal, consistent
+with the other flow-fact targets.
 
 Ambiguity is not silently resolved because a wrong flow fact is a soundness
 problem for WCET analysis. Conditional calls and multi-call blocks are the
@@ -258,6 +310,20 @@ Imported facts are recorded in `wcet.flow_facts`:
       "max_count": 1,
       "context": ["Reset_Handler"],
       "source": "call.ffx"
+    }
+  ],
+  "conflicts": [
+    {
+      "function": "fn:0x8000120",
+      "ordered": false,
+      "applied": true,
+      "scope": "function",
+      "elements": [
+        { "kind": "block", "source": "bb:0x8000120" },
+        { "kind": "edge", "source": "bb:0x8000124",
+          "target": "bb:0x8000128", "site": "0x8000126" }
+      ],
+      "source": "conflicts.ffx"
     }
   ]
 }

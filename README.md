@@ -58,7 +58,10 @@ Implemented:
   - context-sensitive loop and non-loop facts: F4 `in ...` chains and FFX
     `<call>` nesting select per-caller-chain function versions;
   - FFX non-loop facts: conditional branch outcomes (`<conditional>/<case>`)
-    and call counts (`<call numcall=...>` / `executed=false`), enforced by IPET.
+    and call counts (`<call numcall=...>` / `executed=false`), enforced by IPET;
+  - FFX infeasible-path conflicts (`<conflict>` over edges/blocks); unordered
+    function/loop constraints are enforced by IPET. OTAWA `<not-all seq="true">`
+    and ordered conflicts are parsed and recorded but not yet applied.
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
   [docs/flow-facts.md](docs/flow-facts.md).
@@ -296,9 +299,12 @@ Context-specific loop bounds are analyzed per caller chain by both backends, and
 function-level results are the maximum over analyzed contexts. FFX branch and
 call facts are resolved into IPET edge/block constraints and applied only in
 matching caller contexts; longest-path records but does not enforce them.
-Context enumeration has bounded depth and counts; exceeding a limit falls back
-to a conservative context-insensitive model and marks affected results
-`partial`.
+Unordered FFX infeasible-path conflicts are enforced by IPET when all elements
+share one function and are outside loops or within one non-nested loop; ordered,
+cross-function, nested-loop and specific-iteration conflicts are recorded but
+ignored with warnings. Context enumeration has bounded depth and counts;
+exceeding a limit falls back to a conservative context-insensitive model and
+marks affected results `partial`.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved
 calls/control flow or non-terminating loops bounded by assumption mark a result
 `partial`; a partial objective is not a safe upper bound. Results are static
@@ -522,7 +528,7 @@ crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rule
                           origin tracking, emitters, CLI
 docs/cfg-format.md        program CFG, roots, calls, concurrency and timing
 docs/text-report.md       readable CFG/WCET report sections and semantics
-docs/flow-facts.md        F4/FFX import, context, resolution and merge rules
+docs/flow-facts.md        F4/FFX import, contexts, conflicts and merge rules
 docs/timing-models.md     timing-model classes, bounded assumptions and --cpu names
 docs/analysis-architecture.md  pass model, soundness contract and precision roadmap
 docs/layered-model.md     local WCET -> layered system model and coarse bound

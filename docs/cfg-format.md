@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.17`.
+`cfg_schema_version` is `2.18`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.17 adds optional caller `context` fields to resolved loop,
-branch and call flow-fact records. Version 2.16 adds those records.
+functions. Version 2.18 adds infeasible-path conflict records. Version 2.17
+adds optional caller `context` fields to resolved loop, branch and call
+flow-fact records. Version 2.16 adds those records.
 Version 2.15 adds priority-ceiling blocking, per-task lock hold times and
 direct priority-inversion records. Version 2.14 adds per-task
 priorities and fixed-priority response-time bounds. Version 2.13 adds per-task
@@ -406,7 +407,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.17",
+  "cfg_schema_version": "2.18",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -420,6 +421,16 @@ global data.
         { "header": "0x800013e", "bound": 7, "source": "loops.ff" },
         { "header": "0x80000d8", "bound": 2, "context": ["main"],
           "source": "context.ffx" }
+      ],
+      "conflicts": [
+        { "function": "fn:0x8000120", "ordered": false, "applied": true,
+          "scope": "function",
+          "elements": [
+            { "kind": "block", "source": "bb:0x8000120" },
+            { "kind": "edge", "source": "bb:0x8000124",
+              "target": "bb:0x8000128", "site": "0x8000126" }
+          ],
+          "source": "conflicts.ffx" }
       ]
     },
     "functions_analyzed": 8, "functions_partial": 8,
@@ -878,8 +889,12 @@ asserts that the CFG validates.
   falls back to a conservative context-insensitive model and marks affected
   results `partial`. Flow facts come from `[wcet]`, imported F4/FFX files or
   conservative counted-loop inference. FFX branch/call facts are enforced as
-  edge/block constraints in matching contexts; conditional or multi-target call
-  sites and F4 non-loop directives are ignored conservatively. Irreducible
+  edge/block constraints in matching contexts. Unordered infeasible-path
+  conflicts are enforced when their elements share one function and are either
+  outside loops or within one non-nested loop; ordered, cross-function,
+  nested-loop and specific-iteration conflicts are ignored with warnings.
+  Conditional or multi-target call sites and F4 non-loop directives are ignored
+  conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a
   `partial` objective is not a safe upper bound. Multicore interference uses an explicit access budget; arbitration
   schedules, shared caches, DMA and concurrency are not modeled. The layered

@@ -92,7 +92,8 @@ The `wcet` section reports the selected backend:
   and positive block execution counts for each function. The flow-facts section
   lists each explicit loop bound with its source (board profile or F4/FFX file)
   and any caller context; contextual branch/call facts use the same
-  `[context: ...]` suffix.
+  `[context: ...]` suffix. Infeasible-path conflict records show whether the
+  constraint was applied, its scope, and any reason it was ignored.
 
 Both are static estimates, not hardware proofs: loop bounds must be configured,
 recursive call-graph SCCs are unbounded, cache/branch/data-memory results are
