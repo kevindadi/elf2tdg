@@ -362,10 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.19`.
+`cfg_schema_version` is `2.20`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.19 adds the conflict enforcement `mode` (`aggregate` or
-`automaton`). Version 2.18 adds infeasible-path conflict records. Version 2.17
+functions. Version 2.20 adds the cross-function conflict `call` boundary and
+per-element `function` fields. Version 2.19 adds the conflict enforcement
+`mode` (`aggregate` or `automaton`). Version 2.18 adds infeasible-path conflict
+records. Version 2.17
 adds optional caller `context` fields to resolved loop, branch and call
 flow-fact records. Version 2.16 adds those records.
 Version 2.15 adds priority-ceiling blocking, per-task lock hold times and
@@ -408,7 +410,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.19",
+  "cfg_schema_version": "2.20",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -431,7 +433,19 @@ global data.
             { "kind": "edge", "source": "bb:0x8000124",
               "target": "bb:0x8000128", "site": "0x8000126" }
           ],
-          "source": "conflicts.ffx" }
+          "source": "conflicts.ffx" },
+        { "function": "fn:0x8000138", "ordered": true, "applied": true,
+          "mode": "automaton", "scope": "cross-function",
+          "call": { "callee": "fn:0x80000d8", "block": "bb:0x800013e",
+                    "site": "0x8000140",
+                    "continuation": "bb:0x8000144" },
+          "elements": [
+            { "kind": "block", "function": "fn:0x8000138",
+              "source": "bb:0x8000138" },
+            { "kind": "block", "function": "fn:0x80000d8",
+              "source": "bb:0x80000d8" }
+          ],
+          "source": "cross.ffx" }
       ]
     },
     "functions_analyzed": 8, "functions_partial": 8,
@@ -898,9 +912,12 @@ asserts that the CFG validates.
   sequences add no constraint. Cross-iteration ordered conflicts use a product
   IPET with a sequence-progress automaton: function scope spans the whole
   invocation, loop scope resets on entry, and iteration scope resets on entry
-  and each backedge. The automaton product is capped; exceeding the cap makes
-  the function `unknown`. Cross-function, specific-iteration and duplicate-edge
-  conflicts are ignored with warnings.
+  and each backedge. Cross-function ordered conflicts with one direct `<call>`
+  group use a product that inlines the selected callee; callee elements must
+  match within one invocation, and the callee summary remains the cost bound.
+  The product is capped; exceeding the cap makes the function `unknown`.
+  Specific-iteration, multi-group, nested-group, ambiguous-call-site and
+  duplicate-edge conflicts are ignored with warnings.
   Conditional or multi-target call sites and F4 non-loop directives are ignored
   conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a

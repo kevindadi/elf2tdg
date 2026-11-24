@@ -222,7 +222,7 @@ appear in one execution sub-trace:
   their whole-program scope cannot be guaranteed per invocation.
 - Conflicts are also recognized through the OTAWA `<not-all seq="true">`
   form. Both that form and `<conflict ordered="yes">` are ordered conflicts and
-  are enforced by IPET in two ways:
+  are enforced by IPET in three ways:
   - **Structural reduction.** Function-scope conflicts whose elements are
     outside loops are checked by CFG reachability between consecutive elements.
     If every pair is reachable in the declared order, any trace containing all
@@ -237,29 +237,64 @@ appear in one execution sub-trace:
     models cross-iteration ordering exactly without unrolling loop iterations.
     The product is capped (100,000 states / 200,000 transitions); exceeding the
     cap makes the function `unknown` rather than returning an unsound bound.
+  - **Cross-function product.** An ordered conflict may contain one direct
+    `<call name="...">` group:
+
+    ```xml
+    <function name="main">
+      <conflict ordered="yes">
+        <block address="0x0800_0138"/>       <!-- caller-side -->
+        <call name="delay">
+          <block address="0x0800_00d8"/>     <!-- callee-side -->
+          <edge src="0x0800_00e4" dst="0x0800_00e6"/>
+        </call>
+      </conflict>
+    </function>
+    ```
+
+    Top-level elements must resolve in the declaring function; group elements
+    must resolve in the callee. The group is selected by the callee's function
+    name; call-address, offset or source/line attributes are not accepted on a
+    conflict call group. The group is one sequence item and must match in a
+    **single invocation** of the selected call. If the call site is in a
+    loop, callee progress resets on every invocation, while caller-side progress
+    persists across the function invocation. The call must be a unique,
+    unconditional, directly resolved call site of the declaring function, in a
+    reachable block with exactly one call-return edge. The enforcing product
+    IPET inlines the callee at that call site. Callee blocks carry no direct
+    cost: the caller call block keeps the callee summary cost, so this prunes
+    caller-side paths and call executions but does not re-derive the callee's
+    internal worst-case cost. The same state/transition caps apply, and cap
+    overflow makes the function `unknown`. A callee whose inlined CFG or loop
+    bounds cannot be built also makes the caller `unknown` rather than silently
+    dropping the constraint.
   If the sequence is structurally impossible, the fact is vacuously satisfied:
   no constraint or automaton is needed and the record explains why. Ordered
   conflicts that repeat an element, name a backedge element in an iteration
-  scope, or span multiple functions are ignored conservatively.
+  scope, contain more than one call group, nest a call inside a call group, or
+  select an ambiguous call site are ignored conservatively.
 - Caller contexts follow the same rules as other FFX facts. Loop contexts are
-  accepted: a `<loop ...>` may omit its bound and acts as a context only; a
-  missing bound produces a warning and falls back to the profile/default or
-  inference. `<iteration number="*">` conflicts are supported. Conflicts for a
-  specific iteration number and nested `<call>`/`<loop>` elements inside a
-  conflict are ignored with warnings. Unordered conflicts spanning nested loops
-  are ignored; ordered conflicts use the automaton product.
-- All elements must resolve inside one function. For a conflict declared inside
-  a `<loop>` or `<iteration>` context, every edge endpoint and block must be
-  inside that loop; entry/exit edges are rejected with a warning. Two structural
-  forms are enforced by IPET:
+  accepted for same-function conflicts: a `<loop ...>` may omit its bound and
+  acts as a context only; a missing bound produces a warning and falls back to
+  the profile/default or inference. `<iteration number="*">` conflicts are
+  supported. Conflicts for a specific iteration number are ignored with
+  warnings. A cross-function conflict with an enclosing `<loop>` or
+  `<iteration>` context is ignored because per-iteration call-group reset
+  semantics are not implemented. Unordered conflicts spanning nested loops are
+  ignored; ordered conflicts use the automaton product.
+- For same-function conflicts, all elements must resolve inside one function.
+  For a conflict declared inside a `<loop>` or `<iteration>` context, every
+  edge endpoint and block must be inside that loop; entry/exit edges are
+  rejected with a warning. Two structural forms are enforced by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
     `sum(executions) <= (n - 1) * loop_header_executions`. This is a
     conservative per-iteration relaxation and also covers whole-loop conflicts.
-- Mixed loop/non-loop sets, nested-loop elements and cross-function conflicts
-  are ignored with warnings. Unsupported or unresolvable conflicts only lose
-  precision and never tighten the bound incorrectly.
+- Mixed loop/non-loop sets, nested-loop elements and unsupported cross-function
+  shapes are ignored with warnings. Unordered cross-function conflicts are not
+  supported. Unsupported or unresolvable conflicts only lose precision and
+  never tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model
@@ -277,16 +312,19 @@ An imported fact that cannot be resolved is a fatal configuration error:
 - a branch/call fact has no resolvable location, or matches multiple sites;
 - a callee-only call fact names a function with no matching call sites;
 - a context name does not resolve to a unique function;
-- a callee-wide call fact declares a scope that does not contain its call site.
+- a callee-wide call fact declares a scope that does not contain its call site;
+- a cross-function conflict call group names a function that does not resolve.
 
 An FFX caller context that names an ambiguous multi-site edge is not a fatal
 error: the fact is ignored with a warning because its call-site scope cannot be
 represented safely at function granularity. A context edge with no call site
 produces a warning and has no effect. Conflict element-level resolution
 failures and unsupported conflict shapes are also non-fatal: the conflict is
-recorded as ignored and the analysis remains conservative. An unresolvable
-conflict enclosing function name or loop-context target is fatal, consistent
-with the other flow-fact targets.
+recorded as ignored and the analysis remains conservative. This includes a
+cross-function group with no unique unconditional call site, no unique
+call-return edge, more than one group, a nested call group, or a merged
+unordered form. An unresolvable conflict enclosing function name or
+loop-context target is fatal, consistent with the other flow-fact targets.
 
 Ambiguity is not silently resolved because a wrong flow fact is a soundness
 problem for WCET analysis. Conditional calls and multi-call blocks are the
@@ -343,11 +381,32 @@ Imported facts are recorded in `wcet.flow_facts`:
           "target": "bb:0x8000128", "site": "0x8000126" }
       ],
       "source": "conflicts.ffx"
+    },
+    {
+      "function": "fn:0x8000138",
+      "ordered": true,
+      "applied": true,
+      "mode": "automaton",
+      "scope": "cross-function",
+      "call": {
+        "callee": "fn:0x80000d8",
+        "block": "bb:0x800013e",
+        "site": "0x8000140",
+        "continuation": "bb:0x8000144"
+      },
+      "elements": [
+        { "kind": "block", "function": "fn:0x8000138",
+          "source": "bb:0x8000138" },
+        { "kind": "block", "function": "fn:0x80000d8",
+          "source": "bb:0x80000d8" }
+      ],
+      "source": "cross.ffx"
     }
   ]
 }
 ```
 
 Per-loop `source` values and non-empty contexts are also shown in the text
-report. Warnings from import, merge and context handling are appended to
-`wcet.caveats`.
+report. For a cross-function constraint the report also prints the selected
+callee and call-site address. Warnings from import, merge and context handling
+are appended to `wcet.caveats`.

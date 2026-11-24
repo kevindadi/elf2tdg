@@ -61,8 +61,9 @@ Implemented:
     and call counts (`<call numcall=...>` / `executed=false`), enforced by IPET;
   - FFX infeasible-path conflicts (`<conflict>` over edges/blocks) and OTAWA
     `<not-all seq="true">`; IPET enforces unordered constraints, structurally
-    forced ordered conflicts, and cross-iteration ordered sequences through a
-    product sequence-progress automaton.
+    forced ordered conflicts, cross-iteration ordered sequences through a
+    product sequence-progress automaton, and cross-function ordered sequences
+    with one direct `<call>` group by inlining the selected callee.
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
   [docs/flow-facts.md](docs/flow-facts.md).
@@ -308,10 +309,13 @@ order. Other ordered conflicts use a product IPET with a sequence-progress
 automaton: function scope spans the invocation, loop scope resets on entry and
 iteration scope resets per iteration. Structurally impossible sequences add no
 constraint; the product is capped and exceeding it makes the function
-`unknown`. Cross-function and specific-iteration forms are recorded but
-ignored. Context enumeration has bounded depth and counts;
-exceeding a limit falls back to a conservative context-insensitive model and
-marks affected results `partial`.
+`unknown`. Cross-function ordered conflicts with one direct `<call>` group
+inline the selected callee in the product; callee elements must match within one
+invocation, and the callee summary remains the cost bound. Specific-iteration,
+multi-group, nested-group and ambiguous-call-site forms are recorded but
+ignored. Context enumeration has bounded depth and counts; exceeding a limit
+falls back to a conservative context-insensitive model and marks affected
+results `partial`.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved
 calls/control flow or non-terminating loops bounded by assumption mark a result
 `partial`; a partial objective is not a safe upper bound. Results are static

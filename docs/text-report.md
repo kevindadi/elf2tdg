@@ -94,7 +94,8 @@ The `wcet` section reports the selected backend:
   and any caller context; contextual branch/call facts use the same
   `[context: ...]` suffix. Infeasible-path conflict records show whether the
   constraint was applied, its aggregate/automaton enforcement mode, scope, and
-  any reason it was ignored.
+  any reason it was ignored. Cross-function records also print the selected
+  callee and call-site address.
 
 Both are static estimates, not hardware proofs: loop bounds must be configured,
 recursive call-graph SCCs are unbounded, cache/branch/data-memory results are
