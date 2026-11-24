@@ -56,10 +56,6 @@ const fn default_wcet_max_states() -> usize {
     100_000
 }
 
-const fn default_system_activations() -> u32 {
-    1
-}
-
 fn default_multicore_model() -> String {
     "access-budget".to_owned()
 }
@@ -128,6 +124,8 @@ pub(crate) struct SystemProfile {
     tasks: Vec<SystemTaskProfile>,
     #[serde(default)]
     resources: Vec<SystemResourceProfile>,
+    #[serde(default)]
+    horizon_ns: Option<u64>,
 }
 
 impl SystemProfile {
@@ -138,6 +136,10 @@ impl SystemProfile {
     pub(crate) fn resources(&self) -> &[SystemResourceProfile] {
         &self.resources
     }
+
+    pub(crate) fn horizon_ns(&self) -> Option<u64> {
+        self.horizon_ns
+    }
 }
 
 /// One execution root in a `[system]` profile.
@@ -145,8 +147,14 @@ impl SystemProfile {
 #[serde(deny_unknown_fields)]
 pub(crate) struct SystemTaskProfile {
     target: String,
-    #[serde(default = "default_system_activations")]
-    activations: u32,
+    #[serde(default)]
+    activations: Option<u32>,
+    #[serde(default)]
+    period_ns: Option<u64>,
+    #[serde(default)]
+    release_offset_ns: Option<u64>,
+    #[serde(default)]
+    release_jitter_ns: Option<u64>,
     #[serde(default)]
     resources: BTreeMap<String, u32>,
 }
@@ -156,8 +164,20 @@ impl SystemTaskProfile {
         &self.target
     }
 
-    pub(crate) fn activations(&self) -> u32 {
+    pub(crate) fn activations(&self) -> Option<u32> {
         self.activations
+    }
+
+    pub(crate) fn period_ns(&self) -> Option<u64> {
+        self.period_ns
+    }
+
+    pub(crate) fn release_offset_ns(&self) -> Option<u64> {
+        self.release_offset_ns
+    }
+
+    pub(crate) fn release_jitter_ns(&self) -> Option<u64> {
+        self.release_jitter_ns
     }
 
     pub(crate) fn resources(&self) -> &BTreeMap<String, u32> {
@@ -1225,12 +1245,30 @@ impl BoardProfile {
                 )));
             }
         }
+        if system.horizon_ns == Some(0) {
+            return Err(Error::Config(
+                "board profile system.horizon_ns must be positive".to_owned(),
+            ));
+        }
+        let mut has_period = false;
         let mut targets = BTreeSet::new();
         for (index, task) in system.tasks.iter().enumerate() {
             validate_text("system.tasks.target", &task.target)?;
-            if task.activations == 0 {
+            if task.activations == Some(0) {
                 return Err(Error::Config(format!(
                     "board profile system.tasks[{index}].activations must be positive"
+                )));
+            }
+            if let Some(period) = task.period_ns {
+                if period == 0 {
+                    return Err(Error::Config(format!(
+                        "board profile system.tasks[{index}].period_ns must be positive"
+                    )));
+                }
+                has_period = true;
+            } else if task.release_offset_ns.is_some() || task.release_jitter_ns.is_some() {
+                return Err(Error::Config(format!(
+                    "board profile system.tasks[{index}] sets release offset/jitter without period_ns"
                 )));
             }
             if !targets.insert(task.target.as_str()) {
@@ -1259,6 +1297,11 @@ impl BoardProfile {
                     )));
                 }
             }
+        }
+        if has_period && system.horizon_ns.is_none() {
+            return Err(Error::Config(
+                "board profile system tasks with period_ns require system.horizon_ns".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -1728,11 +1771,33 @@ capacity = 4
         let system = profile.system().expect("system profile");
         assert_eq!(system.tasks().len(), 1);
         assert_eq!(system.tasks()[0].target(), "sensor_task");
-        assert_eq!(system.tasks()[0].activations(), 3);
+        assert_eq!(system.tasks()[0].activations(), Some(3));
         assert_eq!(system.tasks()[0].resources().get("bus"), Some(&1));
         assert_eq!(system.resources().len(), 1);
         assert_eq!(system.resources()[0].name(), "bus");
         assert_eq!(system.resources()[0].capacity(), 4);
+
+        let periodic = valid
+            .replace("[system]", "[system]\nhorizon_ns = 5_000_000")
+            .replace(
+                "activations = 3",
+                "period_ns = 1_000_000\nrelease_offset_ns = 0\nrelease_jitter_ns = 100",
+            );
+        let profile = BoardProfile::parse_toml(&periodic).expect("valid periodic profile");
+        let system = profile.system().expect("system profile");
+        assert_eq!(system.horizon_ns(), Some(5_000_000));
+        assert_eq!(system.tasks()[0].period_ns(), Some(1_000_000));
+        assert_eq!(system.tasks()[0].release_offset_ns(), Some(0));
+        assert_eq!(system.tasks()[0].release_jitter_ns(), Some(100));
+        assert_eq!(system.tasks()[0].activations(), None);
+        let no_horizon = periodic.replace("horizon_ns = 5_000_000\n", "");
+        assert!(BoardProfile::parse_toml(&no_horizon).is_err());
+        let zero_period = periodic.replace("period_ns = 1_000_000", "period_ns = 0");
+        assert!(BoardProfile::parse_toml(&zero_period).is_err());
+        let zero_horizon = periodic.replace("horizon_ns = 5_000_000", "horizon_ns = 0");
+        assert!(BoardProfile::parse_toml(&zero_horizon).is_err());
+        let offset_without_period = valid.replace("activations = 3", "release_offset_ns = 10");
+        assert!(BoardProfile::parse_toml(&offset_without_period).is_err());
 
         let no_wcet = valid.replace("[wcet]\ndefault_loop_bound = 4\n", "");
         assert!(BoardProfile::parse_toml(&no_wcet).is_err());

@@ -25,6 +25,9 @@ use crate::wcet::frequency_hz;
 #[derive(Clone, Debug)]
 struct TaskConfig {
     activations: u32,
+    period_ns: Option<u64>,
+    release_offset_ns: Option<u64>,
+    release_jitter_ns: Option<u64>,
     resources: BTreeMap<String, u32>,
 }
 
@@ -80,10 +83,14 @@ pub(crate) fn analyze(
     } else {
         concurrent
     };
+    let horizon_ns = system.and_then(crate::board_profile::SystemProfile::horizon_ns);
     let mut configs: Vec<TaskConfig> = roots
         .iter()
         .map(|_| TaskConfig {
             activations: 1,
+            period_ns: None,
+            release_offset_ns: None,
+            release_jitter_ns: None,
             resources: BTreeMap::new(),
         })
         .collect();
@@ -98,7 +105,35 @@ pub(crate) fn analyze(
                 ));
             }
             matched[index] = true;
-            configs[index].activations = entry.activations();
+            let period = entry.period_ns();
+            let derived = match period {
+                Some(period) => {
+                    let horizon = horizon_ns.ok_or_else(|| {
+                        format!(
+                            "board profile system task {:?} has period_ns but no horizon_ns",
+                            entry.target()
+                        )
+                    })?;
+                    Some(periodic_releases(
+                        horizon,
+                        entry.release_offset_ns().unwrap_or(0),
+                        entry.release_jitter_ns().unwrap_or(0),
+                        period,
+                    ))
+                }
+                None => None,
+            };
+            configs[index].activations = match (entry.activations(), derived) {
+                (Some(explicit), Some(derived)) => explicit.min(derived),
+                (Some(explicit), None) => explicit,
+                (None, Some(derived)) => derived,
+                (None, None) => 1,
+            };
+            configs[index].period_ns = period;
+            configs[index].release_offset_ns =
+                period.map(|_| entry.release_offset_ns().unwrap_or(0));
+            configs[index].release_jitter_ns =
+                period.map(|_| entry.release_jitter_ns().unwrap_or(0));
             configs[index].resources.clone_from(entry.resources());
         }
     }
@@ -134,7 +169,7 @@ pub(crate) fn analyze(
         let ready_place = format!("ready:{task_id}");
         let done_place = format!("done:{task_id}");
         let config = &configs[index];
-        let task = system_task(&task_id, root, config.activations);
+        let task = system_task(&task_id, root, config);
         if let Some(value) = task.cycles {
             cycles += value;
         } else {
@@ -204,7 +239,7 @@ pub(crate) fn analyze(
             .to_owned(),
         "Spawn/join/await/callback dependencies are recorded but not yet encoded as Petri-net arcs or ordering constraints."
             .to_owned(),
-        "Lock/semaphore waiting, periodic activations, preemption and scheduling order are not modeled in this first layer."
+        "Lock/semaphore waiting, release instants, deadlines, preemption and scheduling order are not modeled in this layer."
             .to_owned(),
         "Activation bounds are upper bounds; ready/done markings stay within [0, capacity], the core marking is exact, and firing counts are solved by the pure-Rust microlp backend."
             .to_owned(),
@@ -222,6 +257,12 @@ pub(crate) fn analyze(
         if !system.resources().is_empty() {
             caveats.push(
                 "A cumulative budget may reduce modeled firing counts; a task with a positive activation bound can receive fewer (even zero) firings when another task consumes the budget."
+                    .to_owned(),
+            );
+        }
+        if system.tasks().iter().any(|task| task.period_ns().is_some()) {
+            caveats.push(
+                "Periodic releases are approximated by a release count over horizon_ns; release instants, deadlines and ordering are not modeled."
                     .to_owned(),
             );
         }
@@ -265,6 +306,7 @@ pub(crate) fn analyze(
         model: "layered-petri-state-equation".to_owned(),
         cores,
         core_id,
+        horizon_ns,
         tasks,
         boot_roots: u32::try_from(if fallback_to_boot_roots { 0 } else { boot_roots })
             .unwrap_or(u32::MAX),
@@ -288,7 +330,7 @@ pub(crate) fn analyze(
                     .to_owned(),
                 "The state equation is a reachability relaxation; the solver may accept firing-count combinations that no concrete schedule can realize."
                     .to_owned(),
-                "No periodic release, preemption, scheduling order or lock-wait model is applied in this first layer."
+                "No release instant, deadline, preemption, scheduling order or lock-wait model is applied in this first layer."
                     .to_owned(),
             ],
         },
@@ -456,7 +498,7 @@ fn bound_from_solution(
     (aggregate, Some(objective), time)
 }
 
-fn system_task(id: &str, root: &CfgWcetRoot, activation_bound: u32) -> CfgSystemTask {
+fn system_task(id: &str, root: &CfgWcetRoot, config: &TaskConfig) -> CfgSystemTask {
     CfgSystemTask {
         id: id.to_owned(),
         function: root.function.clone(),
@@ -465,8 +507,23 @@ fn system_task(id: &str, root: &CfgWcetRoot, activation_bound: u32) -> CfgSystem
         status: root.status,
         cycles: root.cycles,
         time_ns: root.time_ns,
-        activation_bound,
+        activation_bound: config.activations,
+        period_ns: config.period_ns,
+        release_offset_ns: config.release_offset_ns,
+        release_jitter_ns: config.release_jitter_ns,
     }
+}
+
+fn periodic_releases(horizon_ns: u64, offset_ns: u64, jitter_ns: u64, period_ns: u64) -> u32 {
+    if period_ns == 0 || horizon_ns == 0 {
+        return 0;
+    }
+    let earliest = offset_ns.saturating_sub(jitter_ns);
+    if earliest > horizon_ns {
+        return 0;
+    }
+    let releases = (horizon_ns - earliest) / period_ns + 1;
+    u32::try_from(releases).unwrap_or(u32::MAX)
 }
 
 fn resolve_task(
@@ -608,7 +665,7 @@ fn dependencies(program: &ProgramCfg) -> Vec<CfgSystemDependency> {
 
 #[cfg(test)]
 mod tests {
-    use super::solve_state_equation;
+    use super::{periodic_releases, solve_state_equation};
     use crate::cfg::{CfgSystemPlace, CfgSystemTransition};
 
     fn place(id: &str, kind: &str, tokens: u32, capacity: u32) -> CfgSystemPlace {
@@ -618,6 +675,19 @@ mod tests {
             tokens,
             capacity,
         }
+    }
+
+    #[test]
+    fn periodic_release_counts_are_conservative() {
+        assert_eq!(periodic_releases(5_000_000, 0, 0, 1_000_000), 6);
+        assert_eq!(periodic_releases(5_000_000, 1_000_000, 0, 1_000_000), 5);
+        assert_eq!(
+            periodic_releases(5_000_000, 5_000_000, 2_000_000, 1_000_000),
+            3
+        );
+        assert_eq!(periodic_releases(0, 0, 0, 1_000_000), 0);
+        assert_eq!(periodic_releases(5_000_000, 0, 0, 0), 0);
+        assert_eq!(periodic_releases(5_000_000, 6_000_000, 0, 1_000_000), 0);
     }
 
     #[test]

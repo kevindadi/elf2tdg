@@ -167,3 +167,75 @@ capacity = 4
     assert_eq!(firing.fires, 3);
     assert!(model.bound.cycles.expect("bound") > 1_071.0);
 }
+
+#[test]
+fn derives_periodic_release_bounds_from_the_horizon() {
+    let Some(elf_path) = example_elf() else {
+        eprintln!("skipping periodic release test: example ELF is absent");
+        return;
+    };
+    let profile_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/cortex-m7-wcet.toml");
+    let Ok(mut profile_text) = std::fs::read_to_string(&profile_path) else {
+        eprintln!("skipping periodic release test: WCET profile is absent");
+        return;
+    };
+    profile_text.push_str(
+        r#"
+
+[system]
+horizon_ns = 5_000_000
+
+[[system.tasks]]
+target = "sensor_task"
+period_ns = 1_000_000
+release_offset_ns = 0
+release_jitter_ns = 0
+resources = { bus = 1 }
+
+[[system.resources]]
+name = "bus"
+capacity = 6
+"#,
+    );
+    let profile = BoardProfile::parse_toml(&profile_text).expect("valid periodic profile");
+    let image = loader::load(&elf_path).expect("example ELF must load");
+    let analysis = analyze_with_cfg(
+        &image,
+        &AnalysisOptions {
+            board_profile: Some(profile),
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("analysis must succeed");
+
+    let model = analysis
+        .cfg
+        .system_model
+        .as_ref()
+        .expect("layered system model");
+    assert_eq!(model.horizon_ns, Some(5_000_000));
+    let sensor = model
+        .tasks
+        .iter()
+        .find(|task| {
+            task.name
+                .as_deref()
+                .is_some_and(|name| name.ends_with("sensor_task"))
+        })
+        .expect("sensor task");
+    assert_eq!(sensor.period_ns, Some(1_000_000));
+    assert_eq!(sensor.release_offset_ns, Some(0));
+    assert_eq!(sensor.release_jitter_ns, Some(0));
+    assert_eq!(sensor.activation_bound, 6);
+    assert_eq!(model.bound.max_activations, 6);
+    let petri = model.petri.as_ref().expect("state-equation solution");
+    assert_eq!(petri.status, "optimal");
+    let firing = petri
+        .firing
+        .iter()
+        .find(|firing| firing.transition == format!("execute:{}", sensor.id))
+        .expect("sensor firing count");
+    assert_eq!(firing.fires, 6);
+    assert!(model.bound.cycles.expect("bound") > 1_500.0);
+}

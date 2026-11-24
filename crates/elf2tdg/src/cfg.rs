@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.9";
+pub const CFG_SCHEMA_VERSION: &str = "2.10";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -340,6 +340,15 @@ pub struct CfgSystemTask {
     pub time_ns: Option<f64>,
     /// Maximum activations modeled in the current bound window.
     pub activation_bound: u32,
+    /// Period used to derive the release bound, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_ns: Option<u64>,
+    /// Release offset from the start of the bound window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_offset_ns: Option<u64>,
+    /// Release jitter applied conservatively to the first release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_jitter_ns: Option<u64>,
 }
 
 /// One place in the coarse layered Petri-net representation.
@@ -458,6 +467,9 @@ pub struct CfgSystemModelInfo {
     pub cores: u32,
     /// Analyzed core.
     pub core_id: u32,
+    /// Bound window for periodic releases and resource budgets, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub horizon_ns: Option<u64>,
     /// Execution-root tasks included in the concurrent bound.
     pub tasks: Vec<CfgSystemTask>,
     /// Startup/main boot roots excluded from the concurrent bound.
