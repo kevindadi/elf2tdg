@@ -1,5 +1,5 @@
 {
-  "cfg_schema_version": "2.12",
+  "cfg_schema_version": "2.13",
   "image": {
     "path": "artifacts/rust-concurrency-analysis.elf",
     "arch": "thumb",
