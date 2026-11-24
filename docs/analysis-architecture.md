@@ -51,9 +51,9 @@ Rust `dylib` interface.
 | Level | Capability | Status |
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
-| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, FFX branch/call facts in IPET, per-function IPET, pure-Rust `microlp`; context-sensitive facts, infeasible paths and richer FFX constructs are next |
+| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain analysis, FFX branch/call facts in IPET, per-function IPET, pure-Rust `microlp`; infeasible paths and richer FFX constructs are next |
 | P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
-| P3 | Context-sensitive summaries, recursion, SMT infeasible paths | planned |
+| P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | planned; caller-function context summaries are implemented in P1 |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
 
@@ -68,7 +68,7 @@ It builds a per-function integer program with flow conservation, natural-loop
 bounds and callee summaries, solves it with `microlp`, and records the positive
 block execution counts. The remaining P1 work is:
 
-1. Context-sensitive flow facts, additional FFX constructs, and inference
+1. Additional FFX constructs, infeasible-path constraints, and inference
    beyond canonical counted loops.
 2. A convenience API for programmatic flow facts beyond files and `[wcet]`.
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
@@ -121,11 +121,15 @@ from summed local estimates.
 
 ## Current limits
 
-- IPET is implemented but still context-insensitive; loop bounds come from the
-  profile, imported F4/FFX files, or canonical counted-loop inference. FFX
-  branch/call facts are enforced as edge/block constraints, but
-  context-sensitive non-loop facts, conditional call sites and infeasible-path
-  constraints are not implemented.
+- Context-sensitive flow facts use caller-chain function versions: F4 `in ...`
+  chains and FFX `<call>` nesting select per-context loop bounds and, in IPET,
+  per-context branch/call constraints. Context identity is the caller function,
+  not the individual call site. An FFX context whose caller-to-callee edge has
+  multiple call sites is ignored with a warning rather than broadened.
+  Function-level WCET is the maximum over analyzed contexts. Context
+  enumeration is bounded; overflow falls back to a conservative
+  context-insensitive model and marks results `partial`. Conditional call sites
+  and infeasible-path constraints remain unsupported.
 - Cache/branch/data-memory analyses are per-function and not path-sensitive.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.

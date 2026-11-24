@@ -21,8 +21,9 @@ The two backends share the same resolved facts:
 1. `default_loop_bound` is a fallback for loops without an explicit bound.
 2. Explicit profile `[[wcet.loop_bounds]]` entries are explicit bounds.
 3. Imported F4/FFX bounds are merged with existing explicit bounds.
-4. If two explicit bounds disagree for the same loop header, the larger bound
-   is kept and a warning is recorded in the WCET caveats.
+4. If two explicit bounds disagree for the same loop header and caller
+   context, the larger bound is kept and a warning is recorded in the WCET
+   caveats.
 5. An imported bound overrides the profile's default bound (it is explicit).
 6. With `auto_loop_bounds = true` (the default), a recognized counted-loop
    bound is added only when no larger explicit/default bound exists. If the
@@ -30,9 +31,66 @@ The two backends share the same resolved facts:
    inferred value is kept conservatively and a warning is recorded. Set
    `auto_loop_bounds = false` to disable inference.
 
-Context-specific facts (F4 `in ...` paths or FFX `<call>` nesting) are applied
-context-insensitively because the current WCET analysis is per-function. This
-keeps the larger bound across contexts and emits a warning.
+### Context-sensitive facts
+
+F4 `in ...` paths and FFX `<call>` nesting select a caller context. Contexts are
+normalized to the same order: **immediate caller first**, excluding the function
+that contains the fact. A fact applies when its caller chain is a prefix of the
+analyzed call chain.
+
+- `in "sensor_task"` applies when `sensor_task` calls the function directly,
+  regardless of who called `sensor_task`.
+- `in "sensor_task" / "main"` additionally requires that `main` called
+  `sensor_task`.
+- A fact without a context remains global.
+
+For example, this FFX fact applies to `delay` when called by `main`:
+
+```xml
+<function name="main">
+  <call name="delay">
+    <loop address="0x0800_00d8" maxcount="2"/>
+  </call>
+</function>
+```
+
+The same fact in F4 form is:
+
+```text
+loop 0x080000d8 2 in "main";
+```
+
+Context-sensitive loop bounds are analyzed per caller chain by both backends.
+IPET also applies contextual branch/call facts. Function-level WCET is the
+maximum over all analyzed contexts, while a root result uses the root's own
+(empty) caller chain. Context-aware callee summaries are selected per call site,
+so an expensive context does not inflate an unrelated caller path.
+
+Within one context, the most specific matching caller chain wins and takes
+precedence over a global, default or inferred loop bound. Conflicting facts for
+the same chain keep the larger loop bound (or the tighter branch/call count) and
+emit a caveat. When context analysis is not used (no contextual
+facts, or a context limit was exceeded), the fallback folds all contextual loop
+bounds in with their maximum and requires a global or default bound for safety.
+Contextual non-loop facts are enforced by IPET only; `longest-path` records them
+but ignores them.
+
+Context enumeration is bounded to depth 16, 64 contexts per function and 4096
+contexts per program. Exceeding a limit falls back to a context-insensitive
+model: contextual loop bounds are merged conservatively, contextual branch/call
+facts are not applied, and finite results computed in that fallback are marked
+`partial` (so `--require-safe` rejects them).
+
+Context identity is the **caller function chain**, not the individual call-site
+address. Two calls from the same caller to the same callee share one callee
+version, so an F4 fact applies to both. F4 is function-level by design. FFX
+nested `<call>` contexts are call-site scoped in OTAWA; this analyzer honors
+them only when every caller-to-callee edge on the chain has exactly one call
+site. If a caller has multiple such sites, the FFX context fact is ignored with
+a warning rather than broadened unsafely. Nesting call addresses are not
+currently used to disambiguate those sites. A fact whose caller chain matches
+no analyzed execution has no effect. Recursive call-graph SCCs remain
+`unbounded`, so contexts are not expanded through them.
 
 ## F4 `.ff`
 
@@ -47,7 +105,7 @@ loop 0x08000100 max 10 total 15;
 loop "main" + 0x24 max 10 total 15;
 loop "main.c":29 max 10 total 15;
 
-loop "main.c":29 max 10 total 15 in "f" / "g1" / "main";
+loop "main.c":29 max 10 total 15 in "g1" / "main";
 ```
 
 - The first form is a direct loop-header address.
@@ -57,6 +115,9 @@ loop "main.c":29 max 10 total 15 in "f" / "g1" / "main";
   same basename.
 - `max` is the per-entry loop bound used by the analysis. If only `total` is
   present, it is used as the per-entry bound with a warning.
+- `in "step1" / "step2" / ...` is a caller chain, immediate caller first.
+  `step1` is the function calling the loop, `step2` is its caller, and so on.
+  Each step may be a function name or a `0x` function address, matching F4.
 - `checksum` is parsed but not verified; a warning is recorded.
 - `nocall` and unknown directives are ignored with warnings; calls remain in
   the analysis.
@@ -77,8 +138,9 @@ Supported shape:
 ```
 
 - `<function name="...">` scopes loop targets to a function.
-- `<call name="...">` nesting is retained as evidence, but facts are applied
-  context-insensitively with a warning.
+- `<call name="...">` nesting selects a caller context. The enclosing
+  `<function>` names and nested call names form the call path; the normalized
+  context excludes the function containing the fact.
 - `<loop offset="...">` resolves against the current function entry.
 - `<loop address="...">` uses a direct loop-header address.
 - `<loop source="..." line="...">` resolves through DWARF source locations.
@@ -129,10 +191,10 @@ Semantics and limits:
 - Numeric branch counts (`maxcount`/`totalcount` on a case) are not supported
   yet; only `executed=false` is applied, with a warning for the numeric form.
   Iteration- and scenario-specific elements are ignored entirely because the
-  current analysis is not context/iteration-sensitive.
-- Context-specific branch/call facts are **ignored** with a warning because the
-  current analysis is context-insensitive. Applying a context-specific fact
-  globally could understate WCET.
+  current analysis is not iteration- or scenario-sensitive.
+- Context-specific branch/call facts are applied only in matching caller
+  contexts by IPET. A fact whose caller chain matches no analyzed context has no
+  effect.
 - Non-loop facts are enforced by IPET only. `longest-path` records them but is
   left as a conservative overestimate and emits a caveat.
 - F4 non-loop directives are not implemented; unknown F4 directives are
@@ -147,7 +209,14 @@ An imported fact that cannot be resolved is a fatal configuration error:
 - the source file/line matches no natural-loop header;
 - the source file/line matches more than one loop;
 - a branch/call fact has no resolvable location, or matches multiple sites;
-- a callee-only call fact names a function with no matching call sites.
+- a callee-only call fact names a function with no matching call sites;
+- a context name does not resolve to a unique function;
+- a callee-wide call fact declares a scope that does not contain its call site.
+
+An FFX caller context that names an ambiguous multi-site edge is not a fatal
+error: the fact is ignored with a warning because its call-site scope cannot be
+represented safely at function granularity. A context edge with no call site
+produces a warning and has no effect.
 
 Ambiguity is not silently resolved because a wrong flow fact is a soundness
 problem for WCET analysis. Conditional calls and multi-call blocks are the
@@ -164,7 +233,13 @@ Imported facts are recorded in `wcet.flow_facts`:
   "default_loop_bound": 4,
   "bound_nonterminating_loops": true,
   "loops": [
-    { "header": "0x800013e", "bound": 7, "source": "loops.ff" }
+    { "header": "0x800013e", "bound": 7, "source": "loops.ff" },
+    {
+      "header": "0x80000d8",
+      "bound": 2,
+      "context": ["main"],
+      "source": "context.ffx"
+    }
   ],
   "branches": [
     {
@@ -172,6 +247,7 @@ Imported facts are recorded in `wcet.flow_facts`:
       "site": "0x80000e4",
       "outcome": "taken",
       "max_count": 0,
+      "context": ["sensor_task"],
       "source": "branch.ffx"
     }
   ],
@@ -180,11 +256,13 @@ Imported facts are recorded in `wcet.flow_facts`:
       "function": "fn:0x8000138",
       "site": "0x8000140",
       "max_count": 1,
+      "context": ["Reset_Handler"],
       "source": "call.ffx"
     }
   ]
 }
 ```
 
-Per-loop `source` values are also shown in the text report. Warnings from
-import, merge and context handling are appended to `wcet.caveats`.
+Per-loop `source` values and non-empty contexts are also shown in the text
+report. Warnings from import, merge and context handling are appended to
+`wcet.caveats`.

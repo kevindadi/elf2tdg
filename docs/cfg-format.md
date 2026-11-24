@@ -362,9 +362,10 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.16`.
+`cfg_schema_version` is `2.17`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.16 adds resolved branch and call flow-fact records.
+functions. Version 2.17 adds optional caller `context` fields to resolved loop,
+branch and call flow-fact records. Version 2.16 adds those records.
 Version 2.15 adds priority-ceiling blocking, per-task lock hold times and
 direct priority-inversion records. Version 2.14 adds per-task
 priorities and fixed-priority response-time bounds. Version 2.13 adds per-task
@@ -405,7 +406,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.16",
+  "cfg_schema_version": "2.17",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -416,7 +417,9 @@ global data.
       "default_loop_bound": 4,
       "bound_nonterminating_loops": true,
       "loops": [
-        { "header": "0x800013e", "bound": 7, "source": "loops.ff" }
+        { "header": "0x800013e", "bound": 7, "source": "loops.ff" },
+        { "header": "0x80000d8", "bound": 2, "context": ["main"],
+          "source": "context.ffx" }
       ]
     },
     "functions_analyzed": 8, "functions_partial": 8,
@@ -868,12 +871,15 @@ asserts that the CFG validates.
   relinking or address changes.
 - Function selection by name requires symbols, unless DWARF provided the name;
   stripped images can still be selected by address.
-- IPET is per-function and context-insensitive: callee summaries are reused
-  across call sites. Flow facts come from `[wcet]`, imported F4/FFX files or
+- IPET remains per-function, but contextual flow facts select caller-chain
+  function versions: callee summaries are selected per call chain and
+  function-level WCET is the maximum over analyzed contexts. Context enumeration
+  is bounded (depth 16, 64 contexts per function, 4096 per program); overflow
+  falls back to a conservative context-insensitive model and marks affected
+  results `partial`. Flow facts come from `[wcet]`, imported F4/FFX files or
   conservative counted-loop inference. FFX branch/call facts are enforced as
-  edge/block constraints; context-sensitive non-loop facts, conditional or
-  multi-target call sites and F4 non-loop directives are ignored
-  conservatively. Irreducible
+  edge/block constraints in matching contexts; conditional or multi-target call
+  sites and F4 non-loop directives are ignored conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a
   `partial` objective is not a safe upper bound. Multicore interference uses an explicit access budget; arbitration
   schedules, shared caches, DMA and concurrency are not modeled. The layered

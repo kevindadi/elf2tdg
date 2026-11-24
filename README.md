@@ -55,6 +55,8 @@ Implemented:
     (`auto_loop_bounds`, enabled by default);
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add
     or override loop bounds by address, function + offset, or source line;
+  - context-sensitive loop and non-loop facts: F4 `in ...` chains and FFX
+    `<call>` nesting select per-caller-chain function versions;
   - FFX non-loop facts: conditional branch outcomes (`<conditional>/<case>`)
     and call counts (`<call numcall=...>` / `executed=false`), enforced by IPET.
   Profiles are strictly validated, and timing metadata records the profile ID,
@@ -289,18 +291,22 @@ The analyzer produces WCET estimates when a board profile enables `[wcet]`.
 per-function integer linear program with flow conservation, loop bounds and
 bottom-up callee summaries, solved by the pure-Rust `microlp` backend. Loop
 bounds come from the profile, imported F4/FFX files, and conservative
-counted-loop inference; conflicting bounds keep the larger value and
-context-specific facts are applied context-insensitively with a warning.
-FFX branch and call facts are resolved into IPET edge/block constraints;
-context-specific non-loop facts are ignored conservatively, and longest-path
-records but does not enforce them.
+counted-loop inference; conflicting global bounds keep the larger value.
+Context-specific loop bounds are analyzed per caller chain by both backends, and
+function-level results are the maximum over analyzed contexts. FFX branch and
+call facts are resolved into IPET edge/block constraints and applied only in
+matching caller contexts; longest-path records but does not enforce them.
+Context enumeration has bounded depth and counts; exceeding a limit falls back
+to a conservative context-insensitive model and marks affected results
+`partial`.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved
 calls/control flow or non-terminating loops bounded by assumption mark a result
 `partial`; a partial objective is not a safe upper bound. Results are static
 estimates, not hardware proofs: loops outside the recognized counted-loop
 patterns need explicit bounds, cache/branch/data-memory results are not
 call-path context-sensitive, and interrupts, DMA, bus contention and
-concurrency are not modeled. Multicore interference is an explicit
+concurrency are not modeled. Context sensitivity applies to flow facts and WCET
+composition, not to the microarchitectural cache/branch models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.
 Without `[wcet]`, static cycle counts remain per-block costs, not execution-time
 bounds.
@@ -516,7 +522,7 @@ crates/elf2tdg/           loader, decoders, CFG/call graph, timing, runtime rule
                           origin tracking, emitters, CLI
 docs/cfg-format.md        program CFG, roots, calls, concurrency and timing
 docs/text-report.md       readable CFG/WCET report sections and semantics
-docs/flow-facts.md        F4/FFX import, resolution and merge rules
+docs/flow-facts.md        F4/FFX import, context, resolution and merge rules
 docs/timing-models.md     timing-model classes, bounded assumptions and --cpu names
 docs/analysis-architecture.md  pass model, soundness contract and precision roadmap
 docs/layered-model.md     local WCET -> layered system model and coarse bound
