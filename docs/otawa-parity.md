@@ -66,7 +66,7 @@ deliberately not implemented:
 | Phase | Scope | Status |
 |---|---|---|
 | A | Typed hardware profile, safe defaults, complete template, resolved values | first version implemented |
-| B | Data-flow/abstract interpretation, automatic loop bounds, non-loop flow facts, context-sensitive facts, infeasible paths | in progress: conservative counted-loop inference; remaining items planned |
+| B | Data-flow/abstract interpretation, automatic loop bounds, non-loop flow facts, context-sensitive facts, infeasible paths | in progress: counted-loop inference and FFX branch/call facts; context-sensitive facts and infeasible paths planned |
 | C | Cache persistence/line splitting, general pipeline/resource model, branch prediction, constraints in IPET | planned |
 | D | IPET scalability, CFG partitioning, context-sensitive summaries, benchmarks against OTAWA | planned |
 

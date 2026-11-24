@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.15`.
+`cfg_schema_version` is `2.16`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.15 adds priority-ceiling blocking, per-task lock hold
-times and direct priority-inversion records. Version 2.14 adds per-task
+functions. Version 2.16 adds resolved branch and call flow-fact records.
+Version 2.15 adds priority-ceiling blocking, per-task lock hold times and
+direct priority-inversion records. Version 2.14 adds per-task
 priorities and fixed-priority response-time bounds. Version 2.13 adds per-task
 work-conserving response-time bounds. Version 2.12 adds the
 discrete-time-expanded feasibility result.
@@ -404,7 +405,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.15",
+  "cfg_schema_version": "2.16",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -589,8 +590,13 @@ upper bound. The top-level `wcet.flow_facts` object records the loop bounds and
 defaults used by the model, including bounds imported from F4/FFX files and
 conservatively inferred counted-loop bounds; each loop bound carries a
 `source` such as `board-profile [wcet]`, an imported file, or
-`inferred counted loop`. Irreducible cycles that are not covered by natural
-loop bounds are reported as `unbounded` instead of producing an unsound model. `blocks` is one optimal solution; alternate optima may distribute
+`inferred counted loop`. Resolved non-loop FFX facts appear as
+`wcet.flow_facts.branches` (`function`, `site`, `outcome`, `max_count`) and
+`wcet.flow_facts.calls` (`function`, `site`, `max_count`). The IPET backend
+enforces branch edges and call blocks; the longest-path backend records but does
+not enforce non-loop facts and remains a conservative overestimate. Irreducible
+cycles that are not covered by natural loop bounds are reported as `unbounded`
+instead of producing an unsound model. `blocks` is one optimal solution; alternate optima may distribute
 execution counts differently while producing the same objective. See
 [flow-facts.md](flow-facts.md) for F4/FFX resolution and merge rules.
 
@@ -864,10 +870,12 @@ asserts that the CFG validates.
   stripped images can still be selected by address.
 - IPET is per-function and context-insensitive: callee summaries are reused
   across call sites. Flow facts come from `[wcet]`, imported F4/FFX files or
-  conservative counted-loop inference; non-loop and context-sensitive facts
-  are not implemented. Irreducible cycles are unbounded, non-terminating
-  bounded loops are `partial`, and a `partial` objective is not a safe upper
-  bound. Multicore interference uses an explicit access budget; arbitration
+  conservative counted-loop inference. FFX branch/call facts are enforced as
+  edge/block constraints; context-sensitive non-loop facts, conditional or
+  multi-target call sites and F4 non-loop directives are ignored
+  conservatively. Irreducible
+  cycles are unbounded, non-terminating bounded loops are `partial`, and a
+  `partial` objective is not a safe upper bound. Multicore interference uses an explicit access budget; arbitration
   schedules, shared caches, DMA and concurrency are not modeled. The layered
   `system_model` is an activation/resource-budget state-equation relaxation
   plus response, blocking and slot-based feasibility analyses, not a

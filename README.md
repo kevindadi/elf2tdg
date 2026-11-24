@@ -54,7 +54,9 @@ Implemented:
   - conservative automatic loop-bound inference for canonical counted loops
     (`auto_loop_bounds`, enabled by default);
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add
-    or override loop bounds by address, function + offset, or source line.
+    or override loop bounds by address, function + offset, or source line;
+  - FFX non-loop facts: conditional branch outcomes (`<conditional>/<case>`)
+    and call counts (`<call numcall=...>` / `executed=false`), enforced by IPET.
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
   [docs/flow-facts.md](docs/flow-facts.md).
@@ -289,6 +291,9 @@ bottom-up callee summaries, solved by the pure-Rust `microlp` backend. Loop
 bounds come from the profile, imported F4/FFX files, and conservative
 counted-loop inference; conflicting bounds keep the larger value and
 context-specific facts are applied context-insensitively with a warning.
+FFX branch and call facts are resolved into IPET edge/block constraints;
+context-specific non-loop facts are ignored conservatively, and longest-path
+records but does not enforce them.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved
 calls/control flow or non-terminating loops bounded by assumption mark a result
 `partial`; a partial objective is not a safe upper bound. Results are static

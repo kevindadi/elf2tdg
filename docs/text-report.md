@@ -31,8 +31,8 @@ The report is deterministic and uses plain text only.
    frequency domains and model caveats.
 5. **Analysis models** — instruction/data cache, branch prediction,
    data-memory latency and multicore interference summaries when enabled.
-6. **WCET** — model name, loop-bound configuration, result counts, per-root
-   cycles/nanoseconds and the analysis caveats.
+6. **WCET** — model name, loop-bound configuration, resolved branch/call flow
+   facts, result counts, per-root cycles/nanoseconds and the analysis caveats.
 7. **Layered system model** — when a WCET profile is active: task/place/
    transition counts, state-equation ILP solver/status/objective, firing
    counts, horizon/period/activation bounds, resource budgets, priorities,
