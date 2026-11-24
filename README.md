@@ -60,8 +60,9 @@ Implemented:
   - FFX non-loop facts: conditional branch outcomes (`<conditional>/<case>`)
     and call counts (`<call numcall=...>` / `executed=false`), enforced by IPET;
   - FFX infeasible-path conflicts (`<conflict>` over edges/blocks); unordered
-    function/loop constraints are enforced by IPET. OTAWA `<not-all seq="true">`
-    and ordered conflicts are parsed and recorded but not yet applied.
+    function/loop constraints are enforced by IPET. Ordered conflicts and
+    OTAWA `<not-all seq="true">` are reduced to those constraints when their
+    order is structurally forced; other ordered forms are recorded but ignored.
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
   [docs/flow-facts.md](docs/flow-facts.md).
@@ -300,9 +301,13 @@ function-level results are the maximum over analyzed contexts. FFX branch and
 call facts are resolved into IPET edge/block constraints and applied only in
 matching caller contexts; longest-path records but does not enforce them.
 Unordered FFX infeasible-path conflicts are enforced by IPET when all elements
-share one function and are outside loops or within one non-nested loop; ordered,
-cross-function, nested-loop and specific-iteration conflicts are recorded but
-ignored with warnings. Context enumeration has bounded depth and counts;
+share one function and are outside loops or within one non-nested loop. Ordered
+conflicts are reduced to the same constraints when CFG reachability (or
+per-iteration reachability with loop backedges removed) forces the declared
+order; structurally impossible sequences add no constraint, and cross-iteration
+ordered forms are ignored with warnings. Cross-function, nested-loop and
+specific-iteration conflicts are recorded but ignored. Context enumeration has
+bounded depth and counts;
 exceeding a limit falls back to a conservative context-insensitive model and
 marks affected results `partial`.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved

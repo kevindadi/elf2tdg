@@ -66,7 +66,7 @@ deliberately not implemented:
 | Phase | Scope | Status |
 |---|---|---|
 | A | Typed hardware profile, safe defaults, complete template, resolved values | first version implemented |
-| B | Data-flow/abstract interpretation, automatic loop bounds, non-loop flow facts, context-sensitive facts, infeasible paths | in progress: counted-loop inference, FFX branch/call facts, caller-function context sensitivity and unordered function/loop conflict constraints implemented; ordered conflicts, call-site-sensitive contexts and richer conflict forms planned |
+| B | Data-flow/abstract interpretation, automatic loop bounds, non-loop flow facts, context-sensitive facts, infeasible paths | in progress: counted-loop inference, FFX branch/call facts, caller-function context sensitivity, unordered and structurally-forced ordered conflict constraints implemented; cross-iteration ordered forms, call-site-sensitive contexts and richer conflict forms planned |
 | C | Cache persistence/line splitting, general pipeline/resource model, branch prediction, constraints in IPET | planned |
 | D | IPET scalability, CFG partitioning, call-site-sensitive context summaries, benchmarks against OTAWA | planned; caller-function context summaries are implemented in Phase B |
 

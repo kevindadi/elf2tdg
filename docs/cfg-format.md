@@ -891,8 +891,11 @@ asserts that the CFG validates.
   conservative counted-loop inference. FFX branch/call facts are enforced as
   edge/block constraints in matching contexts. Unordered infeasible-path
   conflicts are enforced when their elements share one function and are either
-  outside loops or within one non-nested loop; ordered, cross-function,
-  nested-loop and specific-iteration conflicts are ignored with warnings.
+  outside loops or within one non-nested loop. Ordered conflicts use the same
+  constraints only when reachability forces the declared order (function-scope
+  acyclic order or per-iteration loop-body order); structurally impossible
+  sequences add no constraint. Cross-iteration, cross-function, nested-loop and
+  specific-iteration conflicts are ignored with warnings.
   Conditional or multi-target call sites and F4 non-loop directives are ignored
   conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a

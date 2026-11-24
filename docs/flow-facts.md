@@ -221,9 +221,20 @@ appear in one execution sub-trace:
   interpreted per function invocation; top-level conflicts are ignored because
   their whole-program scope cannot be guaranteed per invocation.
 - Conflicts are also recognized through the OTAWA `<not-all seq="true">`
-  form. Both that form and `<conflict ordered="yes">` are ordered conflicts and
-  are currently recorded but **not applied**, because aggregate edge counts
-  cannot safely express order without path variables.
+  form. Both that form and `<conflict ordered="yes">` are ordered conflicts.
+  They are applied only when the declared order is **structurally forced**:
+  - function-scope ordered conflicts are checked by CFG reachability between
+    consecutive elements. If every pair is reachable in the declared order,
+    any trace containing all elements must use that order, so the unordered
+    `sum <= n - 1` constraint applies exactly;
+  - `<iteration number="*">` loop-scope ordered conflicts are checked on the
+    per-iteration CFG with loop backedges removed. A forced order supports the
+    loop aggregate constraint.
+  If the sequence is structurally impossible, the fact is vacuously satisfied:
+  no constraint is added and the record explains why. Whole-loop ordered
+  conflicts without an iteration context, and ordered conflicts whose order is
+  not structurally forced, are ignored with warnings; cross-iteration order is
+  not modeled.
 - Caller contexts follow the same rules as other FFX facts. Loop contexts are
   accepted: a `<loop ...>` may omit its bound and acts as a context only; a
   missing bound produces a warning and falls back to the profile/default or
