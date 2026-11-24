@@ -398,7 +398,7 @@ impl TimingModel {
             frequency_domains,
             default_frequency_domain: frequency_hz.map(|_| FrequencyDomainId::new(CORE_DOMAIN)),
             caveats: vec![
-                "Static timing estimates are not WCET bounds; loop bounds and execution counts are not inferred."
+                "Static timing estimates are not WCET bounds; loop bounds and execution counts are not proven by the timing table."
                     .to_owned(),
             ],
         }
@@ -942,7 +942,7 @@ impl TimingCostModel {
             frequency_domains,
             default_frequency_domain,
             caveats: vec![
-                "Static timing estimates are not WCET bounds; loop bounds and execution counts are not inferred."
+                "Static timing estimates are not WCET bounds; loop bounds and execution counts are not proven by the timing table."
                     .to_owned(),
             ],
         }

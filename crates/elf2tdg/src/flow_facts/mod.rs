@@ -15,6 +15,7 @@ use elf2tdg_schema::Addr;
 
 use crate::board_profile::WcetProfile;
 use crate::cfg::{CfgFlowFactsInfo, CfgFunction, CfgLoopBoundInfo, ProgramCfg};
+use crate::loop_bounds::InferredLoopBound;
 use crate::rules::normalize_crate_hashes;
 
 #[derive(Clone, Debug)]
@@ -179,6 +180,51 @@ impl FlowFacts {
             }
         }
         Ok(())
+    }
+
+    /// Merges automatically inferred bounds conservatively.
+    ///
+    /// Explicit and default bounds are assumptions already present in the
+    /// model, so an inferred value is accepted only when it is larger. That
+    /// keeps the result an upper bound without silently lowering a user fact.
+    pub(crate) fn apply_inferred_loops(
+        &mut self,
+        inferred: impl IntoIterator<Item = InferredLoopBound>,
+    ) -> usize {
+        let mut applied = 0;
+        for entry in inferred {
+            let candidate = LoopBound {
+                bound: entry.bound,
+                source: format!(
+                    "inferred counted loop in {}: {}",
+                    entry.function, entry.detail
+                ),
+            };
+            let existing = self
+                .loop_bounds
+                .get(&entry.header)
+                .map(|bound| bound.bound)
+                .or(self.default_loop_bound);
+            match existing {
+                Some(existing) if entry.bound <= existing => {}
+                Some(existing) => {
+                    self.warnings.push(format!(
+                        "loop 0x{:x}: inferred bound {} exceeds configured bound {existing}; using the larger inferred bound ({})",
+                        entry.header, entry.bound, entry.detail
+                    ));
+                    self.loop_bounds.insert(entry.header, candidate);
+                    applied += 1;
+                }
+                None => {
+                    self.loop_bounds.insert(entry.header, candidate);
+                    applied += 1;
+                }
+            }
+        }
+        if applied > 0 && !self.source.contains("auto loop bounds") {
+            self.source.push_str(" + auto loop bounds");
+        }
+        applied
     }
 }
 
@@ -384,6 +430,8 @@ fn file_matches(expected: &str, actual: &str) -> bool {
 mod tests {
     use super::FlowFacts;
     use crate::board_profile::BoardProfile;
+    use crate::loop_bounds::InferredLoopBound;
+    use elf2tdg_schema::FunctionId;
 
     fn profile(text: &str) -> BoardProfile {
         BoardProfile::parse_toml(text).expect("valid profile")
@@ -449,5 +497,62 @@ bound = 7
         assert_eq!(facts.bound_for(0x400), Some(7));
         assert_eq!(facts.bound_for(0x800), Some(2));
         assert!(!facts.bound_nonterminating_loops());
+    }
+
+    fn inferred(header: u64, bound: u32) -> InferredLoopBound {
+        InferredLoopBound {
+            function: FunctionId::new("fn:0x1000"),
+            header,
+            bound,
+            detail: format!("init=0 limit={bound} step=1"),
+        }
+    }
+
+    #[test]
+    fn inferred_bounds_merge_conservatively() {
+        let board = profile(
+            r#"
+schema_version = 2
+id = "board:flow-test"
+arch = "thumb"
+cpu = "cortex-m7"
+
+[clocks.core]
+hz = 1_000_000
+
+[wcet]
+default_loop_bound = 2
+
+[[wcet.loop_bounds]]
+header = 0x400
+bound = 10
+"#,
+        );
+        let mut facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let applied = facts.apply_inferred_loops([
+            inferred(0x100, 5),
+            inferred(0x200, 1),
+            inferred(0x400, 5),
+            inferred(0x800, 8),
+        ]);
+        assert_eq!(applied, 2);
+        assert_eq!(facts.bound_for(0x100), Some(5));
+        assert_eq!(facts.bound_for(0x200), Some(2));
+        assert_eq!(facts.bound_for(0x400), Some(10));
+        assert_eq!(facts.bound_for(0x800), Some(8));
+        assert!(facts.source().contains("auto loop bounds"));
+        assert!(
+            facts
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("0x800") && warning.contains("exceeds"))
+        );
+        assert!(
+            facts
+                .info()
+                .loops
+                .iter()
+                .any(|entry| entry.source.contains("inferred counted loop"))
+        );
     }
 }

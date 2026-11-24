@@ -3287,6 +3287,14 @@ impl<'a> Analyzer<'a> {
             facts
                 .apply_paths(&self.options.flow_fact_paths, &program_cfg)
                 .map_err(Error::Config)?;
+            if profile.auto_loop_bounds() {
+                let inferred = crate::loop_bounds::infer_program(
+                    &program_cfg,
+                    &self.decoded_by_function,
+                    self.image.arch,
+                );
+                facts.apply_inferred_loops(inferred);
+            }
             let info = match self.options.path_analysis {
                 PathAnalysis::LongestPath => {
                     crate::wcet::analyze_program_with_facts(&mut program_cfg, profile, &facts)

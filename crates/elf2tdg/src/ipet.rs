@@ -116,7 +116,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
         caveats: vec![
             "IPET maximizes block execution counts under flow conservation and configured loop bounds; it is a static estimate, not a hardware proof."
                 .to_owned(),
-            "Loop bounds are assumptions supplied by the board profile or imported flow-fact files, not proven loop facts."
+            "Loop bounds come from the board profile, imported flow-fact files or conservative counted-loop inference; inferred patterns are not a general proof of loop termination."
                 .to_owned(),
             "Callee summaries are context-insensitive and computed bottom-up per function."
                 .to_owned(),

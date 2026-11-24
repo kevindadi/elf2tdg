@@ -118,7 +118,7 @@ pub(crate) fn analyze_program_with_facts(
         caveats: vec![
             "WCET is a CFG longest-path estimate over modeled block upper bounds, not a hardware proof."
                 .to_owned(),
-            "Loops require an explicit bound from the board profile or an imported F4/FFX file; loops without bounds make the containing function unbounded."
+            "Loops require a bound from the board profile, an imported F4/FFX file or a recognized counted-loop pattern; unresolved loops make the containing function unbounded. Automatic inference accepts only canonical counted loops with a constant initializer, one constant self-update, one conditional exit and no calls on the relevant paths."
                 .to_owned(),
             "Recursive call-graph SCCs are reported as unbounded."
                 .to_owned(),

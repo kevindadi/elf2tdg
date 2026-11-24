@@ -1132,14 +1132,14 @@ pub struct CfgFlowFactsInfo {
     pub loops: Vec<CfgLoopBoundInfo>,
 }
 
-/// One explicit loop bound from the flow facts.
+/// One resolved loop bound from the flow facts.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgLoopBoundInfo {
     /// Loop header block address.
     pub header: Addr,
     /// Maximum loop header iterations per external entry.
     pub bound: u32,
-    /// Source of the bound (board profile, F4/FFX file, or a merge).
+    /// Source of the bound (board profile, F4/FFX file, inference or a merge).
     pub source: String,
 }
 

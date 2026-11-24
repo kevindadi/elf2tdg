@@ -64,6 +64,10 @@ const fn default_wcet_max_states() -> usize {
     100_000
 }
 
+const fn default_auto_loop_bounds() -> bool {
+    true
+}
+
 const fn default_link_count() -> u32 {
     1
 }
@@ -163,6 +167,7 @@ cpu = "__CPU__"
 
 # WCET analysis configuration.
 # [wcet]
+# auto_loop_bounds = true
 # default_loop_bound = 4
 # max_states = 100_000
 # bound_nonterminating_loops = false
@@ -843,6 +848,8 @@ impl BranchPredictionProfile {
 pub(crate) struct WcetProfile {
     #[serde(default)]
     default_loop_bound: Option<u32>,
+    #[serde(default = "default_auto_loop_bounds")]
+    auto_loop_bounds: bool,
     #[serde(default = "default_wcet_max_states")]
     max_states: usize,
     #[serde(default)]
@@ -854,6 +861,10 @@ pub(crate) struct WcetProfile {
 impl WcetProfile {
     pub(crate) fn default_loop_bound(&self) -> Option<u32> {
         self.default_loop_bound
+    }
+
+    pub(crate) fn auto_loop_bounds(&self) -> bool {
+        self.auto_loop_bounds
     }
 
     pub(crate) fn max_states(&self) -> usize {
@@ -2431,7 +2442,14 @@ bound = 12
         let wcet = profile.wcet().expect("WCET profile");
         assert_eq!(wcet.default_loop_bound(), Some(4));
         assert_eq!(wcet.max_states(), 1024);
+        assert!(wcet.auto_loop_bounds());
         assert!(wcet.bound_nonterminating_loops());
+        let disabled = BoardProfile::parse_toml(&valid.replace(
+            "[wcet]\ndefault_loop_bound = 4",
+            "[wcet]\nauto_loop_bounds = false\ndefault_loop_bound = 4",
+        ))
+        .expect("valid profile with inference disabled");
+        assert!(!disabled.wcet().expect("WCET profile").auto_loop_bounds());
         assert_eq!(
             wcet.loop_bounds().collect::<Vec<_>>(),
             vec![(0x800_0100, 12)]
