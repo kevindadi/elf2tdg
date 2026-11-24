@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.10";
+pub const CFG_SCHEMA_VERSION: &str = "2.11";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -436,6 +436,23 @@ pub struct CfgSystemDependency {
     pub confidence: Confidence,
 }
 
+/// One explicit fork/join constraint between system tasks.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemLink {
+    /// Link kind (`fork` or `join`).
+    pub kind: String,
+    /// Source task ID.
+    pub from: String,
+    /// Target task ID.
+    pub to: String,
+    /// Source root function.
+    pub from_function: FunctionId,
+    /// Target root function.
+    pub to_function: FunctionId,
+    /// Maximum relation count per source activation.
+    pub count: u32,
+}
+
 /// Coarse bound produced by the layered model.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgSystemBound {
@@ -480,6 +497,9 @@ pub struct CfgSystemModelInfo {
     pub transitions: Vec<CfgSystemTransition>,
     /// Concurrency dependencies between functions.
     pub dependencies: Vec<CfgSystemDependency>,
+    /// Explicit fork/join constraints.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<CfgSystemLink>,
     /// State-equation ILP solution, when the model was solved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub petri: Option<CfgSystemPetriSolution>,

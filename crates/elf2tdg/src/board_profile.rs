@@ -56,6 +56,10 @@ const fn default_wcet_max_states() -> usize {
     100_000
 }
 
+const fn default_link_count() -> u32 {
+    1
+}
+
 fn default_multicore_model() -> String {
     "access-budget".to_owned()
 }
@@ -125,6 +129,8 @@ pub(crate) struct SystemProfile {
     #[serde(default)]
     resources: Vec<SystemResourceProfile>,
     #[serde(default)]
+    links: Vec<SystemLinkProfile>,
+    #[serde(default)]
     horizon_ns: Option<u64>,
 }
 
@@ -135,6 +141,10 @@ impl SystemProfile {
 
     pub(crate) fn resources(&self) -> &[SystemResourceProfile] {
         &self.resources
+    }
+
+    pub(crate) fn links(&self) -> &[SystemLinkProfile] {
+        &self.links
     }
 
     pub(crate) fn horizon_ns(&self) -> Option<u64> {
@@ -182,6 +192,52 @@ impl SystemTaskProfile {
 
     pub(crate) fn resources(&self) -> &BTreeMap<String, u32> {
         &self.resources
+    }
+}
+
+/// Fork/join relation kind in a `[system]` profile.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SystemLinkKind {
+    Fork,
+    Join,
+}
+
+impl SystemLinkKind {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Fork => "fork",
+            Self::Join => "join",
+        }
+    }
+}
+
+/// One explicit fork/join link between two system tasks.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemLinkProfile {
+    from: String,
+    to: String,
+    kind: SystemLinkKind,
+    #[serde(default = "default_link_count")]
+    count: u32,
+}
+
+impl SystemLinkProfile {
+    pub(crate) fn from(&self) -> &str {
+        &self.from
+    }
+
+    pub(crate) fn to(&self) -> &str {
+        &self.to
+    }
+
+    pub(crate) fn kind(&self) -> SystemLinkKind {
+        self.kind
+    }
+
+    pub(crate) fn count(&self) -> u32 {
+        self.count
     }
 }
 
@@ -1213,6 +1269,7 @@ impl BoardProfile {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn validate_system(&self) -> Result<()> {
         let Some(system) = &self.system else {
             return Ok(());
@@ -1302,6 +1359,29 @@ impl BoardProfile {
             return Err(Error::Config(
                 "board profile system tasks with period_ns require system.horizon_ns".to_owned(),
             ));
+        }
+        let mut links = BTreeSet::new();
+        for (index, link) in system.links.iter().enumerate() {
+            validate_text("system.links.from", &link.from)?;
+            validate_text("system.links.to", &link.to)?;
+            if link.from == link.to {
+                return Err(Error::Config(format!(
+                    "board profile system.links[{index}] cannot link a task to itself"
+                )));
+            }
+            if link.count == 0 {
+                return Err(Error::Config(format!(
+                    "board profile system.links[{index}].count must be positive"
+                )));
+            }
+            if !links.insert((link.from.as_str(), link.to.as_str(), link.kind)) {
+                return Err(Error::Config(format!(
+                    "board profile system link {:?} -> {:?} ({}) is declared twice",
+                    link.from,
+                    link.to,
+                    link.kind.name()
+                )));
+            }
         }
         Ok(())
     }
@@ -1776,6 +1856,32 @@ capacity = 4
         assert_eq!(system.resources().len(), 1);
         assert_eq!(system.resources()[0].name(), "bus");
         assert_eq!(system.resources()[0].capacity(), 4);
+
+        let with_links = valid.clone()
+            + r#"
+[[system.links]]
+from = "app_main"
+to = "sensor_task"
+kind = "fork"
+count = 2
+"#;
+        let profile = BoardProfile::parse_toml(&with_links).expect("valid fork link");
+        let system = profile.system().expect("system profile");
+        assert_eq!(system.links().len(), 1);
+        assert_eq!(system.links()[0].from(), "app_main");
+        assert_eq!(system.links()[0].to(), "sensor_task");
+        assert_eq!(system.links()[0].kind().name(), "fork");
+        assert_eq!(system.links()[0].count(), 2);
+        let self_link = with_links.replace("to = \"sensor_task\"", "to = \"app_main\"");
+        assert!(BoardProfile::parse_toml(&self_link).is_err());
+        let zero_count = with_links.replace("count = 2", "count = 0");
+        assert!(BoardProfile::parse_toml(&zero_count).is_err());
+        let duplicate_link = format!(
+            "{with_links}\n[[system.links]]\nfrom = \"app_main\"\nto = \"sensor_task\"\nkind = \"fork\"\n"
+        );
+        assert!(BoardProfile::parse_toml(&duplicate_link).is_err());
+        let bad_kind = with_links.replace("kind = \"fork\"", "kind = \"barrier\"");
+        assert!(BoardProfile::parse_toml(&bad_kind).is_err());
 
         let periodic = valid
             .replace("[system]", "[system]\nhorizon_ns = 5_000_000")

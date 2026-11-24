@@ -239,3 +239,89 @@ capacity = 6
     assert_eq!(firing.fires, 6);
     assert!(model.bound.cycles.expect("bound") > 1_500.0);
 }
+
+#[test]
+fn applies_fork_and_join_links() {
+    let Some(elf_path) = example_elf() else {
+        eprintln!("skipping fork/join test: example ELF is absent");
+        return;
+    };
+    let profile_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/cortex-m7-wcet.toml");
+    let Ok(mut profile_text) = std::fs::read_to_string(&profile_path) else {
+        eprintln!("skipping fork/join test: WCET profile is absent");
+        return;
+    };
+    profile_text.push_str(
+        r#"
+
+[system]
+
+[[system.tasks]]
+target = "app_main"
+activations = 2
+
+[[system.tasks]]
+target = "sensor_task"
+activations = 6
+
+[[system.links]]
+from = "app_main"
+to = "sensor_task"
+kind = "fork"
+count = 2
+
+[[system.links]]
+from = "app_main"
+to = "sensor_task"
+kind = "join"
+count = 1
+"#,
+    );
+    let profile = BoardProfile::parse_toml(&profile_text).expect("valid fork/join profile");
+    let image = loader::load(&elf_path).expect("example ELF must load");
+    let analysis = analyze_with_cfg(
+        &image,
+        &AnalysisOptions {
+            board_profile: Some(profile),
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("analysis must succeed");
+
+    let model = analysis
+        .cfg
+        .system_model
+        .as_ref()
+        .expect("layered system model");
+    assert_eq!(model.links.len(), 2);
+    let sensor = model
+        .tasks
+        .iter()
+        .find(|task| {
+            task.name
+                .as_deref()
+                .is_some_and(|name| name.ends_with("sensor_task"))
+        })
+        .expect("sensor task");
+    let app_main = model
+        .tasks
+        .iter()
+        .find(|task| {
+            task.name
+                .as_deref()
+                .is_some_and(|name| name.ends_with("app_main"))
+        })
+        .expect("app_main task");
+    let petri = model.petri.as_ref().expect("state-equation solution");
+    assert_eq!(petri.status, "optimal");
+    let fires = |task_id: &str| {
+        petri
+            .firing
+            .iter()
+            .find(|firing| firing.transition == format!("execute:{task_id}"))
+            .map_or(0, |firing| firing.fires)
+    };
+    assert_eq!(fires(&app_main.id), 2);
+    assert_eq!(fires(&sensor.id), 4);
+}

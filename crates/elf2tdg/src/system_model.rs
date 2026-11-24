@@ -13,14 +13,22 @@ use good_lp::{
     Expression, ProblemVariables, Solution, SolutionStatus, SolverModel, Variable, constraint,
 };
 
-use crate::board_profile::BoardProfile;
+use crate::board_profile::{BoardProfile, SystemLinkKind};
 use crate::cfg::{
-    CfgConcurrencyKind, CfgSystemBound, CfgSystemDependency, CfgSystemFiring, CfgSystemModelInfo,
-    CfgSystemPetriSolution, CfgSystemPlace, CfgSystemTask, CfgSystemTransition, CfgWcetRoot,
-    CfgWcetStatus, ProgramCfg,
+    CfgConcurrencyKind, CfgSystemBound, CfgSystemDependency, CfgSystemFiring, CfgSystemLink,
+    CfgSystemModelInfo, CfgSystemPetriSolution, CfgSystemPlace, CfgSystemTask, CfgSystemTransition,
+    CfgWcetRoot, CfgWcetStatus, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 use crate::wcet::frequency_hz;
+
+#[derive(Clone, Copy, Debug)]
+struct LinkConstraint {
+    from_index: usize,
+    to_index: usize,
+    kind: SystemLinkKind,
+    count: u32,
+}
 
 #[derive(Clone, Debug)]
 struct TaskConfig {
@@ -138,6 +146,36 @@ pub(crate) fn analyze(
         }
     }
 
+    let mut links = Vec::new();
+    let mut link_constraints = Vec::new();
+    if let Some(system) = system {
+        for link in system.links() {
+            let from_index = resolve_task(program, &roots, link.from())?;
+            let to_index = resolve_task(program, &roots, link.to())?;
+            if from_index == to_index {
+                return Err(format!(
+                    "board profile system link {:?} -> {:?} refers to the same task",
+                    link.from(),
+                    link.to()
+                ));
+            }
+            links.push(CfgSystemLink {
+                kind: link.kind().name().to_owned(),
+                from: format!("t{from_index}"),
+                to: format!("t{to_index}"),
+                from_function: roots[from_index].function.clone(),
+                to_function: roots[to_index].function.clone(),
+                count: link.count(),
+            });
+            link_constraints.push(LinkConstraint {
+                from_index,
+                to_index,
+                kind: link.kind(),
+                count: link.count(),
+            });
+        }
+    }
+
     let mut places = vec![CfgSystemPlace {
         id: core_place.clone(),
         kind: "core".to_owned(),
@@ -224,7 +262,7 @@ pub(crate) fn analyze(
         .max()
         .unwrap_or(1);
     let aggregate = aggregate_status(&tasks);
-    let petri = solve_state_equation(&places, &transitions);
+    let petri = solve_state_equation(&places, &transitions, &link_constraints);
     let (bound_status, bound_cycles, bound_time_ns) = bound_from_solution(
         aggregate,
         petri.as_ref(),
@@ -237,7 +275,7 @@ pub(crate) fn analyze(
             .to_owned(),
         "The state equation M_final = M0 + C*x is a necessary-condition relaxation of Petri-net reachability; infeasible interleavings may remain, so the result is conservative."
             .to_owned(),
-        "Spawn/join/await/callback dependencies are recorded but not yet encoded as Petri-net arcs or ordering constraints."
+        "Spawn/join/await/callback annotations remain metadata; only explicit [system.links] fork/join count constraints are encoded, and temporal ordering is not modeled."
             .to_owned(),
         "Lock/semaphore waiting, release instants, deadlines, preemption and scheduling order are not modeled in this layer."
             .to_owned(),
@@ -263,6 +301,12 @@ pub(crate) fn analyze(
         if system.tasks().iter().any(|task| task.period_ns().is_some()) {
             caveats.push(
                 "Periodic releases are approximated by a release count over horizon_ns; release instants, deadlines and ordering are not modeled."
+                    .to_owned(),
+            );
+        }
+        if !system.links().is_empty() {
+            caveats.push(
+                "Fork/join links constrain firing counts only; temporal ordering and deadline semantics are not modeled."
                     .to_owned(),
             );
         }
@@ -313,6 +357,7 @@ pub(crate) fn analyze(
         places,
         transitions,
         dependencies: dependencies(program),
+        links,
         petri,
         bound: CfgSystemBound {
             scope: "analyzed-core-activation-bounds".to_owned(),
@@ -330,6 +375,8 @@ pub(crate) fn analyze(
                     .to_owned(),
                 "The state equation is a reachability relaxation; the solver may accept firing-count combinations that no concrete schedule can realize."
                     .to_owned(),
+                "Fork/join link counts are maximum relation counts per source activation, not temporal ordering constraints."
+                    .to_owned(),
                 "No release instant, deadline, preemption, scheduling order or lock-wait model is applied in this first layer."
                     .to_owned(),
             ],
@@ -346,6 +393,7 @@ pub(crate) fn analyze(
 fn solve_state_equation(
     places: &[CfgSystemPlace],
     transitions: &[CfgSystemTransition],
+    links: &[LinkConstraint],
 ) -> Option<CfgSystemPetriSolution> {
     if transitions.is_empty()
         || transitions
@@ -372,6 +420,23 @@ fn solve_state_equation(
     }
 
     let mut constraints = Vec::new();
+    for link in links {
+        let (Some(&from), Some(&to)) = (firing.get(link.from_index), firing.get(link.to_index))
+        else {
+            return None;
+        };
+        let from = Expression::from(from);
+        let to = Expression::from(to);
+        let count = f64::from(link.count);
+        match link.kind {
+            SystemLinkKind::Fork => {
+                constraints.push(constraint::leq(to, from * count));
+            }
+            SystemLinkKind::Join => {
+                constraints.push(constraint::leq(from, to * count));
+            }
+        }
+    }
     for place in places {
         let initial = f64::from(place.tokens);
         let mut delta = Expression::from(0.0);
@@ -706,7 +771,7 @@ mod tests {
             inputs: vec!["ready:t0".to_owned(), "core:0".to_owned()],
             outputs: vec!["done:t0".to_owned(), "core:0".to_owned()],
         }];
-        let solution = solve_state_equation(&places, &transitions).expect("solution");
+        let solution = solve_state_equation(&places, &transitions, &[]).expect("solution");
         assert_eq!(solution.status, "optimal");
         assert_eq!(solution.firing.len(), 1);
         assert_eq!(solution.firing[0].fires, 2);
@@ -734,7 +799,7 @@ mod tests {
             ],
             outputs: vec!["done:t0".to_owned(), "core:0".to_owned()],
         }];
-        let solution = solve_state_equation(&places, &transitions).expect("solution");
+        let solution = solve_state_equation(&places, &transitions, &[]).expect("solution");
         assert_eq!(solution.status, "optimal");
         assert_eq!(solution.firing[0].fires, 1);
         assert_eq!(solution.objective, Some(10.0));
@@ -769,7 +834,7 @@ mod tests {
                 outputs: vec!["done:t1".to_owned(), "core:0".to_owned()],
             },
         ];
-        let solution = solve_state_equation(&places, &transitions).expect("solution");
+        let solution = solve_state_equation(&places, &transitions, &[]).expect("solution");
         assert_eq!(solution.status, "optimal");
         assert_eq!(solution.objective, Some(12.0));
         assert_eq!(solution.firing.len(), 2);
