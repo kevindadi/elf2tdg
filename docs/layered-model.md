@@ -107,6 +107,43 @@ maximizes total work, so a task with a positive activation bound may receive
 fewer (even zero) modeled firings when another task consumes the budget. They
 do not add resource waiting time or arbitration delay.
 
+## Fork/join links
+
+Explicit fork/join count constraints are configured under `[system.links]`:
+
+```toml
+[[system.links]]
+from = "app_main"
+to = "sensor_task"
+kind = "fork"
+count = 2
+
+[[system.links]]
+from = "app_main"
+to = "sensor_task"
+kind = "join"
+count = 1
+```
+
+Semantics:
+
+```text
+fork: fires(to)   <= count * fires(from)
+join: fires(from) <= count * fires(to)
+```
+
+A fork link means each source activation enables at most `count` target
+activations. A join link means each target activation can satisfy at most
+`count` source joins. `from` and `to` must resolve to distinct concurrent
+tasks; self-links, zero counts and duplicate `(from, to, kind)` links are
+errors.
+
+Links constrain firing counts only. They do not establish temporal order,
+release-to-join matching or deadline semantics. CFG concurrency annotations
+are still recorded as `dependencies` metadata; auto-deriving links from every
+annotation is not done because a spawn site inside a loop would need a proven
+per-activation execution bound.
+
 ## Current bound
 
 The bound scope is `analyzed-core-activation-bounds`. The model is an integer
@@ -149,8 +186,9 @@ again.
 - Preemption, interrupt nesting and interrupt latency.
 - Other cores' actual workloads, bus arbitration or shared caches. Other cores
   are represented only by the explicit `[multicore]` access budget.
-- Spawn/join/await/callback dependencies as Petri-net arcs or ordering
-  constraints. They are currently metadata.
+- Automatic link derivation from CFG concurrency annotations and temporal
+  ordering. Explicit `[system.links]` count constraints are supported; the
+  discovered annotations remain metadata.
 
 `--require-safe` continues to certify the local per-root WCET layer. The
 layered model is a composition IR, not an additional certification gate yet.
@@ -203,6 +241,16 @@ layered model is a composition IR, not an additional certification gate yet.
         "confidence": "medium"
       }
     ],
+    "links": [
+      {
+        "kind": "fork",
+        "from": "t0",
+        "to": "t1",
+        "from_function": "fn:0x800082a",
+        "to_function": "fn:0x800085c",
+        "count": 2
+      }
+    ],
     "petri": {
       "solver": "microlp",
       "relaxation": "state-equation",
@@ -231,7 +279,8 @@ The state-equation solver and static activation/resource budgets are in place.
 The next steps tighten them:
 
 1. add release instants, deadlines and per-release ordering to the task net;
-2. encode spawn/join dependencies as fork/join arcs and ordering constraints;
+2. derive fork/join links from concurrency annotations when per-activation
+   execution bounds are proven, and add temporal ordering;
 3. add lock/bus hold semantics and arbitration-aware resource places;
 4. add bounded reachability or timed-Petri-net analysis for per-task response
    time;

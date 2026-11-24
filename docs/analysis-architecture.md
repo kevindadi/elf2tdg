@@ -52,7 +52,7 @@ Rust `dylib` interface.
 | P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, per-function IPET, pure-Rust `microlp`; automatic inference and non-loop facts are next |
 | P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
 | P3 | Context-sensitive summaries, recursion, SMT infeasible paths | planned |
-| P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation and `[system]` activation, periodic-release and cumulative-resource budgets; release instants/deadlines, timed PN, arbitration schedules, shared caches, CRPD and interrupt effects are next |
+| P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation and `[system]` activation, periodic-release, cumulative-resource and fork/join link constraints; release instants/deadlines, automatic link derivation, timed PN, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
 
 The IPET first version is available with:

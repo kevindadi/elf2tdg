@@ -529,6 +529,12 @@ resources = { bus = 1 }      # units consumed per activation
 [[system.resources]]
 name = "bus"
 capacity = 4                 # units available in the bound window
+
+[[system.links]]
+from = "app_main"
+to = "sensor_task"
+kind = "fork"                # fork or join
+count = 2                    # default: 1
 ```
 
 | Field | Required | Meaning |
@@ -542,6 +548,10 @@ capacity = 4                 # units available in the bound window
 | `[[system.tasks]].resources` | no | Inline map of resource name to units consumed per activation. |
 | `[[system.resources]].name` | yes | Resource budget name. |
 | `[[system.resources]].capacity` | yes | Positive units available in the bound window. |
+| `[[system.links]].from` | yes | Source task selector; must resolve to a concurrent task. |
+| `[[system.links]].to` | yes | Target task selector; must resolve to a distinct concurrent task. |
+| `[[system.links]].kind` | yes | `fork` or `join`. |
+| `[[system.links]].count` | no | Maximum relation count per source/target activation; positive, default `1`. |
 
 With `period_ns`, the release bound is:
 
@@ -561,7 +571,15 @@ and adds:
 
 ```text
 sum(units(task, resource) * fires(task)) <= capacity(resource)
+fork: fires(to)   <= count * fires(from)
+join: fires(from) <= count * fires(to)
 ```
+
+Fork/join links constrain firing counts only; they do not establish temporal
+order or deadlines. A fork link means each source activation enables at most
+`count` target activations. A join link means each target activation can satisfy
+at most `count` source joins. Discovered CFG concurrency annotations remain
+metadata; only explicit links become ILP constraints.
 
 Resource places are **cumulative per-window budgets**, not lock or bus-hold
 semantics. An over-committed budget reduces the modeled firing counts rather

@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.10`.
+`cfg_schema_version` is `2.11`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.10 adds periodic release bounds (`horizon_ns`, `period_ns`,
-release offset/jitter). Version 2.9 adds the Petri state-equation solution,
+functions. Version 2.11 adds explicit fork/join link constraints. Version 2.10
+adds periodic release bounds (`horizon_ns`, `period_ns`, release offset/jitter).
+Version 2.9 adds the Petri state-equation solution,
 task activation bounds, cumulative resource budgets and `max_activations`.
 Version 2.8 adds the layered `system_model` and its coarse system bound.
 Version 2.7 adds multicore
@@ -398,7 +399,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.10",
+  "cfg_schema_version": "2.11",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -623,7 +624,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
 | `multicore` | access-budget interference model, core topology, charged events, total cycles and caveats |
 | `wcet` | WCET model (`cfg-longest-path` or `cfg-ipet`), backend/solver, flow facts, per-root results and caveats |
-| `system_model` | layered task/place/transition model, concurrency dependencies, optional activation/resource budgets and coarse system bound |
+| `system_model` | layered task/place/transition model, concurrency dependencies, activation/periodic/resource budgets, explicit fork/join links and coarse system bound |
 | `pointer_roots` | function-pointer addresses recovered from data |
 | `roots` | startup/main/ISR/task/callback/pointer roots with ISR vector and IRQ |
 | `calls` | program call graph: caller, resolved callee or `candidates`, call-site flags and confidence |

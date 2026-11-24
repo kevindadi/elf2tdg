@@ -58,8 +58,9 @@ Implemented:
   [docs/flow-facts.md](docs/flow-facts.md).
 - Layered system model (`system_model`): per-root local WCET becomes tasks,
   Petri-net-shaped places/transitions, concurrency dependencies, optional
-  `[system]` activation, periodic-release and resource budgets plus a
-  state-equation ILP relaxation of the analyzed-core workload. See
+  `[system]` activation, periodic-release, resource and explicit fork/join
+  link constraints plus a state-equation ILP relaxation of the analyzed-core
+  workload. See
   [docs/layered-model.md](docs/layered-model.md).
 - Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
 - Compile-time analysis pass plan (`--list-passes`) with explicit pass
@@ -257,10 +258,10 @@ Still deferred:
   values transformed through arbitrary arithmetic, indirect callees, or
   pointer state that crosses more than a few call levels.
 - Tightening the layered Petri-net model: release instants/deadlines,
-  fork/join arcs, lock/bus hold and arbitration semantics, bounded
-  reachability/timed PN and per-task response-time bounds. The current system
-  model supports static activation bounds, periodic release counts and
-  cumulative resource budgets.
+  automatic fork/join derivation and ordering, lock/bus hold and arbitration
+  semantics, bounded reachability/timed PN and per-task response-time bounds.
+  The current system model supports static activation bounds, periodic release
+  counts, cumulative resource budgets and explicit fork/join count links.
 - General `.await` lowering beyond recognized runtime handle poll functions.
 - Full DWARF type/location coverage beyond the bounded extraction above:
   location lists, split-DWARF cross-unit references, nested anonymous
