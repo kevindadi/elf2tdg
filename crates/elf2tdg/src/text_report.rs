@@ -680,6 +680,9 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
             task.activation_bound,
             wcet_cost(task.status, task.cycles, task.time_ns)
         );
+        if let Some(priority) = task.priority {
+            let _ = writeln!(out, "    priority {priority}");
+        }
         if let Some(period) = task.period_ns {
             let offset = task.release_offset_ns.unwrap_or(0);
             let jitter = task.release_jitter_ns.unwrap_or(0);
