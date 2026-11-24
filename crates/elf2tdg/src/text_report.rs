@@ -613,6 +613,27 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
             );
         }
     }
+    if let Some(timed) = &model.timed {
+        kv(out, "timed model", &timed.model);
+        kv(out, "timed slot", &format!("{} ns", timed.slot_ns));
+        kv(
+            out,
+            "timed horizon",
+            &format!("{} slot(s)", timed.horizon_slots),
+        );
+        kv(out, "timed status", &timed.status);
+        kv(
+            out,
+            "timed size",
+            &format!(
+                "{} activation(s), {} execution slot(s), {} variable(s)",
+                timed.activations, timed.execution_slots, timed.variables
+            ),
+        );
+        for caveat in &timed.caveats {
+            let _ = writeln!(out, "    caveat: {caveat}");
+        }
+    }
     for task in model.tasks.iter().take(16) {
         let name = task
             .name
