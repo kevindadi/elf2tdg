@@ -571,6 +571,24 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
             model.dependencies.len()
         ),
     );
+    if let Some(petri) = &model.petri {
+        kv(out, "petri solver", &petri.solver);
+        kv(out, "petri relaxation", &petri.relaxation);
+        kv(out, "petri status", &petri.status);
+        if let Some(objective) = petri.objective {
+            kv(out, "petri objective", &format!("{objective:.1} cycle(s)"));
+        }
+        for firing in petri.firing.iter().take(16) {
+            let _ = writeln!(out, "  * fire {} x{}", firing.transition, firing.fires);
+        }
+        if petri.firing.len() > 16 {
+            let _ = writeln!(
+                out,
+                "  ... {} more firing count(s)",
+                petri.firing.len().saturating_sub(16)
+            );
+        }
+    }
     for task in model.tasks.iter().take(16) {
         let name = task
             .name

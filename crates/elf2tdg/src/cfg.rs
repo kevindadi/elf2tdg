@@ -375,6 +375,32 @@ pub struct CfgSystemTransition {
     pub outputs: Vec<String>,
 }
 
+/// One transition firing count from the state-equation ILP.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemFiring {
+    /// Transition ID.
+    pub transition: String,
+    /// Number of modeled firings.
+    pub fires: u32,
+}
+
+/// Result of the Petri-net state-equation ILP relaxation.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgSystemPetriSolution {
+    /// Solver backend.
+    pub solver: String,
+    /// Relaxation name (`state-equation`).
+    pub relaxation: String,
+    /// Solver status (`optimal`, `infeasible`, `unbounded`, ...).
+    pub status: String,
+    /// Solved objective, when a finite optimum was produced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective: Option<f64>,
+    /// Positive transition firing counts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub firing: Vec<CfgSystemFiring>,
+}
+
 /// One concurrency dependency between program functions.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgSystemDependency {
@@ -440,6 +466,9 @@ pub struct CfgSystemModelInfo {
     pub transitions: Vec<CfgSystemTransition>,
     /// Concurrency dependencies between functions.
     pub dependencies: Vec<CfgSystemDependency>,
+    /// State-equation ILP solution, when the model was solved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub petri: Option<CfgSystemPetriSolution>,
     /// Coarse bound.
     pub bound: CfgSystemBound,
     /// Model caveats.

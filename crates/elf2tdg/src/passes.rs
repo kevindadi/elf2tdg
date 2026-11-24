@@ -218,7 +218,7 @@ pub const BUILTIN_PASSES: &[PassInfo] = &[
         title: "Layered task/resource model and coarse system bound",
         kind: PassKind::Analysis,
         requires: &["ir.roots", "wcet.function", "wcet.root"],
-        provides: &["system.model", "system.petri"],
+        provides: &["system.model", "system.petri", "system.bound"],
         soundness: Soundness::ModelDependent,
     },
     PassInfo {

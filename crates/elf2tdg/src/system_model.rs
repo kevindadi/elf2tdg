@@ -2,16 +2,21 @@
 //!
 //! The local WCET layer is computed per execution root by the CFG/IPET
 //! analyses. This module builds the next layer: a small Petri-net-shaped
-//! workload model whose transitions carry the local root costs. The first
-//! version deliberately solves only the closed-form single-activation
-//! relaxation (all modeled roots execute once on the analyzed core). It
-//! records the full task/place/transition/dependency structure so a later
-//! state-equation or timed-Petri-net solver can consume the same model.
+//! workload model whose transitions carry the local root costs. It solves the
+//! state-equation ILP relaxation of that net and records the full
+//! task/place/transition/dependency structure for a later timed-Petri-net
+//! solver.
+
+use good_lp::{
+    Expression, ProblemVariables, Solution, SolutionStatus, SolverModel, Variable, constraint,
+};
 
 use crate::cfg::{
-    CfgConcurrencyKind, CfgSystemBound, CfgSystemDependency, CfgSystemModelInfo, CfgSystemPlace,
-    CfgSystemTask, CfgSystemTransition, CfgWcetRoot, CfgWcetStatus, ProgramCfg,
+    CfgConcurrencyKind, CfgSystemBound, CfgSystemDependency, CfgSystemFiring, CfgSystemModelInfo,
+    CfgSystemPetriSolution, CfgSystemPlace, CfgSystemTask, CfgSystemTransition, CfgWcetRoot,
+    CfgWcetStatus, ProgramCfg,
 };
+use crate::wcet::frequency_hz;
 
 /// Builds the layered system model from the completed per-root WCET layer.
 ///
@@ -83,39 +88,50 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
             all_time = false;
         }
 
+        let activation_bound = task.activation_bound;
         places.push(CfgSystemPlace {
             id: ready_place.clone(),
             kind: "ready".to_owned(),
-            tokens: 1,
-            capacity: 1,
+            tokens: activation_bound,
+            capacity: activation_bound,
         });
         places.push(CfgSystemPlace {
             id: done_place.clone(),
             kind: "done".to_owned(),
             tokens: 0,
-            capacity: 1,
+            capacity: activation_bound,
         });
         transitions.push(CfgSystemTransition {
             id: format!("execute:{task_id}"),
             kind: "execute".to_owned(),
             task: task_id.clone(),
             cost_cycles: task.cycles,
-            activations: 1,
+            activations: activation_bound,
             inputs: vec![ready_place, core_place.clone()],
             outputs: vec![done_place, core_place.clone()],
         });
         tasks.push(task);
     }
 
-    let status = aggregate_status(&tasks);
+    let aggregate = aggregate_status(&tasks);
+    let petri = solve_state_equation(&places, &transitions);
+    let (bound_status, bound_cycles, bound_time_ns) = bound_from_solution(
+        aggregate,
+        petri.as_ref(),
+        all_cycles.then_some(cycles),
+        all_time.then_some(time_ns),
+        frequency_hz(program),
+    );
     let mut caveats = vec![
         "The layered bound is a coarse total-work bound over one activation per execution root, not a per-task response-time bound."
+            .to_owned(),
+        "The state equation M_final = M0 + C*x is a necessary-condition relaxation of Petri-net reachability; infeasible interleavings may remain, so the result is conservative."
             .to_owned(),
         "Spawn/join/await/callback dependencies are recorded but not yet encoded as Petri-net arcs or ordering constraints."
             .to_owned(),
         "Lock/semaphore waiting, periodic activations, preemption and scheduling order are not modeled in this first layer."
             .to_owned(),
-        "Places and transitions are a serializable Petri-net model; the current bound is its closed-form single-activation relaxation."
+        "The model requires an exact final marking for ready/done/core places; transition firing counts are solved by the pure-Rust microlp backend."
             .to_owned(),
     ];
     if fallback_to_boot_roots {
@@ -136,7 +152,7 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
         );
     }
     if matches!(
-        status,
+        aggregate,
         CfgWcetStatus::Partial | CfgWcetStatus::Unbounded | CfgWcetStatus::Unknown
     ) {
         caveats.push(
@@ -144,9 +160,17 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
                 .to_owned(),
         );
     }
+    if let Some(petri) = &petri
+        && petri.status != "optimal"
+    {
+        caveats.push(format!(
+            "The state-equation ILP did not produce an optimal solution ({}); no solver-backed bound is reported.",
+            petri.status
+        ));
+    }
 
     Some(CfgSystemModelInfo {
-        model: "layered-petri-single-activation".to_owned(),
+        model: "layered-petri-state-equation".to_owned(),
         cores,
         core_id,
         tasks,
@@ -155,11 +179,12 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
         places,
         transitions,
         dependencies: dependencies(program),
+        petri,
         bound: CfgSystemBound {
             scope: "analyzed-core-single-activation".to_owned(),
-            status,
-            cycles: all_cycles.then_some(cycles),
-            time_ns: all_time.then_some(time_ns),
+            status: bound_status,
+            cycles: bound_cycles,
+            time_ns: bound_time_ns,
             tasks: u32::try_from(roots.len()).unwrap_or(u32::MAX),
             assumptions: vec![
                 "Each modeled execution root runs at most once in the bound window.".to_owned(),
@@ -167,12 +192,171 @@ pub(crate) fn analyze(program: &ProgramCfg) -> Option<CfgSystemModelInfo> {
                     .to_owned(),
                 "Local root costs already include configured cache, pipeline, data-memory and multicore block costs; this layer does not add them again."
                     .to_owned(),
+                "The state equation is a reachability relaxation; the solver may accept firing-count combinations that no concrete schedule can realize."
+                    .to_owned(),
                 "No periodic activation, preemption, scheduling order or lock-wait model is applied in this first layer."
                     .to_owned(),
             ],
         },
         caveats,
     })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn solve_state_equation(
+    places: &[CfgSystemPlace],
+    transitions: &[CfgSystemTransition],
+) -> Option<CfgSystemPetriSolution> {
+    if transitions.is_empty()
+        || transitions
+            .iter()
+            .any(|transition| transition.cost_cycles.is_none())
+    {
+        return None;
+    }
+    let mut vars = ProblemVariables::new();
+    let firing: Vec<Variable> = transitions
+        .iter()
+        .map(|transition| {
+            vars.add(
+                good_lp::variable()
+                    .integer()
+                    .min(0.0)
+                    .max(f64::from(transition.activations)),
+            )
+        })
+        .collect();
+    let mut objective = Expression::from(0.0);
+    for (transition, variable) in transitions.iter().zip(&firing) {
+        objective += Expression::from(*variable) * transition.cost_cycles.unwrap_or(0.0);
+    }
+
+    let mut constraints = Vec::new();
+    for place in places {
+        let initial = f64::from(place.tokens);
+        let final_tokens = match place.kind.as_str() {
+            "ready" => 0.0,
+            "done" => f64::from(place.capacity),
+            _ => initial,
+        };
+        let mut delta = Expression::from(0.0);
+        for (transition, variable) in transitions.iter().zip(&firing) {
+            let inputs = transition
+                .inputs
+                .iter()
+                .filter(|id| *id == &place.id)
+                .count();
+            let outputs = transition
+                .outputs
+                .iter()
+                .filter(|id| *id == &place.id)
+                .count();
+            let coefficient = i32::try_from(outputs).unwrap_or(i32::MAX)
+                - i32::try_from(inputs).unwrap_or(i32::MAX);
+            if coefficient != 0 {
+                delta += Expression::from(*variable) * f64::from(coefficient);
+            }
+        }
+        constraints.push(constraint::eq(delta, final_tokens - initial));
+    }
+
+    let mut model = vars.maximise(objective.clone()).using(good_lp::microlp);
+    for item in constraints {
+        model = model.with(item);
+    }
+    let solution = match model.solve() {
+        Ok(solution) => solution,
+        Err(good_lp::ResolutionError::Unbounded) => {
+            return Some(CfgSystemPetriSolution {
+                solver: "microlp".to_owned(),
+                relaxation: "state-equation".to_owned(),
+                status: "unbounded".to_owned(),
+                objective: None,
+                firing: Vec::new(),
+            });
+        }
+        Err(good_lp::ResolutionError::Infeasible) => {
+            return Some(CfgSystemPetriSolution {
+                solver: "microlp".to_owned(),
+                relaxation: "state-equation".to_owned(),
+                status: "infeasible".to_owned(),
+                objective: None,
+                firing: Vec::new(),
+            });
+        }
+        Err(error) => {
+            return Some(CfgSystemPetriSolution {
+                solver: "microlp".to_owned(),
+                relaxation: "state-equation".to_owned(),
+                status: format!("solver-error: {error}"),
+                objective: None,
+                firing: Vec::new(),
+            });
+        }
+    };
+
+    let status = match solution.status() {
+        SolutionStatus::Optimal => "optimal",
+        SolutionStatus::TimeLimit => "time-limit",
+        SolutionStatus::GapLimit => "gap-limit",
+    };
+    let mut counted = Vec::new();
+    let mut integral = true;
+    for (transition, variable) in transitions.iter().zip(&firing) {
+        let value = solution.value(*variable);
+        let rounded = value.round();
+        if (value - rounded).abs() > 1e-4 {
+            integral = false;
+        }
+        if rounded > 0.0 {
+            counted.push(CfgSystemFiring {
+                transition: transition.id.clone(),
+                fires: u32::try_from(rounded.max(0.0) as u64).unwrap_or(u32::MAX),
+            });
+        }
+    }
+    let objective = solution.eval(&objective);
+    Some(CfgSystemPetriSolution {
+        solver: "microlp".to_owned(),
+        relaxation: "state-equation".to_owned(),
+        status: if integral {
+            status.to_owned()
+        } else {
+            "fractional".to_owned()
+        },
+        objective: (objective.is_finite() && objective >= 0.0).then_some(objective),
+        firing: counted,
+    })
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn bound_from_solution(
+    aggregate: CfgWcetStatus,
+    petri: Option<&CfgSystemPetriSolution>,
+    fallback_cycles: Option<f64>,
+    fallback_time: Option<f64>,
+    frequency_hz: Option<u64>,
+) -> (CfgWcetStatus, Option<f64>, Option<f64>) {
+    let Some(petri) = petri else {
+        return (aggregate, fallback_cycles, fallback_time);
+    };
+    if petri.status != "optimal" {
+        let status = match petri.status.as_str() {
+            "unbounded" => CfgWcetStatus::Unbounded,
+            "infeasible" => CfgWcetStatus::Unknown,
+            _ => CfgWcetStatus::Partial,
+        };
+        return (status, None, None);
+    }
+    let Some(objective) = petri.objective else {
+        return (CfgWcetStatus::Unknown, None, None);
+    };
+    let time = frequency_hz.map(|hz| objective * 1_000_000_000.0 / hz as f64);
+    (aggregate, Some(objective), time)
 }
 
 fn system_task(id: &str, root: &CfgWcetRoot) -> CfgSystemTask {
@@ -267,4 +451,77 @@ fn dependencies(program: &ProgramCfg) -> Vec<CfgSystemDependency> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::solve_state_equation;
+    use crate::cfg::{CfgSystemPlace, CfgSystemTransition};
+
+    fn place(id: &str, kind: &str, tokens: u32, capacity: u32) -> CfgSystemPlace {
+        CfgSystemPlace {
+            id: id.to_owned(),
+            kind: kind.to_owned(),
+            tokens,
+            capacity,
+        }
+    }
+
+    #[test]
+    fn state_equation_solves_activation_bounds() {
+        let places = vec![
+            place("core:0", "core", 1, 1),
+            place("ready:t0", "ready", 2, 2),
+            place("done:t0", "done", 0, 2),
+        ];
+        let transitions = vec![CfgSystemTransition {
+            id: "execute:t0".to_owned(),
+            kind: "execute".to_owned(),
+            task: "t0".to_owned(),
+            cost_cycles: Some(10.0),
+            activations: 2,
+            inputs: vec!["ready:t0".to_owned(), "core:0".to_owned()],
+            outputs: vec!["done:t0".to_owned(), "core:0".to_owned()],
+        }];
+        let solution = solve_state_equation(&places, &transitions).expect("solution");
+        assert_eq!(solution.status, "optimal");
+        assert_eq!(solution.firing.len(), 1);
+        assert_eq!(solution.firing[0].fires, 2);
+        assert_eq!(solution.objective, Some(20.0));
+    }
+
+    #[test]
+    fn state_equation_serializes_shared_core_transitions() {
+        let places = vec![
+            place("core:0", "core", 1, 1),
+            place("ready:t0", "ready", 1, 1),
+            place("done:t0", "done", 0, 1),
+            place("ready:t1", "ready", 1, 1),
+            place("done:t1", "done", 0, 1),
+        ];
+        let transitions = vec![
+            CfgSystemTransition {
+                id: "execute:t0".to_owned(),
+                kind: "execute".to_owned(),
+                task: "t0".to_owned(),
+                cost_cycles: Some(7.0),
+                activations: 1,
+                inputs: vec!["ready:t0".to_owned(), "core:0".to_owned()],
+                outputs: vec!["done:t0".to_owned(), "core:0".to_owned()],
+            },
+            CfgSystemTransition {
+                id: "execute:t1".to_owned(),
+                kind: "execute".to_owned(),
+                task: "t1".to_owned(),
+                cost_cycles: Some(5.0),
+                activations: 1,
+                inputs: vec!["ready:t1".to_owned(), "core:0".to_owned()],
+                outputs: vec!["done:t1".to_owned(), "core:0".to_owned()],
+            },
+        ];
+        let solution = solve_state_equation(&places, &transitions).expect("solution");
+        assert_eq!(solution.status, "optimal");
+        assert_eq!(solution.objective, Some(12.0));
+        assert_eq!(solution.firing.len(), 2);
+    }
 }

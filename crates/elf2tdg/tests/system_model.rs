@@ -44,12 +44,23 @@ fn builds_layered_model_from_root_wcet() {
         .system_model
         .as_ref()
         .expect("layered system model");
-    assert_eq!(model.model, "layered-petri-single-activation");
+    assert_eq!(model.model, "layered-petri-state-equation");
     assert!(!model.tasks.is_empty());
     assert_eq!(model.boot_roots, 2);
     assert_eq!(model.places.len(), 1 + 2 * model.tasks.len());
     assert_eq!(model.transitions.len(), model.tasks.len());
     assert_eq!(model.bound.tasks, u32::try_from(model.tasks.len()).unwrap());
+    let petri = model.petri.as_ref().expect("state-equation solution");
+    assert_eq!(petri.relaxation, "state-equation");
+    assert_eq!(petri.status, "optimal");
+    assert_eq!(petri.firing.len(), model.tasks.len());
+    assert!(
+        petri.firing.iter().all(|firing| firing.fires == 1),
+        "single-activation model must fire each transition once"
+    );
+    let objective = petri.objective.expect("finite objective");
+    let bound = model.bound.cycles.expect("solver-backed bound");
+    assert!((objective - bound).abs() < 1e-6);
     assert!(
         model
             .bound
@@ -71,10 +82,17 @@ fn builds_layered_model_from_root_wcet() {
         value["system_model"]["bound"]["scope"],
         "analyzed-core-single-activation"
     );
+    assert_eq!(value["system_model"]["petri"]["status"], "optimal");
+    assert_eq!(
+        value["system_model"]["petri"]["relaxation"],
+        "state-equation"
+    );
 
     let text = text_report::render_text(&analysis.cfg, Some("sensor_task"), false)
         .expect("text report must render");
     assert!(text.contains("layered system model"));
-    assert!(text.contains("layered-petri-single-activation"));
+    assert!(text.contains("layered-petri-state-equation"));
+    assert!(text.contains("petri solver"));
+    assert!(text.contains("petri objective"));
     assert!(text.contains("assumption:"));
 }
