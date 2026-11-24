@@ -562,6 +562,18 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
     }
     kv(
         out,
+        "max activations",
+        &model.bound.max_activations.to_string(),
+    );
+    for place in model.places.iter().filter(|place| place.kind == "budget") {
+        let _ = writeln!(
+            out,
+            "  * resource budget {} {}/{} unit(s)",
+            place.id, place.tokens, place.capacity
+        );
+    }
+    kv(
+        out,
         "model size",
         &format!(
             "{} task(s), {} place(s), {} transition(s), {} dependency(ies)",
@@ -596,10 +608,11 @@ fn render_system_model(out: &mut String, model: Option<&CfgSystemModelInfo>) {
             .unwrap_or_else(|| task.function.as_str());
         let _ = writeln!(
             out,
-            "  * task {} {} [{}] {}",
+            "  * task {} {} [{}] x{} {}",
             task.id,
             name,
             serde_name(&task.kind),
+            task.activation_bound,
             wcet_cost(task.status, task.cycles, task.time_ns)
         );
     }
