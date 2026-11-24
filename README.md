@@ -59,8 +59,9 @@ Implemented:
 - Layered system model (`system_model`): per-root local WCET becomes tasks,
   Petri-net-shaped places/transitions, concurrency dependencies, optional
   `[system]` activation, periodic-release, resource and explicit fork/join
-  link constraints plus a state-equation ILP relaxation, work-conserving
-  per-task response bounds and optional discrete-time-expanded feasibility.
+  link constraints plus a state-equation ILP relaxation, work-conserving or
+  fixed-priority per-task response bounds and optional discrete-time-expanded
+  feasibility.
   See
   [docs/layered-model.md](docs/layered-model.md).
 - Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
@@ -258,12 +259,13 @@ Still deferred:
 - Fully computed pointer targets beyond the bounded patterns above, such as
   values transformed through arbitrary arithmetic, indirect callees, or
   pointer state that crosses more than a few call levels.
-- Tightening the layered Petri-net model: priority-aware/timed-state
-  response analysis, automatic fork/join derivation and ordering, lock/bus
-  hold and arbitration semantics, and bounded reachability. The current system
-  model supports static activation bounds, periodic release counts, cumulative
-  resource budgets, explicit fork/join count links, work-conserving per-task
-  response bounds and a slot-based deadline feasibility check.
+- Tightening the layered Petri-net model: timed-state response analysis,
+  automatic fork/join derivation and ordering, lock/bus hold, priority
+  inversion and arbitration semantics, and bounded reachability. The current
+  system model supports static activation bounds, periodic release counts,
+  cumulative resource budgets, explicit fork/join count links, work-conserving
+  and fixed-priority per-task response bounds, and a slot-based deadline
+  feasibility check.
 - General `.await` lowering beyond recognized runtime handle poll functions.
 - Full DWARF type/location coverage beyond the bounded extraction above:
   location lists, split-DWARF cross-unit references, nested anonymous

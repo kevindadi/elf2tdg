@@ -100,7 +100,8 @@ Irreducible cycles are reported as `unbounded` rather than producing an
 unsound model.
 
 When a WCET profile is active, the report also includes the layered system
-model, its state-equation ILP solution and work-conserving per-task response
-bounds. The `analyzed-core-activation-bounds` relaxation is a coarse total-work
-bound; `system_model.response` carries the separate per-task bound. See
+model, its state-equation ILP solution and work-conserving or fixed-priority
+per-task response bounds. The `analyzed-core-activation-bounds` relaxation is a
+coarse total-work bound; `system_model.response` carries the separate per-task
+bound. See
 [layered-model.md](layered-model.md).

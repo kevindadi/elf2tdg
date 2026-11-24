@@ -9,7 +9,7 @@ conservative, and it is exported in CFG JSON as `system_model`.
 Layer 1  root/local WCET        cfg-longest-path or cfg-ipet per execution root
 Layer 2  layered system model  tasks, places, transitions, dependencies
 Layer 3  state-equation ILP    coarse reachability relaxation
-Layer 4  response bounds       work-conserving busy-period RTA
+Layer 4  response bounds       work-conserving or fixed-priority busy-window RTA
 Layer 5  discrete-time PN      slot-based deadline feasibility
 Layer 6  future timed PN       exact reachability / tighter response analysis
 ```
@@ -129,15 +129,39 @@ part of the timed feasibility model yet.
 
 ## Per-task response bounds
 
-The system model also derives a work-conserving busy-period response bound for
-each task:
+The system model derives a busy-window response upper bound for each task. Two
+interference models are available:
+
+- `work-conserving-busy-period` — used when priorities are not configured;
+  every other task may delay the target under an arbitrary work-conserving
+  scheduler;
+- `fixed-priority-busy-period` — used when every contributing task has a
+  priority; only tasks with a priority greater than or equal to the target's
+  can interfere. Larger numeric priority values run first.
+
+Configure priorities under `[system.tasks]`:
+
+```toml
+[[system.tasks]]
+target = "sensor_task"
+priority = 3
+```
+
+The selected model is reported as `system_model.response.model`. If only some
+contributing tasks have priorities, the analysis falls back to the
+work-conserving model and records a caveat; it never mixes the two models
+silently. Equal-priority tasks are conservatively treated as interference
+because the same-priority tie-break order is not modeled.
+
+Both models evaluate:
 
 ```text
 R_i = C_i + sum(j != i) N_j(R_i) * C_j + M_i(R_i) * C_i
 ```
 
-For a periodic task `k`, both terms count one carry-in activation plus every
-release that can fall inside a window of length `R`:
+The sum runs over the tasks selected by the interference model. For a periodic
+task `k`, both terms count one carry-in activation plus every release that can
+fall inside a window of length `R`:
 
 ```text
 N_k(R) = floor((R + J_k) / T_k) + 1
@@ -146,9 +170,9 @@ M_i(R) = N_i(R) for a periodic target
 
 `J_k` is the configured release jitter and `T_k` the period. The carry-in
 accounts for work released just before the window; the `+1` is needed because
-an arbitrary work-conserving scheduler may not have completed that activation.
-The target's own term covers queued earlier activations and, conservatively,
-releases that occur while the analyzed activation is still pending.
+the scheduler may not have completed that activation. The target's own term
+covers queued earlier activations and, conservatively, releases that occur
+while the analyzed activation is still pending.
 
 For a non-periodic task, the activation bound is a total activation budget:
 `N_j = B_j` for another task and `M_i = B_i - 1` for the target.
@@ -167,23 +191,30 @@ no floating-point tolerance is used that could understate it. Exceeding
 `1e15 ns` reports `unbounded`. Reaching the iteration limit without a
 post-fixed point reports `unknown`; the partial bound is never presented as a
 conclusion. A configured `deadline_ns` produces a `deadline_missed` flag when
-the finite bound exceeds it.
+the finite bound exceeds it. A task's status reflects only the inputs that can
+interfere with it under the selected model; a partial lower-priority task does
+not make a fixed-priority result partial.
 
 Assumptions:
 
 - one analyzed core;
-- work-conserving scheduling with arbitrary preemption order;
+- work-conserving scheduling with arbitrary preemption order, or preemptive
+  fixed-priority scheduling where larger priority values run first;
+- fixed-priority results include equal-priority tasks as interference and
+  exclude lower-priority tasks;
 - periodic releases follow the configured period and jitter;
 - non-periodic activation bounds are true total bounds;
 - jobs may queue, so same-task self-interference is included;
-- no priority model, blocking, fork/join ordering, locks, resources,
-  interrupts, other cores, caches, CRPD or preemption overhead;
+- no blocking, priority inversion or inheritance, fork/join ordering, locks,
+  resources, interrupts, other cores, caches, CRPD or preemption overhead;
 - partial local WCET inputs make the response result `partial`.
 
-This is a safe upper bound only under those assumptions; it is deliberately
-conservative, independent of a particular priority assignment, and can reject
-a feasible system. A priority-aware response analysis is the next tightening
-step.
+Both results are safe upper bounds only under their stated assumptions and are
+deliberately conservative. A fixed-priority result is valid only when the
+target scheduler is actually preemptive fixed-priority and no blocking or
+priority inversion occurs; otherwise the work-conserving model is the safer
+choice. The next tightening steps are timed state-class analysis and explicit
+priority-inversion/blocking terms.
 
 ## Fork/join links
 
@@ -256,7 +287,7 @@ again.
 ## What the bound does not cover
 
 - The state-equation total-work bound does not itself provide per-task
-  response time; use the separate work-conserving response section.
+  response time; use the separate response-bound section.
 - Release instants, deadlines or ordering. Activation bounds are static
   per-window counts; release jitter only shifts the first-release count
   conservatively.
@@ -289,6 +320,7 @@ layered model is a composition IR, not an additional certification gate yet.
         "name": "sensor_task",
         "status": "bounded",
         "cycles": 87.0,
+        "priority": 3,
         "activation_bound": 3
       }
     ],
@@ -331,7 +363,7 @@ layered model is a composition IR, not an additional certification gate yet.
       }
     ],
     "response": {
-      "model": "work-conserving-busy-period",
+      "model": "fixed-priority-busy-period",
       "tasks": [
         {
           "task": "t1",
@@ -381,8 +413,8 @@ layered model is a composition IR, not an additional certification gate yet.
 The state-equation solver and static activation/resource budgets are in place.
 The next steps tighten them:
 
-1. replace the work-conserving busy-period bound with priority-aware or timed
-   state-class response analysis and tighter blocking models;
+1. add timed state-class response analysis and explicit priority-inversion,
+   blocking and deadline-overrun terms;
 2. derive fork/join links from concurrency annotations when per-activation
    execution bounds are proven, and add temporal ordering;
 3. include fork/join links and resource budgets in the timed model;

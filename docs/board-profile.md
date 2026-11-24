@@ -522,10 +522,11 @@ slot_ns = 100_000            # enables the discrete-time-expanded model
 
 [[system.tasks]]
 target = "sensor_task"       # function name, symbol, task name or 0x address
+priority = 3                 # larger values run first; enables fixed-priority response
 period_ns = 1_000_000        # derives a release upper bound
 release_offset_ns = 0        # default: 0
 release_jitter_ns = 0        # default: 0
-deadline_ns = 2_000_000      # relative deadline, when timed analysis is enabled
+deadline_ns = 2_000_000      # relative deadline for timed and response analysis
 resources = { bus = 1 }      # units consumed per activation
 
 [[system.resources]]
@@ -544,6 +545,7 @@ count = 2                    # default: 1
 | `[system].horizon_ns` | with period | Bound window in nanoseconds; required when any task has `period_ns` or `slot_ns`. |
 | `[system].slot_ns` | no | Positive time-slot width; enables discrete-time-expanded feasibility analysis and requires `horizon_ns`. |
 | `[[system.tasks]].target` | yes | Function/task selector: full name, last `::` segment, symbol, or `0x` address. It must resolve to exactly one concurrent execution root. |
+| `[[system.tasks]].priority` | no | Fixed scheduling priority; larger values run first. All contributing tasks need a priority to enable fixed-priority response analysis. |
 | `[[system.tasks]].activations` | no | Explicit activation upper bound; positive. Ignored for the default only when a period is supplied. |
 | `[[system.tasks]].period_ns` | no | Release period in nanoseconds; positive. Derives the activation bound from `horizon_ns`. |
 | `[[system.tasks]].release_offset_ns` | no | First-release offset from the window start; default `0`; requires `period_ns`. |
@@ -580,6 +582,15 @@ the full busy window rather than capping them at the horizon-derived activation
 bound; such a cap would undercount interference once the response window
 extends past `horizon_ns`. Non-periodic `activations` bounds are treated as
 total budgets. See [layered-model.md](layered-model.md).
+
+If every contributing task has a `priority`, the response model is
+`fixed-priority-busy-period`: larger numeric priorities run first, tasks with
+priority greater than or equal to the target interfere, and lower-priority
+tasks are excluded. Equal-priority tasks are conservatively included because
+tie-breaking is not modeled. If only some contributing tasks have priorities,
+the analysis falls back to `work-conserving-busy-period` and records a caveat;
+it does not mix the two models silently. A fixed-priority result assumes
+preemptive fixed-priority scheduling with no blocking or priority inversion.
 
 The state-equation ILP treats each task's activation bound as an upper bound
 and adds:
