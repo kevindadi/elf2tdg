@@ -41,29 +41,66 @@ The model also contains:
 - spawn/join/await/callback/scope dependencies from the CFG concurrency
   annotations.
 
-## Current bound
+## Activation and resource budgets
 
-The bound scope is `analyzed-core-single-activation`:
+The optional `[system]` board-profile section supplies per-task activation
+bounds and cumulative resource budgets:
 
-```text
-bound.cycles = sum(task.local_cycles)   for one activation of every task
-bound.time_ns = sum(task.local_time_ns)
+```toml
+[system]
+
+[[system.tasks]]
+target = "sensor_task"       # function name, symbol, task name or 0x address
+activations = 3              # default: 1
+resources = { bus = 1 }      # units consumed per activation
+
+[[system.resources]]
+name = "bus"
+capacity = 4                 # units available in this bound window
 ```
 
-The model is an integer program:
+`target` is resolved against the recovered concurrent execution roots. A target
+may be the full function/task name, its last `::` segment, a symbol, or a `0x`
+address. Unknown or ambiguous targets are configuration errors rather than
+silently ignored bounds. Boot roots are not part of the concurrent task set, so
+they cannot be target tasks.
+
+Each task gets `ready` tokens equal to its activation bound and a matching
+`done` capacity. The final markings stay within `[0, activations]`; the
+objective maximizes firing, so each transition fires as many times as the
+bounds and budgets allow, up to `activations`. A resource adds a
+`budget:<name>` place with `capacity` tokens; each task activation consumes its
+declared units from that place and never returns them in this layer. The state
+equation therefore enforces the cumulative constraint:
+
+```text
+sum(units(task, resource) * fires(task)) <= capacity(resource)
+```
+
+Resources are **cumulative per-window budgets**, not lock or bus-hold models.
+They constrain total modeled usage and can reduce firing counts; the ILP
+maximizes total work, so a task with a positive activation bound may receive
+fewer (even zero) modeled firings when another task consumes the budget. They
+do not add resource waiting time or arbitration delay.
+
+## Current bound
+
+The bound scope is `analyzed-core-activation-bounds`. The model is an integer
+program:
 
 ```text
 variables   x_t = firing count of transition t, integer, 0 <= x_t <= activations
 objective   maximize sum(cost_t * x_t)
 constraint  M_final = M_initial + C * x
-constraint  exact final marking for ready/done/core places
+constraint  ready/done/budget final markings within [0, capacity]
+constraint  exact final marking for the core place
 ```
 
 The state equation is only a necessary condition for Petri-net reachability.
 Solving it may accept firing-count combinations that no concrete schedule can
-realize, so the optimum is a conservative upper bound. With the current one
-activation per task and one analyzed core, every `execute` transition fires
-once and the objective equals the total local work.
+realize, so the optimum is a conservative upper bound. Without `[system]`, each
+task has activation bound 1, every `execute` transition fires once and the
+objective equals the total local work.
 
 The aggregate status is:
 
@@ -80,8 +117,10 @@ again.
 ## What the bound does not cover
 
 - Per-task response time or scheduling order.
-- Periodic/repeated activation counts.
-- Lock/semaphore waiting and priority inversion.
+- Periodic release times, jitter, deadlines or a hyperperiod; activation
+  bounds are static per-window counts.
+- Lock/semaphore hold semantics, waiting and priority inversion. Resources are
+  cumulative budgets only.
 - Preemption, interrupt nesting and interrupt latency.
 - Other cores' actual workloads, bus arbitration or shared caches. Other cores
   are represented only by the explicit `[multicore]` access budget.
@@ -108,13 +147,14 @@ layered model is a composition IR, not an additional certification gate yet.
         "name": "sensor_task",
         "status": "bounded",
         "cycles": 87.0,
-        "activation_bound": 1
+        "activation_bound": 3
       }
     ],
     "places": [
       { "id": "core:0", "kind": "core", "tokens": 1, "capacity": 1 },
-      { "id": "ready:t0", "kind": "ready", "tokens": 1, "capacity": 1 },
-      { "id": "done:t0", "kind": "done", "tokens": 0, "capacity": 1 }
+      { "id": "budget:bus", "kind": "budget", "tokens": 4, "capacity": 4 },
+      { "id": "ready:t0", "kind": "ready", "tokens": 3, "capacity": 3 },
+      { "id": "done:t0", "kind": "done", "tokens": 0, "capacity": 3 }
     ],
     "transitions": [
       {
@@ -122,8 +162,8 @@ layered model is a composition IR, not an additional certification gate yet.
         "kind": "execute",
         "task": "t0",
         "cost_cycles": 87.0,
-        "activations": 1,
-        "inputs": ["ready:t0", "core:0"],
+        "activations": 3,
+        "inputs": ["ready:t0", "core:0", "budget:bus"],
         "outputs": ["done:t0", "core:0"]
       }
     ],
@@ -144,14 +184,15 @@ layered model is a composition IR, not an additional certification gate yet.
       "status": "optimal",
       "objective": 87.0,
       "firing": [
-        { "transition": "execute:t0", "fires": 1 }
+        { "transition": "execute:t0", "fires": 3 }
       ]
     },
     "bound": {
-      "scope": "analyzed-core-single-activation",
-      "status": "bounded",
-      "cycles": 87.0,
+      "scope": "analyzed-core-activation-bounds",
+      "status": "partial",
+      "cycles": 261.0,
       "tasks": 1,
+      "max_activations": 3,
       "assumptions": ["..."]
     },
     "caveats": ["..."]
@@ -161,11 +202,12 @@ layered model is a composition IR, not an additional certification gate yet.
 
 ## Next layer
 
-The state-equation solver is in place. The next steps tighten it:
+The state-equation solver and static activation/resource budgets are in place.
+The next steps tighten them:
 
-1. add bounded activation counts or a hyperperiod to the task places;
+1. add periodic release times, jitter or a hyperperiod to the task places;
 2. encode spawn/join dependencies as fork/join arcs and ordering constraints;
-3. encode locks, buses and memory banks as resource places;
+3. add lock/bus hold semantics and arbitration-aware resource places;
 4. add bounded reachability or timed-Petri-net analysis for per-task response
    time;
 5. add the system bound to the safe gate only after the model and solver are

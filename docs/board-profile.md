@@ -17,7 +17,8 @@ elf2tdg firmware.elf \
 
 The file is parsed as TOML unless its extension is `.json`. Schema version 1
 profiles remain valid; version 2 adds the optional pipeline, cache,
-branch-prediction, data-memory timing and WCET models. The profile is strictly
+branch-prediction, data-memory timing, multicore, WCET and layered system
+models. The profile is strictly
 validated before analysis:
 unknown fields, duplicate selectors, overlapping memory regions, zero
 frequencies and invalid cycle ranges are errors.
@@ -108,7 +109,7 @@ occupancy = 2
 
 | Field | Required | Meaning |
 |---|---|---|
-| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]`, `[multicore]`, `[wcet]` or per-region data-memory timing. |
+| `schema_version` | yes | `1` for board-cost-only profiles, `2` for profiles that use `[pipeline]`, `[instruction_cache]`, `[data_cache]`, `[branch_prediction]`, `[multicore]`, `[wcet]`, `[system]` or per-region data-memory timing. |
 | `id` | yes | Stable profile identifier recorded in the CFG timing metadata. |
 | `name` | no | Human-readable board name. |
 | `arch` | yes | `thumb`, `aarch64`, `riscv32`, `riscv64` or `x86-64`; architecture-family spellings such as `thumbv7em` and `x86_64` are normalized. |
@@ -122,6 +123,7 @@ occupancy = 2
 | `[branch_prediction]` | no | Enables conditional-branch prediction analysis; see below. |
 | `[multicore]` | no | Enables access-budget multicore interference; see below. |
 | `[wcet]` | no | Enables WCET analysis and selects its flow-bound configuration; see below. |
+| `[system]` | no | Supplies task activation bounds and cumulative resource budgets for the layered system model; requires `[wcet]`. |
 
 ### Clocks
 
@@ -505,6 +507,47 @@ system-level WCET across preempting interrupts or concurrent tasks. The model is
 a static estimate, not a hardware proof: cache/branch/data-memory results are
 local, loop bounds must be supplied, and interrupts, DMA, bus contention and
 concurrency are outside the analysis.
+
+### Layered system model
+
+The optional `[system]` table supplies activation bounds and cumulative resource
+budgets for the `system_model`. It requires `schema_version = 2` and a `[wcet]`
+section. Without `[system]`, each concurrent execution root has activation
+bound 1 and no shared resource budgets.
+
+```toml
+[system]
+
+[[system.tasks]]
+target = "sensor_task"       # function name, symbol, task name or 0x address
+activations = 3              # default: 1
+resources = { bus = 1 }      # units consumed per activation
+
+[[system.resources]]
+name = "bus"
+capacity = 4                 # units available in the bound window
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `[[system.tasks]].target` | yes | Function/task selector: full name, last `::` segment, symbol, or `0x` address. It must resolve to exactly one concurrent execution root. |
+| `[[system.tasks]].activations` | no | Maximum activations modeled in the bound window; positive, default `1`. |
+| `[[system.tasks]].resources` | no | Inline map of resource name to units consumed per activation. |
+| `[[system.resources]].name` | yes | Resource budget name. |
+| `[[system.resources]].capacity` | yes | Positive units available in the bound window. |
+
+The state-equation ILP treats each task's activation bound as an upper bound
+and adds:
+
+```text
+sum(units(task, resource) * fires(task)) <= capacity(resource)
+```
+
+Resource places are **cumulative per-window budgets**, not lock or bus-hold
+semantics. An over-committed budget reduces the modeled firing counts rather
+than adding waiting or arbitration time. Unknown/ambiguous task targets, undeclared
+resources, zero capacities/units and duplicate declarations are configuration
+errors. See [layered-model.md](layered-model.md).
 
 ### Instruction-cost overrides
 
