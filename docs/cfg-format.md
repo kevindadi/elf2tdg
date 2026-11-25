@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.35`.
+`cfg_schema_version` is `2.36`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.35 adds the `branch_target_buffer` metadata, per-block
-BTB misses and `ipet.btb_model`. Version 2.34 adds the `tournament` branch
+functions. Version 2.36 adds `return_address_stack` metadata, per-block RAS
+misses and `ipet.ras_model`. Version 2.35 adds the `branch_target_buffer`
+metadata, per-block BTB misses and `ipet.btb_model`. Version 2.34 adds the `tournament` branch
 model and its `choice_initial_state` metadata. Version 2.33 adds the configurable `two-level`
 branch model and its `level1_history`/`level2_table` metadata. Version 2.32 adds
 the
@@ -430,7 +431,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.35",
+  "cfg_schema_version": "2.36",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -687,7 +688,10 @@ analysis state-limit fallback, indirect/unresolved/recursive calls, contextual
 facts, ordered/cross-function automata or product-size overflow). When a BTB
 profile is active, `ipet.btb_model` is `state-product` for the concrete
 set-associative LRU BTB state product or `block-bounds` when the function falls
-back to per-block miss bounds. When a pipeline profile is active,
+back to per-block miss bounds. When a RAS profile is active,
+`ipet.ras_model` is `state-product` for the bounded LIFO stack product or
+`block-bounds` when the function falls back to per-return-block bounds. When a
+pipeline profile is active,
 `ipet.pipeline_model` is `state-product` when IPET propagated the full
 per-function pipeline state table through the CFG, or `edge-context` when only
 first-order edge stalls were available. The state product starts with ready
@@ -742,6 +746,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `data_cache` | data-cache model parameters, access coverage, analysis counts, line-split first-miss regions and caveats |
 | `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
 | `branch_target_buffer` | BTB geometry, miss penalty, transfer/function coverage and caveats |
+| `return_address_stack` | RAS geometry, miss penalty, return/function coverage and caveats |
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
 | `pipeline` | pipeline model parameters and fallback edge stalls: model name, per-edge `source`/`target`/`site` and `stall_cycles`, caveats |
 | `multicore` | access-budget interference model, core topology, charged events, total cycles and caveats |
@@ -817,6 +822,11 @@ branch or jump carries a `btb` object with minimum/maximum misses, the number
 of BTB states reaching the block and a fallback flag. Fallthrough fetches,
 calls and returns do not probe the BTB. The block `cycles` range includes the
 BTB miss penalty.
+
+When a return-address-stack profile is active, function return blocks carry a
+`ras` object with minimum/maximum RAS misses, the number of stack states
+reaching the block and a fallback flag. The block `cycles` range includes the
+RAS return miss penalty.
 
 When per-region data-memory timing is active, each block with data accesses
 can carry a `data_memory` object. It records resolved, unresolved, mapped and
@@ -1094,7 +1104,10 @@ asserts that the CFG validates.
   across direct calls; local-history, two-level and tournament predictors are
   also modeled. The BTB is a separate set-associative state product for
   intra-function taken branches and jumps; call/return targets, indirect call
-  targets and cross-function replacement are not modeled. Full inter-block
+  targets and cross-function replacement are not modeled. The RAS models a
+  per-function bounded LIFO with one symbolic caller entry, push/pop call-return
+  edges and return-block hits; recursive nesting and cross-function stack
+  occupancy are not modeled. Full inter-block
   pipeline state is integrated into the IPET state product when the
   per-function state table is available, with first-order edge stalls as the
   fallback for ordered/cross-function automata, state-cap overflow or

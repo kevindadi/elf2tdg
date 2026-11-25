@@ -57,6 +57,8 @@ Implemented:
     branch-cost propagation;
   - optional set-associative LRU branch-target buffers with per-block miss
     bounds and a concrete BTB state product in IPET;
+  - optional bounded return-address stacks with per-function call/return
+    push/pop, return-miss bounds and an IPET stack product;
   - per-region data-memory bus widths and read/write wait states;
   - explicit multicore access-budget interference (`[multicore]`) with
     per-block read/write/fetch attribution;
@@ -367,7 +369,9 @@ branch-PC bits; `local-history` keeps a history register per branch site;
 level-2 table; `tournament` selects between global-history and local-history
 components with per-branch choice counters. Other tournament component pairs
 are not modeled. The optional BTB models intra-function taken branch/jump
-targets; call/return and indirect-call targets are not modeled. Context
+targets; call/return and indirect-call targets are not modeled. The optional
+RAS models per-function call-return pushes/pops and return blocks, not
+recursive nesting or cross-function stack occupancy. Context
 sensitivity applies to flow facts and WCET composition, not to the
 microarchitectural cache/branch models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.

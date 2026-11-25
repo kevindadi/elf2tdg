@@ -32,9 +32,9 @@ The report is deterministic and uses plain text only.
 5. **Analysis models** — instruction/data cache (including line-split
    first-miss regions), branch prediction (including first-execution,
    global/local history width, initial history, two-level selection and
-   tournament choice state), branch-target-buffer geometry/coverage,
-   data-memory latency, the pipeline model and its fallback edge stalls, and
-   multicore interference summaries when enabled.
+   tournament choice state), branch-target-buffer and return-address-stack
+   geometry/coverage, data-memory latency, the pipeline model and its fallback
+   edge stalls, and multicore interference summaries when enabled.
 6. **WCET** — model name, loop-bound configuration, resolved branch/call flow
    facts, result counts, per-root cycles/nanoseconds and the analysis caveats.
 7. **Layered system model** — when a WCET profile is active: task/place/
@@ -117,7 +117,8 @@ edge context when the state table is unavailable, branch-prediction IPET
 starts from the configured predictor state, can treat the first access to each
 pattern-table entry as unknown history, and (for counter-based models) can carry
 state and branch cost through direct calls; other tournament component pairs
-are not modeled; the optional BTB covers intra-function branch/jump targets only, data-memory results
+are not modeled; the optional BTB covers intra-function branch/jump targets only, the optional RAS
+covers per-function call-return push/pop and return blocks, data-memory results
 remain block-local, and interrupts, DMA, bus contention and
 concurrency are not modeled. A
 function marked `partial` has unresolved inputs; `unbounded` means no finite

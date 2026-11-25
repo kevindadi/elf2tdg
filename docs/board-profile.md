@@ -17,8 +17,8 @@ elf2tdg firmware.elf \
 
 The file is parsed as TOML unless its extension is `.json`. Schema version 1
 profiles remain valid; version 2 adds the optional pipeline, cache,
-branch-prediction, branch-target-buffer, data-memory timing, multicore, WCET
-and layered system models. The profile is strictly
+branch-prediction, branch-target-buffer, return-address-stack, data-memory
+timing, multicore, WCET and layered system models. The profile is strictly
 validated before analysis:
 unknown fields, duplicate selectors, overlapping memory regions, zero
 frequencies and invalid cycle ranges are errors.
@@ -586,6 +586,33 @@ analysis completes and records `ipet.btb_model = "state-product"`; fallback
 functions use `block-bounds`. The BTB timing model is `statistical` and is
 rejected by `--require-safe`.
 
+### Return address stack
+
+The optional `[return_address_stack]` table enables a bounded LIFO return
+address stack. It requires `schema_version = 2`.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `entries` | yes | Number of modeled return-address entries; must be positive. |
+| `miss_penalty` | yes | Cycles charged for a return-target miss; must be positive. |
+| `max_states` | no | Maximum distinct RAS states per block; defaults to `128`. |
+
+```toml
+[return_address_stack]
+entries = 8
+miss_penalty = 2
+max_states = 128
+```
+
+Each function starts with one symbolic caller-return entry. A call-return edge
+models the callee return as a push of the continuation address followed by a
+pop; a full stack evicts the oldest entry. A function return is a hit only when
+the symbolic entry is still on top. Recursive nesting, indirect return-target
+prediction and cross-function stack occupancy are not modeled. The RAS timing
+model is `statistical` and rejected by `--require-safe`; with
+`--path-analysis ipet` it uses `ipet.ras_model = "state-product"` or
+`block-bounds` when the state product is unavailable.
+
 ### Multicore interference
 
 The optional `[multicore]` table enables an explicit **access-budget**
@@ -953,7 +980,9 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   the same state, while unresolved/indirect/recursive boundaries and summary
   caps fall back to per-function bounds. History/tournament models share the
   per-function pattern/choice state; other tournament component pairs are not
-  modeled. The optional BTB models intra-function branch/jump targets only.
+  modeled. The optional BTB models intra-function branch/jump targets only;
+  the optional RAS models per-function call-return pushes/pops and return
+  blocks, not recursive or cross-function stack occupancy.
 - Data-memory latency is region-based. Only statically resolved accesses with
   addresses inside configured regions contribute wait cycles. If data-cache
   analysis is enabled too, its miss penalties and the wait cycles are additive.
