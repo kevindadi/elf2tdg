@@ -204,12 +204,13 @@ from summed local estimates.
   cross-block co-issue and cross-function pipeline state are not propagated,
   and `--require-safe` rejects the statistical pipeline model. Multiple issue
   slots, per-resource unit counts, optional register-file read/write port
-  budgets and optional data forwarding are modeled within each block and
-  carried through the pipeline state product. Oversized register-file accesses
-  take exclusive issue cycles; forwarding uses bypass latencies but block
-  completion remains full latency and forwarding does not cross blocks.
-  Writeback-cycle contention, banked register files and forwarding-network
-  arbitration are not modeled. Enabling `[pipeline]` on a bounded
+  budgets, data forwarding and block-local store-to-load forwarding are
+  modeled within each block and carried through the pipeline state product.
+  Oversized register-file accesses take exclusive issue cycles; forwarding uses
+  bypass latencies but block completion remains full latency and forwarding
+  does not cross blocks. Writeback-cycle contention, banked register files,
+  forwarding-network arbitration, store-buffer drain/age and cache/data-memory
+  penalty suppression are not modeled. Enabling `[pipeline]` on a bounded
   AArch64/RISC-V model therefore makes the whole timing model statistical.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.

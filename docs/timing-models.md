@@ -100,11 +100,13 @@ limit per cycle (`1..8`), and `[pipeline.resources]` gives explicit unit counts
 for resources that can accept more than one instruction per cycle. Resource
 multiplicity is never inferred from `issue_width`. The optional
 `[pipeline.register_file]` table adds read/write port budgets; instructions
-that exceed one cycle's ports take consecutive exclusive issue cycles. The
-optional `[pipeline.forwarding]` table enables bypass latencies so register
+that exceed one cycle's ports take consecutive exclusive issue cycles. The optional
+`[pipeline.forwarding]` table enables bypass latencies so register
 consumers can issue before the producer's full result latency; block completion
 and basic-block boundaries still use full latency, so forwarding is local to a
-block.
+block. The optional `[pipeline.store_forwarding]` table enables a block-local
+store buffer that shortens matching loads; it does not suppress cache or
+data-memory miss penalties.
 
 ## Selection hints
 

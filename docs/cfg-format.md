@@ -362,9 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.40`.
+`cfg_schema_version` is `2.41`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.40 adds data-forwarding metadata
+functions. Version 2.41 adds store-to-load forwarding metadata
+(`board_profile_pipeline_store_forwarding`, latency and entry count). Version
+2.40 adds data-forwarding metadata
 (`board_profile_pipeline_forwarding`, default latency and override count).
 Version 2.39 adds register-file port metadata
 (`board_profile_pipeline_read_ports` and `write_ports`). Version 2.38 adds
@@ -439,7 +441,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.40",
+  "cfg_schema_version": "2.41",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {

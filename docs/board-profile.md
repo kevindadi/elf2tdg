@@ -255,6 +255,7 @@ issue are not modeled.
 | `resources` | no | Optional table of resource unit counts; unlisted resources have one unit. |
 | `register_file` | no | Optional register-file read/write port budgets, applied per issue cycle. |
 | `forwarding` | no | Optional data-forwarding/bypass model; disabled when omitted. |
+| `store_forwarding` | no | Optional block-local store-to-load forwarding through a store buffer. |
 | `branch_penalty` | no | Extra cycles for the block's final branch/call/return, exact or `{ min, max }`; default `1..3`. |
 
 `[pipeline.resources]` maps a resource name used by an instruction to the
@@ -348,6 +349,41 @@ earliest forwarding time. Forwarding-network arbitration, partial bypass paths
 and writeback-ordering/WAW effects are not modeled. Omitting the section
 disables forwarding and consumers wait for full result latency.
 
+`[pipeline.store_forwarding]` optionally enables store-to-load forwarding
+within one basic block through a bounded store buffer.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `latency` | yes | Effective load latency on a forwarding hit, `1..64`; clamped to the load's normal latency. |
+| `entries` | yes | Number of tracked store-buffer entries, `1..64`. |
+
+```toml
+[pipeline.store_forwarding]
+latency = 1
+entries = 8
+```
+
+A load is forwarded only when it has one read access at the same symbolic
+address and width as a tracked store:
+
+- an absolute address, or the same base register and displacement, with no
+  index register;
+- equal access widths; a newer store that overlaps the load range blocks
+  forwarding from an older exact match, and partial-overlap forwarding itself
+  is not modeled;
+- the newest overlapping store must be an exact match, older than the load's
+  issue cycle, and still present in the store buffer.
+
+A simple store is pushed to the buffer after it issues; the oldest entry is
+evicted when the buffer is full. A barrier, an unknown/indexed/multi-access
+store or any other unrepresentable memory write clears the buffer. A write to
+a register used as a tracked base invalidates the affected entries. The
+buffer is block-local: it is not carried across CFG edges, and loads in another
+basic block are not forwarded. Store-buffer drain/age, aliasing between
+distinct symbolic addresses, cross-block forwarding and suppression of
+cache/data-memory miss penalties are not modeled. A forwarded load uses
+`latency` as its effective result latency; resource occupancy is unchanged.
+
 Each `[[pipeline.instructions]]` entry overrides the built-in class mapping:
 
 | Field | Required | Meaning |
@@ -409,13 +445,15 @@ are ready, one unit of each required resource is free, the cycle has a free
 issue slot, and (when `[pipeline.register_file]` is present) the cycle has
 enough read and write ports. When `[pipeline.forwarding]` is present, a source
 register becomes readable after the producer's forwarding latency; otherwise
-it is readable after full result latency. Each resource has the configured
-number of units; instructions sharing a single-unit resource serialize. Block
-boundaries are issue boundaries: co-issue across a CFG edge is not modeled.
-`branch_penalty` is added when the block's last instruction is a branch, call
-or return; conditional transfers use the worst case. Fetch wait states are
-charged per instruction and are not reduced by co-issue; fetch bandwidth is not
-modeled.
+it is readable after full result latency. When
+`[pipeline.store_forwarding]` is present, a load matching an older tracked
+store uses the configured forwarded-load latency. Each resource has the
+configured number of units; instructions sharing a single-unit resource
+serialize. Block boundaries are issue boundaries: co-issue across a CFG edge
+is not modeled. `branch_penalty` is added when the block's last instruction is
+a branch, call or return; conditional transfers use the worst case. Fetch wait
+states are charged per instruction and are not reduced by co-issue; fetch
+bandwidth is not modeled.
 
 Register readiness is assumed ready at block entry for block-local costing.
 For `--path-analysis ipet`, the analyzer builds a per-function table of
@@ -425,14 +463,18 @@ resource/register readiness across CFG edges. The state records the sorted
 free times of every busy resource unit, so multiple units remain distinct
 across a block boundary. This includes loop-carried accumulation. Call-return
 edges reset the modeled state because the callee's pipeline state is not part
-of the caller summary. Memory dependencies, store-to-load forwarding, exception
-entry, speculative/out-of-order execution, cross-block co-issue and
-cross-function pipeline state are not modeled. Register-file ports are modeled
-only when `[pipeline.register_file]` is present; writeback-cycle contention,
+of the caller summary. Memory dependencies, exception entry,
+speculative/out-of-order execution, cross-block co-issue and cross-function
+pipeline state are not modeled. Register-file ports are modeled only when
+`[pipeline.register_file]` is present; writeback-cycle contention,
 banked/FP/vector register-file distinctions and cross-block port state are not
 modeled. Data forwarding is modeled only when `[pipeline.forwarding]` is
 present; forwarding-network arbitration, partial bypass paths, writeback
-ordering/WAW effects and cross-block forwarding are not modeled. Caches and
+ordering/WAW effects and cross-block forwarding are not modeled.
+Store-to-load forwarding is modeled only when
+`[pipeline.store_forwarding]` is present; store-buffer drain/age,
+partial-overlap and distinct-symbolic-alias forwarding, cross-block forwarding
+and suppression of cache/data-memory miss penalties are not modeled. Caches and
 branch prediction are modeled separately when their profile sections are
 enabled.
 Block-local costs are therefore pipeline-aware estimates, not WCET bounds.
@@ -1086,6 +1128,9 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_pipeline_forwarding` (`isa-class-presets` or `uniform-default`)
 - `board_profile_pipeline_forwarding_default_latency` (uniform mode only)
 - `board_profile_pipeline_forwarding_overrides`
+- `board_profile_pipeline_store_forwarding` (`enabled` when configured)
+- `board_profile_pipeline_store_forwarding_latency`
+- `board_profile_pipeline_store_forwarding_entries`
 - `board_profile_pipeline_branch_penalty`
 - `bounded_cost_table` (`replaced-by-pipeline` when a bounded model has `[pipeline]`)
 - `pipeline_overlap` (`profile-pipeline-schedule` when a bounded model has `[pipeline]`)
