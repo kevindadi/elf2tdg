@@ -149,6 +149,7 @@ struct FunctionDraft {
     kind: FunctionKind,
     noreturn: Option<cfg::CfgNoreturnReason>,
     cfg: cfg::FunctionCfg,
+    pipeline_edges: Vec<cfg::CfgPipelineEdgeInfo>,
     analyzed: bool,
 }
 
@@ -362,6 +363,7 @@ impl<'a> Analyzer<'a> {
                     kind: FunctionKind::External,
                     noreturn,
                     cfg: cfg::FunctionCfg::default(),
+                    pipeline_edges: Vec::new(),
                     analyzed: true,
                 },
             );
@@ -546,6 +548,7 @@ impl<'a> Analyzer<'a> {
                     kind,
                     noreturn,
                     cfg: cfg::FunctionCfg::default(),
+                    pipeline_edges: Vec::new(),
                     analyzed: false,
                 },
             );
@@ -1414,6 +1417,22 @@ impl<'a> Analyzer<'a> {
         for instruction in &decoded_sorted {
             self.collect_code_references(instruction, &mut referenced_addresses);
         }
+        let pipeline_stalls = self.timing.as_ref().map_or_else(Vec::new, |model| {
+            model.pipeline_edge_stalls(&decoded_sorted, &block_drafts, &edge_drafts)
+        });
+        let pipeline_edges = edge_drafts
+            .iter()
+            .zip(pipeline_stalls)
+            .filter_map(|(edge, stall)| {
+                stall.map(|stall| cfg::CfgPipelineEdgeInfo {
+                    function: function_id(start),
+                    source: Addr::new(edge.from),
+                    target: Addr::new(edge.to),
+                    site: Addr::new(edge.site),
+                    stall_cycles: stall,
+                })
+            })
+            .collect();
         let mut function_cfg = cfg::FunctionCfg::build(block_drafts, edge_drafts, Some(start));
         function_cfg.referenced_addresses = referenced_addresses.into_iter().collect();
         function_cfg.recovered_calls = call_sites
@@ -1424,6 +1443,7 @@ impl<'a> Analyzer<'a> {
 
         if let Some(function) = self.functions.get_mut(&address) {
             function.cfg = function_cfg;
+            function.pipeline_edges = pipeline_edges;
             function.analyzed = true;
         }
         self.calls.extend(calls);
@@ -2933,6 +2953,7 @@ impl<'a> Analyzer<'a> {
                 kind: FunctionKind::Normal,
                 noreturn: None,
                 cfg: cfg::FunctionCfg::default(),
+                pipeline_edges: Vec::new(),
                 analyzed: false,
             },
         );
@@ -3320,10 +3341,12 @@ impl<'a> Analyzer<'a> {
     }
 
     fn build_program_cfg(&self) -> cfg::ProgramCfg {
+        let mut pipeline_edges = Vec::new();
         let functions = self
             .functions
             .values()
             .map(|draft| {
+                pipeline_edges.extend(draft.pipeline_edges.iter().cloned());
                 let end = draft.address.saturating_add(draft.size);
                 let mut inline_frames = self.image.dwarf.as_ref().map_or_else(Vec::new, |dwarf| {
                     dwarf
@@ -3385,6 +3408,20 @@ impl<'a> Analyzer<'a> {
             .collect();
         let mut program = cfg::ProgramCfg::new(functions);
         program.pointer_roots = self.pointer_roots.iter().copied().collect();
+        if self
+            .timing
+            .as_ref()
+            .is_some_and(|model| model.active_pipeline().is_some())
+        {
+            program.pipeline = Some(cfg::CfgPipelineInfo {
+                model: "cortex-m4-edge-context".to_owned(),
+                edges: pipeline_edges,
+                caveats: vec![
+                    "Pipeline edge stalls use the source block's local exit state; source entry context, loop-carried accumulation, call-boundary pipeline state and memory dependencies are not propagated."
+                        .to_owned(),
+                ],
+            });
+        }
         program
     }
 

@@ -240,6 +240,12 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 .to_owned(),
         );
     }
+    if program.pipeline.is_some() {
+        info.caveats.push(
+            "Pipeline edge stalls are added to the IPET objective from the source block's local pipeline schedule. This is a first-order predecessor-context estimate; the pipeline timing model remains statistical and is rejected by --require-safe."
+                .to_owned(),
+        );
+    }
     if use_contexts {
         info.caveats.push(
             "Context-sensitive facts are analyzed per caller chain; function-level WCET is the maximum over analyzed contexts."
@@ -401,6 +407,7 @@ fn solve_function(
     let loops = build_loops(cfg, entry, analysis, facts, scope)?;
     let automata = ordered_automata(facts, function_id, scope);
     let cross = cross_function_constraints(facts, function_id, scope);
+    let pipeline_stalls = pipeline_edge_stalls(program, cfg);
     if !cross.is_empty() {
         let mut outcome = solve_function_with_cross_function_automata(
             program,
@@ -414,6 +421,7 @@ fn solve_function(
             &loops,
             &automata,
             &cross,
+            &pipeline_stalls,
         )?;
         outcome.solution.cache_model = cache_fallback_model(program);
         return Ok(outcome);
@@ -429,6 +437,7 @@ fn solve_function(
             scope,
             &loops,
             &automata,
+            &pipeline_stalls,
         )?;
         outcome.solution.cache_model = cache_fallback_model(program);
         return Ok(outcome);
@@ -445,6 +454,7 @@ fn solve_function(
             scope,
             &loops,
             &cache_models,
+            &pipeline_stalls,
         )?
     {
         return Ok(outcome);
@@ -497,7 +507,12 @@ fn solve_function(
         return Err(IpetError::Unknown("entry-unreachable".to_owned()));
     }
 
-    let objective = objective(cfg, &block_vars, call_cycles);
+    let mut objective = objective(cfg, &block_vars, call_cycles);
+    for (edge, variable) in &edge_vars {
+        if let Some(stall) = pipeline_stalls.get(edge) {
+            objective += *variable * *stall;
+        }
+    }
     let mut model_constraints =
         constraints(cfg, entry, &loops, &block_vars, &edge_vars, &loop_exit_vars);
     model_constraints.extend(non_loop_constraints(
@@ -1105,6 +1120,7 @@ fn solve_function_with_automata(
     scope: FactScope<'_>,
     loops: &[LoopModel],
     automata: &[OrderedAutomaton],
+    pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
 ) -> Result<IpetOutcome, IpetError> {
     let runtimes = automaton_runtimes(cfg, automata)?;
     let (nodes, edges) = build_product_graph(cfg, entry, reachable_nodes, &runtimes)?;
@@ -1167,6 +1183,11 @@ fn solve_function_with_automata(
         let base = block.cycles.map_or(0.0, |cycles| cycles.max);
         let call = call_cycles.get(&node.original).copied().unwrap_or(0.0);
         objective += node_variables[index] * (base + call);
+    }
+    for (index, edge) in edges.iter().enumerate() {
+        if let Some(stall) = pipeline_stalls.get(&edge.original) {
+            objective += edge_variables[index] * *stall;
+        }
     }
 
     let block_expression = |block: &BlockId| -> Expression {
@@ -2161,6 +2182,7 @@ fn solve_function_with_cross_function_automata(
     loops: &[LoopModel],
     automata: &[OrderedAutomaton],
     cross: &[&CrossFunctionConstraint],
+    pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
 ) -> Result<IpetOutcome, IpetError> {
     let model = build_cross_model(
         program,
@@ -2427,6 +2449,16 @@ fn solve_function_with_cross_function_automata(
             objective += node_variables[index] * cost;
         }
     }
+    for (index, edge) in product_edges.iter().enumerate() {
+        let model_edge = &model.edges[edge.model_edge];
+        if matches!(
+            model_edge.kind,
+            ModelEdgeKind::Caller | ModelEdgeKind::ReturnCall
+        ) && let Some(stall) = pipeline_stalls.get(&model_edge.original)
+        {
+            objective += edge_variables[index] * *stall;
+        }
+    }
 
     let problem = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = problem
@@ -2522,6 +2554,30 @@ impl CacheIpetModels {
 
 fn cache_fallback_model(program: &ProgramCfg) -> Option<String> {
     (program.cache.is_some() || program.data_cache.is_some()).then(|| "block-bounds".to_owned())
+}
+
+fn pipeline_edge_stalls(program: &ProgramCfg, cfg: &FunctionCfg) -> BTreeMap<EdgeIndex, f64> {
+    let Some(pipeline) = &program.pipeline else {
+        return BTreeMap::new();
+    };
+    let mut by_address = BTreeMap::new();
+    for edge in &pipeline.edges {
+        by_address
+            .entry((edge.source.get(), edge.target.get(), edge.site.get()))
+            .and_modify(|current: &mut f64| *current = current.max(edge.stall_cycles))
+            .or_insert(edge.stall_cycles);
+    }
+    let mut stalls = BTreeMap::new();
+    for edge in cfg.graph.edge_references() {
+        let source = cfg.graph[edge.source()].address;
+        let target = cfg.graph[edge.target()].address;
+        if let Some(&stall) = by_address.get(&(source, target, edge.weight().site))
+            && stall > 0.0
+        {
+            stalls.insert(edge.id(), stall);
+        }
+    }
+    stalls
 }
 
 fn build_cache_ipet_models(
@@ -2749,6 +2805,7 @@ fn solve_function_with_cache_states(
     scope: FactScope<'_>,
     loops: &[LoopModel],
     models: &CacheIpetModels,
+    pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
 ) -> Result<Option<IpetOutcome>, IpetError> {
     let Some((product_nodes, product_edges)) =
         build_cache_product_graph(cfg, entry, reachable_nodes, call_cycles, models)
@@ -2991,6 +3048,11 @@ fn solve_function_with_cache_states(
             objective += node_variables[index] * node.cost;
         }
     }
+    for (index, edge) in product_edges.iter().enumerate() {
+        if let Some(stall) = pipeline_stalls.get(&edge.original) {
+            objective += edge_variables[index] * *stall;
+        }
+    }
 
     let problem = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = problem
@@ -3132,8 +3194,8 @@ mod tests {
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
-        CfgMemoryAccess, CfgMemoryAccessKind, CfgMemoryResolution, CfgTerminator, FunctionCfg,
-        ProgramCfg,
+        CfgMemoryAccess, CfgMemoryAccessKind, CfgMemoryResolution, CfgPipelineEdgeInfo,
+        CfgPipelineInfo, CfgTerminator, FunctionCfg, ProgramCfg,
     };
     use crate::flow_facts::{
         FlowFactDocument, FlowFacts, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
@@ -4401,6 +4463,59 @@ max_states = 16
         let (objective, model) = run_ipet(&mut program, &board);
         assert_eq!(objective, 24.0);
         assert_eq!(model.as_deref(), Some("state-product"));
+    }
+
+    #[test]
+    fn pipeline_edge_stalls_add_to_ipet_objective() {
+        let mut program = ProgramCfg::new(vec![function(
+            0x1000,
+            FunctionCfg::build(
+                vec![
+                    block(0x1000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x1002, CfgTerminator::Fallthrough, 1.0),
+                    block(0x1004, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x1000, 0x1002, CfgEdgeKind::Fallthrough),
+                    edge(0x1002, 0x1004, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x1000),
+            ),
+        )]);
+        let facts = facts();
+        let mut baseline = program.clone();
+        let _ = analyze_program(&mut baseline, &facts);
+        assert_eq!(
+            baseline.functions[0]
+                .wcet
+                .as_ref()
+                .and_then(|wcet| wcet.ipet.as_ref())
+                .expect("baseline IPET")
+                .objective,
+            3.0
+        );
+
+        program.pipeline = Some(CfgPipelineInfo {
+            model: "test-edge-context".to_owned(),
+            edges: vec![CfgPipelineEdgeInfo {
+                function: FunctionId::new("fn:0x1000"),
+                source: Addr::new(0x1000),
+                target: Addr::new(0x1002),
+                site: Addr::new(0x1000),
+                stall_cycles: 5.0,
+            }],
+            caveats: Vec::new(),
+        });
+        let _ = analyze_program(&mut program, &facts);
+        assert_eq!(
+            program.functions[0]
+                .wcet
+                .as_ref()
+                .and_then(|wcet| wcet.ipet.as_ref())
+                .expect("pipeline IPET")
+                .objective,
+            8.0
+        );
     }
 
     #[test]

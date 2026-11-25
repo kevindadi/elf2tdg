@@ -14,8 +14,8 @@ use petgraph::visit::EdgeRef;
 use crate::cfg::{
     CFG_SCHEMA_VERSION, CfgBlock, CfgBranchPredictionInfo, CfgCacheInfo, CfgCallEdge, CfgCallSite,
     CfgConcurrencyKind, CfgDataCacheInfo, CfgDataMemoryInfo, CfgFunction, CfgFunctionWcet,
-    CfgInstruction, CfgLockEvent, CfgMulticoreInfo, CfgRoot, CfgSystemModelInfo, CfgWcetInfo,
-    CfgWcetRoot, CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CfgInstruction, CfgLockEvent, CfgMulticoreInfo, CfgPipelineInfo, CfgRoot, CfgSystemModelInfo,
+    CfgWcetInfo, CfgWcetRoot, CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 
@@ -238,6 +238,7 @@ fn render_analysis_models(out: &mut String, program: &ProgramCfg) {
     any |= render_data_cache(out, program.data_cache.as_ref());
     any |= render_branch_prediction(out, program.branch_prediction.as_ref());
     any |= render_data_memory(out, program.data_memory.as_ref());
+    any |= render_pipeline(out, program.pipeline.as_ref());
     any |= render_multicore(out, program.multicore.as_ref());
     if !any {
         let _ = writeln!(
@@ -452,6 +453,27 @@ fn render_data_memory(out: &mut String, memory: Option<&CfgDataMemoryInfo>) -> b
         ),
     );
     for caveat in &memory.caveats {
+        let _ = writeln!(out, "    caveat: {caveat}");
+    }
+    true
+}
+
+fn render_pipeline(out: &mut String, pipeline: Option<&CfgPipelineInfo>) -> bool {
+    let Some(pipeline) = pipeline else {
+        return false;
+    };
+    let total: f64 = pipeline.edges.iter().map(|edge| edge.stall_cycles).sum();
+    let _ = writeln!(out, "* pipeline: {}", pipeline.model);
+    kv_indent(
+        out,
+        "edge stalls",
+        &format!(
+            "{} edge(s), {:.1} total cycle(s)",
+            pipeline.edges.len(),
+            total
+        ),
+    );
+    for caveat in &pipeline.caveats {
         let _ = writeln!(out, "    caveat: {caveat}");
     }
     true

@@ -91,6 +91,73 @@ fn computes_root_and_function_wcet() {
 }
 
 #[test]
+fn pipeline_edge_context_is_recorded_in_the_pipeline() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let elf = manifest.join("../../tests/fixtures/cortex_m0/firmware.elf");
+    if !elf.exists() {
+        return;
+    }
+    let profile = BoardProfile::parse_toml(
+        r#"
+schema_version = 2
+id = "board:pipeline-integration"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 48_000_000
+
+[pipeline]
+issue_width = 1
+branch_penalty = 2
+
+[[pipeline.instructions]]
+mnemonic = "ldr"
+resources = ["load_store"]
+latency = 1
+occupancy = 4
+
+[wcet]
+default_loop_bound = 4
+bound_nonterminating_loops = true
+auto_loop_bounds = false
+"#,
+    )
+    .expect("valid pipeline profile");
+    let image = loader::load(&elf).expect("fixture ELF must load");
+    let output = analyze_with_cfg(
+        &image,
+        &AnalysisOptions {
+            board_profile: Some(profile),
+            path_analysis: PathAnalysis::Ipet,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("pipeline-aware IPET analysis");
+    let pipeline = output.cfg.pipeline.as_ref().expect("pipeline metadata");
+    assert_eq!(pipeline.model, "cortex-m4-edge-context");
+    assert!(!pipeline.edges.is_empty());
+    assert!(pipeline.edges.iter().all(|edge| edge.stall_cycles > 0.0));
+    let timing = output.cfg.timing.as_ref().expect("timing metadata");
+    assert_eq!(
+        timing.models[0].determinism,
+        elf2tdg_schema::Determinism::Statistical
+    );
+    assert!(output.cfg.functions.iter().any(|function| {
+        function
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .is_some()
+    }));
+    let json = cfg::render_json(&output.cfg, None, false).expect("CFG JSON");
+    let document: serde_json::Value = serde_json::from_str(&json).expect("CFG JSON");
+    assert_eq!(document["pipeline"]["model"], "cortex-m4-edge-context");
+    let text = text_report::render_text(&output.cfg, None, false).expect("text report");
+    assert!(text.contains("pipeline: cortex-m4-edge-context"));
+}
+
+#[test]
 fn cache_state_ipet_is_recorded_in_the_pipeline() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let elf = manifest.join("../../tests/fixtures/cortex_m0/firmware.elf");

@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.21";
+pub const CFG_SCHEMA_VERSION: &str = "2.22";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1000,6 +1000,33 @@ pub struct CfgDataMemoryInfo {
     pub caveats: Vec<String>,
 }
 
+/// Program-level edge-context pipeline metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgPipelineInfo {
+    /// Model name.
+    pub model: String,
+    /// CFG edges with a positive inter-block pipeline stall.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<CfgPipelineEdgeInfo>,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
+/// Pipeline stall charged when one CFG edge is taken.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgPipelineEdgeInfo {
+    /// Function containing the edge.
+    pub function: FunctionId,
+    /// Source block address.
+    pub source: Addr,
+    /// Target block address.
+    pub target: Addr,
+    /// Terminating instruction that produced the edge.
+    pub site: Addr,
+    /// Extra modeled cycles over the target block's ready-entry schedule.
+    pub stall_cycles: f64,
+}
+
 /// Worst-case execution-time status for a function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1740,6 +1767,8 @@ pub struct ProgramCfg {
     pub branch_prediction: Option<CfgBranchPredictionInfo>,
     /// Data-memory latency analysis metadata.
     pub data_memory: Option<CfgDataMemoryInfo>,
+    /// Edge-context pipeline cost metadata.
+    pub pipeline: Option<CfgPipelineInfo>,
     /// Multicore interference analysis metadata.
     pub multicore: Option<CfgMulticoreInfo>,
     /// WCET analysis metadata.
@@ -2924,6 +2953,8 @@ struct CfgDocument<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     data_memory: Option<&'a CfgDataMemoryInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pipeline: Option<&'a CfgPipelineInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     multicore: Option<&'a CfgMulticoreInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wcet: Option<&'a CfgWcetInfo>,
@@ -3166,6 +3197,7 @@ pub fn render_json_selected(
         data_cache: program.data_cache.as_ref(),
         branch_prediction: program.branch_prediction.as_ref(),
         data_memory: program.data_memory.as_ref(),
+        pipeline: program.pipeline.as_ref(),
         multicore: program.multicore.as_ref(),
         wcet: program.wcet.as_ref(),
         system_model: program.system_model.as_ref(),

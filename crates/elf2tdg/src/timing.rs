@@ -436,6 +436,142 @@ pub struct InstructionCost {
     pub unknown: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct PipelineState {
+    resource_free: BTreeMap<String, u32>,
+    register_ready: BTreeMap<capstone::RegId, u32>,
+}
+
+impl PipelineState {
+    fn normalize(&mut self, elapsed: u32) {
+        fn normalize_times<K: Ord>(times: &mut BTreeMap<K, u32>, elapsed: u32) {
+            times.retain(|_, time| {
+                *time = time.saturating_sub(elapsed);
+                *time > 0
+            });
+        }
+        normalize_times(&mut self.resource_free, elapsed);
+        normalize_times(&mut self.register_ready, elapsed);
+    }
+}
+
+struct PipelineSchedule {
+    cost: CostRange,
+    exit_state: PipelineState,
+    unknown: Vec<(String, u64)>,
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn pipeline_schedule(
+    profile: &BoardProfile,
+    pipeline: &crate::board_profile::PipelineProfile,
+    instructions: &[&DecodedInsn],
+    entry: &PipelineState,
+) -> PipelineSchedule {
+    let mut resource_free = entry.resource_free.clone();
+    let mut register_ready = entry.register_ready.clone();
+    let mut issue_start = 0_u32;
+    let mut completion = 0_u32;
+    let mut fetch_cycles = 0_u32;
+    let mut unknown = Vec::new();
+    for instruction in instructions {
+        let classification = classify(instruction);
+        let mnemonic = canonical_mnemonic(&instruction.mnemonic);
+        let (resources, latency, occupancy, is_unknown) = if let Some(spec) =
+            pipeline.instruction_for(classification.class, mnemonic)
+        {
+            (
+                spec.resources()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                spec.latency(),
+                spec.occupancy(),
+                false,
+            )
+        } else {
+            let (resources, latency, occupancy) = cortex_m4_pipeline_default(classification.class);
+            (
+                resources.to_vec(),
+                latency,
+                occupancy,
+                !classification.known,
+            )
+        };
+        let operand_ready = instruction
+            .regs_read
+            .iter()
+            .filter_map(|register| register_ready.get(register))
+            .copied()
+            .max()
+            .unwrap_or(0);
+        let resource_ready = resources
+            .iter()
+            .filter_map(|resource| resource_free.get(*resource))
+            .copied()
+            .max()
+            .unwrap_or(0);
+        let start = issue_start.max(operand_ready).max(resource_ready);
+        issue_start = start.saturating_add(1);
+        for resource in &resources {
+            let free = start.saturating_add(occupancy);
+            resource_free
+                .entry((*resource).to_owned())
+                .and_modify(|current| *current = (*current).max(free))
+                .or_insert(free);
+        }
+        let ready = start.saturating_add(latency);
+        for register in &instruction.regs_write {
+            register_ready
+                .entry(*register)
+                .and_modify(|current| *current = (*current).max(ready))
+                .or_insert(ready);
+        }
+        completion = completion.max(ready);
+        fetch_cycles = fetch_cycles
+            .saturating_add(profile.fetch_wait_cycles(instruction.address, instruction.size));
+        if is_unknown {
+            unknown.push((instruction.mnemonic.clone(), instruction.address));
+        }
+    }
+    let base = issue_start.max(completion).saturating_add(fetch_cycles);
+    let branch_penalty = pipeline.branch_penalty();
+    let ends_in_transfer = instructions
+        .last()
+        .is_some_and(|last| last.is_jump || last.is_call || last.is_return);
+    let min = f64::from(base)
+        + if ends_in_transfer {
+            branch_penalty.min
+        } else {
+            0.0
+        };
+    let max = f64::from(base)
+        + if ends_in_transfer {
+            branch_penalty.max
+        } else {
+            0.0
+        };
+    let elapsed = base.saturating_add(if ends_in_transfer {
+        branch_penalty.max.ceil() as u32
+    } else {
+        0
+    });
+    let mut exit_state = PipelineState {
+        resource_free,
+        register_ready,
+    };
+    exit_state.normalize(elapsed);
+    PipelineSchedule {
+        cost: CostRange::new(min, max),
+        exit_state,
+        unknown,
+    }
+}
+
 impl TimingCostModel {
     /// Selects a timing model and applies an optional board profile.
     ///
@@ -600,96 +736,93 @@ impl TimingCostModel {
         (CostRange::new(min, max), unknown)
     }
 
-    #[allow(clippy::cast_precision_loss)]
     fn pipeline_block_cost(
         profile: &BoardProfile,
         pipeline: &crate::board_profile::PipelineProfile,
         instructions: &[DecodedInsn],
     ) -> (CostRange, Vec<(String, u64)>) {
-        let mut resource_free: BTreeMap<&str, u32> = BTreeMap::new();
-        let mut register_ready: BTreeMap<capstone::RegId, u32> = BTreeMap::new();
-        let mut issue_start = 0_u32;
-        let mut completion = 0_u32;
-        let mut fetch_cycles = 0_u32;
-        let mut unknown = Vec::new();
-        for instruction in instructions {
-            let classification = classify(instruction);
-            let mnemonic = canonical_mnemonic(&instruction.mnemonic);
-            let (resources, latency, occupancy, is_unknown) =
-                if let Some(spec) = pipeline.instruction_for(classification.class, mnemonic) {
-                    (
-                        spec.resources()
-                            .iter()
-                            .map(String::as_str)
-                            .collect::<Vec<_>>(),
-                        spec.latency(),
-                        spec.occupancy(),
-                        false,
-                    )
-                } else {
-                    let (resources, latency, occupancy) =
-                        cortex_m4_pipeline_default(classification.class);
-                    (
-                        resources.to_vec(),
-                        latency,
-                        occupancy,
-                        !classification.known,
-                    )
-                };
-            let operand_ready = instruction
-                .regs_read
-                .iter()
-                .filter_map(|register| register_ready.get(register))
-                .copied()
-                .max()
-                .unwrap_or(0);
-            let resource_ready = resources
-                .iter()
-                .filter_map(|resource| resource_free.get(resource))
-                .copied()
-                .max()
-                .unwrap_or(0);
-            let start = issue_start.max(operand_ready).max(resource_ready);
-            issue_start = start.saturating_add(1);
-            for resource in &resources {
-                let free = start.saturating_add(occupancy);
-                resource_free
-                    .entry(resource)
-                    .and_modify(|current| *current = (*current).max(free))
-                    .or_insert(free);
-            }
-            let ready = start.saturating_add(latency);
-            for register in &instruction.regs_write {
-                register_ready
-                    .entry(*register)
-                    .and_modify(|current| *current = (*current).max(ready))
-                    .or_insert(ready);
-            }
-            completion = completion.max(ready);
-            fetch_cycles = fetch_cycles
-                .saturating_add(profile.fetch_wait_cycles(instruction.address, instruction.size));
-            if is_unknown {
-                unknown.push((instruction.mnemonic.clone(), instruction.address));
-            }
+        let instructions: Vec<&DecodedInsn> = instructions.iter().collect();
+        let schedule =
+            pipeline_schedule(profile, pipeline, &instructions, &PipelineState::default());
+        (schedule.cost, schedule.unknown)
+    }
+
+    /// Returns the pipeline cost added when a block is entered from each CFG
+    /// edge instead of from an all-ready pipeline.
+    ///
+    /// The state is derived from the source block's local schedule. This is a
+    /// first-order predecessor context: predecessor entry state and call
+    /// boundaries are not propagated.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::too_many_lines
+    )]
+    pub(crate) fn pipeline_edge_stalls(
+        &self,
+        decoded: &[DecodedInsn],
+        blocks: &[crate::cfg::CfgBlockDraft],
+        edges: &[crate::cfg::CfgEdgeDraft],
+    ) -> Vec<Option<f64>> {
+        let Some(profile) = &self.profile else {
+            return vec![None; edges.len()];
+        };
+        let Some(pipeline) = self.active_pipeline() else {
+            return vec![None; edges.len()];
+        };
+        let instructions_by_block: Vec<Vec<&DecodedInsn>> = blocks
+            .iter()
+            .map(|block| {
+                let end = block.address.saturating_add(block.size);
+                decoded
+                    .iter()
+                    .filter(|instruction| {
+                        instruction.address >= block.address && instruction.address < end
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut base = Vec::with_capacity(blocks.len());
+        let mut exit_states = Vec::with_capacity(blocks.len());
+        for instructions in &instructions_by_block {
+            let schedule =
+                pipeline_schedule(profile, pipeline, instructions, &PipelineState::default());
+            base.push(schedule.cost.max);
+            exit_states.push(schedule.exit_state);
         }
-        let base = issue_start.max(completion).saturating_add(fetch_cycles);
-        let branch_penalty = pipeline.branch_penalty();
-        let ends_in_transfer = instructions
-            .last()
-            .is_some_and(|last| last.is_jump || last.is_call || last.is_return);
-        let min = f64::from(base)
-            + if ends_in_transfer {
-                branch_penalty.min
-            } else {
-                0.0
-            };
-        let max = f64::from(base)
-            + if ends_in_transfer {
-                branch_penalty.max
-            } else {
-                0.0
-            };
-        (CostRange::new(min, max), unknown)
+        let index_by_address: BTreeMap<u64, usize> = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (block.address, index))
+            .collect();
+        edges
+            .iter()
+            .map(|edge| {
+                if edge.kind == crate::cfg::CfgEdgeKind::CallReturn {
+                    return None;
+                }
+                let source = *index_by_address.get(&edge.from)?;
+                let target = *index_by_address.get(&edge.to)?;
+                let schedule = pipeline_schedule(
+                    profile,
+                    pipeline,
+                    &instructions_by_block[target],
+                    &exit_states[source],
+                );
+                let delta = (schedule.cost.max - base[target]).max(0.0);
+                (delta > 1e-9).then_some(delta)
+            })
+            .collect()
+    }
+
+    /// Active Cortex-M4 pipeline profile, if the timing model uses it.
+    #[must_use]
+    pub(crate) fn active_pipeline(&self) -> Option<&crate::board_profile::PipelineProfile> {
+        if self.model.is_bounded_abstract() {
+            return None;
+        }
+        self.profile.as_ref()?.pipeline()
     }
 
     /// Builds CFG timing metadata for the selected model and profile.
@@ -1018,7 +1151,7 @@ impl TimingCostModel {
                         !caveat.contains("Load/store and branch penalties are table-based")
                     });
                     caveats.push(
-                        "Board-profile pipeline costs use an in-order resource/dependency model. Registers are assumed ready at block entry; memory dependencies, inter-block pipeline state, caches, branch prediction and exception entry are not modeled."
+                        "Board-profile pipeline block costs use an in-order resource/dependency model with registers ready at block entry. IPET adds a first-order edge-context stall from the source block's local pipeline state; source entry context, loop-carried accumulation, call-boundary state, memory dependencies and exception entry are not modeled. The model remains statistical."
                             .to_owned(),
                     );
                     if profile.instruction_cost_override_count() > 0 {
@@ -1506,6 +1639,7 @@ mod tests {
     use super::{TimingCostModel, TimingModel, parse_frequency};
     use crate::arch::DecodedInsn;
     use crate::board_profile::BoardProfile;
+    use crate::cfg::{CfgBlockDraft, CfgEdgeDraft, CfgEdgeKind, CfgTerminator};
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
     use elf2tdg_schema::FrequencySource;
     use std::collections::BTreeSet;
@@ -2023,6 +2157,78 @@ occupancy = 2
         assert_eq!(
             info.models[0].determinism,
             elf2tdg_schema::Determinism::Statistical
+        );
+    }
+
+    #[test]
+    fn pipeline_edge_stalls_carry_resource_occupancy() {
+        let profile = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:pipeline-edge"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 168_000_000
+
+[pipeline]
+issue_width = 1
+branch_penalty = 2
+
+[[pipeline.instructions]]
+mnemonic = "ldr"
+resources = ["load_store"]
+latency = 1
+occupancy = 4
+"#,
+        )
+        .expect("valid pipeline edge profile");
+        let model = TimingCostModel::select(None, Some(&profile), &image(ArchKind::Thumb))
+            .expect("profile selects")
+            .expect("timing model");
+        let decoded = [
+            insn_with_regs(0x1000, 2, "ldr", &[1], &[0]),
+            insn_with_regs(0x1002, 2, "ldr", &[2], &[3]),
+        ];
+        let blocks = [
+            CfgBlockDraft {
+                address: 0x1000,
+                size: 2,
+                instructions: Vec::new(),
+                calls: Vec::new(),
+                cycles: None,
+                terminator: CfgTerminator::Fallthrough,
+            },
+            CfgBlockDraft {
+                address: 0x1002,
+                size: 2,
+                instructions: Vec::new(),
+                calls: Vec::new(),
+                cycles: None,
+                terminator: CfgTerminator::Fallthrough,
+            },
+        ];
+        let edges = [CfgEdgeDraft {
+            from: 0x1000,
+            to: 0x1002,
+            kind: CfgEdgeKind::Fallthrough,
+            site: 0x1000,
+            conditional: false,
+        }];
+        let stalls = model.pipeline_edge_stalls(&decoded, &blocks, &edges);
+        assert_eq!(stalls, vec![Some(3.0)]);
+
+        let call_return = [CfgEdgeDraft {
+            from: 0x1000,
+            to: 0x1002,
+            kind: CfgEdgeKind::CallReturn,
+            site: 0x1000,
+            conditional: false,
+        }];
+        assert_eq!(
+            model.pipeline_edge_stalls(&decoded, &blocks, &call_return),
+            vec![None]
         );
     }
 
