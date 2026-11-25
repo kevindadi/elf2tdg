@@ -34,6 +34,9 @@ pub(crate) const MAX_PIPELINE_ISSUE_WIDTH: u32 = 8;
 /// Maximum accepted units for one pipeline resource.
 pub(crate) const MAX_PIPELINE_RESOURCE_UNITS: u32 = 64;
 
+/// Maximum accepted read or write ports in a pipeline register file.
+pub(crate) const MAX_PIPELINE_REGISTER_PORTS: u32 = 64;
+
 const fn default_profile_schema_version() -> u32 {
     BOARD_PROFILE_SCHEMA_VERSION
 }
@@ -133,6 +136,11 @@ cpu = "__CPU__"
 # [pipeline.resources]
 # alu = 2
 # load_store = 1
+#
+# Optional register-file port budgets, applied per issue cycle.
+# [pipeline.register_file]
+# read_ports = 4                   # 1..64
+# write_ports = 2                  # 1..64
 #
 # [[pipeline.instructions]]
 # mnemonic = "ldr"
@@ -1134,6 +1142,8 @@ pub(crate) struct PipelineProfile {
     #[serde(default)]
     resources: BTreeMap<String, u32>,
     #[serde(default)]
+    register_file: Option<PipelineRegisterFileProfile>,
+    #[serde(default)]
     branch_penalty: Option<CostSpec>,
     #[serde(default)]
     instructions: Vec<PipelineInstruction>,
@@ -1156,6 +1166,10 @@ impl PipelineProfile {
 
     pub(crate) fn resources(&self) -> &BTreeMap<String, u32> {
         &self.resources
+    }
+
+    pub(crate) fn register_file(&self) -> Option<&PipelineRegisterFileProfile> {
+        self.register_file.as_ref()
     }
 
     pub(crate) fn resource_summary(&self) -> String {
@@ -1192,6 +1206,23 @@ impl PipelineProfile {
 
     pub(crate) fn instruction_override_count(&self) -> usize {
         self.instructions.len()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PipelineRegisterFileProfile {
+    read_ports: u32,
+    write_ports: u32,
+}
+
+impl PipelineRegisterFileProfile {
+    pub(crate) fn read_ports(&self) -> u32 {
+        self.read_ports
+    }
+
+    pub(crate) fn write_ports(&self) -> u32 {
+        self.write_ports
     }
 }
 
@@ -1484,6 +1515,7 @@ impl BoardProfile {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn validate_pipeline(&self) -> Result<()> {
         let Some(pipeline) = &self.pipeline else {
             return Ok(());
@@ -1521,6 +1553,18 @@ impl BoardProfile {
                 return Err(Error::Config(format!(
                     "board profile pipeline.resources[{resource:?}] must be between 1 and {MAX_PIPELINE_RESOURCE_UNITS} units, not {units}"
                 )));
+            }
+        }
+        if let Some(register_file) = &pipeline.register_file {
+            for (name, ports) in [
+                ("read_ports", register_file.read_ports),
+                ("write_ports", register_file.write_ports),
+            ] {
+                if ports == 0 || ports > MAX_PIPELINE_REGISTER_PORTS {
+                    return Err(Error::Config(format!(
+                        "board profile pipeline.register_file.{name} must be between 1 and {MAX_PIPELINE_REGISTER_PORTS}, not {ports}"
+                    )));
+                }
             }
         }
         if let Some(branch_penalty) = &pipeline.branch_penalty
@@ -2723,6 +2767,10 @@ branch_penalty = { min = 1, max = 3 }
 alu = 2
 load_store = 1
 
+[pipeline.register_file]
+read_ports = 4
+write_ports = 2
+
 [[pipeline.instructions]]
 class = "load"
 resources = ["load_store"]
@@ -2736,6 +2784,9 @@ occupancy = 1
         assert_eq!(pipeline.resource_units("load_store"), 1);
         assert_eq!(pipeline.resource_units("branch"), 1);
         assert_eq!(pipeline.resource_summary(), "alu=2,load_store=1");
+        let register_file = pipeline.register_file().expect("register file");
+        assert_eq!(register_file.read_ports(), 4);
+        assert_eq!(register_file.write_ports(), 2);
 
         let legacy = valid.replace("schema_version = 2", "schema_version = 1");
         assert!(BoardProfile::parse_toml(&legacy).is_err());
@@ -2779,6 +2830,25 @@ occupancy = 1
 
         let bad_resource_name = valid.replace("alu = 2", "\"bad name\" = 2");
         assert!(BoardProfile::parse_toml(&bad_resource_name).is_err());
+
+        for (field, current, value) in [
+            ("read_ports", 4, 0),
+            ("write_ports", 2, 0),
+            ("read_ports", 4, 65),
+            ("write_ports", 2, 65),
+        ] {
+            let invalid = valid.replace(
+                &format!("{field} = {current}"),
+                &format!("{field} = {value}"),
+            );
+            assert!(
+                BoardProfile::parse_toml(&invalid).is_err(),
+                "{field} = {value}"
+            );
+        }
+
+        let missing_write_ports = valid.replace("write_ports = 2\n", "");
+        assert!(BoardProfile::parse_toml(&missing_write_ports).is_err());
 
         let no_resources = valid.replace("resources = [\"load_store\"]", "resources = []");
         assert!(BoardProfile::parse_toml(&no_resources).is_err());

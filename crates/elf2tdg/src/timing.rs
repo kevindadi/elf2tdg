@@ -548,8 +548,18 @@ fn pipeline_schedule(
     let mut resource_free = entry.resource_free.clone();
     let mut register_ready = entry.register_ready.clone();
     let issue_width = pipeline.issue_width().max(1);
-    let mut last_issue: Option<u32> = None;
+    let read_ports = pipeline
+        .register_file()
+        .map_or(u32::MAX, |register_file| register_file.read_ports().max(1));
+    let write_ports = pipeline
+        .register_file()
+        .map_or(u32::MAX, |register_file| register_file.write_ports().max(1));
+    let mut issue_floor = 0_u32;
+    let mut current_cycle: Option<u32> = None;
     let mut issued_in_cycle = 0_u32;
+    let mut reads_in_cycle = 0_u32;
+    let mut writes_in_cycle = 0_u32;
+    let mut port_end = 0_u32;
     let mut completion = 0_u32;
     let mut fetch_cycles = 0_u32;
     let mut unknown = Vec::new();
@@ -598,20 +608,47 @@ fn pipeline_schedule(
             })
             .max()
             .unwrap_or(0);
-        let mut start = last_issue
-            .unwrap_or(0)
-            .max(operand_ready)
-            .max(resource_ready);
-        if last_issue != Some(start) {
+        let reads = u32::try_from(instruction.regs_read.len()).unwrap_or(u32::MAX);
+        let writes = u32::try_from(instruction.regs_write.len()).unwrap_or(u32::MAX);
+        let oversized = reads > read_ports || writes > write_ports;
+        let mut start = issue_floor.max(operand_ready).max(resource_ready);
+        if oversized {
+            if current_cycle == Some(start) {
+                start = start.saturating_add(1);
+            }
+            let port_cycles = reads
+                .div_ceil(read_ports)
+                .max(writes.div_ceil(write_ports))
+                .max(1);
+            issue_floor = start.saturating_add(port_cycles);
+            port_end = port_end.max(issue_floor);
+            current_cycle = None;
             issued_in_cycle = 0;
-            last_issue = Some(start);
+            reads_in_cycle = 0;
+            writes_in_cycle = 0;
+        } else {
+            if current_cycle != Some(start) {
+                current_cycle = Some(start);
+                issued_in_cycle = 0;
+                reads_in_cycle = 0;
+                writes_in_cycle = 0;
+            }
+            if issued_in_cycle >= issue_width
+                || reads_in_cycle.saturating_add(reads) > read_ports
+                || writes_in_cycle.saturating_add(writes) > write_ports
+            {
+                start = start.saturating_add(1);
+                current_cycle = Some(start);
+                issued_in_cycle = 0;
+                reads_in_cycle = 0;
+                writes_in_cycle = 0;
+            }
+            issued_in_cycle = issued_in_cycle.saturating_add(1);
+            reads_in_cycle = reads_in_cycle.saturating_add(reads);
+            writes_in_cycle = writes_in_cycle.saturating_add(writes);
+            issue_floor = start;
+            port_end = port_end.max(start.saturating_add(1));
         }
-        if issued_in_cycle >= issue_width {
-            start = start.saturating_add(1);
-            issued_in_cycle = 0;
-            last_issue = Some(start);
-        }
-        issued_in_cycle = issued_in_cycle.saturating_add(1);
         for resource in &resources {
             let capacity = pipeline.resource_units(resource);
             let times = resource_free.entry((*resource).to_owned()).or_default();
@@ -621,22 +658,21 @@ fn pipeline_schedule(
             times.push(start.saturating_add(occupancy));
             times.sort_unstable();
         }
-        let ready = start.saturating_add(latency);
+        let result_ready = start.saturating_add(latency);
         for register in &instruction.regs_write {
             register_ready
                 .entry(*register)
-                .and_modify(|current| *current = (*current).max(ready))
-                .or_insert(ready);
+                .and_modify(|current| *current = (*current).max(result_ready))
+                .or_insert(result_ready);
         }
-        completion = completion.max(ready);
+        completion = completion.max(result_ready);
         fetch_cycles = fetch_cycles
             .saturating_add(profile.fetch_wait_cycles(instruction.address, instruction.size));
         if is_unknown {
             unknown.push((instruction.mnemonic.clone(), instruction.address));
         }
     }
-    let issue_cycles = last_issue.map_or(0, |cycle| cycle.saturating_add(1));
-    let base = issue_cycles.max(completion).saturating_add(fetch_cycles);
+    let base = port_end.max(completion).saturating_add(fetch_cycles);
     let branch_penalty = pipeline.branch_penalty();
     let ends_in_transfer = instructions
         .last()
@@ -810,10 +846,11 @@ impl TimingCostModel {
     ///
     /// The pipeline model schedules instructions in order using per-class
     /// resources, result latencies and register dependencies. Up to
-    /// `issue_width` instructions may issue per cycle, and each resource name
-    /// has the configured number of units. It models local hazards within one
-    /// block; pipeline state at block entry is assumed ready, so this is a
-    /// local cost rather than a whole-program WCET bound.
+    /// `issue_width` instructions may issue per cycle, each resource name has
+    /// the configured number of units, and an optional register-file section
+    /// budgets register reads and writes per issue cycle. It models local
+    /// hazards within one block; pipeline state at block entry is assumed
+    /// ready, so this is a local cost rather than a whole-program WCET bound.
     #[must_use]
     pub fn block_cost(&self, instructions: &[DecodedInsn]) -> (CostRange, Vec<(String, u64)>) {
         if self.model.supports_pipeline_model()
@@ -1136,6 +1173,16 @@ impl TimingCostModel {
                         pipeline.resource_summary(),
                     );
                 }
+                if let Some(register_file) = pipeline.register_file() {
+                    params.extras.insert(
+                        "board_profile_pipeline_read_ports".to_owned(),
+                        register_file.read_ports().to_string(),
+                    );
+                    params.extras.insert(
+                        "board_profile_pipeline_write_ports".to_owned(),
+                        register_file.write_ports().to_string(),
+                    );
+                }
                 params.extras.insert(
                     "board_profile_pipeline_branch_penalty".to_owned(),
                     format!(
@@ -1439,9 +1486,20 @@ impl TimingCostModel {
                     );
                 }
                 caveats.push(
-                    "Board-profile pipeline block costs use an in-order resource/dependency model. IPET builds a per-function state table from ready registers and resources at function entry and charges the state-dependent block cost; call-return edges reset the modeled state. Memory dependencies, register-file port limits, speculative/out-of-order execution, cross-block co-issue and non-IPET inter-block state are not modeled. The model remains statistical."
+                    "Board-profile pipeline block costs use an in-order resource/dependency model. IPET builds a per-function state table from ready registers and resources at function entry and charges the state-dependent block cost; call-return edges reset the modeled state. Memory dependencies, speculative/out-of-order execution, cross-block co-issue and non-IPET inter-block state are not modeled. The model remains statistical."
                         .to_owned(),
                 );
+                if pipeline.register_file().is_some() {
+                    caveats.push(
+                        "Register-file ports are budgeted at issue from Capstone's explicit and implicit read/write register sets. An instruction that exceeds one cycle's ports occupies consecutive exclusive issue cycles; port cycles are not added to execution latency. Writeback-cycle contention, banked/FP/vector register files and cross-block port state are not modeled."
+                            .to_owned(),
+                    );
+                } else {
+                    caveats.push(
+                        "Register-file port limits are not modeled; add [pipeline.register_file] to enable issue-cycle read/write port budgets."
+                            .to_owned(),
+                    );
+                }
                 if pipeline.issue_width() > 1 {
                     caveats.push(
                         "Per-instruction fetch wait states are summed and are not reduced by co-issue; fetch bandwidth is not modeled."
@@ -3070,6 +3128,126 @@ occupancy = 3
                 .caveats
                 .iter()
                 .any(|caveat| caveat.contains("cross-block co-issue"))
+        );
+    }
+
+    fn register_file_model(read_ports: u32, write_ports: u32) -> TimingCostModel {
+        let profile = BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:register-file"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[pipeline]
+issue_width = 2
+
+[pipeline.resources]
+alu = 2
+
+[pipeline.register_file]
+read_ports = {read_ports}
+write_ports = {write_ports}
+"#
+        ))
+        .expect("valid register-file profile");
+        TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model")
+    }
+
+    #[test]
+    fn register_file_ports_limit_co_issue() {
+        let instructions = [
+            insn_with_regs(0x1000, 4, "add", &[1], &[2]),
+            insn_with_regs(0x1004, 4, "add", &[3], &[4]),
+        ];
+        for (read_ports, write_ports, expected) in
+            [(2, 2, 1.0), (1, 2, 2.0), (2, 1, 2.0), (1, 1, 2.0)]
+        {
+            let model = register_file_model(read_ports, write_ports);
+            let (cost, _) = model.block_cost(&instructions);
+            assert_eq!(
+                cost.max, expected,
+                "read_ports={read_ports}, write_ports={write_ports}"
+            );
+        }
+    }
+
+    #[test]
+    fn register_file_oversized_instructions_use_exclusive_issue_cycles() {
+        let read_limited = register_file_model(1, 2);
+        let instructions = [
+            insn_with_regs(0x1000, 4, "add", &[1, 2], &[3]),
+            insn_with_regs(0x1004, 4, "add", &[4], &[5]),
+        ];
+        let (cost, _) = read_limited.block_cost(&instructions);
+        assert_eq!(cost.max, 3.0, "two reads need two exclusive cycles");
+
+        let write_limited = register_file_model(2, 1);
+        let instructions = [
+            insn_with_regs(0x1000, 4, "add", &[1], &[2, 3, 4]),
+            insn_with_regs(0x1004, 4, "add", &[5], &[6]),
+        ];
+        let (cost, _) = write_limited.block_cost(&instructions);
+        assert_eq!(cost.max, 4.0, "three writes need three exclusive cycles");
+
+        let unlimited = multi_issue_model(2, Some(2));
+        let instructions = [
+            insn_with_regs(0x1000, 4, "add", &[1, 2], &[3]),
+            insn_with_regs(0x1004, 4, "add", &[4], &[5]),
+        ];
+        let (cost, _) = unlimited.block_cost(&instructions);
+        assert_eq!(
+            cost.max, 1.0,
+            "without the section both instructions co-issue"
+        );
+    }
+
+    #[test]
+    fn register_file_metadata_records_port_counts() {
+        let model = register_file_model(4, 2);
+        let info = model.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_read_ports")
+                .map(String::as_str),
+            Some("4")
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_write_ports")
+                .map(String::as_str),
+            Some("2")
+        );
+        assert!(
+            info.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("Register-file ports are budgeted"))
+        );
+        assert!(
+            info.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("consecutive exclusive issue cycles"))
+        );
+
+        let unlimited = multi_issue_model(2, Some(2));
+        let info = unlimited.timing_info(None, &BTreeSet::new());
+        assert!(
+            info.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("Register-file port limits are not modeled"))
         );
     }
 

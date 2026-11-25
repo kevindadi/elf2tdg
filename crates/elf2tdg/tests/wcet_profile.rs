@@ -154,6 +154,7 @@ auto_loop_bounds = false
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn pipeline_state_product_is_recorded_in_the_pipeline() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let elf = manifest.join("../../tests/fixtures/cortex_m0/firmware.elf");
@@ -177,6 +178,10 @@ branch_penalty = 2
 [pipeline.resources]
 alu = 2
 load_store = 1
+
+[pipeline.register_file]
+read_ports = 4
+write_ports = 2
 
 [[pipeline.instructions]]
 mnemonic = "ldr"
@@ -225,6 +230,22 @@ auto_loop_bounds = false
             .get("board_profile_pipeline_resources")
             .map(String::as_str),
         Some("alu=2,load_store=1")
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_read_ports")
+            .map(String::as_str),
+        Some("4")
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_write_ports")
+            .map(String::as_str),
+        Some("2")
     );
     assert!(output.cfg.functions.iter().any(|function| {
         function
