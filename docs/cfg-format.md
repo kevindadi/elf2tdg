@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.31`.
+`cfg_schema_version` is `2.32`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.31 adds the `global-history`/`gshare` branch models and
-their `history_bits`/`initial_history` metadata. Version 2.30 adds the
+functions. Version 2.32 adds the `local-history` branch model. Version 2.31
+adds the `global-history`/`gshare` branch models and their
+`history_bits`/`initial_history` metadata. Version 2.30 adds the
 branch-prediction `first_execution` policy and the option to model an unknown
 first-execution counter. Version 2.29 adds
 the `interprocedural-state-product` branch model and predictor-state
@@ -424,7 +425,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.31",
+  "cfg_schema_version": "2.32",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -673,9 +674,9 @@ the concrete cache analysis falls back. `cache_conflicts` summarizes those
 bounds. When
 a branch-prediction profile is active, `ipet.branch_model` is
 `state-product` for the concrete per-function predictor-state product,
-`interprocedural-state-product` when the bimodal/global-history/gshare predictor
-state and callee branch costs are propagated through direct calls, and
-`block-bounds` when the
+`interprocedural-state-product` when the bimodal/global-history/gshare/
+local-history predictor state and callee branch costs are propagated through
+direct calls, and `block-bounds` when the
 function falls back to per-block misprediction bounds (unsupported branches,
 analysis state-limit fallback, indirect/unresolved/recursive calls, contextual
 facts, ordered/cross-function automata or product-size overflow). When a
@@ -783,8 +784,10 @@ direction (`taken` or `not-taken`), the branch-level predicted direction
 `predicted` value is the direction the predictor chose, not whether that
 particular successor was selected. The `global-history` model indexes one
 shared two-bit pattern table from a global branch-history register; `gshare`
-XORs the history with branch-PC bits. Program-level metadata records
-`history_bits` and `initial_history` for those models. `first_execution =
+XORs the history with branch-PC bits; `local-history` keeps a local history
+register per branch site and indexes the table by branch and local history.
+Program-level metadata records `history_bits` and `initial_history` for those
+models. `first_execution =
 "unknown"` applies to unexecuted pattern-table entries; the history register
 still starts from `initial_history`. For counter-based models, IPET may replace
 the per-call callee branch bound with an interprocedural summary: each callee is
