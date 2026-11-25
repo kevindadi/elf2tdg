@@ -765,6 +765,10 @@ pub(crate) enum BranchPredictionModel {
     Gshare,
     /// Per-branch local history registers indexing two-bit counters.
     LocalHistory,
+    /// Configurable two-level adaptive predictor: a level-1 global or local
+    /// history register and a level-2 global or per-address pattern table.
+    #[serde(rename = "two-level", alias = "two-level-history")]
+    TwoLevel,
 }
 
 impl BranchPredictionModel {
@@ -777,6 +781,47 @@ impl BranchPredictionModel {
             Self::GlobalHistory => "global-history",
             Self::Gshare => "gshare",
             Self::LocalHistory => "local-history",
+            Self::TwoLevel => "two-level",
+        }
+    }
+}
+
+/// Level-1 branch-history source for the two-level model.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum HistorySource {
+    /// One global branch-history register.
+    #[default]
+    Global,
+    /// One local history register per branch site.
+    Local,
+}
+
+impl HistorySource {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Local => "local",
+        }
+    }
+}
+
+/// Level-2 pattern-table indexing for the two-level model.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PatternTableScope {
+    /// One table shared by all branches.
+    #[default]
+    Global,
+    /// One table index per branch address.
+    PerAddress,
+}
+
+impl PatternTableScope {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::PerAddress => "per-address",
         }
     }
 }
@@ -850,6 +895,10 @@ pub(crate) struct BranchPredictionProfile {
     history_bits: Option<u8>,
     #[serde(default)]
     initial_history: Option<u64>,
+    #[serde(default)]
+    level1_history: Option<HistorySource>,
+    #[serde(default)]
+    level2_table: Option<PatternTableScope>,
     #[serde(default = "default_max_branch_states")]
     max_states: usize,
 }
@@ -898,8 +947,24 @@ impl BranchPredictionProfile {
         )
     }
 
+    pub(crate) fn is_two_level(&self) -> bool {
+        self.model == BranchPredictionModel::TwoLevel
+    }
+
     pub(crate) fn is_history_model(&self) -> bool {
-        self.is_global_history() || self.model == BranchPredictionModel::LocalHistory
+        self.is_global_history()
+            || matches!(
+                self.model,
+                BranchPredictionModel::LocalHistory | BranchPredictionModel::TwoLevel
+            )
+    }
+
+    pub(crate) fn level1_history(&self) -> Option<HistorySource> {
+        self.level1_history
+    }
+
+    pub(crate) fn level2_table(&self) -> Option<PatternTableScope> {
+        self.level2_table
     }
 
     pub(crate) fn max_states(&self) -> usize {
@@ -1505,6 +1570,14 @@ impl BoardProfile {
                         .to_owned(),
                 ));
             };
+            if prediction.is_two_level()
+                && (prediction.level1_history.is_none() || prediction.level2_table.is_none())
+            {
+                return Err(Error::Config(
+                    "board profile branch_prediction.level1_history and level2_table are required for two-level"
+                        .to_owned(),
+                ));
+            }
             if history >= (1_u64 << bits) {
                 return Err(Error::Config(format!(
                     "board profile branch_prediction.initial_history must fit in {bits} bit(s)"
@@ -1513,6 +1586,14 @@ impl BoardProfile {
         } else if prediction.history_bits.is_some() || prediction.initial_history.is_some() {
             return Err(Error::Config(
                 "board profile branch_prediction.history_bits/initial_history require a history-based model"
+                    .to_owned(),
+            ));
+        }
+        if !prediction.is_two_level()
+            && (prediction.level1_history.is_some() || prediction.level2_table.is_some())
+        {
+            return Err(Error::Config(
+                "board profile branch_prediction.level1_history/level2_table require two-level"
                     .to_owned(),
             ));
         }
@@ -2047,7 +2128,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BOARD_PROFILE_SCHEMA_VERSION, BoardProfile, SystemBlockingModel, UnknownInstructionPolicy,
+        BOARD_PROFILE_SCHEMA_VERSION, BoardProfile, HistorySource, PatternTableScope,
+        SystemBlockingModel, UnknownInstructionPolicy,
     };
 
     const VALID: &str = r#"
@@ -2484,6 +2566,7 @@ occupancy = 1
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn validates_branch_prediction_profiles() {
         let valid = format!(
             r#"{}
@@ -2556,6 +2639,45 @@ max_states = 32
             .is_err()
         );
         assert!(BoardProfile::parse_toml(&format!("{valid}\nhistory_bits = 4\n")).is_err());
+
+        let two_level = format!(
+            "{}\nhistory_bits = 4\ninitial_history = 1\nlevel1_history = \"local\"\nlevel2_table = \"global\"\n",
+            valid.replace("model = \"bimodal\"", "model = \"two-level\"")
+        );
+        let profile = BoardProfile::parse_toml(&two_level).expect("valid two-level profile");
+        let prediction = profile.branch_prediction().expect("two-level profile");
+        assert_eq!(prediction.model_name(), "two-level");
+        assert_eq!(prediction.level1_history(), Some(HistorySource::Local));
+        assert_eq!(prediction.level2_table(), Some(PatternTableScope::Global));
+
+        let gas = two_level
+            .replace("level1_history = \"local\"", "level1_history = \"global\"")
+            .replace(
+                "level2_table = \"global\"",
+                "level2_table = \"per-address\"",
+            );
+        let profile = BoardProfile::parse_toml(&gas).expect("valid GAs profile");
+        assert_eq!(
+            profile
+                .branch_prediction()
+                .expect("GAs profile")
+                .level2_table(),
+            Some(PatternTableScope::PerAddress)
+        );
+
+        assert!(
+            BoardProfile::parse_toml(&two_level.replace("level1_history = \"local\"\n", ""))
+                .is_err()
+        );
+        assert!(
+            BoardProfile::parse_toml(
+                &two_level.replace("level2_table = \"global\"", "level2_table = \"unknown\"")
+            )
+            .is_err()
+        );
+        assert!(
+            BoardProfile::parse_toml(&format!("{valid}\nlevel1_history = \"global\"\n")).is_err()
+        );
     }
 
     #[test]

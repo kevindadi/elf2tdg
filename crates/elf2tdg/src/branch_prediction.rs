@@ -18,7 +18,10 @@ use petgraph::visit::EdgeRef;
 
 use elf2tdg_schema::{Addr, CostRange};
 
-use crate::board_profile::{BranchPredictionModel, BranchPredictionProfile, FirstExecutionHistory};
+use crate::board_profile::{
+    BranchPredictionModel, BranchPredictionProfile, FirstExecutionHistory, HistorySource,
+    PatternTableScope,
+};
 use crate::cfg::{
     CfgBlockBranchPrediction, CfgBranchDirection, CfgBranchOutcome, CfgBranchPredictionInfo,
     CfgBranchPredictionOutcome, CfgEdgeKind, CfgTerminator, FunctionCfg, ProgramCfg,
@@ -31,6 +34,8 @@ pub(crate) struct PredictorModel {
     first_execution_unknown: bool,
     history_bits: u8,
     initial_history: u64,
+    level1_local: bool,
+    level2_per_address: bool,
     max_states: usize,
 }
 
@@ -42,8 +47,19 @@ impl PredictorModel {
                 | BranchPredictionModel::GlobalHistory
                 | BranchPredictionModel::Gshare
                 | BranchPredictionModel::LocalHistory
+                | BranchPredictionModel::TwoLevel
         ) && profile.first_execution()
             == FirstExecutionHistory::Unknown;
+        let level1_local = if profile.is_two_level() {
+            profile.level1_history() == Some(HistorySource::Local)
+        } else {
+            profile.model() == BranchPredictionModel::LocalHistory
+        };
+        let level2_per_address = if profile.is_two_level() {
+            profile.level2_table() == Some(PatternTableScope::PerAddress)
+        } else {
+            profile.model() == BranchPredictionModel::LocalHistory
+        };
         Self {
             model: profile.model(),
             mispredict_penalty: profile.mispredict_penalty(),
@@ -51,12 +67,21 @@ impl PredictorModel {
             first_execution_unknown,
             history_bits: profile.history_bits().unwrap_or(0),
             initial_history: profile.initial_history().unwrap_or(0),
+            level1_local,
+            level2_per_address,
             max_states: profile.max_states(),
         }
     }
 
     pub(crate) fn entry_state(&self) -> PredictorState {
-        if self.is_global_history() {
+        if !self.level1_local
+            && matches!(
+                self.model,
+                BranchPredictionModel::GlobalHistory
+                    | BranchPredictionModel::Gshare
+                    | BranchPredictionModel::TwoLevel
+            )
+        {
             PredictorState {
                 history: self.initial_history & self.history_mask(),
                 ..PredictorState::default()
@@ -64,13 +89,6 @@ impl PredictorModel {
         } else {
             PredictorState::default()
         }
-    }
-
-    fn is_global_history(&self) -> bool {
-        matches!(
-            self.model,
-            BranchPredictionModel::GlobalHistory | BranchPredictionModel::Gshare
-        )
     }
 
     fn history_mask(&self) -> u64 {
@@ -93,6 +111,18 @@ impl PredictorModel {
                 site,
                 state.local_history(site, self.initial_history) & self.history_mask(),
             ),
+            BranchPredictionModel::TwoLevel => {
+                let history = if self.level1_local {
+                    state.local_history(site, self.initial_history)
+                } else {
+                    state.history
+                } & self.history_mask();
+                if self.level2_per_address {
+                    (site, history)
+                } else {
+                    (0, history)
+                }
+            }
             BranchPredictionModel::StaticNotTaken
             | BranchPredictionModel::StaticTaken
             | BranchPredictionModel::Btfn
@@ -119,7 +149,8 @@ impl PredictorModel {
             BranchPredictionModel::Bimodal
             | BranchPredictionModel::GlobalHistory
             | BranchPredictionModel::Gshare
-            | BranchPredictionModel::LocalHistory => {
+            | BranchPredictionModel::LocalHistory
+            | BranchPredictionModel::TwoLevel => {
                 if counter >= 2 {
                     CfgBranchDirection::Taken
                 } else {
@@ -164,6 +195,7 @@ impl PredictorModel {
                 | BranchPredictionModel::GlobalHistory
                 | BranchPredictionModel::Gshare
                 | BranchPredictionModel::LocalHistory
+                | BranchPredictionModel::TwoLevel
         ) {
             return state.clone();
         }
@@ -175,12 +207,7 @@ impl PredictorModel {
         let mut state = state.clone();
         state.set(key, next, self.initial_state, self.first_execution_unknown);
         let bit = u64::from(actual == CfgBranchDirection::Taken);
-        if matches!(
-            self.model,
-            BranchPredictionModel::GlobalHistory | BranchPredictionModel::Gshare
-        ) {
-            state.history = ((state.history << 1) | bit) & self.history_mask();
-        } else if self.model == BranchPredictionModel::LocalHistory {
+        if self.level1_local {
             let history = state.local_history(site, self.initial_history);
             let next_history = ((history << 1) | bit) & self.history_mask();
             if next_history == self.initial_history {
@@ -188,6 +215,13 @@ impl PredictorModel {
             } else {
                 state.local_history.insert(site, next_history);
             }
+        } else if matches!(
+            self.model,
+            BranchPredictionModel::GlobalHistory
+                | BranchPredictionModel::Gshare
+                | BranchPredictionModel::TwoLevel
+        ) {
+            state.history = ((state.history << 1) | bit) & self.history_mask();
         }
         state
     }
@@ -378,6 +412,7 @@ pub(crate) fn analyze_program(
                 | BranchPredictionModel::GlobalHistory
                 | BranchPredictionModel::Gshare
                 | BranchPredictionModel::LocalHistory
+                | BranchPredictionModel::TwoLevel
         )
         .then(|| profile.initial_state_name().to_owned()),
         first_execution: (matches!(
@@ -386,6 +421,7 @@ pub(crate) fn analyze_program(
                 | BranchPredictionModel::GlobalHistory
                 | BranchPredictionModel::Gshare
                 | BranchPredictionModel::LocalHistory
+                | BranchPredictionModel::TwoLevel
         ) && profile.first_execution() == FirstExecutionHistory::Unknown)
             .then(|| profile.first_execution_name().to_owned()),
         history_bits: profile
@@ -396,6 +432,14 @@ pub(crate) fn analyze_program(
             .is_history_model()
             .then(|| profile.initial_history())
             .flatten(),
+        level1_history: profile
+            .is_two_level()
+            .then(|| profile.level1_history().map(|source| source.name().to_owned()))
+            .flatten(),
+        level2_table: profile
+            .is_two_level()
+            .then(|| profile.level2_table().map(|scope| scope.name().to_owned()))
+            .flatten(),
         max_states: profile.max_states(),
         functions_analyzed: 0,
         functions_fallback: 0,
@@ -404,7 +448,7 @@ pub(crate) fn analyze_program(
         caveats: vec![
             "Each function starts with the configured predictor state for its standalone block ranges unless first_execution = \"unknown\" is selected; in that mode every unexecuted pattern-table entry is evaluated against all four possible two-bit counters and the worst modeled outcome is kept. IPET can propagate predictor state through direct calls when the per-function branch-cost and exit-state summaries are available."
                 .to_owned(),
-            "Only conditional branches with one taken edge and one fallthrough edge are modeled. global-history uses a branch-history register to index one shared pattern table; gshare XORs the history with branch-PC bits; local-history keeps a local history register per branch site and indexes a pattern table by the branch and local history. Indirect/table target prediction, returns, branch-target buffers, two-level history and tournament predictors are not modeled."
+            "Only conditional branches with one taken edge and one fallthrough edge are modeled. global-history uses a branch-history register to index one shared pattern table; gshare XORs the history with branch-PC bits; local-history keeps a local history register per branch site and indexes a pattern table by the branch and local history; two-level selects a global or local level-1 history and a global or per-address level-2 pattern table. Indirect/table target prediction, returns, branch-target buffers and tournament predictors are not modeled."
                 .to_owned(),
             "Block cycle ranges include mispredictions for either successor; path-specific branch and predictor correlation is not modeled."
                 .to_owned(),
@@ -831,6 +875,12 @@ hz = 1_000_000
         )
     }
 
+    fn two_level_profile(level1: &str, level2: &str, bits: u8, history: u64) -> String {
+        format!(
+            "{BASE}\n[branch_prediction]\nmodel = \"two-level\"\nmispredict_penalty = 3\ninitial_state = \"weakly-not-taken\"\nhistory_bits = {bits}\ninitial_history = {history}\nlevel1_history = \"{level1}\"\nlevel2_table = \"{level2}\"\nmax_states = 16\n"
+        )
+    }
+
     #[test]
     fn btfn_predicts_backward_taken_branches() {
         let mut cfg = branch_cfg(0x0ff0, 0x1002);
@@ -991,6 +1041,55 @@ hz = 1_000_000
             crate::cfg::CfgBranchDirection::NotTaken,
         );
         assert_eq!(not_taken.local_history(0x1000, 0), 2);
+    }
+
+    #[test]
+    fn two_level_pag_shares_the_global_pattern_table() {
+        let predictor = model(&two_level_profile("local", "global", 2, 0));
+        let initial = predictor.entry_state();
+        assert_eq!(initial.history, 0);
+        let counters = predictor.possible_counters(&initial, 0x1000);
+        assert_eq!(counters, vec![1]);
+        let taken = predictor.next_state_for_counter(
+            &initial,
+            0x1000,
+            counters[0],
+            crate::cfg::CfgBranchDirection::Taken,
+        );
+        assert_eq!(taken.local_history(0x1000, 0), 1);
+        assert_eq!(taken.counters.get(&(0, 0)), Some(&2));
+        assert_eq!(taken.local_history(0x2000, 0), 0);
+        assert_eq!(predictor.possible_counters(&taken, 0x2000), vec![2]);
+    }
+
+    #[test]
+    fn two_level_gas_uses_global_history_with_per_address_table() {
+        let predictor = model(&two_level_profile("global", "per-address", 2, 0));
+        let initial = predictor.entry_state();
+        let counters = predictor.possible_counters(&initial, 0x1000);
+        let taken = predictor.next_state_for_counter(
+            &initial,
+            0x1000,
+            counters[0],
+            crate::cfg::CfgBranchDirection::Taken,
+        );
+        assert_eq!(taken.history, 1);
+        assert_eq!(taken.counters.get(&(0x1000, 0)), Some(&2));
+        assert_eq!(predictor.possible_counters(&taken, 0x2000), vec![1]);
+    }
+
+    #[test]
+    fn two_level_models_analyze_conditional_branches() {
+        for (level1, level2) in [("local", "global"), ("global", "per-address")] {
+            let mut cfg = branch_cfg(0x1004, 0x1002);
+            let result =
+                analyze_function(&mut cfg, &model(&two_level_profile(level1, level2, 3, 5)));
+            assert!(!result.fallback);
+            let block = &cfg.graph[cfg.entry.expect("entry")];
+            let prediction = block.branch_prediction.as_ref().expect("prediction");
+            assert_eq!(prediction.entry_states, 1);
+            assert_eq!(block.cycles.expect("cycles").max, 4.0);
+        }
     }
 
     #[test]

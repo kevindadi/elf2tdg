@@ -400,6 +400,12 @@ fn render_branch_prediction(
     if let Some(initial_history) = prediction.initial_history {
         kv_indent(out, "initial history", &format!("0x{initial_history:x}"));
     }
+    if let Some(level1) = &prediction.level1_history {
+        kv_indent(out, "level-1 history", level1);
+    }
+    if let Some(level2) = &prediction.level2_table {
+        kv_indent(out, "level-2 table", level2);
+    }
     kv_indent(
         out,
         "coverage",
