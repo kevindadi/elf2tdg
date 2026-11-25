@@ -98,7 +98,8 @@ The `wcet` section reports the selected backend:
   conflict-graph summaries when those constraints apply, branch model
   (`state-product`, `interprocedural-state-product` or `block-bounds`) when a
   branch-prediction profile is active, pipeline model (`state-product` or `edge-context`) when a pipeline
-  profile is active, and positive block execution counts for each function.
+  profile is active, CFG-partitioning summary when SESE region summaries are
+  used, and positive block execution counts for each function.
   The cache model section also lists each first-miss loop and its line
   addresses. The flow-facts section
   lists each explicit loop bound with its source (board profile or F4/FFX file)

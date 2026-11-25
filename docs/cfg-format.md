@@ -362,9 +362,10 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.41`.
+`cfg_schema_version` is `2.42`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.41 adds store-to-load forwarding metadata
+functions. Version 2.42 adds IPET `partitioning` metadata for SESE region
+summaries. Version 2.41 adds store-to-load forwarding metadata
 (`board_profile_pipeline_store_forwarding`, latency and entry count). Version
 2.40 adds data-forwarding metadata
 (`board_profile_pipeline_forwarding`, default latency and override count).
@@ -441,7 +442,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.41",
+  "cfg_schema_version": "2.42",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -710,7 +711,16 @@ the selected timing model, for example `cortex-m4-edge-context` or
 registers and resources at function entry, carries the exit state across
 edges, and resets on call-return edges; it falls back to edge stalls when the
 table exceeds its per-function state cap or the ordered/cross-function
-automata are selected. The top-level `wcet.flow_facts` object records the loop bounds and
+automata are selected. When IPET summarizes CFG partitions, `ipet.partitioning`
+records `model` (`sese-branch-regions`), the number of summarized regions,
+the number of original blocks hidden in region summaries and model caveats.
+Block execution counts in `ipet.blocks` are expanded back to original block
+IDs. Partitioning is disabled for functions with calls, cache/pipeline/
+branch/BTB/RAS state models, non-loop flow facts or infeasible-path
+constraints. Regions whose entry is the function entry are not summarized in
+the first version. Partitioning is capped at 4096 blocks, 512 regions and a
+bounded scan-work budget; functions outside the eligible shape use the
+monolithic IPET model. The top-level `wcet.flow_facts` object records the loop bounds and
 defaults used by the model, including bounds imported from F4/FFX files and
 conservatively inferred counted-loop bounds; each loop bound carries a
 `source` such as `board-profile [wcet]`, an imported file, or

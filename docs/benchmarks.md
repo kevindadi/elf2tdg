@@ -86,7 +86,7 @@ Each analysis entry records:
   maximum finite root;
 - `timing`: timing model, determinism and frequency;
 - `models`: IPET function count, solver/status counts and the selected
-  cache/pipeline/branch/BTB/RAS model variants;
+  cache/pipeline/branch/BTB/RAS and CFG-partitioning model variants;
 - `diagnostics`: number of CFG diagnostics;
 - `safe_ok` when `require_safe` was requested;
 - `reference` when a matching external reference was configured.
@@ -117,6 +117,11 @@ profiles. They are not evidence that a real board matches the timing values.
 - `state-product`, `block-bounds`, `edge-context` and
   `interprocedural-state-product` entries expose where a model completed or
   fell back.
+- `partition:sese-branch-regions` means IPET summarized eligible branch-entry
+  SESE regions before solving. The cycle objective should be identical to the
+  monolithic model for the same eligible function; report a mismatch as a
+  partitioning regression. Functions with calls, state models, non-loop flow
+  facts or infeasible-path constraints intentionally stay monolithic.
 - `partial`, `unbounded` and `unknown` function counts are more important than
   a single objective value. A benchmark with any partial/unbounded root is not
   a safe WCET result.

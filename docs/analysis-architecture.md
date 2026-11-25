@@ -66,7 +66,13 @@ elf2tdg firmware.elf --board-profile board.toml \
 
 It builds a per-function integer program with flow conservation, natural-loop
 bounds and callee summaries, solves it with `microlp`, and records the positive
-block execution counts. The remaining P1 work is:
+block execution counts. Call-free functions without cache/pipeline/branch/BTB/
+RAS state models and without non-loop flow facts or infeasible-path constraints
+first summarize branch-entry SESE regions bottom-up, replacing each region
+by an exact per-entry cost block and expanding block counts into the original
+CFG. The first partitioner is capped at 4096 blocks, 512 regions and a bounded
+scan-work budget, and is skipped for the unsupported shapes above; those
+functions use monolithic IPET. The remaining P1 work is:
 
 1. Additional FFX constructs, richer cross-function conflict forms (multiple
    groups, loop-scoped groups, call-address selection) and inference beyond
@@ -75,7 +81,8 @@ block execution counts. The remaining P1 work is:
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
    `elf2tdg-bench` now provides a reproducible local suite with cycle results,
    model/fallback summaries and external-reference slots; OTAWA reference
-   population, larger public benchmark sets and CFG partitioning remain.
+   population, larger public benchmark sets, richer partition shapes and
+   partitioning across calls/state models remain.
 4. Making IPET the default only after the bounded-results contract is validated.
 
 The irreducible-cycle guard is deliberate: if removing all natural-loop
@@ -125,6 +132,13 @@ from summed local estimates.
 
 ## Current limits
 
+- IPET CFG partitioning currently covers branch-entry SESE regions in
+  call-free functions without cache/pipeline/branch/BTB/RAS state models and
+  without non-loop flow facts or infeasible-path constraints. Regions whose
+  entry is the function entry are not summarized in the first version. It is
+  capped at 4096 blocks, 512 regions and a bounded scan-work budget; other
+  functions use monolithic IPET. Region summaries assume homogeneous per-entry
+  scaling and reconstruct block counts from per-region optima.
 - Context-sensitive flow facts use caller-chain function versions: F4 `in ...`
   chains and FFX `<call>` nesting select per-context loop bounds and, in IPET,
   per-context branch/call constraints. Context identity is the caller function,
