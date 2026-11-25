@@ -33,8 +33,8 @@ use crate::cache_state::{
     CacheGeometry, CacheState, data_accesses, instruction_accesses, simulate,
 };
 use crate::cfg::{
-    CfgBlock, CfgCachePersistenceInfo, CfgFunction, CfgFunctionWcet, CfgIpetBlockCount,
-    CfgIpetSolution, CfgWcetInfo, CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CfgBlock, CfgCacheConflictGraphInfo, CfgCachePersistenceInfo, CfgFunction, CfgFunctionWcet,
+    CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::flow_facts::{
     BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
@@ -580,6 +580,9 @@ fn solve_function(
         scope,
     ));
     let mut cache_variables = 0_usize;
+    let mut cache_conflicts = 0_usize;
+    let mut cache_conflict_sets = 0_usize;
+    let mut cache_conflict_lines = 0_usize;
     if !cache_persistence.is_empty() {
         let block_execution = |node: NodeIndex| -> Expression {
             block_vars
@@ -600,7 +603,7 @@ fn solve_function(
             .into_iter()
             .flatten()
         {
-            cache_variables += add_cache_persistence_model(
+            let application = add_cache_persistence_model(
                 &mut vars,
                 model,
                 cfg,
@@ -611,6 +614,10 @@ fn solve_function(
                 &mut model_constraints,
                 &mut objective,
             );
+            cache_variables = cache_variables.saturating_add(application.variables);
+            cache_conflicts = cache_conflicts.saturating_add(application.conflicts);
+            cache_conflict_sets = cache_conflict_sets.saturating_add(application.conflict_sets);
+            cache_conflict_lines = cache_conflict_lines.saturating_add(application.conflict_lines);
         }
     }
     if block_vars
@@ -666,11 +673,13 @@ fn solve_function(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: if cache_persistence.is_empty() {
-                cache_fallback_model(program)
-            } else {
-                Some("line-split".to_owned())
-            },
+            cache_model: cache_model_name(cache_conflicts, &cache_persistence)
+                .or_else(|| cache_fallback_model(program)),
+            cache_conflicts: cache_conflict_info(
+                cache_conflict_sets,
+                cache_conflict_lines,
+                cache_conflicts,
+            ),
             branch_model: branch_fallback_model(branch_prediction),
             blocks,
         },
@@ -695,6 +704,7 @@ fn objective(
 
 struct LoopModel {
     header: NodeIndex,
+    blocks: Vec<NodeIndex>,
     bound: u32,
     has_exit: bool,
     is_entry: bool,
@@ -767,8 +777,14 @@ fn build_loops(
             .filter(|edge| !loop_set.contains(&cfg.graph[edge.source()].id))
             .map(|edge| edge.id())
             .collect();
+        let blocks: Vec<NodeIndex> = loop_
+            .blocks
+            .iter()
+            .filter_map(|block| node_by_id.get(block).copied())
+            .collect();
         loops.push(LoopModel {
             header,
+            blocks,
             bound,
             has_exit,
             is_entry: header == entry,
@@ -1469,6 +1485,9 @@ fn solve_function_with_automata(
     }
 
     let mut cache_variables = 0_usize;
+    let mut cache_conflicts = 0_usize;
+    let mut cache_conflict_sets = 0_usize;
+    let mut cache_conflict_lines = 0_usize;
     if !cache_persistence.is_empty() {
         let block_execution = |node: NodeIndex| -> Expression {
             let mut expression = Expression::from(0.0);
@@ -1494,7 +1513,7 @@ fn solve_function_with_automata(
             .into_iter()
             .flatten()
         {
-            cache_variables += add_cache_persistence_model(
+            let application = add_cache_persistence_model(
                 &mut vars,
                 model,
                 cfg,
@@ -1505,6 +1524,10 @@ fn solve_function_with_automata(
                 &mut constraints,
                 &mut objective,
             );
+            cache_variables = cache_variables.saturating_add(application.variables);
+            cache_conflicts = cache_conflicts.saturating_add(application.conflicts);
+            cache_conflict_sets = cache_conflict_sets.saturating_add(application.conflict_sets);
+            cache_conflict_lines = cache_conflict_lines.saturating_add(application.conflict_lines);
         }
     }
     if nodes
@@ -1577,7 +1600,12 @@ fn solve_function_with_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: (!cache_persistence.is_empty()).then(|| "line-split".to_owned()),
+            cache_model: cache_model_name(cache_conflicts, cache_persistence),
+            cache_conflicts: cache_conflict_info(
+                cache_conflict_sets,
+                cache_conflict_lines,
+                cache_conflicts,
+            ),
             branch_model: None,
             blocks,
         },
@@ -2616,6 +2644,9 @@ fn solve_function_with_cross_function_automata(
     }
 
     let mut cache_variables = 0_usize;
+    let mut cache_conflicts = 0_usize;
+    let mut cache_conflict_sets = 0_usize;
+    let mut cache_conflict_lines = 0_usize;
     if !cache_persistence.is_empty() {
         let block_execution = |node: NodeIndex| -> Expression {
             let mut expression = Expression::from(0.0);
@@ -2641,7 +2672,7 @@ fn solve_function_with_cross_function_automata(
             .into_iter()
             .flatten()
         {
-            cache_variables += add_cache_persistence_model(
+            let application = add_cache_persistence_model(
                 &mut vars,
                 model,
                 cfg,
@@ -2652,6 +2683,10 @@ fn solve_function_with_cross_function_automata(
                 &mut constraints,
                 &mut objective,
             );
+            cache_variables = cache_variables.saturating_add(application.variables);
+            cache_conflicts = cache_conflicts.saturating_add(application.conflicts);
+            cache_conflict_sets = cache_conflict_sets.saturating_add(application.conflict_sets);
+            cache_conflict_lines = cache_conflict_lines.saturating_add(application.conflict_lines);
         }
     }
     if product_nodes
@@ -2730,7 +2765,12 @@ fn solve_function_with_cross_function_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: (!cache_persistence.is_empty()).then(|| "line-split".to_owned()),
+            cache_model: cache_model_name(cache_conflicts, cache_persistence),
+            cache_conflicts: cache_conflict_info(
+                cache_conflict_sets,
+                cache_conflict_lines,
+                cache_conflicts,
+            ),
             branch_model: None,
             blocks,
         },
@@ -2765,6 +2805,8 @@ enum PersistenceCacheKind {
 
 struct CachePersistenceIpetModel {
     kind: PersistenceCacheKind,
+    geometry: CacheGeometry,
+    write_allocate: bool,
     miss_penalty: u32,
     analysis: cache_persistence::PersistenceAnalysis,
 }
@@ -2779,6 +2821,43 @@ impl CachePersistenceModels {
     fn is_empty(&self) -> bool {
         self.instruction.is_none() && self.data.is_none()
     }
+
+    fn has_regions(&self) -> bool {
+        self.instruction
+            .as_ref()
+            .is_some_and(|model| !model.analysis.is_empty())
+            || self
+                .data
+                .as_ref()
+                .is_some_and(|model| !model.analysis.is_empty())
+    }
+}
+
+fn cache_model_name(conflicts: usize, models: &CachePersistenceModels) -> Option<String> {
+    if conflicts > 0 {
+        Some("conflict-graph".to_owned())
+    } else if models.has_regions() {
+        Some("line-split".to_owned())
+    } else {
+        None
+    }
+}
+
+fn cache_conflict_info(
+    sets: usize,
+    lines: usize,
+    constraints: usize,
+) -> Option<CfgCacheConflictGraphInfo> {
+    (constraints > 0).then(|| CfgCacheConflictGraphInfo {
+        model: "line-conflict-graph".to_owned(),
+        sets: u32::try_from(sets).unwrap_or(u32::MAX),
+        lines: u32::try_from(lines).unwrap_or(u32::MAX),
+        constraints: u32::try_from(constraints).unwrap_or(u32::MAX),
+        caveats: vec![
+            "Conflict bounds allow one miss per loop entry plus one potential eviction per access to another line in the same cache set; associativity and access ordering are over-approximated."
+                .to_owned(),
+        ],
+    })
 }
 
 struct BranchIpetModel {
@@ -2912,17 +2991,22 @@ fn build_cache_persistence_models(
         && info.line_bytes > 0
         && let Ok(ways) = usize::try_from(info.ways)
         && ways > 0
-        && reachable_nodes.iter().all(|node| {
-            cfg.graph[*node]
-                .cache
-                .as_ref()
-                .is_some_and(|cache| !cache.fallback)
-        })
+        && reachable_nodes
+            .iter()
+            .all(|node| cfg.graph[*node].cache.is_some())
     {
+        let geometry = CacheGeometry {
+            line_bytes: u64::from(info.line_bytes),
+            sets: info.sets,
+            ways,
+        };
         let analysis = persistence_from_info(&info.persistence, function_id, cfg);
-        if !analysis.is_empty() {
+        if !analysis.is_empty() || has_loop_lines(cfg, geometry, PersistenceCacheKind::Instruction)
+        {
             models.instruction = Some(CachePersistenceIpetModel {
                 kind: PersistenceCacheKind::Instruction,
+                geometry,
+                write_allocate: true,
                 miss_penalty: info.miss_penalty,
                 analysis,
             });
@@ -2938,19 +3022,49 @@ fn build_cache_persistence_models(
             cfg.graph[*node]
                 .data_cache
                 .as_ref()
-                .is_some_and(|cache| !cache.fallback && cache.unresolved_memory_accesses == 0)
+                .is_some_and(|cache| cache.unresolved_memory_accesses == 0)
         })
     {
+        let geometry = CacheGeometry {
+            line_bytes: u64::from(info.line_bytes),
+            sets: info.sets,
+            ways,
+        };
         let analysis = persistence_from_info(&info.persistence, function_id, cfg);
-        if !analysis.is_empty() {
+        if !analysis.is_empty() || has_loop_lines(cfg, geometry, PersistenceCacheKind::Data) {
             models.data = Some(CachePersistenceIpetModel {
                 kind: PersistenceCacheKind::Data,
+                geometry,
+                write_allocate: info.write_allocate,
                 miss_penalty: info.miss_penalty,
                 analysis,
             });
         }
     }
     models
+}
+
+fn has_loop_lines(cfg: &FunctionCfg, geometry: CacheGeometry, kind: PersistenceCacheKind) -> bool {
+    if geometry.line_bytes == 0 || geometry.sets == 0 {
+        return false;
+    }
+    let graph = crate::cfg_graph::analyze(cfg);
+    let node_by_id: BTreeMap<BlockId, NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    graph.loops.iter().any(|loop_| {
+        loop_.blocks.iter().any(|block| {
+            node_by_id.get(block).is_some_and(|node| {
+                cache_block_line_data(&cfg.graph[*node], kind).is_some_and(|(lines, _)| {
+                    lines
+                        .iter()
+                        .any(|line| line.accesses > 0 && line.misses_max > 0)
+                })
+            })
+        })
+    })
 }
 
 fn persistence_from_info(
@@ -3024,7 +3138,15 @@ fn cache_persistence_base_cost(
     cost.max(0.0)
 }
 
-type BlockCacheLineData = (Vec<(u64, u32, u32)>, u32);
+#[derive(Clone, Copy, Debug)]
+struct CacheLineData {
+    line: u64,
+    accesses: u32,
+    misses_max: u32,
+    writes: u32,
+}
+
+type BlockCacheLineData = (Vec<CacheLineData>, u32);
 
 fn cache_block_line_data(
     block: &CfgBlock,
@@ -3037,7 +3159,12 @@ fn cache_block_line_data(
                 cache
                     .lines
                     .iter()
-                    .map(|line| (line.line.get(), line.accesses, line.misses_max))
+                    .map(|line| CacheLineData {
+                        line: line.line.get(),
+                        accesses: line.accesses,
+                        misses_max: line.misses_max,
+                        writes: 0,
+                    })
                     .collect(),
                 cache.misses_max,
             ))
@@ -3048,12 +3175,31 @@ fn cache_block_line_data(
                 cache
                     .lines
                     .iter()
-                    .map(|line| (line.line.get(), line.accesses, line.misses_max))
+                    .map(|line| CacheLineData {
+                        line: line.line.get(),
+                        accesses: line.accesses,
+                        misses_max: line.misses_max,
+                        writes: line.writes,
+                    })
                     .collect(),
                 cache.misses_max,
             ))
         }
     }
+}
+
+struct CachePersistenceApplication {
+    variables: usize,
+    conflict_sets: usize,
+    conflict_lines: usize,
+    conflicts: usize,
+}
+
+#[derive(Default)]
+struct ConflictGraphUse {
+    sets: usize,
+    lines: usize,
+    constraints: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3067,9 +3213,10 @@ fn add_cache_persistence_model(
     loop_entries: &dyn Fn(&LoopModel) -> Expression,
     constraints: &mut Vec<good_lp::Constraint>,
     objective: &mut Expression,
-) -> usize {
+) -> CachePersistenceApplication {
     let mut added = 0_usize;
     let mut line_variables: BTreeMap<(NodeIndex, u64), Variable> = BTreeMap::new();
+    let mut block_lines: BTreeMap<NodeIndex, Vec<CacheLineData>> = BTreeMap::new();
     for node in reachable_nodes {
         let Some((lines, total_misses)) = cache_block_line_data(&cfg.graph[*node], model.kind)
         else {
@@ -3077,23 +3224,31 @@ fn add_cache_persistence_model(
         };
         let execution = block_execution(*node);
         let mut block_sum = Expression::from(0.0);
-        for (line, accesses, misses_max) in lines {
-            if accesses == 0 || misses_max == 0 {
+        let mut all_lines = Vec::new();
+        for line in lines {
+            if line.accesses == 0 {
+                continue;
+            }
+            all_lines.push(line);
+            if line.misses_max == 0 {
                 continue;
             }
             let variable = vars.add(good_lp::variable().integer().min(0.0));
             added = added.saturating_add(1);
             constraints.push(constraint::leq(
-                Expression::from(variable) - execution.clone() * f64::from(accesses),
+                Expression::from(variable) - execution.clone() * f64::from(line.accesses),
                 0.0,
             ));
             constraints.push(constraint::leq(
-                Expression::from(variable) - execution.clone() * f64::from(misses_max),
+                Expression::from(variable) - execution.clone() * f64::from(line.misses_max),
                 0.0,
             ));
             block_sum += variable;
             *objective += variable * f64::from(model.miss_penalty);
-            line_variables.insert((*node, line), variable);
+            line_variables.insert((*node, line.line), variable);
+        }
+        if !all_lines.is_empty() {
+            block_lines.insert(*node, all_lines);
         }
         if total_misses > 0 {
             constraints.push(constraint::leq(
@@ -3129,7 +3284,105 @@ fn add_cache_persistence_model(
             }
         }
     }
-    added
+    let conflict_use = add_conflict_graph_constraints(
+        model,
+        cfg,
+        loops,
+        &block_lines,
+        &line_variables,
+        block_execution,
+        loop_entries,
+        constraints,
+    );
+    CachePersistenceApplication {
+        variables: added,
+        conflict_sets: conflict_use.sets,
+        conflict_lines: conflict_use.lines,
+        conflicts: conflict_use.constraints,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_conflict_graph_constraints(
+    model: &CachePersistenceIpetModel,
+    cfg: &FunctionCfg,
+    loops: &[LoopModel],
+    block_lines: &BTreeMap<NodeIndex, Vec<CacheLineData>>,
+    line_variables: &BTreeMap<(NodeIndex, u64), Variable>,
+    block_execution: &dyn Fn(NodeIndex) -> Expression,
+    loop_entries: &dyn Fn(&LoopModel) -> Expression,
+    constraints: &mut Vec<good_lp::Constraint>,
+) -> ConflictGraphUse {
+    let mut use_ = ConflictGraphUse::default();
+    for loop_ in loops {
+        if loop_.blocks.is_empty() {
+            continue;
+        }
+        let node_set: BTreeSet<NodeIndex> = loop_.blocks.iter().copied().collect();
+        if cfg.graph.edge_references().any(|edge| {
+            let source_in = node_set.contains(&edge.source());
+            let target_in = node_set.contains(&edge.target());
+            (edge.weight().kind == crate::cfg::CfgEdgeKind::CallReturn && source_in)
+                || (target_in && !source_in && edge.target() != loop_.header)
+        }) {
+            continue;
+        }
+        let mut by_set: BTreeMap<u64, BTreeMap<u64, (Expression, bool)>> = BTreeMap::new();
+        for block in &loop_.blocks {
+            let Some(lines) = block_lines.get(block) else {
+                continue;
+            };
+            for line in lines {
+                let set = (line.line / model.geometry.line_bytes) % model.geometry.sets;
+                let entry = by_set
+                    .entry(set)
+                    .or_default()
+                    .entry(line.line)
+                    .or_insert_with(|| (Expression::from(0.0), false));
+                entry.0 += block_execution(*block) * f64::from(line.accesses);
+                entry.1 |= line.writes > 0;
+            }
+        }
+        let entries = loop_entries(loop_);
+        for lines in by_set.values() {
+            let mut set_lines = 0_usize;
+            for (line, (_, writes)) in lines {
+                if !model.write_allocate && *writes {
+                    // Non-allocating stores can miss repeatedly without an
+                    // intervening access to another line.
+                    continue;
+                }
+                let mut miss_sum = Expression::from(0.0);
+                let mut any = false;
+                for block in &loop_.blocks {
+                    if let Some(variable) = line_variables.get(&(*block, *line)) {
+                        miss_sum += *variable;
+                        any = true;
+                    }
+                }
+                if !any {
+                    continue;
+                }
+                let mut conflict_sum = Expression::from(0.0);
+                for (other, (accesses, _)) in lines {
+                    if other != line {
+                        conflict_sum += accesses.clone();
+                    }
+                }
+                constraints.push(constraint::leq(
+                    miss_sum - conflict_sum - entries.clone(),
+                    0.0,
+                ));
+                set_lines = set_lines.saturating_add(1);
+            }
+            if set_lines > 0 {
+                use_.sets = use_.sets.saturating_add(1);
+                use_.lines = use_.lines.saturating_add(set_lines);
+                use_.constraints = use_.constraints.saturating_add(set_lines);
+            }
+        }
+    }
+    use_
 }
 
 fn state_base_cost(
@@ -3680,6 +3933,7 @@ fn solve_function_with_state_products(
             status: status.to_owned(),
             objective,
             cache_model: (!models.is_empty()).then(|| "state-product".to_owned()),
+            cache_conflicts: None,
             branch_model: branch.map(|_| "state-product".to_owned()),
             blocks,
         },
@@ -4886,6 +5140,37 @@ bound_nonterminating_loops = true
         )])
     }
 
+    fn cache_conflict_program() -> ProgramCfg {
+        let a_instructions = (0..8)
+            .map(|index| instruction(0x4010 + 2 * index, CfgTerminator::Fallthrough, 1.0))
+            .collect();
+        ProgramCfg::new(vec![function(
+            0x4000,
+            FunctionCfg::build(
+                vec![
+                    block(0x4000, CfgTerminator::Fallthrough, 1.0),
+                    CfgBlockDraft {
+                        address: 0x4010,
+                        size: 16,
+                        instructions: a_instructions,
+                        calls: Vec::new(),
+                        cycles: Some(CostRange::exact(8.0)),
+                        terminator: CfgTerminator::Fallthrough,
+                    },
+                    block(0x4030, CfgTerminator::Branch, 1.0),
+                    block(0x4050, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x4000, 0x4010, CfgEdgeKind::Fallthrough),
+                    edge(0x4010, 0x4030, CfgEdgeKind::Fallthrough),
+                    edge(0x4030, 0x4000, CfgEdgeKind::Branch),
+                    edge(0x4030, 0x4050, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x4000),
+            ),
+        )])
+    }
+
     fn cache_line_split_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x3000,
@@ -4945,6 +5230,46 @@ bound_nonterminating_loops = true
             index: None,
             disp: 0,
         }];
+        let block = CfgBlockDraft {
+            address: 0x1000,
+            size: 2,
+            instructions: vec![instruction],
+            calls: Vec::new(),
+            cycles: Some(CostRange::exact(1.0)),
+            terminator: CfgTerminator::Jump,
+        };
+        ProgramCfg::new(vec![function(
+            0x1000,
+            FunctionCfg::build(
+                vec![block],
+                vec![edge(0x1000, 0x1000, CfgEdgeKind::Jump)],
+                Some(0x1000),
+            ),
+        )])
+    }
+
+    fn data_cache_write_loop_program() -> ProgramCfg {
+        let mut instruction = instruction(0x1000, CfgTerminator::Jump, 1.0);
+        instruction.memory_accesses = vec![
+            CfgMemoryAccess {
+                kind: CfgMemoryAccessKind::Read,
+                address: Some(Addr::new(0x2000)),
+                width: 4,
+                resolution: CfgMemoryResolution::Direct,
+                base: None,
+                index: None,
+                disp: 0,
+            },
+            CfgMemoryAccess {
+                kind: CfgMemoryAccessKind::Write,
+                address: Some(Addr::new(0x2000)),
+                width: 4,
+                resolution: CfgMemoryResolution::Direct,
+                base: None,
+                index: None,
+                disp: 0,
+            },
+        ];
         let block = CfgBlockDraft {
             address: 0x1000,
             size: 2,
@@ -5105,10 +5430,10 @@ max_states = 16
             .as_ref()
             .and_then(|wcet| wcet.ipet.as_ref())
             .expect("persistence IPET");
-        assert_eq!(ipet.cache_model.as_deref(), Some("line-split"));
+        assert_eq!(ipet.cache_model.as_deref(), Some("conflict-graph"));
         assert!(
             ipet.objective < bounded_ipet.objective,
-            "line splitting must cap repeated loop misses: {} < {}",
+            "conflict-graph constraints must cap repeated loop misses: {} < {}",
             ipet.objective,
             bounded_ipet.objective
         );
@@ -5178,14 +5503,141 @@ max_states = 64
             .wcet
             .as_ref()
             .and_then(|wcet| wcet.ipet.as_ref())
-            .expect("line-split IPET");
-        assert_eq!(ipet.cache_model.as_deref(), Some("line-split"));
+            .expect("conflict-graph IPET");
+        assert_eq!(ipet.cache_model.as_deref(), Some("conflict-graph"));
         assert!(
             ipet.objective < bounded_ipet.objective,
-            "line splitting must cap the persistent line: {} < {}",
+            "conflict-graph constraints must cap the persistent line: {} < {}",
             ipet.objective,
             bounded_ipet.objective
         );
+    }
+
+    #[test]
+    fn conflict_graph_applies_when_the_concrete_cache_analysis_falls_back() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 32
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 1
+",
+        );
+        let mut program = cache_loop_header_program();
+        prepare_cache_program(&mut program, &board);
+        let cache_info = program.cache.as_ref().expect("cache info");
+        assert!(
+            cache_info.functions_fallback > 0,
+            "max_states = 1 must force the concrete analysis fallback"
+        );
+        assert!(cache_info.persistence.regions.is_empty());
+
+        let mut bounded = program.clone();
+        bounded
+            .cache
+            .as_mut()
+            .expect("cache info")
+            .invalidate_on_call = false;
+        let bounded_facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let _ = analyze_program(&mut bounded, &bounded_facts);
+        let bounded_ipet = bounded.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("bounded IPET");
+
+        let mut constrained = program.clone();
+        let constrained_facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let _ = analyze_program(&mut constrained, &constrained_facts);
+        let ipet = constrained.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("conflict-graph IPET");
+        assert_eq!(ipet.cache_model.as_deref(), Some("conflict-graph"));
+        assert!(
+            ipet.objective < bounded_ipet.objective,
+            "conflict graph must work without concrete state persistence: {} < {}",
+            ipet.objective,
+            bounded_ipet.objective
+        );
+    }
+
+    #[test]
+    fn conflict_graph_caps_repeated_line_misses_across_blocks() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 64
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 1
+",
+        );
+        let mut program = cache_conflict_program();
+        prepare_cache_program(&mut program, &board);
+        assert!(
+            program
+                .cache
+                .as_ref()
+                .expect("cache info")
+                .functions_fallback
+                > 0,
+            "max_states = 1 must force fallback"
+        );
+
+        let mut bounded = program.clone();
+        bounded
+            .cache
+            .as_mut()
+            .expect("cache info")
+            .invalidate_on_call = false;
+        let bounded_facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let _ = analyze_program(&mut bounded, &bounded_facts);
+        let bounded_ipet = bounded.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("bounded IPET");
+
+        let mut constrained = program.clone();
+        let constrained_facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let _ = analyze_program(&mut constrained, &constrained_facts);
+        let ipet = constrained.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("conflict-graph IPET");
+        assert_eq!(ipet.cache_model.as_deref(), Some("conflict-graph"));
+        assert!(
+            ipet.objective < bounded_ipet.objective,
+            "conflict graph must cap repeated line misses: {} < {}",
+            ipet.objective,
+            bounded_ipet.objective
+        );
+    }
+
+    #[test]
+    fn conflict_graph_does_not_cap_nonallocating_store_misses() {
+        let board = cache_board(
+            r"
+[data_cache]
+size = 64
+line_bytes = 32
+ways = 2
+miss_penalty = 10
+write_allocate = false
+max_states = 1
+",
+        );
+        let mut program = data_cache_write_loop_program();
+        prepare_cache_program(&mut program, &board);
+        let (objective, model) = run_ipet(&mut program, &board);
+        assert_eq!(objective, 84.0);
+        assert_eq!(model.as_deref(), Some("block-bounds"));
     }
 
     #[test]
@@ -5421,7 +5873,7 @@ auto_loop_bounds = false
     }
 
     #[test]
-    fn cache_state_ipet_falls_back_when_cache_analysis_falls_back() {
+    fn conflict_graph_applies_when_cache_analysis_falls_back() {
         let board = cache_board(
             r"
 [instruction_cache]
@@ -5435,8 +5887,23 @@ max_states = 1
         let mut program = cache_loop_program();
         prepare_cache_program(&mut program, &board);
         let (objective, model) = run_ipet(&mut program, &board);
-        assert_eq!(objective, 44.0);
-        assert_eq!(model.as_deref(), Some("block-bounds"));
+        assert_eq!(objective, 14.0);
+        assert_eq!(model.as_deref(), Some("conflict-graph"));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("IPET solution");
+        let conflicts = ipet.cache_conflicts.as_ref().expect("conflict graph");
+        assert_eq!(conflicts.model, "line-conflict-graph");
+        assert!(conflicts.constraints > 0);
+        let json = serde_json::to_value(ipet).expect("IPET JSON");
+        assert_eq!(json["cache_conflicts"]["model"], "line-conflict-graph");
+        assert!(
+            json["cache_conflicts"]["constraints"]
+                .as_u64()
+                .is_some_and(|constraints| constraints > 0)
+        );
     }
 
     #[test]

@@ -1137,6 +1137,16 @@ fn render_function_wcet(out: &mut String, function: &CfgFunction, analysis_enabl
         if let Some(cache_model) = &ipet.cache_model {
             kv(out, "ipet cache model", cache_model);
         }
+        if let Some(conflicts) = &ipet.cache_conflicts {
+            kv(
+                out,
+                "ipet cache conflicts",
+                &format!(
+                    "{}: {} set(s), {} line(s), {} constraint(s)",
+                    conflicts.model, conflicts.sets, conflicts.lines, conflicts.constraints
+                ),
+            );
+        }
         if let Some(branch_model) = &ipet.branch_model {
             kv(out, "ipet branch model", branch_model);
         }

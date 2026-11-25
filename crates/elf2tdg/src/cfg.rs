@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.25";
+pub const CFG_SCHEMA_VERSION: &str = "2.26";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1122,6 +1122,21 @@ pub struct CfgFunctionWcet {
     pub ipet: Option<CfgIpetSolution>,
 }
 
+/// Cache conflict-graph constraint summary for one IPET function version.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgCacheConflictGraphInfo {
+    /// Conflict-graph model name.
+    pub model: String,
+    /// Cache sets with at least one conflict constraint.
+    pub sets: u32,
+    /// Cache lines with a conflict bound.
+    pub lines: u32,
+    /// Number of generated conflict constraints.
+    pub constraints: u32,
+    /// Model caveats.
+    pub caveats: Vec<String>,
+}
+
 /// Solver result for one IPET function model.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgIpetSolution {
@@ -1134,6 +1149,9 @@ pub struct CfgIpetSolution {
     /// Cache model used by the IPET constraints, when cache analysis is active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_model: Option<String>,
+    /// Cache conflict-graph constraints, when the conflict-graph model is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_conflicts: Option<CfgCacheConflictGraphInfo>,
     /// Branch-prediction model used by the IPET constraints, when active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_model: Option<String>,
