@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.34`.
+`cfg_schema_version` is `2.35`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.34 adds the `tournament` branch model and its
-`choice_initial_state` metadata. Version 2.33 adds the configurable `two-level`
+functions. Version 2.35 adds the `branch_target_buffer` metadata, per-block
+BTB misses and `ipet.btb_model`. Version 2.34 adds the `tournament` branch
+model and its `choice_initial_state` metadata. Version 2.33 adds the configurable `two-level`
 branch model and its `level1_history`/`level2_table` metadata. Version 2.32 adds
 the
 `local-history` branch model. Version 2.31 adds the
@@ -429,7 +430,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.34",
+  "cfg_schema_version": "2.35",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -683,8 +684,10 @@ local-history/two-level/tournament predictor state and callee branch costs are
 propagated through direct calls, and `block-bounds` when the
 function falls back to per-block misprediction bounds (unsupported branches,
 analysis state-limit fallback, indirect/unresolved/recursive calls, contextual
-facts, ordered/cross-function automata or product-size overflow). When a
-pipeline profile is active,
+facts, ordered/cross-function automata or product-size overflow). When a BTB
+profile is active, `ipet.btb_model` is `state-product` for the concrete
+set-associative LRU BTB state product or `block-bounds` when the function falls
+back to per-block miss bounds. When a pipeline profile is active,
 `ipet.pipeline_model` is `state-product` when IPET propagated the full
 per-function pipeline state table through the CFG, or `edge-context` when only
 first-order edge stalls were available. The state product starts with ready
@@ -738,6 +741,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `cache` | instruction-cache model parameters, analysis counts, line-split first-miss regions and caveats |
 | `data_cache` | data-cache model parameters, access coverage, analysis counts, line-split first-miss regions and caveats |
 | `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
+| `branch_target_buffer` | BTB geometry, miss penalty, transfer/function coverage and caveats |
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
 | `pipeline` | pipeline model parameters and fallback edge stalls: model name, per-edge `source`/`target`/`site` and `stall_cycles`, caveats |
 | `multicore` | access-budget interference model, core topology, charged events, total cycles and caveats |
@@ -807,6 +811,12 @@ the program-level branch metadata carries `first_execution: "unknown"`; each
 unexecuted branch site is evaluated against all four possible two-bit counters,
 the worst modeled misprediction is kept, and every resulting counter remains a
 possible successor state until that site's first execution makes it concrete.
+
+When a BTB profile is active, a block ending in a modeled taken conditional
+branch or jump carries a `btb` object with minimum/maximum misses, the number
+of BTB states reaching the block and a fallback flag. Fallthrough fetches,
+calls and returns do not probe the BTB. The block `cycles` range includes the
+BTB miss penalty.
 
 When per-region data-memory timing is active, each block with data accesses
 can carry a `data_memory` object. It records resolved, unresolved, mapped and
@@ -1071,17 +1081,20 @@ asserts that the CFG validates.
   state when the branch analysis completes, charging the
   actual predicted/actual edge outcome instead of the per-block maximum;
   unsupported branches, analysis fallback, ordered/cross-function automata or
-  product-size overflow keep `branch_model = "block-bounds"`. For the bimodal
-  model, direct, statically resolved calls use branch-only callee summaries to
-  carry predictor state and callee branch costs through call edges, including
-  nested calls; indirect, unresolved or recursive calls, contextual facts and
-  summary/state caps fall back to the per-function or per-block model.
+  product-size overflow keep `branch_model = "block-bounds"`. For counter-based
+  branch models, direct, statically resolved calls use branch-only callee
+  summaries to carry predictor state and callee branch costs through call
+  edges, including nested calls; indirect, unresolved or recursive calls,
+  contextual facts and summary/state caps fall back to the per-function or
+  per-block model.
   With `first_execution = "unknown"`, the first access to each pattern-table
   entry considers all four possible counters and keeps the worst outcome; later
   accesses use the resulting concrete counter. `global-history` (GAg) and
   `gshare` track a global history register and shared pattern table, including
-  across direct calls. Tournament predictors and branch-target buffers are not
-  modeled. Full inter-block
+  across direct calls; local-history, two-level and tournament predictors are
+  also modeled. The BTB is a separate set-associative state product for
+  intra-function taken branches and jumps; call/return targets, indirect call
+  targets and cross-function replacement are not modeled. Full inter-block
   pipeline state is integrated into the IPET state product when the
   per-function state table is available, with first-order edge stalls as the
   fallback for ordered/cross-function automata, state-cap overflow or

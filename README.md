@@ -55,6 +55,8 @@ Implemented:
     concrete predictor-state IPET for per-edge misprediction costs, optional
     unknown first-execution history and cross-call predictor-state and
     branch-cost propagation;
+  - optional set-associative LRU branch-target buffers with per-block miss
+    bounds and a concrete BTB state product in IPET;
   - per-region data-memory bus widths and read/write wait states;
   - explicit multicore access-budget interference (`[multicore]`) with
     per-block read/write/fetch attribution;
@@ -364,7 +366,8 @@ branch-PC bits; `local-history` keeps a history register per branch site;
 `two-level` selects global/local level-1 history and a global/per-address
 level-2 table; `tournament` selects between global-history and local-history
 components with per-branch choice counters. Other tournament component pairs
-and BTB behavior are not modeled. Context
+are not modeled. The optional BTB models intra-function taken branch/jump
+targets; call/return and indirect-call targets are not modeled. Context
 sensitivity applies to flow facts and WCET composition, not to the
 microarchitectural cache/branch models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.

@@ -17,8 +17,8 @@ elf2tdg firmware.elf \
 
 The file is parsed as TOML unless its extension is `.json`. Schema version 1
 profiles remain valid; version 2 adds the optional pipeline, cache,
-branch-prediction, data-memory timing, multicore, WCET and layered system
-models. The profile is strictly
+branch-prediction, branch-target-buffer, data-memory timing, multicore, WCET
+and layered system models. The profile is strictly
 validated before analysis:
 unknown fields, duplicate selectors, overlapping memory regions, zero
 frequencies and invalid cycle ranges are errors.
@@ -516,8 +516,9 @@ survives calls and loops. The global history register still starts from
 `initial_history`; `first_execution` controls pattern-table entries, not the
 register's reset value. Only conditional branches with exactly one taken edge
 and one fallthrough edge are modeled. Indirect/table target prediction,
-return-address stacks, branch-target buffers and tournament component pairs
-other than global+local are not modeled.
+return-address stacks and tournament component pairs other than global+local
+are not modeled by the direction predictor; target caching is modeled
+separately by `[branch_target_buffer]`.
 
 The analyzer propagates concrete predictor states over each function CFG and
 adds `mispredicts * mispredict_penalty` to block cycle ranges. Because a block
@@ -552,6 +553,38 @@ automata and the branch-effect (4096 states) and exit-state (256 per summary)
 caps fall back to the per-function `state-product` or `block-bounds` model.
 Global-, local-, two-level and global/local tournament predictors are modeled;
 other component pairs are not.
+
+### Branch target buffer
+
+The optional `[branch_target_buffer]` table enables a set-associative LRU BTB
+for intra-function taken conditional branches and jump edges. It requires
+`schema_version = 2`.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `entries` | yes | Total BTB entries; must be positive and divisible by `ways`. |
+| `ways` | yes | Associativity; `entries / ways` sets. |
+| `miss_penalty` | yes | Cycles charged for a cold, target-change or replacement miss; must be positive. |
+| `max_states` | no | Maximum distinct BTB states per block; defaults to `128`. |
+
+```toml
+[branch_target_buffer]
+entries = 64
+ways = 2
+miss_penalty = 2
+max_states = 128
+```
+
+The BTB is indexed by branch PC and stores a target address in each way; a
+matching site and target is a hit, a changed target or cold set access is a
+miss, and the least-recently-used entry is replaced. A taken conditional branch
+and a jump probe the BTB; fallthrough fetches do not. Calls, returns, indirect
+call targets and cross-function BTB replacement are not modeled. BTB state
+starts cold at function entry and is preserved across modeled call-return
+edges. `--path-analysis ipet` uses a concrete BTB state product when the
+analysis completes and records `ipet.btb_model = "state-product"`; fallback
+functions use `block-bounds`. The BTB timing model is `statistical` and is
+rejected by `--require-safe`.
 
 ### Multicore interference
 
@@ -910,14 +943,17 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   are not modeled. For such cores the profile can refine table values, but the
   result remains statistical.
 - Branch prediction covers conditional direction only. Indirect/table target
-  prediction, return prediction, branch-target buffers and tournament
-  component pairs other than global+local are not modeled. Counter-based IPET summaries can carry predictor state
+  prediction, return prediction and tournament component pairs other than
+  global+local are not modeled. A separate optional `[branch_target_buffer]`
+  models intra-function taken-branch/jump targets; call/return targets and
+  cross-function replacement are not modeled. Counter-based IPET summaries can
+  carry predictor state
   through direct calls when all branch effects and base callee costs are
   available; the `first_execution = "unknown"` entry history is carried with
   the same state, while unresolved/indirect/recursive boundaries and summary
   caps fall back to per-function bounds. History/tournament models share the
-  per-function pattern/choice state; other tournament component pairs and BTB
-  behavior are not modeled.
+  per-function pattern/choice state; other tournament component pairs are not
+  modeled. The optional BTB models intra-function branch/jump targets only.
 - Data-memory latency is region-based. Only statically resolved accesses with
   addresses inside configured regions contribute wait cycles. If data-cache
   analysis is enabled too, its miss penalties and the wait cycles are additive.
