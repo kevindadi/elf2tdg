@@ -349,8 +349,20 @@ With `--path-analysis ipet`, a completed instruction-cache analysis and
 replaces the per-block worst-case miss penalty with the misses modeled on each
 cache-state transition, so loop reuse is not charged a miss on every iteration.
 If the concrete product is unavailable, for example with ordered/cross-function
-automata or product-size overflow, IPET falls back to **line splitting**. Each
-block's instruction-fetch cost is split into per-cache-line logical blocks;
+automata or product-size overflow, IPET builds a full instruction-cache
+**cache conflict graph (CCG)** when the function has no call-return edges and
+no unresolved control flow. For each cache set the graph has a source, a sink,
+and one node per `(basic block, cache line)` access. Edges connect consecutive
+accesses in CFG order, including across blocks that do not access the set;
+loops recirculate flow. Node throughput equals IPET block executions times
+line accesses, and source/sink flow is one. Incoming flow from the same line is
+a guaranteed hit; incoming flow from a different line is conservatively a
+miss. The resulting per-node miss terms replace the block-level cache penalty.
+`ipet.cache_model = "ccg"` records this model and `ipet.cache_ccg` reports the
+sets, nodes, edges and constraints.
+
+When CCG is unavailable, IPET falls back to **line splitting**. Each block's
+instruction-fetch cost is split into per-cache-line logical blocks;
 `cache.lines` records the line, first instruction address, covered bytes,
 instruction count, accesses and hit/miss range. First-miss is proved per line
 from the concrete state graph: a line qualifies when the modeled loop never
@@ -360,8 +372,8 @@ larger than the associativity. IPET permits at most one miss per persistent
 line per loop entry; non-persistent lines retain per-line block bounds. The
 line-split regions are recorded in `cache.persistence`.
 
-When per-line block bounds are still active, IPET also builds a **cache
-conflict graph** per loop and cache set and adds:
+When per-line block bounds are still active, IPET also builds an **aggregate
+cache conflict graph** per loop and cache set and adds:
 
 ```text
 line-misses <= loop-entries + sum(accesses to other lines in the same set)
@@ -372,12 +384,12 @@ different line that can evict the line, so this is a sound upper bound. It is
 independent of the concrete cache categories and therefore also applies when
 the cache analysis falls back to all-miss block bounds. It skips loops with
 call-return invalidation or non-header entries. `ipet.cache_model` records
-`state-product`, `conflict-graph`, `line-split` or `block-bounds`, and
-`ipet.cache_conflicts` reports the applied sets, lines and constraints.
-Cache-analysis fallback alone no longer forces `block-bounds`; unresolved data
-addresses, loops with calls, multi-entry loops, no eligible loop or
-model-size overflow do. `--require-safe` rejects `invalidate_on_call = false`
-because inter-function cache state is not modeled.
+`state-product`, `ccg`, `conflict-graph`, `line-split` or `block-bounds`, and
+`ipet.cache_conflicts` reports the applied aggregate sets, lines and
+constraints. Cache-analysis fallback alone no longer forces `block-bounds`;
+unresolved data addresses, loops with calls, multi-entry loops, no eligible
+loop or model-size overflow do. `--require-safe` rejects
+`invalidate_on_call = false` because inter-function cache state is not modeled.
 
 ### Data cache
 

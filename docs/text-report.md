@@ -90,12 +90,12 @@ The `wcet` section reports the selected backend:
 - `cfg-longest-path` (default): CFG longest path with bounded loop visits.
 - `cfg-ipet` (`--path-analysis ipet`): IPET integer-linear program solved with
   the pure-Rust `microlp` backend. The report prints the solver status, objective,
-  cache model (`state-product`, `conflict-graph`, `line-split` or
-  `block-bounds`) when a cache profile is active, a conflict-graph summary when
-  conflict constraints apply, branch model (`state-product` or `block-bounds`)
-  when a branch-prediction profile is active, and positive block execution
-  counts for each function. The cache model section also lists each first-miss
-  loop and its line addresses. The
+  cache model (`state-product`, `ccg`, `conflict-graph`, `line-split` or
+  `block-bounds`) when a cache profile is active, CCG and aggregate
+  conflict-graph summaries when those constraints apply, branch model
+  (`state-product` or `block-bounds`) when a branch-prediction profile is
+  active, and positive block execution counts for each function. The cache
+  model section also lists each first-miss loop and its line addresses. The
   flow-facts section
   lists each explicit loop bound with its source (board profile or F4/FFX file)
   and any caller context; contextual branch/call facts use the same
@@ -106,9 +106,9 @@ The `wcet` section reports the selected backend:
 
 Both are static estimates, not hardware proofs: loop bounds must be configured,
 recursive call-graph SCCs are unbounded, cache models are per-function with
-cold entry and call-return invalidation, line splitting and conflict-graph
-bounds over-approximate cache evictions, IPET pipeline costs add only a
-first-order edge context, branch-prediction IPET
+cold entry and call-return invalidation, CCG flow, line splitting and aggregate
+conflict bounds over-approximate cache evictions, IPET pipeline costs add only
+a first-order edge context, branch-prediction IPET
 follows a per-function initial predictor state with no inter-function history,
 data-memory results remain block-local, and interrupts, DMA, bus contention and
 concurrency are not modeled. A

@@ -362,9 +362,10 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.26`.
+`cfg_schema_version` is `2.27`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.26 adds the `conflict-graph` IPET cache model and
+functions. Version 2.27 adds the `ccg` IPET cache flow model and `cache_ccg`
+summary. Version 2.26 adds the `conflict-graph` aggregate cache model and
 `cache_conflicts` summary. Version 2.25 adds line-split logical-block fields to
 instruction cache lines and the `line-split` IPET cache model. Version 2.24
 adds cache-line persistence metadata. Version 2.23 adds the IPET
@@ -416,7 +417,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.26",
+  "cfg_schema_version": "2.27",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -632,10 +633,14 @@ block address:
     "solver": "microlp",
     "status": "optimal",
     "objective": 87.0,
-    "cache_model": "conflict-graph",
+    "cache_model": "ccg",
+    "cache_ccg": {
+      "model": "instruction-ccg-lru", "sets": 4, "nodes": 12,
+      "edges": 18, "constraints": 38, "caveats": []
+    },
     "cache_conflicts": {
-      "model": "line-conflict-graph", "sets": 4, "lines": 9,
-      "constraints": 9, "caveats": []
+      "model": "line-conflict-graph", "sets": 2, "lines": 5,
+      "constraints": 5, "caveats": []
     },
     "branch_model": "state-product",
     "blocks": [
@@ -648,14 +653,16 @@ block address:
 
 A `partial` IPET objective is an estimate over the resolved inputs, not a safe
 upper bound. When a cache profile is active, `ipet.cache_model` is
-`state-product` for the per-function cache-state product, `conflict-graph`
-when per-line conflict bounds are generated, `line-split` when only the
-per-line first-miss regions apply, or `block-bounds` when the function falls
-back to per-block miss bounds (unresolved data addresses, no eligible loop,
-or model-size overflow). The conflict-graph model can still apply after the
-concrete cache analysis falls back; it uses line access counts rather than
-abstract cache categories. `cache_conflicts` summarizes the applied graph.
-When
+`state-product` for the per-function cache-state product, `ccg` when the
+instruction-cache conflict-graph flow model is used, `conflict-graph` when
+aggregate per-line conflict bounds are used, `line-split` when only the
+per-line first-miss regions apply, or `block-bounds` for the remaining
+fallbacks. The full CCG flow models per-set access sequences, per-line first
+access misses and same-line hits; it is not built for functions with
+call-return edges or unresolved control flow. `cache_ccg` summarizes its
+sets/nodes/edges/constraints. Aggregate conflict bounds can still apply after
+the concrete cache analysis falls back. `cache_conflicts` summarizes those
+bounds. When
 a branch-prediction profile is active, `ipet.branch_model` is
 `state-product` for the concrete per-function predictor-state product and
 `block-bounds` when the function falls back to per-block misprediction bounds
@@ -983,19 +990,32 @@ asserts that the CFG validates.
   `invalidate_on_call = true`, a complete cache analysis and, for the data
   cache, no unresolved memory accesses. When the cache-state product is
   unavailable (ordered/cross-function automata or product overflow), IPET
-  splits each block's cache cost into per-cache-line logical blocks. A
-  per-line conflict bound limits a line to one miss per loop entry plus one
-  potential eviction per access to another line in the same cache set:
-  `line-misses <= entries + conflicting-line-accesses`. This bound remains
+  builds a full instruction-cache CCG when the function has no call-return
+  edges or unresolved control flow. Each cache set gets a source, a sink, and
+  one node per `(basic block, cache line)` access. Edges connect consecutive
+  accesses in CFG order, including across blocks that do not touch the set;
+  loops recirculate flow. Node throughput equals IPET block executions times
+  line accesses, and source/sink flow is one. Incoming flow from the same line
+  is a guaranteed hit; other incoming flow is conservatively a miss. The
+  resulting per-node miss terms replace the block-level cache penalty.
+  `ccg` records this model and `cache_ccg` reports the applied set/node/edge
+  and constraint counts.
+
+  For data cache, functions with call-return edges, or when CCG results are
+  unavailable, IPET splits each block's cache cost into per-cache-line logical
+  blocks. A per-line conflict bound limits a line to one miss per loop entry
+  plus one potential eviction per access to another line in the same cache
+  set: `line-misses <= entries + conflicting-line-accesses`. This bound remains
   valid when the concrete cache analysis falls back. Separately, the concrete
   state graph can prove per-line first-miss when the modeled loop never evicts
-  a line after it is loaded; that permits the tighter `line-misses <= entries`
-  even when the loop's total set working set exceeds the associativity.
-  Non-persistent lines keep per-line block bounds. `conflict-graph` records a
-  model with conflict constraints, `line-split` a first-miss-only model, and
-  `block-bounds` the fallback when no eligible loop exists, data accesses are
-  unresolved or the model is too large. `cache_conflicts` reports the applied
-  set/line/constraint counts. Branch-prediction
+  a line after it is loaded; that permits the tighter
+  `line-misses <= entries` even when the loop's total set working set exceeds
+  the associativity. Non-persistent lines keep per-line block bounds.
+  `conflict-graph` records aggregate conflict constraints, `line-split` a
+  first-miss-only model, and `block-bounds` the fallback when no eligible loop
+  exists, data accesses are unresolved or the model is too large.
+  `cache_conflicts` reports the aggregate set/line/constraint counts.
+  Branch-prediction
   state IPET follows concrete predictor states from the configured
   per-function initial state when the branch analysis completes, charging the
   actual predicted/actual edge outcome instead of the per-block maximum;
