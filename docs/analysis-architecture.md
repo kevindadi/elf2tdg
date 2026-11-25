@@ -203,9 +203,12 @@ from summed local estimates.
   edge-context stalls. Memory dependencies, speculative/out-of-order execution,
   cross-block co-issue and cross-function pipeline state are not propagated,
   and `--require-safe` rejects the statistical pipeline model. Multiple issue
-  slots and per-resource unit counts are modeled within each block and carried
-  through the pipeline state product. Enabling `[pipeline]` on a bounded
-  AArch64/RISC-V model therefore makes the whole timing model statistical.
+  slots, per-resource unit counts and optional register-file read/write port
+  budgets are modeled within each block and carried through the pipeline state
+  product. Oversized register-file accesses take exclusive issue cycles;
+  writeback-cycle contention and banked register files are not modeled.
+  Enabling `[pipeline]` on a bounded AArch64/RISC-V model therefore makes the
+  whole timing model statistical.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.
 - The layered system model solves the state-equation relaxation and computes

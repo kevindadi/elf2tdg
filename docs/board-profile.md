@@ -253,6 +253,7 @@ issue are not modeled.
 |---|---|---|
 | `issue_width` | no | Maximum instructions issued per cycle, `1..8`; defaults to `1`. |
 | `resources` | no | Optional table of resource unit counts; unlisted resources have one unit. |
+| `register_file` | no | Optional register-file read/write port budgets, applied per issue cycle. |
 | `branch_penalty` | no | Extra cycles for the block's final branch/call/return, exact or `{ min, max }`; default `1..3`. |
 
 `[pipeline.resources]` maps a resource name used by an instruction to the
@@ -273,6 +274,30 @@ branch = 1
 With `issue_width > 1` and no `[pipeline.resources]` table, only instructions
 whose resource names differ can co-issue; two ALU operations still serialize on
 the default single `alu` unit.
+
+`[pipeline.register_file]` optionally limits register-file ports per issue
+cycle:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `read_ports` | yes | Maximum register reads per issue cycle, `1..64`. |
+| `write_ports` | yes | Maximum register writes per issue cycle, `1..64`. |
+
+```toml
+[pipeline.register_file]
+read_ports = 4
+write_ports = 2
+```
+
+The scheduler counts Capstone's explicit and implicit register read/write sets.
+An instruction joins the current issue cycle only when the cycle has enough
+read and write ports; otherwise it starts in the next cycle. An instruction
+that needs more accesses than one cycle's ports (for example a multi-register
+load) occupies `max(ceil(reads / read_ports), ceil(writes / write_ports))`
+consecutive exclusive issue cycles. Ports are budgeted at issue; port cycles
+are not added to the instruction's execution latency. Writeback-cycle
+contention, banked/FP/vector register-file distinctions and cross-block port
+state are not modeled. Omitting the table disables port limits.
 
 Each `[[pipeline.instructions]]` entry overrides the built-in class mapping:
 
@@ -330,11 +355,12 @@ AArch64 (generic and bounded models):
 The scheduler consumes Capstone's explicit and implicit register read/write
 sets. Within a basic block it issues instructions in program order, at most
 `issue_width` per cycle. An instruction is eligible when its source registers
-are ready, one unit of each required resource is free, and the cycle has a free
-issue slot. Each resource has the configured number of units; instructions
-sharing a single-unit resource serialize. Block boundaries are issue
-boundaries: co-issue across a CFG edge is not modeled. `branch_penalty` is
-added when the block's last instruction is a branch, call or return;
+are ready, one unit of each required resource is free, the cycle has a free
+issue slot, and (when `[pipeline.register_file]` is present) the cycle has
+enough read and write ports. Each resource has the configured number of units;
+instructions sharing a single-unit resource serialize. Block boundaries are
+issue boundaries: co-issue across a CFG edge is not modeled. `branch_penalty`
+is added when the block's last instruction is a branch, call or return;
 conditional transfers use the worst case. Fetch wait states are charged per
 instruction and are not reduced by co-issue; fetch bandwidth is not modeled.
 
@@ -346,11 +372,13 @@ resource/register readiness across CFG edges. The state records the sorted
 free times of every busy resource unit, so multiple units remain distinct
 across a block boundary. This includes loop-carried accumulation. Call-return
 edges reset the modeled state because the callee's pipeline state is not part
-of the caller summary. Memory dependencies, register-file port limits,
-store-to-load forwarding, exception entry, speculative/out-of-order execution,
-cross-block co-issue and cross-function pipeline state are not modeled; caches
-and branch prediction are modeled separately when their profile sections are
-enabled.
+of the caller summary. Memory dependencies, store-to-load forwarding, exception
+entry, speculative/out-of-order execution, cross-block co-issue and
+cross-function pipeline state are not modeled. Register-file ports are modeled
+only when `[pipeline.register_file]` is present; writeback-cycle contention,
+banked/FP/vector register-file distinctions and cross-block port state are not
+modeled. Caches and branch prediction are modeled separately when their
+profile sections are enabled.
 Block-local costs are therefore pipeline-aware estimates, not WCET bounds.
 While the pipeline model is active the CFG marks the timing model
 `statistical`, and a generated caveat records the limitation. This also applies
@@ -997,6 +1025,8 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_pipeline_issue_width`
 - `board_profile_pipeline_instruction_overrides`
 - `board_profile_pipeline_resources` (configured `name=units` entries only)
+- `board_profile_pipeline_read_ports` (when `[pipeline.register_file]` is present)
+- `board_profile_pipeline_write_ports` (when `[pipeline.register_file]` is present)
 - `board_profile_pipeline_branch_penalty`
 - `bounded_cost_table` (`replaced-by-pipeline` when a bounded model has `[pipeline]`)
 - `pipeline_overlap` (`profile-pipeline-schedule` when a bounded model has `[pipeline]`)

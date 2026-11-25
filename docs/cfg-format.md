@@ -362,9 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.38`.
+`cfg_schema_version` is `2.39`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.38 adds multi-issue pipeline timing metadata, including
+functions. Version 2.39 adds register-file port metadata
+(`board_profile_pipeline_read_ports` and `write_ports`). Version 2.38 adds
+multi-issue pipeline timing metadata, including
 the configured issue width and per-resource unit counts. Version 2.37 extends
 the pipeline metadata names and deterministic classification to
 generic/bounded AArch64 and RISC-V timing models. Version
@@ -435,7 +437,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.38",
+  "cfg_schema_version": "2.39",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {

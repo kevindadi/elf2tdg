@@ -44,9 +44,10 @@ Implemented:
   domains, memory regions, instruction-cost overrides and optional performance
   models:
   - Cortex-M4, generic/bounded AArch64 and RISC-V in-order resource/dependency
-    pipeline scheduling with configurable issue width and per-resource unit
-    counts, branch penalties, full inter-block pipeline state propagation in
-    the IPET state product and first-order edge-context stalls as fallback;
+    pipeline scheduling with configurable issue width, per-resource unit
+    counts and optional register-file read/write port budgets, branch
+    penalties, full inter-block pipeline state propagation in the IPET state
+    product and first-order edge-context stalls as fallback;
   - LRU instruction and data caches with per-block hit/miss ranges and
     line-split logical blocks, an optional per-function cache-state product in
     IPET, a full instruction-cache CCG flow model, plus per-line first-miss and
@@ -351,9 +352,11 @@ Inter-function cache state is not modeled. Pipeline block costs remain
 statistical for Cortex-M4 and for AArch64/RISC-V when `[pipeline]` is enabled.
 IPET precomputes per-function reachable pipeline entry states and charges the
 state-dependent block cost through its state product, including loop-carried
-resource/register state. Multiple issue slots and per-resource unit counts are
-modeled within each block; out-of-order execution and cross-block co-issue are
-not. Call-return edges reset the modeled state, and first-order edge-context
+resource/register state. Multiple issue slots, per-resource unit counts and
+optional register-file read/write port budgets are modeled within each block;
+out-of-order execution and cross-block co-issue are not. Instructions that
+exceed one cycle's register ports take consecutive exclusive issue cycles.
+Call-return edges reset the modeled state, and first-order edge-context
 stalls remain the fallback when the state table is unavailable. The pipeline
 timing model is rejected by `--require-safe`, and enabling it on a bounded
 AArch64/RISC-V model replaces the additive bounded table for block costs.

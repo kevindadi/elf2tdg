@@ -98,7 +98,9 @@ per-board measurements. Override them in `[[pipeline.instructions]]` from the
 target core's documentation or measurements. `issue_width` sets the issue
 limit per cycle (`1..8`), and `[pipeline.resources]` gives explicit unit counts
 for resources that can accept more than one instruction per cycle. Resource
-multiplicity is never inferred from `issue_width`.
+multiplicity is never inferred from `issue_width`. The optional
+`[pipeline.register_file]` table adds read/write port budgets; instructions
+that exceed one cycle's ports take consecutive exclusive issue cycles.
 
 ## Selection hints
 
