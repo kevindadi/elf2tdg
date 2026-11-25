@@ -545,7 +545,6 @@ fn solve_function(
     if let Some(outcome) = try_solve_partitioned(
         program,
         cfg,
-        entry,
         analysis,
         reachable_nodes,
         facts,
@@ -1037,7 +1036,6 @@ fn partition_eligible(
 fn try_solve_partitioned(
     program: &ProgramCfg,
     cfg: &FunctionCfg,
-    entry: NodeIndex,
     analysis: &crate::cfg_graph::CfgGraphAnalysis,
     reachable_nodes: &BTreeSet<NodeIndex>,
     facts: &FlowFacts,
@@ -1060,7 +1058,6 @@ fn try_solve_partitioned(
         return None;
     }
     let mut working = cfg.clone();
-    let function_entry = entry;
     let mut summaries: BTreeMap<BlockId, PartitionSummary> = BTreeMap::new();
     let mut regions = 0_u32;
     let mut summarized_blocks = 0_u32;
@@ -1068,6 +1065,9 @@ fn try_solve_partitioned(
     let mut counter = 0_usize;
     let mut scan_steps = 0_usize;
     while regions < MAX_PARTITION_REGIONS {
+        let Some(function_entry) = working.entry else {
+            break;
+        };
         let working_analysis = working.analyze_graph();
         let Some(region) =
             select_partition_region(&working, &working_analysis, function_entry, &mut scan_steps)
@@ -1117,7 +1117,7 @@ fn try_solve_partitioned(
         summarized_blocks,
         caveats: vec![
             "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
-            "Partitioning is used only for call-free functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models and without non-loop flow facts or infeasible-path constraints; otherwise the monolithic IPET model is used. Regions whose entry is the function entry are not summarized in this first version.".to_owned(),
+            "Partitioning is used only for call-free functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models and without non-loop flow facts or infeasible-path constraints; otherwise the monolithic IPET model is used.".to_owned(),
         ],
     };
     Some(IpetOutcome {
@@ -1162,9 +1162,6 @@ fn select_partition_region(
         *scan_steps = scan_steps.saturating_add(1);
         if *scan_steps > MAX_PARTITION_SCAN_STEPS {
             return None;
-        }
-        if entry == function_entry {
-            continue;
         }
         let targets: BTreeSet<NodeIndex> = cfg
             .graph
@@ -1215,7 +1212,7 @@ fn select_partition_region(
         if *scan_steps > MAX_PARTITION_SCAN_STEPS {
             return None;
         }
-        if !valid_partition_region(cfg, analysis, &blocks, entry, exit) {
+        if !valid_partition_region(cfg, analysis, &blocks, entry, exit, function_entry) {
             continue;
         }
         candidates.push(PartitionRegion {
@@ -1240,6 +1237,7 @@ fn valid_partition_region(
     blocks: &BTreeSet<NodeIndex>,
     entry: NodeIndex,
     exit: NodeIndex,
+    function_entry: NodeIndex,
 ) -> bool {
     let block_ids: BTreeSet<BlockId> = blocks
         .iter()
@@ -1271,7 +1269,7 @@ fn valid_partition_region(
             }
         }
     }
-    if external_incoming == 0 || boundary_exits == 0 {
+    if (external_incoming == 0 && entry != function_entry) || boundary_exits == 0 {
         return false;
     }
     for loop_ in &analysis.loops {
@@ -1386,7 +1384,8 @@ fn replace_region(
             }
         }
     }
-    if incoming.is_empty() || boundary_exits == 0 {
+    let is_function_entry = cfg.entry == Some(region.entry);
+    if (incoming.is_empty() && !is_function_entry) || boundary_exits == 0 {
         return false;
     }
     let removed_addresses: Vec<u64> = region
@@ -1419,6 +1418,9 @@ fn replace_region(
     };
     let node = cfg.graph.add_node(macro_block);
     cfg.blocks_by_address.insert(address, node);
+    if is_function_entry {
+        cfg.entry = Some(node);
+    }
     for (source, weight) in incoming {
         cfg.graph.add_edge(source, node, weight);
     }
@@ -5721,6 +5723,27 @@ auto_loop_bounds = false
         )])
     }
 
+    fn root_loop_partition_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x8000,
+            FunctionCfg::build(
+                vec![
+                    block(0x8000, CfgTerminator::Branch, 1.0),
+                    block(0x8002, CfgTerminator::Fallthrough, 1.0),
+                    block(0x8004, CfgTerminator::Fallthrough, 1.0),
+                    block(0x8006, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x8000, 0x8002, CfgEdgeKind::Branch),
+                    edge(0x8000, 0x8006, CfgEdgeKind::Fallthrough),
+                    edge(0x8002, 0x8004, CfgEdgeKind::Fallthrough),
+                    edge(0x8004, 0x8000, CfgEdgeKind::Branch),
+                ],
+                Some(0x8000),
+            ),
+        )])
+    }
+
     fn simple_partition_objective(program: &ProgramCfg, facts: &FlowFacts) -> f64 {
         let function = &program.functions[0];
         let entry = function.cfg.entry.expect("entry");
@@ -6014,6 +6037,43 @@ auto_loop_bounds = false
         let partitioning = solution.partitioning.as_ref().expect("partitioning");
         assert!(partitioning.regions >= 1);
         assert!(partitioning.summarized_blocks >= 3);
+        assert!(
+            solution
+                .blocks
+                .iter()
+                .all(|block| !block.block.as_str().starts_with("bb:partition:"))
+        );
+    }
+
+    #[test]
+    fn sese_partition_summarizes_function_entry_region_exactly() {
+        let program = diamond_program();
+        let facts = facts();
+        let baseline = simple_partition_objective(&program, &facts);
+        assert_eq!(baseline, 32.0);
+        let solution = partitioned_solution(&program, &facts);
+        assert_eq!(solution.objective, baseline);
+        let partitioning = solution.partitioning.as_ref().expect("partitioning");
+        assert_eq!(partitioning.regions, 1);
+        assert_eq!(partitioning.summarized_blocks, 4);
+        let counts = block_counts(&solution);
+        assert_eq!(counts.get("bb:0x1000"), Some(&1));
+        assert_eq!(counts.get("bb:0x1002"), Some(&1));
+        assert_eq!(counts.get("bb:0x1004"), Some(&1));
+        assert!(!counts.contains_key("bb:0x1008"));
+        assert_eq!(counts.get("bb:0x1006"), Some(&1));
+    }
+
+    #[test]
+    fn sese_partition_handles_a_root_loop_region() {
+        let program = root_loop_partition_program();
+        let facts = facts();
+        let baseline = simple_partition_objective(&program, &facts);
+        let solution = partitioned_solution(&program, &facts);
+        assert_eq!(solution.objective, baseline);
+        let partitioning = solution.partitioning.as_ref().expect("partitioning");
+        assert_eq!(partitioning.regions, 1);
+        assert_eq!(partitioning.summarized_blocks, 3);
         assert!(
             solution
                 .blocks
