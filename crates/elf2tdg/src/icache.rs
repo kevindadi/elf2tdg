@@ -18,8 +18,10 @@ use petgraph::visit::EdgeRef;
 use elf2tdg_schema::{Addr, CostRange};
 
 use crate::board_profile::InstructionCacheProfile;
+use crate::cache_persistence;
 use crate::cfg::{
-    CfgBlockCache, CfgBlockCacheLine, CfgCacheInfo, CfgEdgeKind, FunctionCfg, ProgramCfg,
+    CfgBlockCache, CfgBlockCacheLine, CfgCacheInfo, CfgCachePersistenceInfo, CfgEdgeKind,
+    FunctionCfg, ProgramCfg,
 };
 
 use crate::cache_state::{
@@ -88,6 +90,10 @@ pub(crate) fn analyze_program(
         functions_fallback: 0,
         blocks_analyzed: 0,
         blocks_fallback: 0,
+        persistence: CfgCachePersistenceInfo::new(
+            "instruction-working-set-lru",
+            cache_persistence::caveats(false),
+        ),
         caveats: vec![
             "Instruction-cache analysis assumes a cold cache at each function entry.".to_owned(),
             "Prefetch, data caches, bus contention and inter-function cache state are not modeled."
@@ -96,6 +102,7 @@ pub(crate) fn analyze_program(
                 .to_owned(),
         ],
     };
+    let mut persistent_lines = BTreeSet::new();
     for function in &mut program.functions {
         if function.cfg.blocks_by_address.is_empty() {
             continue;
@@ -108,7 +115,23 @@ pub(crate) fn analyze_program(
             info.functions_analyzed = info.functions_analyzed.saturating_add(1);
             info.blocks_analyzed = info.blocks_analyzed.saturating_add(result.blocks);
         }
+        let persistence = cache_persistence::instruction(&function.cfg, model.geometry());
+        info.persistence.loops_analyzed = info
+            .persistence
+            .loops_analyzed
+            .saturating_add(persistence.loops_analyzed);
+        info.persistence.loops_persistent = info
+            .persistence
+            .loops_persistent
+            .saturating_add(persistence.loops_persistent);
+        for region in &persistence.regions {
+            persistent_lines.extend(region.lines.iter().copied());
+            info.persistence
+                .regions
+                .push(cache_persistence::region_info(&function.id, region));
+        }
     }
+    info.persistence.persistent_lines = u32::try_from(persistent_lines.len()).unwrap_or(u32::MAX);
     info
 }
 

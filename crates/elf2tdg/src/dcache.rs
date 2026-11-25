@@ -21,12 +21,13 @@ use petgraph::visit::EdgeRef;
 use elf2tdg_schema::{Addr, CostRange};
 
 use crate::board_profile::DataCacheProfile;
+use crate::cache_persistence;
 use crate::cache_state::{
     CacheAccess, CacheAccessKind, CacheGeometry, CacheSimulation, CacheState, simulate,
 };
 use crate::cfg::{
-    CfgBlockDataCache, CfgBlockDataCacheLine, CfgCacheLineClass, CfgDataCacheInfo, CfgEdgeKind,
-    FunctionCfg, ProgramCfg,
+    CfgBlockDataCache, CfgBlockDataCacheLine, CfgCacheLineClass, CfgCachePersistenceInfo,
+    CfgDataCacheInfo, CfgEdgeKind, FunctionCfg, ProgramCfg,
 };
 
 struct CacheModel {
@@ -148,6 +149,10 @@ pub(crate) fn analyze_program(
         functions_fallback: 0,
         blocks_analyzed: 0,
         blocks_fallback: 0,
+        persistence: CfgCachePersistenceInfo::new(
+            "data-working-set-lru",
+            cache_persistence::caveats(true),
+        ),
         caveats: vec![
             "Data-cache analysis assumes a cold cache at each function entry.".to_owned(),
             "Only statically resolved data addresses are modeled; unresolved stack, indexed and register-dependent accesses are counted but excluded from miss penalties and state propagation, so modeled hits remain optimistic."
@@ -162,6 +167,7 @@ pub(crate) fn analyze_program(
                 .to_owned(),
         ],
     };
+    let mut persistent_lines = BTreeSet::new();
     for function in &mut program.functions {
         if function.cfg.blocks_by_address.is_empty() {
             continue;
@@ -182,7 +188,24 @@ pub(crate) fn analyze_program(
             info.functions_analyzed = info.functions_analyzed.saturating_add(1);
             info.blocks_analyzed = info.blocks_analyzed.saturating_add(result.blocks);
         }
+        let persistence =
+            cache_persistence::data(&function.cfg, model.geometry(), model.write_allocate);
+        info.persistence.loops_analyzed = info
+            .persistence
+            .loops_analyzed
+            .saturating_add(persistence.loops_analyzed);
+        info.persistence.loops_persistent = info
+            .persistence
+            .loops_persistent
+            .saturating_add(persistence.loops_persistent);
+        for region in &persistence.regions {
+            persistent_lines.extend(region.lines.iter().copied());
+            info.persistence
+                .regions
+                .push(cache_persistence::region_info(&function.id, region));
+        }
     }
+    info.persistence.persistent_lines = u32::try_from(persistent_lines.len()).unwrap_or(u32::MAX);
     info
 }
 

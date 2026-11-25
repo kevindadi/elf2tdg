@@ -4,6 +4,7 @@ pub mod analysis;
 pub mod arch;
 pub mod board_profile;
 mod branch_prediction;
+mod cache_persistence;
 mod cache_state;
 pub mod cfg;
 pub mod cfg_graph;

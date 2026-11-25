@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.23";
+pub const CFG_SCHEMA_VERSION: &str = "2.24";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -730,6 +730,50 @@ pub struct CfgBlockCacheLine {
     pub misses_max: u32,
 }
 
+/// One natural-loop region with persistent cache lines.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgCachePersistenceRegion {
+    /// Function containing the loop.
+    pub function: FunctionId,
+    /// Loop header block.
+    pub header: BlockId,
+    /// Number of blocks in the loop.
+    pub blocks: u32,
+    /// Persistent line start addresses.
+    pub lines: Vec<Addr>,
+}
+
+/// Cache-line persistence analysis metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgCachePersistenceInfo {
+    /// Persistence model name.
+    pub model: String,
+    /// Natural loops inspected.
+    pub loops_analyzed: u32,
+    /// Natural loops with at least one persistent line.
+    pub loops_persistent: u32,
+    /// Distinct line addresses proved persistent in at least one loop.
+    pub persistent_lines: u32,
+    /// Per-loop persistent-line regions.
+    pub regions: Vec<CfgCachePersistenceRegion>,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
+impl CfgCachePersistenceInfo {
+    /// Creates an empty persistence record for one cache model.
+    pub(crate) fn new(model: &str, caveats: Vec<String>) -> Self {
+        Self {
+            model: model.to_owned(),
+            loops_analyzed: 0,
+            loops_persistent: 0,
+            persistent_lines: 0,
+            regions: Vec::new(),
+            caveats,
+        }
+    }
+}
+
 /// Program-level instruction-cache analysis metadata.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgCacheInfo {
@@ -759,6 +803,8 @@ pub struct CfgCacheInfo {
     pub blocks_analyzed: u32,
     /// Blocks that fell back to an all-miss bound.
     pub blocks_fallback: u32,
+    /// Cache-line persistence analysis.
+    pub persistence: CfgCachePersistenceInfo,
     /// Analysis caveats.
     pub caveats: Vec<String>,
 }
@@ -848,6 +894,8 @@ pub struct CfgDataCacheInfo {
     pub blocks_analyzed: u32,
     /// Blocks that fell back to an all-miss bound.
     pub blocks_fallback: u32,
+    /// Cache-line persistence analysis.
+    pub persistence: CfgCachePersistenceInfo,
     /// Analysis caveats.
     pub caveats: Vec<String>,
 }

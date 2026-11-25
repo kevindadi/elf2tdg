@@ -53,6 +53,8 @@ fn applies_instruction_cache_penalties() {
     assert_eq!(info.miss_penalty, 20);
     assert!(info.functions_analyzed > 0);
     assert!(info.blocks_analyzed > 0);
+    assert_eq!(info.persistence.model, "instruction-working-set-lru");
+    assert!(info.persistence.loops_analyzed >= info.persistence.loops_persistent);
     assert!(base.cfg.cache.is_none());
 
     let base_costs = block_costs(&base.cfg);
@@ -101,6 +103,14 @@ fn applies_instruction_cache_penalties() {
     let document: serde_json::Value = serde_json::from_str(&json).expect("CFG JSON");
     assert_eq!(document["cfg_schema_version"], cfg::CFG_SCHEMA_VERSION);
     assert_eq!(document["cache"]["miss_penalty"], 20);
+    assert_eq!(
+        document["cache"]["persistence"]["model"],
+        "instruction-working-set-lru"
+    );
+    assert_eq!(
+        document["cache"]["persistence"]["loops_analyzed"],
+        info.persistence.loops_analyzed
+    );
     assert!(
         document["functions"]
             .as_array()

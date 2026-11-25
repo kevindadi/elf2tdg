@@ -12,10 +12,10 @@ use elf2tdg_schema::{Addr, CostRange, Diagnostic, FunctionId, SourceLoc};
 use petgraph::visit::EdgeRef;
 
 use crate::cfg::{
-    CFG_SCHEMA_VERSION, CfgBlock, CfgBranchPredictionInfo, CfgCacheInfo, CfgCallEdge, CfgCallSite,
-    CfgConcurrencyKind, CfgDataCacheInfo, CfgDataMemoryInfo, CfgFunction, CfgFunctionWcet,
-    CfgInstruction, CfgLockEvent, CfgMulticoreInfo, CfgPipelineInfo, CfgRoot, CfgSystemModelInfo,
-    CfgWcetInfo, CfgWcetRoot, CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CFG_SCHEMA_VERSION, CfgBlock, CfgBranchPredictionInfo, CfgCacheInfo, CfgCachePersistenceInfo,
+    CfgCallEdge, CfgCallSite, CfgConcurrencyKind, CfgDataCacheInfo, CfgDataMemoryInfo, CfgFunction,
+    CfgFunctionWcet, CfgInstruction, CfgLockEvent, CfgMulticoreInfo, CfgPipelineInfo, CfgRoot,
+    CfgSystemModelInfo, CfgWcetInfo, CfgWcetRoot, CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 
@@ -280,6 +280,7 @@ fn render_instruction_cache(out: &mut String, cache: Option<&CfgCacheInfo>) -> b
             cache.blocks_fallback
         ),
     );
+    render_cache_persistence(out, &cache.persistence);
     for caveat in &cache.caveats {
         let _ = writeln!(out, "    caveat: {caveat}");
     }
@@ -329,10 +330,48 @@ fn render_data_cache(out: &mut String, cache: Option<&CfgDataCacheInfo>) -> bool
             cache.blocks_fallback
         ),
     );
+    render_cache_persistence(out, &cache.persistence);
     for caveat in &cache.caveats {
         let _ = writeln!(out, "    caveat: {caveat}");
     }
     true
+}
+
+fn render_cache_persistence(out: &mut String, persistence: &CfgCachePersistenceInfo) {
+    kv_indent(
+        out,
+        "persistence",
+        &format!(
+            "{}; {} of {} loop(s), {} persistent line(s)",
+            persistence.model,
+            persistence.loops_persistent,
+            persistence.loops_analyzed,
+            persistence.persistent_lines
+        ),
+    );
+    for region in &persistence.regions {
+        let shown: Vec<String> = region
+            .lines
+            .iter()
+            .take(8)
+            .map(ToString::to_string)
+            .collect();
+        let suffix = if region.lines.len() > shown.len() {
+            format!(", ... {} more", region.lines.len() - shown.len())
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "    persistent loop {} in {}: {} block(s), {} line(s) [{}{}]",
+            region.header,
+            region.function,
+            region.blocks,
+            region.lines.len(),
+            shown.join(", "),
+            suffix
+        );
+    }
 }
 
 fn render_branch_prediction(
