@@ -6,7 +6,7 @@
 //! statistical throughput tables and must be selected explicitly with
 //! `--cpu aarch64` or `--cpu x86-64`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use elf2tdg_schema::{
     BlockTiming, CacheParams, Confidence, CostRange, Determinism, FrequencyDomain,
@@ -437,7 +437,7 @@ pub struct InstructionCost {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct PipelineState {
+pub(crate) struct PipelineState {
     resource_free: BTreeMap<String, u32>,
     register_ready: BTreeMap<capstone::RegId, u32>,
 }
@@ -460,6 +460,52 @@ struct PipelineSchedule {
     exit_state: PipelineState,
     unknown: Vec<(String, u64)>,
 }
+
+/// Precomputed cost and exit state for one pipeline entry state.
+#[derive(Clone, Debug)]
+pub(crate) struct PipelineStateTransition {
+    cost_max: f64,
+    exit: PipelineState,
+}
+
+/// Precomputed pipeline states for one basic block.
+#[derive(Clone, Debug)]
+pub(crate) struct PipelineBlockModel {
+    default_cost: f64,
+    states: BTreeMap<PipelineState, PipelineStateTransition>,
+}
+
+/// Full inter-block pipeline state table for one function.
+#[derive(Clone, Debug)]
+pub(crate) struct PipelineFunctionModel {
+    entry_state: PipelineState,
+    blocks: BTreeMap<u64, PipelineBlockModel>,
+}
+
+impl PipelineFunctionModel {
+    /// Pipeline state at function entry.
+    pub(crate) fn entry_state(&self) -> &PipelineState {
+        &self.entry_state
+    }
+
+    /// Ready-entry cost of a block, before cache/branch/data-memory extras.
+    pub(crate) fn default_cost(&self, address: u64) -> Option<f64> {
+        self.blocks.get(&address).map(|block| block.default_cost)
+    }
+
+    /// Cost and exit state of `address` entered from `state`.
+    pub(crate) fn transition(
+        &self,
+        address: u64,
+        state: &PipelineState,
+    ) -> Option<(f64, PipelineState)> {
+        let transition = self.blocks.get(&address)?.states.get(state)?;
+        Some((transition.cost_max, transition.exit.clone()))
+    }
+}
+
+/// Upper bound on per-function pipeline state entries.
+const MAX_PIPELINE_STATES: usize = 100_000;
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -751,8 +797,8 @@ impl TimingCostModel {
     /// edge instead of from an all-ready pipeline.
     ///
     /// The state is derived from the source block's local schedule. This is a
-    /// first-order predecessor context: predecessor entry state and call
-    /// boundaries are not propagated.
+    /// first-order predecessor context used as the IPET fallback when the full
+    /// inter-block state table is unavailable.
     #[must_use]
     #[allow(
         clippy::cast_possible_truncation,
@@ -814,6 +860,109 @@ impl TimingCostModel {
                 (delta > 1e-9).then_some(delta)
             })
             .collect()
+    }
+
+    /// Builds the full inter-block pipeline state table for one function.
+    ///
+    /// Call-return edges reset the model to the ready state: callee pipeline
+    /// state is not available in the caller summary. Returns `None` when the
+    /// state table exceeds the configured cap.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::too_many_lines
+    )]
+    pub(crate) fn pipeline_state_model(
+        &self,
+        decoded: &[DecodedInsn],
+        blocks: &[crate::cfg::CfgBlockDraft],
+        edges: &[crate::cfg::CfgEdgeDraft],
+        entry: u64,
+    ) -> Option<PipelineFunctionModel> {
+        let profile = self.profile.as_ref()?;
+        let pipeline = self.active_pipeline()?;
+        let block_by_address: BTreeMap<u64, &crate::cfg::CfgBlockDraft> =
+            blocks.iter().map(|block| (block.address, block)).collect();
+        block_by_address.get(&entry)?;
+        let instructions_by_block: BTreeMap<u64, Vec<&DecodedInsn>> = blocks
+            .iter()
+            .map(|block| {
+                let end = block.address.saturating_add(block.size);
+                (
+                    block.address,
+                    decoded
+                        .iter()
+                        .filter(|instruction| {
+                            instruction.address >= block.address && instruction.address < end
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let mut outgoing: BTreeMap<u64, Vec<&crate::cfg::CfgEdgeDraft>> = BTreeMap::new();
+        for edge in edges {
+            if block_by_address.contains_key(&edge.from) && block_by_address.contains_key(&edge.to)
+            {
+                outgoing.entry(edge.from).or_default().push(edge);
+            }
+        }
+        let mut models: BTreeMap<u64, PipelineBlockModel> = BTreeMap::new();
+        for block in blocks {
+            let instructions = instructions_by_block
+                .get(&block.address)
+                .map_or(&[][..], Vec::as_slice);
+            let schedule =
+                pipeline_schedule(profile, pipeline, instructions, &PipelineState::default());
+            models.insert(
+                block.address,
+                PipelineBlockModel {
+                    default_cost: schedule.cost.max,
+                    states: BTreeMap::new(),
+                },
+            );
+        }
+        let entry_state = PipelineState::default();
+        let mut queue = VecDeque::from([(entry, entry_state.clone())]);
+        let mut state_count = 0_usize;
+        while let Some((address, state)) = queue.pop_front() {
+            let Some(block) = models.get_mut(&address) else {
+                continue;
+            };
+            if block.states.contains_key(&state) {
+                continue;
+            }
+            let instructions = instructions_by_block
+                .get(&address)
+                .map_or(&[][..], Vec::as_slice);
+            let schedule = pipeline_schedule(profile, pipeline, instructions, &state);
+            let exit = schedule.exit_state.clone();
+            block.states.insert(
+                state,
+                PipelineStateTransition {
+                    cost_max: schedule.cost.max,
+                    exit: exit.clone(),
+                },
+            );
+            state_count = state_count.saturating_add(1);
+            if state_count > MAX_PIPELINE_STATES {
+                return None;
+            }
+            if let Some(next_edges) = outgoing.get(&address) {
+                for edge in next_edges {
+                    let next = if edge.kind == crate::cfg::CfgEdgeKind::CallReturn {
+                        PipelineState::default()
+                    } else {
+                        exit.clone()
+                    };
+                    queue.push_back((edge.to, next));
+                }
+            }
+        }
+        Some(PipelineFunctionModel {
+            entry_state,
+            blocks: models,
+        })
     }
 
     /// Active Cortex-M4 pipeline profile, if the timing model uses it.
@@ -1151,7 +1300,7 @@ impl TimingCostModel {
                         !caveat.contains("Load/store and branch penalties are table-based")
                     });
                     caveats.push(
-                        "Board-profile pipeline block costs use an in-order resource/dependency model with registers ready at block entry. IPET adds a first-order edge-context stall from the source block's local pipeline state; full inter-block pipeline state, loop-carried accumulation, call-boundary state, memory dependencies and exception entry are not modeled. The model remains statistical."
+                        "Board-profile pipeline block costs use an in-order resource/dependency model. IPET builds a per-function state table from ready registers and resources at function entry and charges the state-dependent block cost; call-return edges reset the modeled state. Memory dependencies, exception entry, multi-issue and non-IPET inter-block state are not modeled. The model remains statistical."
                             .to_owned(),
                     );
                     if profile.instruction_cost_override_count() > 0 {
@@ -2229,6 +2378,117 @@ occupancy = 4
         assert_eq!(
             model.pipeline_edge_stalls(&decoded, &blocks, &call_return),
             vec![None]
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn pipeline_state_model_carries_state_across_blocks_and_resets_on_call_return() {
+        let profile = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:pipeline-state"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 168_000_000
+
+[pipeline]
+issue_width = 1
+branch_penalty = 2
+
+[[pipeline.instructions]]
+mnemonic = "ldr"
+resources = ["load_store"]
+latency = 1
+occupancy = 4
+"#,
+        )
+        .expect("valid pipeline state profile");
+        let model = TimingCostModel::select(None, Some(&profile), &image(ArchKind::Thumb))
+            .expect("profile selects")
+            .expect("timing model");
+        let decoded = [
+            insn_with_regs(0x1000, 2, "ldr", &[1], &[0]),
+            insn_with_regs(0x1002, 2, "ldr", &[2], &[3]),
+        ];
+        let blocks = [
+            CfgBlockDraft {
+                address: 0x1000,
+                size: 2,
+                instructions: Vec::new(),
+                calls: Vec::new(),
+                cycles: None,
+                terminator: CfgTerminator::Fallthrough,
+            },
+            CfgBlockDraft {
+                address: 0x1002,
+                size: 2,
+                instructions: Vec::new(),
+                calls: Vec::new(),
+                cycles: None,
+                terminator: CfgTerminator::Fallthrough,
+            },
+        ];
+        let loop_edges = [
+            CfgEdgeDraft {
+                from: 0x1000,
+                to: 0x1002,
+                kind: CfgEdgeKind::Fallthrough,
+                site: 0x1000,
+                conditional: false,
+            },
+            CfgEdgeDraft {
+                from: 0x1002,
+                to: 0x1000,
+                kind: CfgEdgeKind::Fallthrough,
+                site: 0x1002,
+                conditional: false,
+            },
+        ];
+        let function = model
+            .pipeline_state_model(&decoded, &blocks, &loop_edges, 0x1000)
+            .expect("pipeline state table");
+        assert_eq!(function.entry_state(), &super::PipelineState::default());
+        assert_eq!(function.default_cost(0x1000), Some(1.0));
+        assert_eq!(function.default_cost(0x1002), Some(1.0));
+        let (cost, exit) = function
+            .transition(0x1000, function.entry_state())
+            .expect("entry transition");
+        assert_eq!(cost, 1.0);
+        assert_ne!(exit, super::PipelineState::default());
+        assert_eq!(
+            function.transition(0x1002, &exit).map(|(cost, _)| cost),
+            Some(4.0)
+        );
+        assert_eq!(function.blocks[&0x1000].states.len(), 2);
+        assert_eq!(function.blocks[&0x1002].states.len(), 1);
+
+        let call_return_edges = [
+            CfgEdgeDraft {
+                from: 0x1000,
+                to: 0x1002,
+                kind: CfgEdgeKind::Fallthrough,
+                site: 0x1000,
+                conditional: false,
+            },
+            CfgEdgeDraft {
+                from: 0x1002,
+                to: 0x1000,
+                kind: CfgEdgeKind::CallReturn,
+                site: 0x1002,
+                conditional: false,
+            },
+        ];
+        let reset = model
+            .pipeline_state_model(&decoded, &blocks, &call_return_edges, 0x1000)
+            .expect("pipeline state table across a call return");
+        assert_eq!(reset.blocks[&0x1000].states.len(), 1);
+        assert!(
+            reset.blocks[&0x1000]
+                .states
+                .contains_key(&super::PipelineState::default())
         );
     }
 
