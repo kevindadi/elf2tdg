@@ -758,6 +758,11 @@ pub(crate) enum BranchPredictionModel {
     /// Two-bit local saturating counter per branch site.
     #[serde(alias = "two-bit")]
     Bimodal,
+    /// Two-bit counters indexed by a global branch history register (`GAg`).
+    #[serde(rename = "global-history", alias = "gag")]
+    GlobalHistory,
+    /// Two-bit counters indexed by the global history XOR branch-PC bits.
+    Gshare,
 }
 
 impl BranchPredictionModel {
@@ -767,6 +772,8 @@ impl BranchPredictionModel {
             Self::StaticTaken => "static-taken",
             Self::Btfn => "btfn",
             Self::Bimodal => "bimodal",
+            Self::GlobalHistory => "global-history",
+            Self::Gshare => "gshare",
         }
     }
 }
@@ -836,6 +843,10 @@ pub(crate) struct BranchPredictionProfile {
     initial_state: BranchPredictionState,
     #[serde(default)]
     first_execution: FirstExecutionHistory,
+    #[serde(default)]
+    history_bits: Option<u8>,
+    #[serde(default)]
+    initial_history: Option<u64>,
     #[serde(default = "default_max_branch_states")]
     max_states: usize,
 }
@@ -867,6 +878,21 @@ impl BranchPredictionProfile {
 
     pub(crate) fn first_execution_name(&self) -> &'static str {
         self.first_execution.name()
+    }
+
+    pub(crate) fn history_bits(&self) -> Option<u8> {
+        self.history_bits
+    }
+
+    pub(crate) fn initial_history(&self) -> Option<u64> {
+        self.initial_history
+    }
+
+    pub(crate) fn is_global_history(&self) -> bool {
+        matches!(
+            self.model,
+            BranchPredictionModel::GlobalHistory | BranchPredictionModel::Gshare
+        )
     }
 
     pub(crate) fn max_states(&self) -> usize {
@@ -1452,6 +1478,35 @@ impl BoardProfile {
         if prediction.max_states == 0 {
             return Err(Error::Config(
                 "board profile branch_prediction.max_states must be positive".to_owned(),
+            ));
+        }
+        if prediction.is_global_history() {
+            let Some(bits) = prediction.history_bits else {
+                return Err(Error::Config(
+                    "board profile branch_prediction.history_bits is required for global-history/gshare"
+                        .to_owned(),
+                ));
+            };
+            if !(1..=16).contains(&bits) {
+                return Err(Error::Config(
+                    "board profile branch_prediction.history_bits must be in 1..=16".to_owned(),
+                ));
+            }
+            let Some(history) = prediction.initial_history else {
+                return Err(Error::Config(
+                    "board profile branch_prediction.initial_history is required for global-history/gshare"
+                        .to_owned(),
+                ));
+            };
+            if history >= (1_u64 << bits) {
+                return Err(Error::Config(format!(
+                    "board profile branch_prediction.initial_history must fit in {bits} bit(s)"
+                )));
+            }
+        } else if prediction.history_bits.is_some() || prediction.initial_history.is_some() {
+            return Err(Error::Config(
+                "board profile branch_prediction.history_bits/initial_history require global-history or gshare"
+                    .to_owned(),
             ));
         }
         Ok(())
@@ -2452,6 +2507,39 @@ max_states = 32
         assert!(BoardProfile::parse_toml(&zero_states).is_err());
         let bad_model = valid.replace("model = \"bimodal\"", "model = \"unknown\"");
         assert!(BoardProfile::parse_toml(&bad_model).is_err());
+
+        let global = format!(
+            "{}\nhistory_bits = 4\ninitial_history = 5\n",
+            valid.replace("model = \"bimodal\"", "model = \"global-history\"")
+        );
+        let profile = BoardProfile::parse_toml(&global).expect("valid global-history profile");
+        let prediction = profile.branch_prediction().expect("global-history profile");
+        assert_eq!(prediction.model_name(), "global-history");
+        assert_eq!(prediction.history_bits(), Some(4));
+        assert_eq!(prediction.initial_history(), Some(5));
+
+        let gshare = global.replace("model = \"global-history\"", "model = \"gshare\"");
+        let profile = BoardProfile::parse_toml(&gshare).expect("valid gshare profile");
+        assert_eq!(
+            profile
+                .branch_prediction()
+                .expect("gshare profile")
+                .model_name(),
+            "gshare"
+        );
+
+        assert!(BoardProfile::parse_toml(&global.replace("history_bits = 4\n", "")).is_err());
+        assert!(
+            BoardProfile::parse_toml(&global.replace("history_bits = 4", "history_bits = 0"))
+                .is_err()
+        );
+        assert!(
+            BoardProfile::parse_toml(
+                &global.replace("initial_history = 5", "initial_history = 16")
+            )
+            .is_err()
+        );
+        assert!(BoardProfile::parse_toml(&format!("{valid}\nhistory_bits = 4\n")).is_err());
     }
 
     #[test]

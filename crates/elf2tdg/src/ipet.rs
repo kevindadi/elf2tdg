@@ -70,7 +70,8 @@ pub(crate) fn analyze_program_with_branch_prediction(
 ) -> CfgWcetInfo {
     let interproc = branch_prediction
         .filter(|profile| {
-            profile.model() == crate::board_profile::BranchPredictionModel::Bimodal
+            (profile.model() == crate::board_profile::BranchPredictionModel::Bimodal
+                || profile.is_global_history())
                 && !facts.has_contextual_facts()
         })
         .and_then(|profile| build_interproc_context(program, facts, profile));
@@ -343,7 +344,7 @@ fn analyze_program_impl(
     }
     if program.branch_prediction.is_some() {
         info.caveats.push(
-            "Branch-prediction state IPET follows concrete predictor states from the configured initial state when the branch analysis completes. For the bimodal model it builds per-function branch-cost/exit-state summaries and carries predictor state through direct, statically resolved calls, including nested calls; indirect, unresolved or recursive calls, contextual facts, ordered/cross-function automata, callee analysis fallback and state/summary caps keep the per-function or per-block model."
+            "Branch-prediction state IPET follows concrete predictor states from the configured initial state when the branch analysis completes. For bimodal, global-history and gshare it builds per-function branch-cost/exit-state summaries and carries predictor state through direct, statically resolved calls, including nested calls; indirect, unresolved or recursive calls, contextual facts, ordered/cross-function automata, callee analysis fallback and state/summary caps keep the per-function or per-block model."
                 .to_owned(),
         );
     }
@@ -3943,10 +3944,10 @@ fn build_state_product_graph(
         node: entry,
         instruction: models.instruction.map(|model| model.geometry.cold()),
         data: models.data.map(|model| model.geometry.cold()),
-        prediction: branch.map(|_| {
+        prediction: branch.map(|model| {
             entry_prediction
                 .cloned()
-                .unwrap_or_else(PredictorState::default)
+                .unwrap_or_else(|| model.predictor.entry_state())
         }),
         pipeline: pipeline_model.map(|model| model.entry_state().clone()),
     };
@@ -6286,6 +6287,33 @@ auto_loop_bounds = false
         .expect("valid branch profile")
     }
 
+    fn global_history_board(model: &str, max_states: usize) -> BoardProfile {
+        BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:ipet-global-history-test"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 1_000_000
+
+[branch_prediction]
+model = "{model}"
+mispredict_penalty = 3
+initial_state = "weakly-not-taken"
+history_bits = 3
+initial_history = 0
+max_states = {max_states}
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+"#
+        ))
+        .expect("valid global-history branch profile")
+    }
+
     fn unknown_first_branch_board(max_states: usize) -> BoardProfile {
         BoardProfile::parse_toml(&format!(
             r#"
@@ -6359,6 +6387,28 @@ auto_loop_bounds = false
     }
 
     #[test]
+    fn branch_state_product_models_global_history() {
+        for model in ["global-history", "gshare"] {
+            let board = global_history_board(model, 32);
+            let prediction = board.branch_prediction().expect("branch profile");
+            let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+            let mut program = branch_loop_program();
+            let info = crate::branch_prediction::analyze_program(&mut program, prediction);
+            assert_eq!(info.model, model);
+            assert_eq!(info.history_bits, Some(3));
+            assert_eq!(info.initial_history, Some(0));
+            let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+            let ipet = program.functions[0]
+                .wcet
+                .as_ref()
+                .and_then(|wcet| wcet.ipet.as_ref())
+                .expect("global-history IPET");
+            assert_eq!(ipet.branch_model.as_deref(), Some("state-product"));
+            assert!(ipet.objective > 0.0);
+        }
+    }
+
+    #[test]
     fn interprocedural_branch_state_models_callee_warmup() {
         let board = branch_board(16);
         let prediction = board.branch_prediction().expect("branch profile");
@@ -6416,6 +6466,26 @@ auto_loop_bounds = false
         let json = serde_json::to_value(ipet).expect("IPET JSON");
         assert_eq!(json["branch_model"], "interprocedural-state-product");
         assert!(ipet.objective < baseline_ipet.objective);
+        assert!(ipet.objective > 0.0);
+    }
+
+    #[test]
+    fn interprocedural_state_product_models_global_history() {
+        let board = global_history_board("global-history", 32);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut program = loop_caller_program(true);
+        let _ = crate::branch_prediction::analyze_program(&mut program, prediction);
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("global-history interprocedural IPET");
+        assert_eq!(
+            ipet.branch_model.as_deref(),
+            Some("interprocedural-state-product")
+        );
         assert!(ipet.objective > 0.0);
     }
 

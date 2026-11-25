@@ -394,6 +394,12 @@ fn render_branch_prediction(
     if let Some(first_execution) = &prediction.first_execution {
         kv_indent(out, "first execution", first_execution);
     }
+    if let Some(history_bits) = prediction.history_bits {
+        kv_indent(out, "history bits", &history_bits.to_string());
+    }
+    if let Some(initial_history) = prediction.initial_history {
+        kv_indent(out, "initial history", &format!("0x{initial_history:x}"));
+    }
     kv_indent(
         out,
         "coverage",
