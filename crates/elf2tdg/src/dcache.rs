@@ -21,10 +21,12 @@ use petgraph::visit::EdgeRef;
 use elf2tdg_schema::{Addr, CostRange};
 
 use crate::board_profile::DataCacheProfile;
-use crate::cache_state::CacheState;
+use crate::cache_state::{
+    CacheAccess, CacheAccessKind, CacheGeometry, CacheSimulation, CacheState, simulate,
+};
 use crate::cfg::{
     CfgBlockDataCache, CfgBlockDataCacheLine, CfgCacheLineClass, CfgDataCacheInfo, CfgEdgeKind,
-    CfgMemoryAccessKind, FunctionCfg, ProgramCfg,
+    FunctionCfg, ProgramCfg,
 };
 
 struct CacheModel {
@@ -50,27 +52,25 @@ impl CacheModel {
         }
     }
 
-    fn line_of(&self, address: u64) -> u64 {
-        address / self.line_bytes
+    fn geometry(&self) -> CacheGeometry {
+        CacheGeometry {
+            line_bytes: self.line_bytes,
+            sets: self.sets,
+            ways: self.ways,
+        }
     }
 
     fn line_address(&self, line: u64) -> u64 {
-        line.saturating_mul(self.line_bytes)
+        self.geometry().line_address(line)
     }
 
     fn cold_state(&self) -> CacheState {
-        CacheState::cold(usize::try_from(self.sets).unwrap_or(usize::MAX))
+        self.geometry().cold()
     }
 }
 
-#[derive(Clone, Copy)]
-struct LineAccess {
-    line: u64,
-    kind: CfgMemoryAccessKind,
-}
-
 struct AccessTrace {
-    lines: Vec<LineAccess>,
+    lines: Vec<CacheAccess>,
     memory_accesses: u32,
     resolved_memory_accesses: u32,
     unresolved_memory_accesses: u32,
@@ -86,7 +86,7 @@ impl AccessTrace {
         }
     }
 
-    fn add(&mut self, access: &crate::cfg::CfgMemoryAccess, model: &CacheModel) {
+    fn add(&mut self, access: &crate::cfg::CfgMemoryAccess, geometry: CacheGeometry) {
         self.memory_accesses = self.memory_accesses.saturating_add(1);
         let Some(address) = access.address else {
             self.unresolved_memory_accesses = self.unresolved_memory_accesses.saturating_add(1);
@@ -94,12 +94,12 @@ impl AccessTrace {
         };
         self.resolved_memory_accesses = self.resolved_memory_accesses.saturating_add(1);
         let width = u64::from(access.width.max(1));
-        let first = model.line_of(address.get());
-        let last = model.line_of(address.get().saturating_add(width.saturating_sub(1)));
+        let first = geometry.line_of(address.get());
+        let last = geometry.line_of(address.get().saturating_add(width.saturating_sub(1)));
         for line in first..=last {
-            self.lines.push(LineAccess {
+            self.lines.push(CacheAccess {
                 line,
-                kind: access.kind,
+                kind: access.kind.into(),
             });
         }
     }
@@ -109,48 +109,14 @@ impl AccessTrace {
     }
 }
 
-fn block_accesses(block: &crate::cfg::CfgBlock, model: &CacheModel) -> AccessTrace {
+fn block_accesses(block: &crate::cfg::CfgBlock, geometry: CacheGeometry) -> AccessTrace {
     let mut trace = AccessTrace::new();
     for instruction in &block.instructions {
         for access in &instruction.memory_accesses {
-            trace.add(access, model);
+            trace.add(access, geometry);
         }
     }
     trace
-}
-
-#[derive(Clone)]
-struct StateResult {
-    state: CacheState,
-    misses: u32,
-    hits_by_line: BTreeMap<u64, u32>,
-}
-
-fn simulate(trace: &AccessTrace, state: &CacheState, model: &CacheModel) -> StateResult {
-    let mut state = state.clone();
-    let mut misses = 0_u32;
-    let mut hits_by_line = BTreeMap::new();
-    for access in &trace.lines {
-        let hit = match access.kind {
-            CfgMemoryAccessKind::Read | CfgMemoryAccessKind::ReadWrite => {
-                state.access(access.line, model.ways, model.sets)
-            }
-            CfgMemoryAccessKind::Write if model.write_allocate => {
-                state.access(access.line, model.ways, model.sets)
-            }
-            CfgMemoryAccessKind::Write => state.write_no_allocate(access.line, model.sets),
-        };
-        if hit {
-            *hits_by_line.entry(access.line).or_insert(0) += 1;
-        } else {
-            misses = misses.saturating_add(1);
-        }
-    }
-    StateResult {
-        state,
-        misses,
-        hits_by_line,
-    }
 }
 
 /// Runs data-cache analysis over every function in `program`.
@@ -248,12 +214,13 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
         return FunctionResult::empty();
     };
     let nodes: Vec<NodeIndex> = cfg.blocks_by_address.values().copied().collect();
+    let geometry = model.geometry();
     let traces: BTreeMap<NodeIndex, AccessTrace> = nodes
         .iter()
-        .map(|node| (*node, block_accesses(&cfg.graph[*node], model)))
+        .map(|node| (*node, block_accesses(&cfg.graph[*node], geometry)))
         .collect();
     let mut entry_states: BTreeMap<NodeIndex, BTreeSet<CacheState>> = BTreeMap::new();
-    let mut results: BTreeMap<NodeIndex, Vec<StateResult>> = BTreeMap::new();
+    let mut results: BTreeMap<NodeIndex, Vec<CacheSimulation>> = BTreeMap::new();
     let mut processed: BTreeSet<(NodeIndex, CacheState)> = BTreeSet::new();
     let mut queue: VecDeque<(NodeIndex, CacheState)> = VecDeque::new();
     let cold = model.cold_state();
@@ -265,7 +232,7 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
             continue;
         }
         let trace = traces.get(&node).expect("trace for CFG node");
-        let result = simulate(trace, &state, model);
+        let result = simulate(&trace.lines, &state, geometry, model.write_allocate);
         results.entry(node).or_default().push(result.clone());
         for edge in cfg.graph.edges_directed(node, Direction::Outgoing) {
             let target = edge.target();
@@ -355,23 +322,24 @@ fn line_counts(
     for access in &trace.lines {
         *accesses.entry(access.line).or_insert(0) += 1;
         match access.kind {
-            CfgMemoryAccessKind::Read => {
+            CacheAccessKind::Read => {
                 *reads.entry(access.line).or_insert(0) += 1;
             }
-            CfgMemoryAccessKind::Write => {
+            CacheAccessKind::Write => {
                 *writes.entry(access.line).or_insert(0) += 1;
             }
-            CfgMemoryAccessKind::ReadWrite => {
+            CacheAccessKind::ReadWrite => {
                 *reads.entry(access.line).or_insert(0) += 1;
                 *writes.entry(access.line).or_insert(0) += 1;
             }
+            CacheAccessKind::Fetch => {}
         }
     }
     (accesses, reads, writes)
 }
 
 fn line_metadata(
-    results: &[StateResult],
+    results: &[CacheSimulation],
     access_counts: &BTreeMap<u64, u32>,
     read_counts: &BTreeMap<u64, u32>,
     write_counts: &BTreeMap<u64, u32>,

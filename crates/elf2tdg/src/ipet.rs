@@ -26,6 +26,9 @@ use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use elf2tdg_schema::{BlockId, FunctionId};
 
+use crate::cache_state::{
+    CacheGeometry, CacheState, data_accesses, instruction_accesses, simulate,
+};
 use crate::cfg::{
     CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus,
     FunctionCfg, ProgramCfg,
@@ -225,12 +228,18 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 .to_owned(),
             "Unresolved calls, missing callee summaries, unresolved control flow or missing block timing produce partial results; a partial objective is not a safe upper bound."
                 .to_owned(),
-            "Cache, branch-prediction and data-memory results are local and not path-sensitive."
+            "Branch-prediction and data-memory results are local and not path-sensitive; cache penalties are block-local unless the cache-state IPET model is selected."
                 .to_owned(),
             "Interrupts, DMA, bus contention, multi-core interference and concurrency are not modeled."
                 .to_owned(),
         ],
     };
+    if program.cache.is_some() || program.data_cache.is_some() {
+        info.caveats.push(
+            "Cache-state IPET simulates the configured LRU caches with cold per-function entry and call-return invalidation when the cache analysis completes and invalidate_on_call is enabled. Functions with ordered or cross-function automata, cache-analysis fallback, unresolved data addresses or cache-product overflow keep per-block miss bounds."
+                .to_owned(),
+        );
+    }
     if use_contexts {
         info.caveats.push(
             "Context-sensitive facts are analyzed per caller chain; function-level WCET is the maximum over analyzed contexts."
@@ -393,7 +402,7 @@ fn solve_function(
     let automata = ordered_automata(facts, function_id, scope);
     let cross = cross_function_constraints(facts, function_id, scope);
     if !cross.is_empty() {
-        return solve_function_with_cross_function_automata(
+        let mut outcome = solve_function_with_cross_function_automata(
             program,
             cfg,
             entry,
@@ -405,10 +414,12 @@ fn solve_function(
             &loops,
             &automata,
             &cross,
-        );
+        )?;
+        outcome.solution.cache_model = cache_fallback_model(program);
+        return Ok(outcome);
     }
     if !automata.is_empty() {
-        return solve_function_with_automata(
+        let mut outcome = solve_function_with_automata(
             cfg,
             entry,
             reachable_nodes,
@@ -418,7 +429,25 @@ fn solve_function(
             scope,
             &loops,
             &automata,
-        );
+        )?;
+        outcome.solution.cache_model = cache_fallback_model(program);
+        return Ok(outcome);
+    }
+    let cache_models = build_cache_ipet_models(program, cfg, reachable_nodes);
+    if !cache_models.is_empty()
+        && let Some(outcome) = solve_function_with_cache_states(
+            cfg,
+            entry,
+            reachable_nodes,
+            call_cycles,
+            facts,
+            function_id,
+            scope,
+            &loops,
+            &cache_models,
+        )?
+    {
+        return Ok(outcome);
     }
 
     let mut nodes: Vec<NodeIndex> = reachable_nodes.iter().copied().collect();
@@ -531,6 +560,7 @@ fn solve_function(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
+            cache_model: cache_fallback_model(program),
             blocks,
         },
         partial,
@@ -1377,6 +1407,7 @@ fn solve_function_with_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
+            cache_model: None,
             blocks,
         },
         partial,
@@ -2463,10 +2494,569 @@ fn solve_function_with_cross_function_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
+            cache_model: None,
             blocks,
         },
         partial,
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CacheIpetModel {
+    geometry: CacheGeometry,
+    write_allocate: bool,
+    miss_penalty: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CacheIpetModels {
+    instruction: Option<CacheIpetModel>,
+    data: Option<CacheIpetModel>,
+}
+
+impl CacheIpetModels {
+    fn is_empty(self) -> bool {
+        self.instruction.is_none() && self.data.is_none()
+    }
+}
+
+fn cache_fallback_model(program: &ProgramCfg) -> Option<String> {
+    (program.cache.is_some() || program.data_cache.is_some()).then(|| "block-bounds".to_owned())
+}
+
+fn build_cache_ipet_models(
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+) -> CacheIpetModels {
+    let mut models = CacheIpetModels::default();
+    if let Some(info) = &program.cache
+        && info.invalidate_on_call
+        && info.sets > 0
+        && info.line_bytes > 0
+        && let Ok(ways) = usize::try_from(info.ways)
+        && ways > 0
+        && reachable_nodes.iter().all(|node| {
+            cfg.graph[*node]
+                .cache
+                .as_ref()
+                .is_some_and(|cache| !cache.fallback)
+        })
+    {
+        models.instruction = Some(CacheIpetModel {
+            geometry: CacheGeometry {
+                line_bytes: u64::from(info.line_bytes),
+                sets: info.sets,
+                ways,
+            },
+            write_allocate: true,
+            miss_penalty: info.miss_penalty,
+        });
+    }
+    if let Some(info) = &program.data_cache
+        && info.invalidate_on_call
+        && info.sets > 0
+        && info.line_bytes > 0
+        && let Ok(ways) = usize::try_from(info.ways)
+        && ways > 0
+        && reachable_nodes.iter().all(|node| {
+            cfg.graph[*node]
+                .data_cache
+                .as_ref()
+                .is_some_and(|cache| !cache.fallback && cache.unresolved_memory_accesses == 0)
+        })
+    {
+        models.data = Some(CacheIpetModel {
+            geometry: CacheGeometry {
+                line_bytes: u64::from(info.line_bytes),
+                sets: info.sets,
+                ways,
+            },
+            write_allocate: info.write_allocate,
+            miss_penalty: info.miss_penalty,
+        });
+    }
+    models
+}
+
+fn cache_base_cost(
+    block: &crate::cfg::CfgBlock,
+    node: NodeIndex,
+    call_cycles: &BTreeMap<NodeIndex, f64>,
+    models: &CacheIpetModels,
+) -> f64 {
+    let mut cost = block.cycles.map_or(0.0, |cycles| cycles.max)
+        + call_cycles.get(&node).copied().unwrap_or(0.0);
+    if let Some(model) = &models.instruction
+        && let Some(cache) = &block.cache
+    {
+        cost -= f64::from(cache.misses_max) * f64::from(model.miss_penalty);
+    }
+    if let Some(model) = &models.data
+        && let Some(cache) = &block.data_cache
+    {
+        cost -= f64::from(cache.misses_max) * f64::from(model.miss_penalty);
+    }
+    cost.max(0.0)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CacheProductKey {
+    node: NodeIndex,
+    instruction: Option<CacheState>,
+    data: Option<CacheState>,
+}
+
+struct CacheProductNode {
+    key: CacheProductKey,
+    cost: f64,
+    exit_instruction: Option<CacheState>,
+    exit_data: Option<CacheState>,
+}
+
+struct CacheProductEdge {
+    from: usize,
+    to: usize,
+    original: EdgeIndex,
+}
+
+fn cache_product_node(
+    cfg: &FunctionCfg,
+    key: CacheProductKey,
+    call_cycles: &BTreeMap<NodeIndex, f64>,
+    models: &CacheIpetModels,
+) -> CacheProductNode {
+    debug_assert_eq!(
+        models.instruction.is_some(),
+        key.instruction.is_some(),
+        "instruction-cache state/model mismatch"
+    );
+    debug_assert_eq!(
+        models.data.is_some(),
+        key.data.is_some(),
+        "data-cache state/model mismatch"
+    );
+    let block = &cfg.graph[key.node];
+    let mut cost = cache_base_cost(block, key.node, call_cycles, models);
+    let mut exit_instruction = key.instruction.clone();
+    let mut exit_data = key.data.clone();
+    if let Some(model) = &models.instruction
+        && let Some(state) = key.instruction.as_ref()
+    {
+        let accesses = instruction_accesses(block, model.geometry);
+        let simulation = simulate(&accesses, state, model.geometry, true);
+        cost += f64::from(simulation.misses) * f64::from(model.miss_penalty);
+        exit_instruction = Some(simulation.state);
+    }
+    if let Some(model) = &models.data
+        && let Some(state) = key.data.as_ref()
+    {
+        let accesses = data_accesses(block, model.geometry);
+        let simulation = simulate(&accesses, state, model.geometry, model.write_allocate);
+        cost += f64::from(simulation.misses) * f64::from(model.miss_penalty);
+        exit_data = Some(simulation.state);
+    }
+    CacheProductNode {
+        key,
+        cost,
+        exit_instruction,
+        exit_data,
+    }
+}
+
+fn build_cache_product_graph(
+    cfg: &FunctionCfg,
+    entry: NodeIndex,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    call_cycles: &BTreeMap<NodeIndex, f64>,
+    models: &CacheIpetModels,
+) -> Option<(Vec<CacheProductNode>, Vec<CacheProductEdge>)> {
+    let start_key = CacheProductKey {
+        node: entry,
+        instruction: models.instruction.map(|model| model.geometry.cold()),
+        data: models.data.map(|model| model.geometry.cold()),
+    };
+    let mut index_by_key: BTreeMap<CacheProductKey, usize> = BTreeMap::new();
+    index_by_key.insert(start_key.clone(), 0);
+    let mut nodes = vec![cache_product_node(cfg, start_key, call_cycles, models)];
+    let mut edges = Vec::new();
+    let mut queue = VecDeque::from([0_usize]);
+    while let Some(from) = queue.pop_front() {
+        let key = nodes[from].key.clone();
+        let exit_instruction = nodes[from].exit_instruction.clone();
+        let exit_data = nodes[from].exit_data.clone();
+        for edge in cfg
+            .graph
+            .edges_directed(key.node, petgraph::Direction::Outgoing)
+        {
+            let target = edge.target();
+            if !reachable_nodes.contains(&target) {
+                continue;
+            }
+            let reset = edge.weight().kind == crate::cfg::CfgEdgeKind::CallReturn;
+            let next_key = CacheProductKey {
+                node: target,
+                instruction: if reset {
+                    models.instruction.map(|model| model.geometry.cold())
+                } else {
+                    exit_instruction.clone()
+                },
+                data: if reset {
+                    models.data.map(|model| model.geometry.cold())
+                } else {
+                    exit_data.clone()
+                },
+            };
+            let to = if let Some(&index) = index_by_key.get(&next_key) {
+                index
+            } else {
+                if nodes.len() >= MAX_AUTOMATON_NODES {
+                    return None;
+                }
+                let index = nodes.len();
+                index_by_key.insert(next_key.clone(), index);
+                nodes.push(cache_product_node(cfg, next_key, call_cycles, models));
+                queue.push_back(index);
+                index
+            };
+            if edges.len() >= MAX_AUTOMATON_EDGES {
+                return None;
+            }
+            edges.push(CacheProductEdge {
+                from,
+                to,
+                original: edge.id(),
+            });
+        }
+    }
+    Some((nodes, edges))
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+fn solve_function_with_cache_states(
+    cfg: &FunctionCfg,
+    entry: NodeIndex,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    call_cycles: &BTreeMap<NodeIndex, f64>,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+    loops: &[LoopModel],
+    models: &CacheIpetModels,
+) -> Result<Option<IpetOutcome>, IpetError> {
+    let Some((product_nodes, product_edges)) =
+        build_cache_product_graph(cfg, entry, reachable_nodes, call_cycles, models)
+    else {
+        return Ok(None);
+    };
+
+    let blocks_with_outgoing: BTreeSet<NodeIndex> = reachable_nodes
+        .iter()
+        .copied()
+        .filter(|node| {
+            cfg.graph
+                .edges_directed(*node, petgraph::Direction::Outgoing)
+                .any(|edge| reachable_nodes.contains(&edge.target()))
+        })
+        .collect();
+    let nonexit_headers: BTreeSet<NodeIndex> = loops
+        .iter()
+        .filter(|loop_| !loop_.has_exit)
+        .map(|loop_| loop_.header)
+        .collect();
+    let mut vars = ProblemVariables::new();
+    let node_variables: Vec<Variable> = product_nodes
+        .iter()
+        .map(|_| vars.add(good_lp::variable().integer().min(0.0)))
+        .collect();
+    let edge_variables: Vec<Variable> = product_edges
+        .iter()
+        .map(|_| vars.add(good_lp::variable().integer().min(0.0)))
+        .collect();
+    let mut exit_variables: BTreeMap<usize, Variable> = BTreeMap::new();
+    for (index, node) in product_nodes.iter().enumerate() {
+        if nonexit_headers.contains(&node.key.node) {
+            exit_variables.insert(index, vars.add(good_lp::variable().integer().min(0.0)));
+        }
+    }
+    if node_variables
+        .len()
+        .saturating_add(edge_variables.len())
+        .saturating_add(exit_variables.len())
+        > MAX_MODEL_VARIABLES
+    {
+        return Err(IpetError::Unknown("ipet-model-too-large".to_owned()));
+    }
+
+    let node_by_block_id: BTreeMap<BlockId, NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    let mut nodes_by_block: BTreeMap<NodeIndex, Vec<usize>> = BTreeMap::new();
+    for (index, node) in product_nodes.iter().enumerate() {
+        nodes_by_block.entry(node.key.node).or_default().push(index);
+    }
+    let mut edges_by_original: BTreeMap<EdgeIndex, Vec<usize>> = BTreeMap::new();
+    for (index, edge) in product_edges.iter().enumerate() {
+        edges_by_original
+            .entry(edge.original)
+            .or_default()
+            .push(index);
+    }
+    let mut incoming = vec![Vec::new(); product_nodes.len()];
+    let mut outgoing = vec![Vec::new(); product_nodes.len()];
+    for (index, edge) in product_edges.iter().enumerate() {
+        incoming[edge.to].push(index);
+        outgoing[edge.from].push(index);
+    }
+
+    let block_expression = |block: &BlockId| -> Expression {
+        let Some(&node) = node_by_block_id.get(block) else {
+            return Expression::from(0.0);
+        };
+        let Some(indices) = nodes_by_block.get(&node) else {
+            return Expression::from(0.0);
+        };
+        let mut expression = Expression::from(0.0);
+        for index in indices {
+            expression += node_variables[*index];
+        }
+        expression
+    };
+    let edge_expression = |edge: EdgeIndex| -> Expression {
+        let Some(indices) = edges_by_original.get(&edge) else {
+            return Expression::from(0.0);
+        };
+        let mut expression = Expression::from(0.0);
+        for index in indices {
+            expression += edge_variables[*index];
+        }
+        expression
+    };
+
+    let mut constraints = Vec::new();
+    for (index, node) in product_nodes.iter().enumerate() {
+        let variable = node_variables[index];
+        let mut incoming_flow = Expression::from(0.0);
+        for edge in &incoming[index] {
+            incoming_flow += edge_variables[*edge];
+        }
+        constraints.push(constraint::eq(
+            Expression::from(variable) - incoming_flow,
+            if index == 0 { 1.0 } else { 0.0 },
+        ));
+        let mut outgoing_flow = Expression::from(0.0);
+        let mut has_outgoing = false;
+        for edge in &outgoing[index] {
+            outgoing_flow += edge_variables[*edge];
+            has_outgoing = true;
+        }
+        if let Some(exit) = exit_variables.get(&index) {
+            outgoing_flow += *exit;
+            has_outgoing = true;
+        }
+        if has_outgoing {
+            constraints.push(constraint::eq(
+                Expression::from(variable) - outgoing_flow,
+                0.0,
+            ));
+        } else if blocks_with_outgoing.contains(&node.key.node) {
+            constraints.push(constraint::leq(Expression::from(variable), 0.0));
+        }
+    }
+
+    for loop_ in loops {
+        let Some(header_nodes) = nodes_by_block.get(&loop_.header) else {
+            continue;
+        };
+        let mut header = Expression::from(0.0);
+        for index in header_nodes {
+            header += node_variables[*index];
+        }
+        let mut entries = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
+        for edge in &loop_.entry_edges {
+            if let Some(indices) = edges_by_original.get(edge) {
+                for index in indices {
+                    entries += edge_variables[*index];
+                }
+            }
+        }
+        constraints.push(constraint::leq(
+            header - entries * f64::from(loop_.bound),
+            0.0,
+        ));
+    }
+
+    for branch in facts
+        .branches()
+        .iter()
+        .filter(|branch| &branch.function == function_id && scope.matches(&branch.context))
+    {
+        match branch.outcome {
+            BranchOutcome::Both => {
+                constraints.push(constraint::leq(block_expression(&branch.block), 0.0));
+            }
+            BranchOutcome::Taken | BranchOutcome::NotTaken => {
+                let Some(&node) = node_by_block_id.get(&branch.block) else {
+                    continue;
+                };
+                let kind = if branch.outcome == BranchOutcome::Taken {
+                    crate::cfg::CfgEdgeKind::Branch
+                } else {
+                    crate::cfg::CfgEdgeKind::Fallthrough
+                };
+                let edge = cfg
+                    .graph
+                    .edges_directed(node, petgraph::Direction::Outgoing)
+                    .find(|edge| edge.weight().site == branch.site && edge.weight().kind == kind);
+                if let Some(edge) = edge {
+                    constraints.push(constraint::leq(
+                        edge_expression(edge.id()),
+                        f64::from(branch.max_count),
+                    ));
+                }
+            }
+        }
+    }
+    for call in facts
+        .calls()
+        .iter()
+        .filter(|call| &call.function == function_id && scope.matches(&call.context))
+    {
+        constraints.push(constraint::leq(
+            block_expression(&call.block),
+            f64::from(call.max_count),
+        ));
+    }
+    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
+        conflict.applied
+            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
+            && conflict
+                .function
+                .as_ref()
+                .is_some_and(|function| function == function_id)
+            && scope.matches(&conflict.context)
+    }) {
+        let mut sum = Expression::from(0.0);
+        for element in &conflict.elements {
+            match element {
+                InfeasibleElement::Block { block } => sum += block_expression(block),
+                InfeasibleElement::Edge {
+                    source,
+                    target,
+                    site,
+                } => {
+                    let Some(&source) = node_by_block_id.get(source) else {
+                        continue;
+                    };
+                    let Some(&target) = node_by_block_id.get(target) else {
+                        continue;
+                    };
+                    if let Some(edge) = cfg
+                        .graph
+                        .edges_directed(source, petgraph::Direction::Outgoing)
+                        .find(|edge| edge.target() == target && edge.weight().site == *site)
+                    {
+                        sum += edge_expression(edge.id());
+                    }
+                }
+            }
+        }
+        let Ok(count) = u32::try_from(conflict.elements.len()) else {
+            continue;
+        };
+        let bound = f64::from(count.saturating_sub(1));
+        match conflict.scope.as_ref() {
+            Some(InfeasibleScope::Function) => {
+                constraints.push(constraint::leq(sum, bound));
+            }
+            Some(InfeasibleScope::Loop { header }) => {
+                let header_expression = block_expression(header);
+                constraints.push(constraint::leq(sum - header_expression * bound, 0.0));
+            }
+            Some(InfeasibleScope::CrossFunction) | None => {}
+        }
+    }
+
+    let mut objective = Expression::from(0.0);
+    for (index, node) in product_nodes.iter().enumerate() {
+        if node.cost != 0.0 {
+            objective += node_variables[index] * node.cost;
+        }
+    }
+
+    let problem = vars.maximise(objective.clone()).using(good_lp::microlp);
+    let solution = problem
+        .with_all(constraints)
+        .solve()
+        .map_err(|error| match error {
+            good_lp::ResolutionError::Unbounded => {
+                IpetError::Unbounded("ipet-unbounded".to_owned())
+            }
+            other => IpetError::Unknown(format!("ipet-solver: {other}")),
+        })?;
+    let status = match solution.status() {
+        SolutionStatus::Optimal => "optimal",
+        SolutionStatus::TimeLimit => "time-limit",
+        SolutionStatus::GapLimit => "gap-limit",
+    };
+    let mut partial = status != "optimal" || loops.iter().any(|loop_| !loop_.has_exit);
+    let mut counts: BTreeMap<NodeIndex, u64> = BTreeMap::new();
+    for (index, node) in product_nodes.iter().enumerate() {
+        let value = solution.value(node_variables[index]);
+        let rounded = value.round();
+        if (value - rounded).abs() > 1e-4 {
+            partial = true;
+        }
+        if rounded < 0.0 {
+            partial = true;
+            continue;
+        }
+        let count = rounded as u64;
+        if count >= u64::from(i32::MAX as u32) {
+            return Err(IpetError::Unbounded(
+                "ipet-solver-bound-saturated".to_owned(),
+            ));
+        }
+        let entry = counts.entry(node.key.node).or_default();
+        *entry = entry
+            .checked_add(count)
+            .ok_or_else(|| IpetError::Unbounded("ipet-solver-bound-saturated".to_owned()))?;
+        if *entry >= u64::from(i32::MAX as u32) {
+            return Err(IpetError::Unbounded(
+                "ipet-solver-bound-saturated".to_owned(),
+            ));
+        }
+    }
+    let objective = solution.eval(&objective);
+    if !objective.is_finite() || objective < 0.0 {
+        return Err(IpetError::Unknown("ipet-objective-not-finite".to_owned()));
+    }
+    let blocks = counts
+        .into_iter()
+        .filter(|(_, executions)| *executions > 0)
+        .map(|(node, executions)| CfgIpetBlockCount {
+            block: cfg.graph[node].id.clone(),
+            executions,
+        })
+        .collect();
+    Ok(Some(IpetOutcome {
+        solution: CfgIpetSolution {
+            solver: SOLVER_NAME.to_owned(),
+            status: status.to_owned(),
+            objective,
+            cache_model: Some("state-product".to_owned()),
+            blocks,
+        },
+        partial,
+    }))
 }
 
 fn non_loop_constraints(
@@ -2542,12 +3132,13 @@ mod tests {
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
-        CfgTerminator, FunctionCfg, ProgramCfg,
+        CfgMemoryAccess, CfgMemoryAccessKind, CfgMemoryResolution, CfgTerminator, FunctionCfg,
+        ProgramCfg,
     };
     use crate::flow_facts::{
         FlowFactDocument, FlowFacts, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
     };
-    use elf2tdg_schema::{CostRange, FunctionId, FunctionKind, Language};
+    use elf2tdg_schema::{Addr, CostRange, FunctionId, FunctionKind, Language};
 
     fn profile() -> BoardProfile {
         BoardProfile::parse_toml(
@@ -3632,6 +4223,203 @@ auto_loop_bounds = false
                 .as_deref()
                 .is_some_and(|reason| reason.contains("exactly one <call> group"))
         );
+    }
+
+    fn cache_board(extra: &str) -> BoardProfile {
+        BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:ipet-cache-test"
+arch = "thumb"
+cpu = "cortex-m7"
+
+[clocks.core]
+hz = 1_000_000
+
+{extra}
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+bound_nonterminating_loops = true
+"#
+        ))
+        .expect("valid cache profile")
+    }
+
+    fn cache_loop_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x1000,
+            FunctionCfg::build(
+                vec![block(0x1000, CfgTerminator::Jump, 1.0)],
+                vec![edge(0x1000, 0x1000, CfgEdgeKind::Jump)],
+                Some(0x1000),
+            ),
+        )])
+    }
+
+    fn data_cache_loop_program() -> ProgramCfg {
+        let mut instruction = instruction(0x1000, CfgTerminator::Jump, 1.0);
+        instruction.memory_accesses = vec![CfgMemoryAccess {
+            kind: CfgMemoryAccessKind::Read,
+            address: Some(Addr::new(0x2000)),
+            width: 4,
+            resolution: CfgMemoryResolution::Direct,
+            base: None,
+            index: None,
+            disp: 0,
+        }];
+        let block = CfgBlockDraft {
+            address: 0x1000,
+            size: 2,
+            instructions: vec![instruction],
+            calls: Vec::new(),
+            cycles: Some(CostRange::exact(1.0)),
+            terminator: CfgTerminator::Jump,
+        };
+        ProgramCfg::new(vec![function(
+            0x1000,
+            FunctionCfg::build(
+                vec![block],
+                vec![edge(0x1000, 0x1000, CfgEdgeKind::Jump)],
+                Some(0x1000),
+            ),
+        )])
+    }
+
+    fn prepare_cache_program(program: &mut ProgramCfg, board: &BoardProfile) {
+        if let Some(cache) = board.instruction_cache() {
+            let info = crate::icache::analyze_program(program, cache);
+            program.cache = Some(info);
+        }
+        if let Some(cache) = board.data_cache() {
+            let info = crate::dcache::analyze_program(program, cache);
+            program.data_cache = Some(info);
+        }
+    }
+
+    fn disable_cache_state_ipet(program: &mut ProgramCfg) {
+        if let Some(cache) = &mut program.cache {
+            cache.invalidate_on_call = false;
+        }
+        if let Some(cache) = &mut program.data_cache {
+            cache.invalidate_on_call = false;
+        }
+    }
+
+    fn run_ipet(program: &mut ProgramCfg, board: &BoardProfile) -> (f64, Option<String>) {
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let _ = analyze_program(program, &facts);
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("IPET solution");
+        (ipet.objective, ipet.cache_model.clone())
+    }
+
+    #[test]
+    fn instruction_cache_state_product_avoids_repeated_misses() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 32
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 16
+",
+        );
+        let mut program = cache_loop_program();
+        prepare_cache_program(&mut program, &board);
+
+        let mut block_bounds = program.clone();
+        disable_cache_state_ipet(&mut block_bounds);
+        let (block_objective, block_model) = run_ipet(&mut block_bounds, &board);
+        assert_eq!(block_objective, 44.0);
+        assert_eq!(block_model.as_deref(), Some("block-bounds"));
+
+        let (objective, model) = run_ipet(&mut program, &board);
+        assert_eq!(objective, 14.0);
+        assert_eq!(model.as_deref(), Some("state-product"));
+    }
+
+    #[test]
+    fn data_cache_state_product_avoids_repeated_misses() {
+        let board = cache_board(
+            r"
+[data_cache]
+size = 64
+line_bytes = 32
+ways = 2
+miss_penalty = 10
+write_allocate = true
+max_states = 16
+",
+        );
+        let mut program = data_cache_loop_program();
+        prepare_cache_program(&mut program, &board);
+
+        let mut block_bounds = program.clone();
+        disable_cache_state_ipet(&mut block_bounds);
+        let (block_objective, _) = run_ipet(&mut block_bounds, &board);
+        assert_eq!(block_objective, 44.0);
+
+        let (objective, model) = run_ipet(&mut program, &board);
+        assert_eq!(objective, 14.0);
+        assert_eq!(model.as_deref(), Some("state-product"));
+    }
+
+    #[test]
+    fn combined_cache_state_product_models_both_caches() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 32
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 16
+
+[data_cache]
+size = 64
+line_bytes = 32
+ways = 2
+miss_penalty = 10
+write_allocate = true
+max_states = 16
+",
+        );
+        let mut program = data_cache_loop_program();
+        prepare_cache_program(&mut program, &board);
+
+        let mut block_bounds = program.clone();
+        disable_cache_state_ipet(&mut block_bounds);
+        let (block_objective, _) = run_ipet(&mut block_bounds, &board);
+        assert_eq!(block_objective, 84.0);
+
+        let (objective, model) = run_ipet(&mut program, &board);
+        assert_eq!(objective, 24.0);
+        assert_eq!(model.as_deref(), Some("state-product"));
+    }
+
+    #[test]
+    fn cache_state_ipet_falls_back_when_cache_analysis_falls_back() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 32
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 1
+",
+        );
+        let mut program = cache_loop_program();
+        prepare_cache_program(&mut program, &board);
+        let (objective, model) = run_ipet(&mut program, &board);
+        assert_eq!(objective, 44.0);
+        assert_eq!(model.as_deref(), Some("block-bounds"));
     }
 
     #[test]

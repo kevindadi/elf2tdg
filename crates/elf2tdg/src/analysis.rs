@@ -3987,6 +3987,22 @@ fn enforce_safe_wcet(program: &cfg::ProgramCfg) -> Result<()> {
             ));
         }
     }
+    if let Some(cache) = program.cache.as_ref()
+        && !cache.invalidate_on_call
+    {
+        return Err(Error::UnsafeWcet(
+            "instruction-cache analysis does not invalidate state on call-return edges; set invalidate_on_call = true for a safe bound"
+                .to_owned(),
+        ));
+    }
+    if let Some(cache) = program.data_cache.as_ref()
+        && !cache.invalidate_on_call
+    {
+        return Err(Error::UnsafeWcet(
+            "data-cache analysis does not invalidate state on call-return edges; set invalidate_on_call = true for a safe bound"
+                .to_owned(),
+        ));
+    }
     if let Some(cache) = program.data_cache.as_ref()
         && cache.unresolved_memory_accesses > 0
     {

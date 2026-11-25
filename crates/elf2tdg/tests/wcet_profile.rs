@@ -2,10 +2,11 @@
 
 use std::path::Path;
 
-use elf2tdg::analysis::{AnalysisOptions, analyze_with_cfg};
+use elf2tdg::analysis::{AnalysisOptions, PathAnalysis, analyze_with_cfg};
 use elf2tdg::board_profile::BoardProfile;
 use elf2tdg::cfg;
 use elf2tdg::loader;
+use elf2tdg::text_report;
 
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -87,4 +88,74 @@ fn computes_root_and_function_wcet() {
                 function["wcet"].is_object() && function["wcet"]["status"].is_string()
             }))
     );
+}
+
+#[test]
+fn cache_state_ipet_is_recorded_in_the_pipeline() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let elf = manifest.join("../../tests/fixtures/cortex_m0/firmware.elf");
+    if !elf.exists() {
+        return;
+    }
+    let profile = BoardProfile::parse_toml(
+        r#"
+schema_version = 2
+id = "board:ipet-cache-integration"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 48_000_000
+
+[instruction_cache]
+size = 1024
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 128
+
+[wcet]
+default_loop_bound = 4
+bound_nonterminating_loops = true
+auto_loop_bounds = false
+"#,
+    )
+    .expect("valid cache profile");
+    let image = loader::load(&elf).expect("fixture ELF must load");
+    let output = analyze_with_cfg(
+        &image,
+        &AnalysisOptions {
+            board_profile: Some(profile),
+            path_analysis: PathAnalysis::Ipet,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("cache-aware IPET analysis");
+    assert!(output.cfg.cache.is_some());
+    let wcet = output.cfg.wcet.as_ref().expect("WCET metadata");
+    assert!(
+        wcet.caveats
+            .iter()
+            .any(|caveat| caveat.contains("Cache-state IPET"))
+    );
+    assert!(
+        output.cfg.functions.iter().any(|function| {
+            function
+                .wcet
+                .as_ref()
+                .and_then(|wcet| wcet.ipet.as_ref())
+                .and_then(|ipet| ipet.cache_model.as_deref())
+                == Some("state-product")
+        }),
+        "at least one complete cache analysis should use the state product"
+    );
+    let json = cfg::render_json(&output.cfg, None, false).expect("CFG JSON");
+    let document: serde_json::Value = serde_json::from_str(&json).expect("CFG JSON");
+    assert!(document["functions"].as_array().is_some_and(|functions| {
+        functions
+            .iter()
+            .any(|function| function["wcet"]["ipet"]["cache_model"] == "state-product")
+    }));
+    let text = text_report::render_text(&output.cfg, None, false).expect("text report");
+    assert!(text.contains("ipet cache model"));
 }

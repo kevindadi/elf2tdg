@@ -22,7 +22,9 @@ use crate::cfg::{
     CfgBlockCache, CfgBlockCacheLine, CfgCacheInfo, CfgEdgeKind, FunctionCfg, ProgramCfg,
 };
 
-use crate::cache_state::CacheState;
+use crate::cache_state::{
+    CacheAccess, CacheGeometry, CacheSimulation, CacheState, instruction_accesses, simulate,
+};
 
 struct CacheModel {
     sets: u64,
@@ -45,61 +47,20 @@ impl CacheModel {
         }
     }
 
-    fn line_of(&self, address: u64) -> u64 {
-        address / self.line_bytes
+    fn geometry(&self) -> CacheGeometry {
+        CacheGeometry {
+            line_bytes: self.line_bytes,
+            sets: self.sets,
+            ways: self.ways,
+        }
     }
 
     fn line_address(&self, line: u64) -> u64 {
-        line.saturating_mul(self.line_bytes)
+        self.geometry().line_address(line)
     }
 
     fn cold_state(&self) -> CacheState {
-        CacheState::cold(usize::try_from(self.sets).unwrap_or(usize::MAX))
-    }
-}
-
-#[derive(Clone)]
-struct StateResult {
-    state: CacheState,
-    misses: u32,
-    hits_by_line: BTreeMap<u64, u32>,
-}
-
-fn block_line_accesses(block: &crate::cfg::CfgBlock, model: &CacheModel) -> Vec<u64> {
-    let mut accesses = Vec::new();
-    for instruction in &block.instructions {
-        if instruction.size == 0 {
-            continue;
-        }
-        let first = model.line_of(instruction.address);
-        let last = model.line_of(
-            instruction
-                .address
-                .saturating_add(u64::from(instruction.size).saturating_sub(1)),
-        );
-        for line in first..=last {
-            accesses.push(line);
-        }
-    }
-    accesses
-}
-
-fn simulate(accesses: &[u64], state: &CacheState, model: &CacheModel) -> StateResult {
-    let mut state = state.clone();
-    let mut misses = 0_u32;
-    let mut hits_by_line = BTreeMap::new();
-    for line in accesses {
-        let hit = state.access(*line, model.ways, model.sets);
-        if hit {
-            *hits_by_line.entry(*line).or_insert(0) += 1;
-        } else {
-            misses = misses.saturating_add(1);
-        }
-    }
-    StateResult {
-        state,
-        misses,
-        hits_by_line,
+        self.geometry().cold()
     }
 }
 
@@ -165,12 +126,13 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
         };
     };
     let nodes: Vec<NodeIndex> = cfg.blocks_by_address.values().copied().collect();
-    let accesses: BTreeMap<NodeIndex, Vec<u64>> = nodes
+    let geometry = model.geometry();
+    let accesses: BTreeMap<NodeIndex, Vec<CacheAccess>> = nodes
         .iter()
-        .map(|node| (*node, block_line_accesses(&cfg.graph[*node], model)))
+        .map(|node| (*node, instruction_accesses(&cfg.graph[*node], geometry)))
         .collect();
     let mut entry_states: BTreeMap<NodeIndex, BTreeSet<CacheState>> = BTreeMap::new();
-    let mut results: BTreeMap<NodeIndex, Vec<StateResult>> = BTreeMap::new();
+    let mut results: BTreeMap<NodeIndex, Vec<CacheSimulation>> = BTreeMap::new();
     let mut processed: BTreeSet<(NodeIndex, CacheState)> = BTreeSet::new();
     let mut queue: VecDeque<(NodeIndex, CacheState)> = VecDeque::new();
     let cold = model.cold_state();
@@ -182,7 +144,7 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
             continue;
         }
         let block_accesses = accesses.get(&node).map_or(&[][..], Vec::as_slice);
-        let result = simulate(block_accesses, &state, model);
+        let result = simulate(block_accesses, &state, geometry, true);
         results.entry(node).or_default().push(result.clone());
         for edge in cfg.graph.edges_directed(node, Direction::Outgoing) {
             let target = edge.target();
@@ -221,8 +183,8 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
             .max()
             .unwrap_or(0);
         let mut access_counts: BTreeMap<u64, u32> = BTreeMap::new();
-        for line in block_accesses {
-            *access_counts.entry(*line).or_insert(0) += 1;
+        for access in block_accesses {
+            *access_counts.entry(access.line).or_insert(0) += 1;
         }
         let mut hits: BTreeMap<u64, (u32, u32)> = BTreeMap::new();
         for result in node_results {
@@ -279,7 +241,7 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
 
 fn fallback_function(
     cfg: &mut FunctionCfg,
-    accesses: &BTreeMap<NodeIndex, Vec<u64>>,
+    accesses: &BTreeMap<NodeIndex, Vec<CacheAccess>>,
     model: &CacheModel,
 ) -> FunctionResult {
     let reachable_ids: BTreeSet<_> = crate::cfg_graph::analyze(cfg)
@@ -298,8 +260,8 @@ fn fallback_function(
             continue;
         };
         let mut access_counts: BTreeMap<u64, u32> = BTreeMap::new();
-        for line in line_accesses {
-            *access_counts.entry(*line).or_insert(0) += 1;
+        for access in line_accesses {
+            *access_counts.entry(access.line).or_insert(0) += 1;
         }
         let lines = access_counts
             .iter()

@@ -1073,6 +1073,9 @@ fn render_function_wcet(out: &mut String, function: &CfgFunction, analysis_enabl
     if let Some(ipet) = &wcet.ipet {
         kv(out, "ipet solver", &ipet.solver);
         kv(out, "ipet status", &ipet.status);
+        if let Some(cache_model) = &ipet.cache_model {
+            kv(out, "ipet cache model", cache_model);
+        }
         kv(
             out,
             "ipet objective",
