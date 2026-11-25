@@ -143,7 +143,7 @@ occupancy = 2
 | `confidence` | no | Overrides block-timing confidence (`high`, `medium`, `low`, `unknown`); otherwise the base model's confidence is used. |
 | `unknown_instructions` | no | `warn` (default) emits a `timing-unknown-instruction` diagnostic; `ignore` suppresses it. The fallback cost still applies. |
 | `caveats` | no | Extra caveats copied into the CFG timing metadata and block timing. |
-| `[pipeline]` | no | Enables the Cortex-M4 in-order resource/dependency model; see below. |
+| `[pipeline]` | no | Enables the in-order resource/dependency model for Cortex-M4 or AArch64/RISC-V; see below. |
 | `[instruction_cache]` | no | Enables LRU instruction-cache analysis; see below. |
 | `[data_cache]` | no | Enables LRU data-cache analysis; see below. |
 | `[branch_prediction]` | no | Enables conditional-branch prediction analysis; see below. |
@@ -243,16 +243,18 @@ write buffers, prefetch and per-region cacheability are not modeled.
 
 The optional `[pipeline]` table switches block costing from independent
 instruction sums to an in-order resource/dependency schedule. It requires
-`schema_version = 2`. This phase supports `cpu = "cortex-m4"` and single issue
-only; other cores are rejected until their models exist.
+`schema_version = 2`. It is supported for `cortex-m4` and for the generic and
+bounded AArch64/RISC-V timing models (`riscv32`, `riscv64`,
+`riscv32-bounded`, `riscv64-bounded`, `aarch64`, `aarch64-bounded`). Other
+cores are rejected. The scheduler is single issue only; `issue_width` must be
+`1`.
 
 | Field | Required | Meaning |
 |---|---|---|
 | `issue_width` | no | Must be `1` in the current implementation; defaults to `1`. |
 | `branch_penalty` | no | Extra cycles for the block's final branch/call/return, exact or `{ min, max }`; default `1..3`. |
 
-Each `[[pipeline.instructions]]` entry overrides the built-in Cortex-M4 class
-mapping:
+Each `[[pipeline.instructions]]` entry overrides the built-in class mapping:
 
 | Field | Required | Meaning |
 |---|---|---|
@@ -262,7 +264,11 @@ mapping:
 | `latency` | yes | Cycles from issue until a written register is ready; must be positive. |
 | `occupancy` | no | Cycles the resources stay busy; defaults to `1`. |
 
-Built-in defaults when no override matches:
+Built-in defaults when no override matches. These are **generic in-order
+presets**, not verified timings for a particular board or core; use
+`[[pipeline.instructions]]` to record the target core's values.
+
+Cortex-M4:
 
 | Class | Resources | Latency | Occupancy |
 |---|---|---|---|
@@ -272,6 +278,32 @@ Built-in defaults when no override matches:
 | ldm/stm | `load_store` | 2 | 2 |
 | branch/call/return | `branch` | 1 | 1 |
 | multiply | `mul` | 1 | 1 |
+| divide | `div` | 12 | 1 |
+| alu/nop/barrier/other | `alu` | 1 | 1 |
+
+RISC-V (all RV32/RV64 generic and bounded models):
+
+| Class | Resources | Latency | Occupancy |
+|---|---|---|---|
+| load | `load_store` | 2 | 1 |
+| store | `load_store` | 1 | 1 |
+| push/pop | `load_store` | 2 | 1 |
+| ldm/stm | `load_store` | 2 | 2 |
+| branch/call/return | `branch` | 1 | 1 |
+| multiply | `mul` | 3 | 1 |
+| divide | `div` | 20 | 1 |
+| alu/nop/barrier/other | `alu` | 1 | 1 |
+
+AArch64 (generic and bounded models):
+
+| Class | Resources | Latency | Occupancy |
+|---|---|---|---|
+| load | `load_store` | 3 | 1 |
+| store | `load_store` | 1 | 1 |
+| push/pop | `load_store` | 3 | 1 |
+| ldm/stm | `load_store` | 3 | 2 |
+| branch/call/return | `branch` | 1 | 1 |
+| multiply | `mul` | 3 | 1 |
 | divide | `div` | 12 | 1 |
 | alu/nop/barrier/other | `alu` | 1 | 1 |
 
@@ -293,7 +325,17 @@ pipeline state are not modeled; caches and branch prediction are modeled
 separately when their profile sections are enabled.
 Block-local costs are therefore pipeline-aware estimates, not WCET bounds.
 While the pipeline model is active the CFG marks the timing model
-`statistical`, and a generated caveat records the limitation.
+`statistical`, and a generated caveat records the limitation. This also applies
+to the bounded AArch64/RISC-V timing models: enabling `[pipeline]` replaces
+their additive base table, so `--require-safe` rejects the run. The generated
+metadata records `bounded_cost_table = "replaced-by-pipeline"` and
+`pipeline_overlap = "profile-pipeline-schedule"` for those models.
+
+The built-in class presets are labeled as generic in-order estimates in the
+model caveats. For a certifiable performance study, override every class used
+by the application with values from the target core's manual or measurement.
+The pipeline model only affects block-cycle estimates; the bounded base table
+remains available when `[pipeline]` is omitted.
 
 For `--path-analysis ipet`, the full state product is the primary pipeline
 model. When the per-function state table exceeds its cap, or an
@@ -926,6 +968,9 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_pipeline`
 - `board_profile_pipeline_issue_width`
 - `board_profile_pipeline_instruction_overrides`
+- `board_profile_pipeline_branch_penalty`
+- `bounded_cost_table` (`replaced-by-pipeline` when a bounded model has `[pipeline]`)
+- `pipeline_overlap` (`profile-pipeline-schedule` when a bounded model has `[pipeline]`)
 - `board_profile_instruction_cache`
 - `board_profile_instruction_cache_miss_penalty`
 - `board_profile_data_cache`

@@ -32,7 +32,11 @@ These models are explicit and conservative:
   product is unavailable;
 - branch-prediction penalties are added when a `[branch_prediction]` profile is
   enabled; IPET may replace the per-block maximum with a concrete
-  predictor-state product when the branch analysis completes.
+  predictor-state product when the branch analysis completes;
+- an explicit `[pipeline]` profile replaces the additive base table with an
+  in-order resource/dependency schedule for AArch64/RISC-V. The result is
+  `statistical` and rejected by `--require-safe`, even though the selected CPU
+  model is otherwise bounded.
 
 Base per-class upper bounds:
 
@@ -78,15 +82,21 @@ still outside the model. `--require-safe` rejects cache profiles with
 `invalidate_on_call = false`, unresolved data-cache addresses and data-memory
 unmapped accesses because those make the local cost optimistic.
 
-The board-profile `[pipeline]` model currently supports Cortex-M4 only. Bounded
-AArch64/RISC-V models deliberately use additive upper bounds instead of that
-pipeline schedule. The Cortex-M4 pipeline model remains `statistical`: local
-block schedules assume ready registers/resources at entry, while IPET builds a
-per-function table of reachable pipeline entry states and charges the
-state-dependent block cost through its state product. Call-return edges reset
-the modeled state, and first-order edge-context stalls are the fallback when
-the table exceeds its cap or a non-state-product solver is used. It is not a
-safe upper bound and is rejected by `--require-safe`.
+The board-profile `[pipeline]` model supports Cortex-M4 and the generic/bounded
+AArch64/RISC-V models. It remains `statistical`: local block schedules assume
+ready registers/resources at entry, while IPET builds a per-function table of
+reachable pipeline entry states and charges the state-dependent block cost
+through its state product. Call-return edges reset the modeled state, and
+first-order edge-context stalls are the fallback when the table exceeds its cap
+or a non-state-product solver is used. A profile without `[pipeline]` keeps the
+additive bounded table, so select the pipeline only when a pipeline-aware
+estimate is wanted rather than a safe bound. The pipeline model is rejected by
+`--require-safe`.
+
+The built-in per-class pipeline values are generic in-order presets, not
+per-board measurements. Override them in `[[pipeline.instructions]]` from the
+target core's documentation or measurements. Multi-issue is not modeled;
+`issue_width` must be `1`.
 
 ## Selection hints
 

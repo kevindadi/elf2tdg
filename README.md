@@ -43,9 +43,10 @@ Implemented:
 - Optional TOML/JSON board profiles (`--board-profile`, schema v2) supply clock
   domains, memory regions, instruction-cost overrides and optional performance
   models:
-  - Cortex-M4 resource/dependency pipeline scheduling with branch penalties,
-    full inter-block pipeline state propagation in the IPET state product and
-    first-order edge-context stalls as fallback;
+  - Cortex-M4, generic/bounded AArch64 and RISC-V resource/dependency pipeline
+    scheduling with branch penalties, full inter-block pipeline state
+    propagation in the IPET state product and first-order edge-context stalls
+    as fallback;
   - LRU instruction and data caches with per-block hit/miss ranges and
     line-split logical blocks, an optional per-function cache-state product in
     IPET, a full instruction-cache CCG flow model, plus per-line first-miss and
@@ -347,12 +348,14 @@ loop's total set working set is larger than the associativity. Aggregate
 conflict bounds additionally allow one miss per loop entry plus accesses to
 other lines in the same set and remain valid when cache analysis falls back.
 Inter-function cache state is not modeled. Pipeline block costs remain
-statistical. IPET precomputes per-function reachable pipeline entry states and
-charges the state-dependent block cost through its state product, including
-loop-carried resource/register state; call-return edges reset the modeled
-state, and first-order edge-context stalls remain the fallback when the state
-table is unavailable. The pipeline timing model is rejected by
-`--require-safe`.
+statistical for Cortex-M4 and for AArch64/RISC-V when `[pipeline]` is enabled.
+IPET precomputes per-function reachable pipeline entry states and charges the
+state-dependent block cost through its state product, including loop-carried
+resource/register state; call-return edges reset the modeled state, and
+first-order edge-context stalls remain the fallback when the state table is
+unavailable. The pipeline timing model is rejected by `--require-safe`, and
+enabling it on a bounded AArch64/RISC-V model replaces the additive bounded
+table for block costs.
 Branch-prediction state IPET starts from the configured predictor state. For
 counter-based models (bimodal, global-history, gshare, local-history, two-level
 and tournament) it computes branch-only callee summaries from the caller's concrete state, charges the

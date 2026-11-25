@@ -362,10 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.36`.
+`cfg_schema_version` is `2.37`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.36 adds `return_address_stack` metadata, per-block RAS
-misses and `ipet.ras_model`. Version 2.35 adds the `branch_target_buffer`
+functions. Version 2.37 extends the pipeline metadata names and deterministic
+classification to generic/bounded AArch64 and RISC-V timing models. Version
+2.36 adds `return_address_stack` metadata, per-block RAS misses and
+`ipet.ras_model`. Version 2.35 adds the `branch_target_buffer`
 metadata, per-block BTB misses and `ipet.btb_model`. Version 2.34 adds the `tournament` branch
 model and its `choice_initial_state` metadata. Version 2.33 adds the configurable `two-level`
 branch model and its `level1_history`/`level2_table` metadata. Version 2.32 adds
@@ -431,7 +433,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.36",
+  "cfg_schema_version": "2.37",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -694,7 +696,9 @@ back to per-block miss bounds. When a RAS profile is active,
 pipeline profile is active,
 `ipet.pipeline_model` is `state-product` when IPET propagated the full
 per-function pipeline state table through the CFG, or `edge-context` when only
-first-order edge stalls were available. The state product starts with ready
+first-order edge stalls were available. The top-level `pipeline.model` names
+the selected timing model, for example `cortex-m4-edge-context` or
+`aarch64-bounded-edge-context`. The state product starts with ready
 registers and resources at function entry, carries the exit state across
 edges, and resets on call-return edges; it falls back to edge stalls when the
 table exceeds its per-function state cap or the ordered/cross-function
@@ -835,7 +839,7 @@ with region name, kind, access count, bytes, and read/write wait cycles. An
 access spanning multiple regions is split at boundaries and can appear in more
 than one region. Wait cycles are included in block `cycles`.
 
-When the Cortex-M4 pipeline profile is active, the document carries a
+When an in-order pipeline profile is active, the document carries a
 `pipeline` object with one entry for each CFG edge that has a positive
 inter-block stall. The stall is computed by scheduling the target block with
 the source block's local pipeline exit state and subtracting the target's
@@ -889,7 +893,7 @@ analysis facts; serializing the CFG JSON is self-contained. `calls`,
 | `address`, `size` | linked virtual address and byte size |
 | `instructions` | full instruction list with raw bytes and control-flow flags |
 | `calls` | call sites owned by this block |
-| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when the Cortex-M4 pipeline profile is active; includes profile fetch wait states, instruction-/data-cache miss penalties, data-memory wait cycles, branch misprediction penalties and multicore interference budgets |
+| `cycles` | static instruction-cost sum, or local resource/dependency pipeline schedule when an in-order pipeline profile is active; includes profile fetch wait states, instruction-/data-cache miss penalties, data-memory wait cycles, branch misprediction penalties and multicore interference budgets |
 | `terminator` | `fallthrough`, `call`, `noreturn-call`, `return`, `branch`, `jump`, `unresolved` |
 | `noreturn` | `api` or `control-flow` when the function cannot return; absent otherwise |
 | `instructions[].source` | per-instruction file/line/column when DWARF provides it |
