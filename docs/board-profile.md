@@ -345,9 +345,16 @@ With `--path-analysis ipet`, a completed instruction-cache analysis and
 `invalidate_on_call = true` enable a per-function cache-state product: IPET
 replaces the per-block worst-case miss penalty with the misses modeled on each
 cache-state transition, so loop reuse is not charged a miss on every iteration.
-Functions with ordered/cross-function automata, cache-analysis fallback or
-product-size overflow keep per-block miss bounds; `ipet.cache_model` records
-`state-product` or `block-bounds`. `--require-safe` rejects
+If the concrete product is unavailable, for example with ordered/cross-function
+automata or product-size overflow, IPET falls back to a per-loop
+**working-set persistence** model. A line is persistent in a natural loop when
+the loop's distinct lines in each cache set fit in the associativity and the
+loop contains no call-return invalidation. IPET then permits at most one miss
+per persistent line per loop entry; non-persistent lines retain per-block miss
+bounds. The persistence regions are recorded in `cache.persistence`, and
+`ipet.cache_model` records `state-product`, `persistence` or `block-bounds`.
+Cache-analysis fallback, loops with calls, loops whose working set does not fit
+and no persistent line keep `block-bounds`. `--require-safe` rejects
 `invalidate_on_call = false` because inter-function cache state is not modeled.
 
 ### Data cache
@@ -401,9 +408,15 @@ state propagation, so modeled hits are optimistic. With
 
 IPET uses the same cache-state product as the instruction cache when the
 data-cache analysis completes, `invalidate_on_call = true`, and every reachable
-block has zero unresolved accesses. Unresolved data accesses therefore keep
-the per-block cache bounds (`ipet.cache_model = "block-bounds"`); they are
-still rejected by `--require-safe`, as is `invalidate_on_call = false`.
+block has zero unresolved accesses. When the product is unavailable, the
+data-cache working-set persistence model applies with the same per-loop
+one-miss bound, recorded in `data_cache.persistence` and
+`ipet.cache_model = "persistence"`. With `write_allocate = false`, lines with
+any store are excluded from the persistence claim because a store miss does
+not install a line; purely written lines also do not occupy a set. Unresolved
+data accesses therefore keep the per-block cache bounds
+(`ipet.cache_model = "block-bounds"`); they are still rejected by
+`--require-safe`, as is `invalidate_on_call = false`.
 
 ### Branch prediction
 

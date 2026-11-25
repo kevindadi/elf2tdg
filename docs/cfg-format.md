@@ -362,9 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.23`.
+`cfg_schema_version` is `2.24`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.23 adds the IPET `branch_model` field. Version 2.22 adds
+functions. Version 2.24 adds cache-line persistence metadata and the
+`persistence` IPET cache model. Version 2.23 adds the IPET `branch_model`
+field. Version 2.22 adds
 program-level `pipeline` edge-stall metadata. Version 2.21 adds the IPET
 `cache_model` field. Version 2.20 adds the
 cross-function conflict `call` boundary and per-element `function` fields.
@@ -412,7 +414,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.23",
+  "cfg_schema_version": "2.24",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -487,7 +489,17 @@ global data.
     "max_states": 128, "memory_accesses": 97, "resolved_memory_accesses": 57,
     "unresolved_memory_accesses": 40, "line_accesses": 57,
     "functions_analyzed": 20, "functions_fallback": 0,
-    "blocks_analyzed": 158, "blocks_fallback": 0, "caveats": []
+    "blocks_analyzed": 158, "blocks_fallback": 0,
+    "persistence": {
+      "model": "data-working-set-lru", "loops_analyzed": 3,
+      "loops_persistent": 1, "persistent_lines": 2,
+      "regions": [
+        { "function": "fn:0x8000138", "header": "bb:0x8000200",
+          "blocks": 4, "lines": ["0x8000200", "0x8000220"] }
+      ],
+      "caveats": []
+    },
+    "caveats": []
   },
   "pipeline": {
     "model": "cortex-m4-edge-context",
@@ -630,10 +642,12 @@ block address:
 
 A `partial` IPET objective is an estimate over the resolved inputs, not a safe
 upper bound. When a cache profile is active, `ipet.cache_model` is
-`state-product` for the per-function cache-state product and `block-bounds`
-when the function falls back to the per-block miss bounds (ordered/cross-function
-automata, cache-analysis fallback, unresolved data addresses or product-size
-overflow). When a branch-prediction profile is active, `ipet.branch_model` is
+`state-product` for the per-function cache-state product, `persistence` when
+the concrete product is unavailable but a natural loop proves cache-line
+persistence, or `block-bounds` when the function falls back to per-block miss
+bounds (cache-analysis fallback, unresolved data addresses, loops containing
+call-return invalidation, no persistent line, or product-size overflow). When
+a branch-prediction profile is active, `ipet.branch_model` is
 `state-product` for the concrete per-function predictor-state product and
 `block-bounds` when the function falls back to per-block misprediction bounds
 (unsupported branches, analysis state-limit fallback, ordered/cross-function
@@ -681,8 +695,8 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 |---|---|
 | `image` | architecture, entry, ELF type and available metadata |
 | `timing` | timing models and frequency domains used by block costs |
-| `cache` | instruction-cache model parameters, analysis counts and caveats |
-| `data_cache` | data-cache model parameters, access coverage, analysis counts and caveats |
+| `cache` | instruction-cache model parameters, analysis counts, persistence regions and caveats |
+| `data_cache` | data-cache model parameters, access coverage, analysis counts, persistence regions and caveats |
 | `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
 | `pipeline` | edge-context pipeline stalls: model name, per-edge `source`/`target`/`site` and `stall_cycles`, caveats |
@@ -957,10 +971,16 @@ asserts that the CFG validates.
   records `ipet.cache_model = "state-product"`. The model assumes a cold cache
   at function entry and resets it on call-return edges; it requires
   `invalidate_on_call = true`, a complete cache analysis and, for the data
-  cache, no unresolved memory accesses. Ordered/cross-function automata,
-  cache-analysis fallback and product-size overflow keep the per-block cache
-  bounds and record `cache_model = "block-bounds"`. Cache persistence, line
-  splitting and cache conflict graphs are not implemented. Branch-prediction
+  cache, no unresolved memory accesses. When the cache-state product is
+  unavailable (ordered/cross-function automata or product overflow), IPET
+  uses a per-loop working-set persistence model. Lines are persistent when the
+  loop's distinct accesses in each cache set fit in the associativity and the
+  loop has no call-return invalidation; each persistent line may then miss at
+  most once per loop entry, while non-persistent lines keep per-block bounds.
+  `persistence` records that model; cache-analysis fallback, unresolved data
+  addresses, non-persistent loops and loops with calls record
+  `cache_model = "block-bounds"`. Line splitting and cache conflict graphs are
+  not implemented. Branch-prediction
   state IPET follows concrete predictor states from the configured
   per-function initial state when the branch analysis completes, charging the
   actual predicted/actual edge outcome instead of the per-block maximum;
