@@ -254,6 +254,7 @@ issue are not modeled.
 | `issue_width` | no | Maximum instructions issued per cycle, `1..8`; defaults to `1`. |
 | `resources` | no | Optional table of resource unit counts; unlisted resources have one unit. |
 | `register_file` | no | Optional register-file read/write port budgets, applied per issue cycle. |
+| `forwarding` | no | Optional data-forwarding/bypass model; disabled when omitted. |
 | `branch_penalty` | no | Extra cycles for the block's final branch/call/return, exact or `{ min, max }`; default `1..3`. |
 
 `[pipeline.resources]` maps a resource name used by an instruction to the
@@ -299,6 +300,54 @@ are not added to the instruction's execution latency. Writeback-cycle
 contention, banked/FP/vector register-file distinctions and cross-block port
 state are not modeled. Omitting the table disables port limits.
 
+`[pipeline.forwarding]` optionally enables data forwarding. The section
+presence enables the model; the built-in per-class bypass latencies are used
+unless a uniform default or an instruction override is configured.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `default_latency` | no | Uniform bypass latency for instructions without an override; clamped to the instruction latency. |
+
+```toml
+[pipeline.forwarding]
+# default_latency = 1
+
+[[pipeline.instructions]]
+mnemonic = "mul"
+resources = ["mul"]
+latency = 3
+forwarding_latency = 2
+```
+
+`forwarding_latency` on an instruction overrides both the uniform default and
+the class preset; it must be between `1` and that instruction's `latency`.
+Built-in class bypass latencies:
+
+| Class | Cortex-M4 | RISC-V | AArch64 |
+|---|---:|---:|---:|
+| load | 2 | 2 | 3 |
+| store | 1 | 1 | 1 |
+| push/pop | 2 | 2 | 3 |
+| ldm/stm | 2 | 2 | 3 |
+| branch/call/return | 1 | 1 | 1 |
+| multiply | 1 | 2 | 2 |
+| divide | 12 | 20 | 12 |
+| alu/nop/barrier/other | 1 | 1 | 1 |
+
+A value equal to the class latency means the result is not readable before
+register-file writeback; this is the default for loads and divides, so the
+classic load-use interlock remains unless the profile overrides it. Class
+presets and a uniform `default_latency` are clamped to the instruction's
+configured `latency`; an explicit `forwarding_latency` is validated against it.
+
+Forwarding makes a producer's written registers readable after the bypass
+latency, but the producer still completes at its full `latency`: block cost and
+basic-block boundaries use full completion. Forwarding therefore does not cross
+basic-block boundaries. Multi-cycle register-port access also delays the
+earliest forwarding time. Forwarding-network arbitration, partial bypass paths
+and writeback-ordering/WAW effects are not modeled. Omitting the section
+disables forwarding and consumers wait for full result latency.
+
 Each `[[pipeline.instructions]]` entry overrides the built-in class mapping:
 
 | Field | Required | Meaning |
@@ -306,7 +355,8 @@ Each `[[pipeline.instructions]]` entry overrides the built-in class mapping:
 | `class` | one selector | Same class names as `[[instruction_costs]]`. |
 | `mnemonic` | one selector | Canonical, case-insensitive mnemonic. |
 | `resources` | yes | Resource names occupied while issuing, for example `load_store`, `alu`, `mul`, `div`, `branch` or `fpu`. |
-| `latency` | yes | Cycles from issue until a written register is ready; must be positive. |
+| `latency` | yes | Cycles from issue until execution completes and the register-file result is available; must be positive. |
+| `forwarding_latency` | no | Cycles from issue until a written result is readable through forwarding; `1..latency`; requires `[pipeline.forwarding]`. |
 | `occupancy` | no | Cycles the resources stay busy; defaults to `1`. |
 
 Built-in defaults when no override matches. These are **generic in-order
@@ -357,12 +407,15 @@ sets. Within a basic block it issues instructions in program order, at most
 `issue_width` per cycle. An instruction is eligible when its source registers
 are ready, one unit of each required resource is free, the cycle has a free
 issue slot, and (when `[pipeline.register_file]` is present) the cycle has
-enough read and write ports. Each resource has the configured number of units;
-instructions sharing a single-unit resource serialize. Block boundaries are
-issue boundaries: co-issue across a CFG edge is not modeled. `branch_penalty`
-is added when the block's last instruction is a branch, call or return;
-conditional transfers use the worst case. Fetch wait states are charged per
-instruction and are not reduced by co-issue; fetch bandwidth is not modeled.
+enough read and write ports. When `[pipeline.forwarding]` is present, a source
+register becomes readable after the producer's forwarding latency; otherwise
+it is readable after full result latency. Each resource has the configured
+number of units; instructions sharing a single-unit resource serialize. Block
+boundaries are issue boundaries: co-issue across a CFG edge is not modeled.
+`branch_penalty` is added when the block's last instruction is a branch, call
+or return; conditional transfers use the worst case. Fetch wait states are
+charged per instruction and are not reduced by co-issue; fetch bandwidth is not
+modeled.
 
 Register readiness is assumed ready at block entry for block-local costing.
 For `--path-analysis ipet`, the analyzer builds a per-function table of
@@ -377,8 +430,11 @@ entry, speculative/out-of-order execution, cross-block co-issue and
 cross-function pipeline state are not modeled. Register-file ports are modeled
 only when `[pipeline.register_file]` is present; writeback-cycle contention,
 banked/FP/vector register-file distinctions and cross-block port state are not
-modeled. Caches and branch prediction are modeled separately when their
-profile sections are enabled.
+modeled. Data forwarding is modeled only when `[pipeline.forwarding]` is
+present; forwarding-network arbitration, partial bypass paths, writeback
+ordering/WAW effects and cross-block forwarding are not modeled. Caches and
+branch prediction are modeled separately when their profile sections are
+enabled.
 Block-local costs are therefore pipeline-aware estimates, not WCET bounds.
 While the pipeline model is active the CFG marks the timing model
 `statistical`, and a generated caveat records the limitation. This also applies
@@ -1027,6 +1083,9 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_pipeline_resources` (configured `name=units` entries only)
 - `board_profile_pipeline_read_ports` (when `[pipeline.register_file]` is present)
 - `board_profile_pipeline_write_ports` (when `[pipeline.register_file]` is present)
+- `board_profile_pipeline_forwarding` (`isa-class-presets` or `uniform-default`)
+- `board_profile_pipeline_forwarding_default_latency` (uniform mode only)
+- `board_profile_pipeline_forwarding_overrides`
 - `board_profile_pipeline_branch_penalty`
 - `bounded_cost_table` (`replaced-by-pipeline` when a bounded model has `[pipeline]`)
 - `pipeline_overlap` (`profile-pipeline-schedule` when a bounded model has `[pipeline]`)
