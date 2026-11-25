@@ -161,6 +161,12 @@ cpu = "__CPU__"
 # miss_penalty = 2
 # max_states = 128
 
+# Return address stack.
+# [return_address_stack]
+# entries = 8
+# miss_penalty = 2
+# max_states = 128
+
 # Multicore contention budget.
 # [multicore]
 # model = "access-budget"
@@ -476,6 +482,8 @@ pub struct BoardProfile {
     branch_prediction: Option<BranchPredictionProfile>,
     #[serde(default)]
     branch_target_buffer: Option<BtbProfile>,
+    #[serde(default)]
+    return_address_stack: Option<RasProfile>,
     #[serde(default)]
     multicore: Option<MulticoreProfile>,
     #[serde(default)]
@@ -951,6 +959,30 @@ impl BtbProfile {
     }
 }
 
+/// Optional return-address stack.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RasProfile {
+    entries: u32,
+    miss_penalty: u32,
+    #[serde(default = "default_max_branch_states")]
+    max_states: usize,
+}
+
+impl RasProfile {
+    pub(crate) fn entries(&self) -> u32 {
+        self.entries
+    }
+
+    pub(crate) fn miss_penalty(&self) -> u32 {
+        self.miss_penalty
+    }
+
+    pub(crate) fn max_states(&self) -> usize {
+        self.max_states
+    }
+}
+
 impl BranchPredictionProfile {
     pub(crate) fn model(&self) -> BranchPredictionModel {
         self.model
@@ -1300,6 +1332,7 @@ impl BoardProfile {
         self.validate_data_cache()?;
         self.validate_branch_prediction()?;
         self.validate_branch_target_buffer()?;
+        self.validate_return_address_stack()?;
         self.validate_multicore()?;
         self.validate_wcet()?;
         self.validate_system()?;
@@ -1702,6 +1735,33 @@ impl BoardProfile {
         Ok(())
     }
 
+    fn validate_return_address_stack(&self) -> Result<()> {
+        let Some(ras) = &self.return_address_stack else {
+            return Ok(());
+        };
+        if self.schema_version < 2 {
+            return Err(Error::Config(
+                "board profile return_address_stack requires schema_version 2".to_owned(),
+            ));
+        }
+        if ras.entries == 0 {
+            return Err(Error::Config(
+                "board profile return_address_stack.entries must be positive".to_owned(),
+            ));
+        }
+        if ras.miss_penalty == 0 {
+            return Err(Error::Config(
+                "board profile return_address_stack.miss_penalty must be positive".to_owned(),
+            ));
+        }
+        if ras.max_states == 0 {
+            return Err(Error::Config(
+                "board profile return_address_stack.max_states must be positive".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_multicore(&self) -> Result<()> {
         let Some(multicore) = &self.multicore else {
             return Ok(());
@@ -2094,6 +2154,10 @@ impl BoardProfile {
 
     pub(crate) fn branch_target_buffer(&self) -> Option<&BtbProfile> {
         self.branch_target_buffer.as_ref()
+    }
+
+    pub(crate) fn return_address_stack(&self) -> Option<&RasProfile> {
+        self.return_address_stack.as_ref()
     }
 
     /// Optional WCET analysis configuration.
@@ -2668,6 +2732,30 @@ occupancy = 1
             valid.replace("entries = 64", "entries = 0"),
             valid.replace("ways = 2", "ways = 0"),
             valid.replace("entries = 64", "entries = 65"),
+            valid.replace("miss_penalty = 2", "miss_penalty = 0"),
+            valid.replace("max_states = 32", "max_states = 0"),
+        ] {
+            assert!(BoardProfile::parse_toml(&bad).is_err());
+        }
+    }
+
+    #[test]
+    fn validates_return_address_stack_profiles() {
+        let valid = format!(
+            "{}\n[return_address_stack]\nentries = 8\nmiss_penalty = 2\nmax_states = 32\n",
+            VALID.replace("schema_version = 1", "schema_version = 2")
+        );
+        let profile = BoardProfile::parse_toml(&valid).expect("valid RAS profile");
+        let ras = profile.return_address_stack().expect("RAS profile");
+        assert_eq!(ras.entries(), 8);
+        assert_eq!(ras.miss_penalty(), 2);
+        assert_eq!(ras.max_states(), 32);
+        assert!(
+            BoardProfile::parse_toml(&valid.replace("schema_version = 2", "schema_version = 1"))
+                .is_err()
+        );
+        for bad in [
+            valid.replace("entries = 8", "entries = 0"),
             valid.replace("miss_penalty = 2", "miss_penalty = 0"),
             valid.replace("max_states = 32", "max_states = 0"),
         ] {

@@ -44,6 +44,7 @@ use crate::flow_facts::{
     BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
     InfeasibleElement, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
 };
+use crate::ras::RasState;
 use crate::timing::{PipelineFunctionModel, PipelineState};
 use crate::wcet::{
     CallContext, VersionSummaries, aggregate_context_summaries, build_call_info_with,
@@ -546,6 +547,10 @@ fn solve_function(
             .any(|edge| probes_btb(edge.weight().kind))
     });
     let btb_model = build_btb_ipet_model(program, cfg, reachable_nodes);
+    let has_ras = reachable_nodes
+        .iter()
+        .any(|node| cfg.graph[*node].terminator == crate::cfg::CfgTerminator::Return);
+    let ras_model = build_ras_ipet_model(program, cfg, reachable_nodes);
     if !cross.is_empty() {
         let mut outcome = solve_function_with_cross_function_automata(
             program,
@@ -569,6 +574,7 @@ fn solve_function(
         outcome.solution.branch_model = branch_fallback_model(branch_prediction);
         apply_pipeline_fallback(&mut outcome, program);
         apply_btb_fallback(&mut outcome, program, has_btb);
+        apply_ras_fallback(&mut outcome, program, has_ras);
         return Ok(outcome);
     }
     if !automata.is_empty() {
@@ -592,6 +598,7 @@ fn solve_function(
         outcome.solution.branch_model = branch_fallback_model(branch_prediction);
         apply_pipeline_fallback(&mut outcome, program);
         apply_btb_fallback(&mut outcome, program, has_btb);
+        apply_ras_fallback(&mut outcome, program, has_ras);
         return Ok(outcome);
     }
     let cache_models = build_cache_ipet_models(program, cfg, reachable_nodes);
@@ -609,6 +616,7 @@ fn solve_function(
         || branch_model.is_some()
         || pipeline_model.is_some()
         || btb_model.is_some()
+        || ras_model.is_some()
     {
         let state_call_cycles = if active_interproc.is_some() {
             base_call_cycles.unwrap_or(call_cycles)
@@ -631,6 +639,7 @@ fn solve_function(
             active_interproc,
             None,
             btb_model.as_ref(),
+            ras_model.as_ref(),
         ) {
             Ok(outcome) => outcome,
             Err(IpetError::Unknown(reason)) if reason == "ipet-model-too-large" => None,
@@ -645,6 +654,7 @@ fn solve_function(
             }
             apply_pipeline_fallback(&mut outcome, program);
             apply_btb_fallback(&mut outcome, program, has_btb);
+            apply_ras_fallback(&mut outcome, program, has_ras);
             return Ok(outcome);
         }
     }
@@ -653,6 +663,7 @@ fn solve_function(
         || branch_model.is_some()
         || pipeline_model.is_some()
         || btb_model.is_some()
+        || ras_model.is_some()
     {
         let state_outcome = match solve_function_with_state_products(
             cfg,
@@ -670,6 +681,7 @@ fn solve_function(
             None,
             None,
             btb_model.as_ref(),
+            ras_model.as_ref(),
         ) {
             Ok(outcome) => outcome,
             Err(IpetError::Unknown(reason)) if reason == "ipet-model-too-large" => None,
@@ -684,6 +696,7 @@ fn solve_function(
             }
             apply_pipeline_fallback(&mut outcome, program);
             apply_btb_fallback(&mut outcome, program, has_btb);
+            apply_ras_fallback(&mut outcome, program, has_ras);
             return Ok(outcome);
         }
     }
@@ -882,6 +895,7 @@ fn solve_function(
             pipeline_model: None,
             branch_model: branch_fallback_model(branch_prediction),
             btb_model: None,
+            ras_model: None,
             blocks,
         },
         partial,
@@ -889,6 +903,7 @@ fn solve_function(
     };
     apply_pipeline_fallback(&mut outcome, program);
     apply_btb_fallback(&mut outcome, program, has_btb);
+    apply_ras_fallback(&mut outcome, program, has_ras);
     Ok(outcome)
 }
 
@@ -901,6 +916,12 @@ fn apply_pipeline_fallback(outcome: &mut IpetOutcome, program: &ProgramCfg) {
 fn apply_btb_fallback(outcome: &mut IpetOutcome, program: &ProgramCfg, has_btb: bool) {
     if outcome.solution.btb_model.is_none() && has_btb && program.btb.is_some() {
         outcome.solution.btb_model = Some("block-bounds".to_owned());
+    }
+}
+
+fn apply_ras_fallback(outcome: &mut IpetOutcome, program: &ProgramCfg, has_ras: bool) {
+    if outcome.solution.ras_model.is_none() && has_ras && program.ras.is_some() {
+        outcome.solution.ras_model = Some("block-bounds".to_owned());
     }
 }
 
@@ -1847,6 +1868,7 @@ fn solve_function_with_automata(
             pipeline_model: None,
             branch_model: None,
             btb_model: None,
+            ras_model: None,
             blocks,
         },
         partial,
@@ -3035,6 +3057,7 @@ fn solve_function_with_cross_function_automata(
             pipeline_model: None,
             branch_model: None,
             btb_model: None,
+            ras_model: None,
             blocks,
         },
         partial,
@@ -3266,6 +3289,7 @@ impl BranchInterprocModel {
             Some(self),
             Some(state),
             None,
+            None,
         )
         .ok()??;
         if outcome.partial || outcome.prediction_exit_costs.is_empty() {
@@ -3314,6 +3338,40 @@ fn build_btb_ipet_model(
             ways: usize::try_from(info.ways).unwrap_or(usize::MAX),
             miss_penalty: info.miss_penalty,
         },
+    })
+}
+
+struct RasIpetModel {
+    entries: usize,
+    miss_penalty: u32,
+}
+
+impl RasIpetModel {
+    fn penalty(&self) -> f64 {
+        f64::from(self.miss_penalty)
+    }
+}
+
+fn build_ras_ipet_model(
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+) -> Option<RasIpetModel> {
+    let info = program.ras.as_ref()?;
+    let mut has_return = false;
+    for node in reachable_nodes {
+        if cfg.graph[*node].terminator != crate::cfg::CfgTerminator::Return {
+            continue;
+        }
+        has_return = true;
+        let metadata = cfg.graph[*node].ras.as_ref()?;
+        if metadata.fallback {
+            return None;
+        }
+    }
+    has_return.then(|| RasIpetModel {
+        entries: usize::try_from(info.entries).unwrap_or(usize::MAX),
+        miss_penalty: info.miss_penalty,
     })
 }
 
@@ -3840,6 +3898,7 @@ fn add_conflict_graph_constraints(
     use_
 }
 
+#[allow(clippy::too_many_arguments)]
 fn state_base_cost(
     block: &CfgBlock,
     node: NodeIndex,
@@ -3848,6 +3907,7 @@ fn state_base_cost(
     branch: Option<&BranchIpetModel>,
     pipeline_cost: Option<(f64, f64)>,
     btb_model: Option<&BtbIpetModel>,
+    ras_model: Option<&RasIpetModel>,
 ) -> f64 {
     let mut cost = block.cycles.map_or(0.0, |cycles| cycles.max)
         + call_cycles.get(&node).copied().unwrap_or(0.0);
@@ -3875,6 +3935,11 @@ fn state_base_cost(
     {
         cost -= f64::from(btb.misses_max) * model.penalty();
     }
+    if let Some(model) = ras_model
+        && let Some(ras) = &block.ras
+    {
+        cost -= f64::from(ras.misses_max) * model.penalty();
+    }
     cost.max(0.0)
 }
 
@@ -3886,6 +3951,7 @@ struct StateProductKey {
     prediction: Option<PredictorState>,
     pipeline: Option<PipelineState>,
     btb: Option<BtbState>,
+    ras: Option<RasState>,
 }
 
 struct StateProductNode {
@@ -3903,6 +3969,7 @@ struct StateProductEdge {
     branch_cost: f64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn state_product_node(
     cfg: &FunctionCfg,
     key: StateProductKey,
@@ -3911,6 +3978,7 @@ fn state_product_node(
     branch: Option<&BranchIpetModel>,
     pipeline_model: Option<&PipelineFunctionModel>,
     btb_model: Option<&BtbIpetModel>,
+    ras_model: Option<&RasIpetModel>,
 ) -> Option<StateProductNode> {
     debug_assert_eq!(
         models.instruction.is_some(),
@@ -3937,6 +4005,11 @@ fn state_product_node(
         key.btb.is_some(),
         "BTB state/model mismatch"
     );
+    debug_assert_eq!(
+        ras_model.is_some(),
+        key.ras.is_some(),
+        "RAS state/model mismatch"
+    );
     let block = &cfg.graph[key.node];
     let (pipeline_cost, exit_pipeline) = if let Some(model) = pipeline_model {
         let state = key.pipeline.as_ref()?;
@@ -3954,6 +4027,7 @@ fn state_product_node(
         branch,
         pipeline_cost,
         btb_model,
+        ras_model,
     );
     let mut exit_instruction = key.instruction.clone();
     let mut exit_data = key.data.clone();
@@ -3972,6 +4046,13 @@ fn state_product_node(
         let simulation = simulate(&accesses, state, model.geometry, model.write_allocate);
         cost += f64::from(simulation.misses) * f64::from(model.miss_penalty);
         exit_data = Some(simulation.state);
+    }
+    if let Some(model) = ras_model
+        && block.terminator == crate::cfg::CfgTerminator::Return
+        && let Some(state) = key.ras.as_ref()
+        && state.return_miss()
+    {
+        cost += model.penalty();
     }
     Some(StateProductNode {
         key,
@@ -4033,6 +4114,7 @@ fn build_state_product_graph(
     branch_interproc: Option<&BranchInterprocModel>,
     entry_prediction: Option<&PredictorState>,
     btb_model: Option<&BtbIpetModel>,
+    ras_model: Option<&RasIpetModel>,
 ) -> Option<(Vec<StateProductNode>, Vec<StateProductEdge>)> {
     let start_key = StateProductKey {
         node: entry,
@@ -4045,6 +4127,7 @@ fn build_state_product_graph(
         }),
         pipeline: pipeline_model.map(|model| model.entry_state().clone()),
         btb: btb_model.map(|_| BtbState::default()),
+        ras: ras_model.map(|_| RasState::entry()),
     };
     let mut index_by_key: BTreeMap<StateProductKey, usize> = BTreeMap::new();
     index_by_key.insert(start_key.clone(), 0);
@@ -4056,6 +4139,7 @@ fn build_state_product_graph(
         branch,
         pipeline_model,
         btb_model,
+        ras_model,
     )?];
     let mut edges = Vec::new();
     let mut queue = VecDeque::from([0_usize]);
@@ -4097,6 +4181,16 @@ fn build_state_product_graph(
             } else {
                 (0.0, None)
             };
+            let next_ras = if let Some(model) = ras_model {
+                let state = key.ras.as_ref()?;
+                if edge.weight().kind == crate::cfg::CfgEdgeKind::CallReturn {
+                    Some(state.call_return(cfg.graph[target].address, model.entries))
+                } else {
+                    Some(state.clone())
+                }
+            } else {
+                None
+            };
             for (prediction, branch_cost) in transitions {
                 let next_key = StateProductKey {
                     node: target,
@@ -4117,6 +4211,7 @@ fn build_state_product_graph(
                         None => None,
                     },
                     btb: next_btb.clone(),
+                    ras: next_ras.clone(),
                 };
                 let to = if let Some(&index) = index_by_key.get(&next_key) {
                     index
@@ -4134,6 +4229,7 @@ fn build_state_product_graph(
                         branch,
                         pipeline_model,
                         btb_model,
+                        ras_model,
                     )?);
                     queue.push_back(index);
                     index
@@ -4219,6 +4315,7 @@ fn solve_function_with_state_products(
     branch_interproc: Option<&BranchInterprocModel>,
     entry_prediction: Option<&PredictorState>,
     btb_model: Option<&BtbIpetModel>,
+    ras_model: Option<&RasIpetModel>,
 ) -> Result<Option<IpetOutcome>, IpetError> {
     let Some((product_nodes, product_edges)) = build_state_product_graph(
         cfg,
@@ -4231,6 +4328,7 @@ fn solve_function_with_state_products(
         branch_interproc,
         entry_prediction,
         btb_model,
+        ras_model,
     ) else {
         return Ok(None);
     };
@@ -4612,6 +4710,7 @@ fn solve_function_with_state_products(
                 .to_owned()
             }),
             btb_model: btb_model.map(|_| "state-product".to_owned()),
+            ras_model: ras_model.map(|_| "state-product".to_owned()),
             blocks,
         },
         partial,
@@ -6569,6 +6668,60 @@ auto_loop_bounds = false
             .expect("BTB IPET");
         assert_eq!(ipet.btb_model.as_deref(), Some("state-product"));
         assert!(ipet.objective > 0.0);
+    }
+
+    #[test]
+    fn ras_state_product_models_return_after_entry_eviction() {
+        let board = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:ipet-ras-test"
+arch = "thumb"
+cpu = "cortex-m7"
+
+[clocks.core]
+hz = 1_000_000
+
+[return_address_stack]
+entries = 1
+miss_penalty = 2
+max_states = 16
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+"#,
+        )
+        .expect("valid RAS profile");
+        let ras_profile = board.return_address_stack().expect("RAS profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let cfg = FunctionCfg::build(
+            vec![
+                block(0x1000, CfgTerminator::Fallthrough, 1.0),
+                block(0x1002, CfgTerminator::Call, 1.0),
+                block(0x1004, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x1000, 0x1002, CfgEdgeKind::Fallthrough),
+                edge(0x1002, 0x1004, CfgEdgeKind::CallReturn),
+            ],
+            Some(0x1000),
+        );
+        let mut program = ProgramCfg::new(vec![function(0x1000, cfg)]);
+        let info = crate::ras::analyze_program(&mut program, ras_profile);
+        program.ras = Some(info);
+        let _ = analyze_program(&mut program, &facts);
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("RAS IPET");
+        assert_eq!(ipet.ras_model.as_deref(), Some("state-product"));
+        assert!(ipet.objective > 0.0);
+        let return_block =
+            &program.functions[0].cfg.graph[program.functions[0].cfg.blocks_by_address[&0x1004]];
+        let ras = return_block.ras.as_ref().expect("RAS metadata");
+        assert_eq!(ras.misses_max, 1);
     }
 
     #[test]

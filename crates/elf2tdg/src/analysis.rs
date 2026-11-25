@@ -3027,6 +3027,15 @@ impl<'a> Analyzer<'a> {
             let info = crate::btb::analyze_program(&mut program_cfg, btb);
             program_cfg.btb = Some(info);
         }
+        if let Some(ras) = self
+            .timing
+            .as_ref()
+            .and_then(TimingCostModel::profile)
+            .and_then(BoardProfile::return_address_stack)
+        {
+            let info = crate::ras::analyze_program(&mut program_cfg, ras);
+            program_cfg.ras = Some(info);
+        }
         if let Some(profile) = self
             .timing
             .as_ref()

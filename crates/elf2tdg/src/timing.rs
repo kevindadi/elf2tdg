@@ -1129,6 +1129,20 @@ impl TimingCostModel {
                         .to_owned(),
                 );
             }
+            if let Some(ras) = profile.return_address_stack() {
+                params.extras.insert(
+                    "board_profile_ras_entries".to_owned(),
+                    ras.entries().to_string(),
+                );
+                params.extras.insert(
+                    "board_profile_ras_miss_penalty".to_owned(),
+                    ras.miss_penalty().to_string(),
+                );
+                caveats.push(
+                    "Return-address-stack misses model per-function return blocks with a bounded LIFO stack; recursive nesting, indirect return targets and cross-function stack occupancy are not modeled."
+                        .to_owned(),
+                );
+            }
             if profile.data_memory_enabled() {
                 params.extras.insert(
                     "board_profile_data_memory".to_owned(),
@@ -1229,6 +1243,7 @@ impl TimingCostModel {
                     profile.pipeline().is_some()
                         || profile.branch_prediction().is_some()
                         || profile.branch_target_buffer().is_some()
+                        || profile.return_address_stack().is_some()
                 }) {
                     Determinism::Statistical
                 } else {

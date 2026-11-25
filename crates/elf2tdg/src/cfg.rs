@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.35";
+pub const CFG_SCHEMA_VERSION: &str = "2.36";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -266,6 +266,9 @@ pub struct CfgBlock {
     /// Branch-target-buffer analysis for this block, when a BTB profile is
     /// active and the block ends in a modeled transfer.
     pub btb: Option<CfgBlockBtb>,
+    /// Return-address-stack analysis for this block, when a RAS profile is
+    /// active and this is a function return.
+    pub ras: Option<CfgBlockRas>,
     /// Data-memory latency analysis for this block, when memory regions declare
     /// data-access timing.
     pub data_memory: Option<CfgBlockDataMemory>,
@@ -1005,6 +1008,42 @@ pub struct CfgBtbInfo {
     pub caveats: Vec<String>,
 }
 
+/// Return-address-stack analysis for one function-return block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockRas {
+    /// Minimum modeled RAS return misses at this block.
+    pub misses_min: u32,
+    /// Maximum modeled RAS return misses at this block.
+    pub misses_max: u32,
+    /// Number of distinct RAS states reaching the block.
+    pub entry_states: u32,
+    /// Whether the function fell back to an all-miss RAS bound.
+    pub fallback: bool,
+}
+
+/// Program-level return-address-stack analysis metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgRasInfo {
+    /// RAS model name.
+    pub model: String,
+    /// Number of modeled return-address entries.
+    pub entries: u32,
+    /// Cycles charged for a return-target miss.
+    pub miss_penalty: u32,
+    /// Per-block RAS state limit.
+    pub max_states: usize,
+    /// Functions with complete RAS analysis.
+    pub functions_analyzed: u32,
+    /// Functions that fell back to an all-miss bound.
+    pub functions_fallback: u32,
+    /// Return blocks with complete analysis.
+    pub returns_analyzed: u32,
+    /// Return blocks that fell back to an all-miss bound.
+    pub returns_fallback: u32,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
 /// Program-level branch-prediction analysis metadata.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgBranchPredictionInfo {
@@ -1248,6 +1287,11 @@ pub struct CfgIpetSolution {
     /// back to per-block miss bounds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub btb_model: Option<String>,
+    /// Return-address-stack model used by the IPET constraints, when active.
+    /// `state-product` propagates the concrete stack; `block-bounds` falls
+    /// back to per-return-block miss bounds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ras_model: Option<String>,
     /// Positive block execution counts from the solution.
     pub blocks: Vec<CfgIpetBlockCount>,
 }
@@ -1544,6 +1588,7 @@ impl FunctionCfg {
                 data_cache: None,
                 branch_prediction: None,
                 btb: None,
+                ras: None,
                 data_memory: None,
                 multicore: None,
                 terminator: block.terminator,
@@ -1937,6 +1982,8 @@ pub struct ProgramCfg {
     pub branch_prediction: Option<CfgBranchPredictionInfo>,
     /// Branch-target-buffer analysis metadata.
     pub btb: Option<CfgBtbInfo>,
+    /// Return-address-stack analysis metadata.
+    pub ras: Option<CfgRasInfo>,
     /// Data-memory latency analysis metadata.
     pub data_memory: Option<CfgDataMemoryInfo>,
     /// Pipeline model metadata and fallback edge stalls.
@@ -3127,6 +3174,8 @@ struct CfgDocument<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     btb: Option<&'a CfgBtbInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    ras: Option<&'a CfgRasInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     data_memory: Option<&'a CfgDataMemoryInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pipeline: Option<&'a CfgPipelineInfo>,
@@ -3222,6 +3271,8 @@ struct CfgBlockView {
     branch_prediction: Option<CfgBlockBranchPrediction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     btb: Option<CfgBlockBtb>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ras: Option<CfgBlockRas>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data_memory: Option<CfgBlockDataMemory>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3375,6 +3426,7 @@ pub fn render_json_selected(
         data_cache: program.data_cache.as_ref(),
         branch_prediction: program.branch_prediction.as_ref(),
         btb: program.btb.as_ref(),
+        ras: program.ras.as_ref(),
         data_memory: program.data_memory.as_ref(),
         pipeline: program.pipeline.as_ref(),
         multicore: program.multicore.as_ref(),
@@ -3461,6 +3513,7 @@ fn function_view(
             data_cache: block.data_cache.clone(),
             branch_prediction: block.branch_prediction.clone(),
             btb: block.btb.clone(),
+            ras: block.ras.clone(),
             data_memory: block.data_memory.clone(),
             multicore: block.multicore.clone(),
             terminator: block.terminator,

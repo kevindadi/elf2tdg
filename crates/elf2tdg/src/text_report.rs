@@ -15,8 +15,8 @@ use crate::cfg::{
     CFG_SCHEMA_VERSION, CfgBlock, CfgBranchPredictionInfo, CfgBtbInfo, CfgCacheInfo,
     CfgCachePersistenceInfo, CfgCallEdge, CfgCallSite, CfgConcurrencyKind, CfgDataCacheInfo,
     CfgDataMemoryInfo, CfgFunction, CfgFunctionWcet, CfgInstruction, CfgLockEvent,
-    CfgMulticoreInfo, CfgPipelineInfo, CfgRoot, CfgSystemModelInfo, CfgWcetInfo, CfgWcetRoot,
-    CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CfgMulticoreInfo, CfgPipelineInfo, CfgRasInfo, CfgRoot, CfgSystemModelInfo, CfgWcetInfo,
+    CfgWcetRoot, CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 
@@ -239,6 +239,7 @@ fn render_analysis_models(out: &mut String, program: &ProgramCfg) {
     any |= render_data_cache(out, program.data_cache.as_ref());
     any |= render_branch_prediction(out, program.branch_prediction.as_ref());
     any |= render_btb(out, program.btb.as_ref());
+    any |= render_ras(out, program.ras.as_ref());
     any |= render_data_memory(out, program.data_memory.as_ref());
     any |= render_pipeline(out, program.pipeline.as_ref());
     any |= render_multicore(out, program.multicore.as_ref());
@@ -456,6 +457,35 @@ fn render_btb(out: &mut String, info: Option<&CfgBtbInfo>) -> bool {
             info.functions_fallback,
             info.transfers_analyzed,
             info.transfers_fallback
+        ),
+    );
+    for caveat in &info.caveats {
+        let _ = writeln!(out, "    caveat: {caveat}");
+    }
+    true
+}
+
+fn render_ras(out: &mut String, info: Option<&CfgRasInfo>) -> bool {
+    let Some(info) = info else {
+        return false;
+    };
+    let _ = writeln!(out, "* return address stack: {}", info.model);
+    kv_indent(out, "entries", &info.entries.to_string());
+    kv_indent(
+        out,
+        "miss penalty",
+        &format!("{} cycle(s)", info.miss_penalty),
+    );
+    kv_indent(out, "max states", &info.max_states.to_string());
+    kv_indent(
+        out,
+        "coverage",
+        &format!(
+            "{} function(s) analyzed, {} fallback; {} return block(s) analyzed, {} fallback",
+            info.functions_analyzed,
+            info.functions_fallback,
+            info.returns_analyzed,
+            info.returns_fallback
         ),
     );
     for caveat in &info.caveats {
@@ -1218,6 +1248,9 @@ fn render_function_wcet(out: &mut String, function: &CfgFunction, analysis_enabl
         }
         if let Some(btb_model) = &ipet.btb_model {
             kv(out, "ipet btb model", btb_model);
+        }
+        if let Some(ras_model) = &ipet.ras_model {
+            kv(out, "ipet ras model", ras_model);
         }
         if let Some(pipeline_model) = &ipet.pipeline_model {
             kv(out, "ipet pipeline model", pipeline_model);

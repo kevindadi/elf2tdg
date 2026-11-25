@@ -23,6 +23,7 @@ mod loop_bounds;
 mod multicore;
 pub mod origin;
 pub mod passes;
+mod ras;
 pub mod rules;
 pub mod runtime;
 mod system_model;
