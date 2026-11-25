@@ -151,7 +151,7 @@ auto_loop_bounds = false
 }
 
 #[test]
-fn pipeline_edge_context_is_recorded_in_the_pipeline() {
+fn pipeline_state_product_is_recorded_in_the_pipeline() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let elf = manifest.join("../../tests/fixtures/cortex_m0/firmware.elf");
     if !elf.exists() {
@@ -208,13 +208,20 @@ auto_loop_bounds = false
             .wcet
             .as_ref()
             .and_then(|wcet| wcet.ipet.as_ref())
-            .is_some()
+            .and_then(|ipet| ipet.pipeline_model.as_deref())
+            == Some("state-product")
     }));
     let json = cfg::render_json(&output.cfg, None, false).expect("CFG JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("CFG JSON");
     assert_eq!(document["pipeline"]["model"], "cortex-m4-edge-context");
+    assert!(document["functions"].as_array().is_some_and(|functions| {
+        functions
+            .iter()
+            .any(|function| function["wcet"]["ipet"]["pipeline_model"] == "state-product")
+    }));
     let text = text_report::render_text(&output.cfg, None, false).expect("text report");
     assert!(text.contains("pipeline: cortex-m4-edge-context"));
+    assert!(text.contains("ipet pipeline model state-product"));
 }
 
 #[test]

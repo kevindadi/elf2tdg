@@ -150,6 +150,7 @@ struct FunctionDraft {
     noreturn: Option<cfg::CfgNoreturnReason>,
     cfg: cfg::FunctionCfg,
     pipeline_edges: Vec<cfg::CfgPipelineEdgeInfo>,
+    pipeline_states: Option<crate::timing::PipelineFunctionModel>,
     analyzed: bool,
 }
 
@@ -364,6 +365,7 @@ impl<'a> Analyzer<'a> {
                     noreturn,
                     cfg: cfg::FunctionCfg::default(),
                     pipeline_edges: Vec::new(),
+                    pipeline_states: None,
                     analyzed: true,
                 },
             );
@@ -549,6 +551,7 @@ impl<'a> Analyzer<'a> {
                     noreturn,
                     cfg: cfg::FunctionCfg::default(),
                     pipeline_edges: Vec::new(),
+                    pipeline_states: None,
                     analyzed: false,
                 },
             );
@@ -1420,6 +1423,9 @@ impl<'a> Analyzer<'a> {
         let pipeline_stalls = self.timing.as_ref().map_or_else(Vec::new, |model| {
             model.pipeline_edge_stalls(&decoded_sorted, &block_drafts, &edge_drafts)
         });
+        let pipeline_states = self.timing.as_ref().and_then(|model| {
+            model.pipeline_state_model(&decoded_sorted, &block_drafts, &edge_drafts, start)
+        });
         let pipeline_edges = edge_drafts
             .iter()
             .zip(pipeline_stalls)
@@ -1444,6 +1450,7 @@ impl<'a> Analyzer<'a> {
         if let Some(function) = self.functions.get_mut(&address) {
             function.cfg = function_cfg;
             function.pipeline_edges = pipeline_edges;
+            function.pipeline_states = pipeline_states;
             function.analyzed = true;
         }
         self.calls.extend(calls);
@@ -2954,6 +2961,7 @@ impl<'a> Analyzer<'a> {
                 noreturn: None,
                 cfg: cfg::FunctionCfg::default(),
                 pipeline_edges: Vec::new(),
+                pipeline_states: None,
                 analyzed: false,
             },
         );
@@ -3351,11 +3359,15 @@ impl<'a> Analyzer<'a> {
 
     fn build_program_cfg(&self) -> cfg::ProgramCfg {
         let mut pipeline_edges = Vec::new();
+        let mut pipeline_states = BTreeMap::new();
         let functions = self
             .functions
             .values()
             .map(|draft| {
                 pipeline_edges.extend(draft.pipeline_edges.iter().cloned());
+                if let Some(model) = &draft.pipeline_states {
+                    pipeline_states.insert(draft.address, model.clone());
+                }
                 let end = draft.address.saturating_add(draft.size);
                 let mut inline_frames = self.image.dwarf.as_ref().map_or_else(Vec::new, |dwarf| {
                     dwarf
@@ -3416,6 +3428,7 @@ impl<'a> Analyzer<'a> {
             })
             .collect();
         let mut program = cfg::ProgramCfg::new(functions);
+        program.pipeline_states = pipeline_states;
         program.pointer_roots = self.pointer_roots.iter().copied().collect();
         if self
             .timing
@@ -3426,7 +3439,7 @@ impl<'a> Analyzer<'a> {
                 model: "cortex-m4-edge-context".to_owned(),
                 edges: pipeline_edges,
                 caveats: vec![
-                    "Pipeline edge stalls use the source block's local exit state; source entry context, loop-carried accumulation, call-boundary pipeline state and memory dependencies are not propagated."
+                    "Pipeline edge stalls are a fallback for IPET functions where the full inter-block state product is unavailable. IPET propagates the full resource/register pipeline state from function entry through the CFG when a state table is available; call-return edges reset the modeled state and memory dependencies are not propagated."
                         .to_owned(),
                 ],
             });

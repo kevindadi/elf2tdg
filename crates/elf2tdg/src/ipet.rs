@@ -42,6 +42,7 @@ use crate::flow_facts::{
     BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
     InfeasibleElement, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
 };
+use crate::timing::{PipelineFunctionModel, PipelineState};
 use crate::wcet::{
     CallContext, VersionSummaries, aggregate_context_summaries, build_call_info_with,
     callee_context, frequency_hz, function_call_targets, plan_contexts, root_results, time_ns,
@@ -260,7 +261,7 @@ pub(crate) fn analyze_program_with_branch_prediction(
     }
     if program.pipeline.is_some() {
         info.caveats.push(
-            "Pipeline edge stalls are added to the IPET objective from the source block's local pipeline schedule. This is a first-order predecessor-context estimate; the pipeline timing model remains statistical and is rejected by --require-safe."
+            "Pipeline state IPET propagates resource and register readiness through the CFG when a full state table is available; otherwise first-order edge stalls are used. Call-return edges reset the modeled pipeline state because callee pipeline state is not part of the caller summary. The pipeline timing model remains statistical and is rejected by --require-safe."
                 .to_owned(),
         );
     }
@@ -366,6 +367,7 @@ where
         &function.id,
         scope,
         branch_prediction,
+        program.pipeline_states.get(&function.address),
     ) {
         Ok(outcome) => outcome,
         Err(IpetError::Unbounded(reason)) => {
@@ -430,6 +432,7 @@ fn solve_function(
     function_id: &FunctionId,
     scope: FactScope<'_>,
     branch_prediction: Option<&BranchPredictionProfile>,
+    pipeline_model: Option<&PipelineFunctionModel>,
 ) -> Result<IpetOutcome, IpetError> {
     let loops = build_loops(cfg, entry, analysis, facts, scope)?;
     let automata = ordered_automata(facts, function_id, scope);
@@ -465,6 +468,7 @@ fn solve_function(
             outcome.solution.cache_model = cache_fallback_model(program);
         }
         outcome.solution.branch_model = branch_fallback_model(branch_prediction);
+        apply_pipeline_fallback(&mut outcome, program);
         return Ok(outcome);
     }
     if !automata.is_empty() {
@@ -486,11 +490,12 @@ fn solve_function(
             outcome.solution.cache_model = cache_fallback_model(program);
         }
         outcome.solution.branch_model = branch_fallback_model(branch_prediction);
+        apply_pipeline_fallback(&mut outcome, program);
         return Ok(outcome);
     }
     let cache_models = build_cache_ipet_models(program, cfg, reachable_nodes);
     let branch_model = build_branch_ipet_model(branch_prediction, cfg, reachable_nodes);
-    if !cache_models.is_empty() || branch_model.is_some() {
+    if !cache_models.is_empty() || branch_model.is_some() || pipeline_model.is_some() {
         let state_outcome = match solve_function_with_state_products(
             cfg,
             entry,
@@ -503,6 +508,7 @@ fn solve_function(
             &cache_models,
             branch_model.as_ref(),
             &pipeline_stalls,
+            pipeline_model,
         ) {
             Ok(outcome) => outcome,
             Err(IpetError::Unknown(reason)) if reason == "ipet-model-too-large" => None,
@@ -515,6 +521,7 @@ fn solve_function(
             if outcome.solution.branch_model.is_none() {
                 outcome.solution.branch_model = branch_fallback_model(branch_prediction);
             }
+            apply_pipeline_fallback(&mut outcome, program);
             return Ok(outcome);
         }
     }
@@ -697,7 +704,7 @@ fn solve_function(
     if !objective.is_finite() || objective < 0.0 {
         return Err(IpetError::Unknown("ipet-objective-not-finite".to_owned()));
     }
-    Ok(IpetOutcome {
+    let mut outcome = IpetOutcome {
         solution: CfgIpetSolution {
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
@@ -710,11 +717,20 @@ fn solve_function(
                 cache_conflicts,
             ),
             cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
+            pipeline_model: None,
             branch_model: branch_fallback_model(branch_prediction),
             blocks,
         },
         partial,
-    })
+    };
+    apply_pipeline_fallback(&mut outcome, program);
+    Ok(outcome)
+}
+
+fn apply_pipeline_fallback(outcome: &mut IpetOutcome, program: &ProgramCfg) {
+    if outcome.solution.pipeline_model.is_none() && program.pipeline.is_some() {
+        outcome.solution.pipeline_model = Some("edge-context".to_owned());
+    }
 }
 
 fn objective(
@@ -1657,6 +1673,7 @@ fn solve_function_with_automata(
                 cache_conflicts,
             ),
             cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
+            pipeline_model: None,
             branch_model: None,
             blocks,
         },
@@ -2842,6 +2859,7 @@ fn solve_function_with_cross_function_automata(
                 cache_conflicts,
             ),
             cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
+            pipeline_model: None,
             branch_model: None,
             blocks,
         },
@@ -3489,6 +3507,7 @@ fn state_base_cost(
     call_cycles: &BTreeMap<NodeIndex, f64>,
     models: &CacheIpetModels,
     branch: Option<&BranchIpetModel>,
+    pipeline_cost: Option<(f64, f64)>,
 ) -> f64 {
     let mut cost = block.cycles.map_or(0.0, |cycles| cycles.max)
         + call_cycles.get(&node).copied().unwrap_or(0.0);
@@ -3507,6 +3526,10 @@ fn state_base_cost(
     {
         cost -= f64::from(prediction.mispredicts_max) * branch.penalty();
     }
+    if let Some((default, state_cost)) = pipeline_cost {
+        cost -= default;
+        cost += state_cost;
+    }
     cost.max(0.0)
 }
 
@@ -3516,6 +3539,7 @@ struct StateProductKey {
     instruction: Option<CacheState>,
     data: Option<CacheState>,
     prediction: Option<PredictorState>,
+    pipeline: Option<PipelineState>,
 }
 
 struct StateProductNode {
@@ -3523,6 +3547,7 @@ struct StateProductNode {
     cost: f64,
     exit_instruction: Option<CacheState>,
     exit_data: Option<CacheState>,
+    exit_pipeline: Option<PipelineState>,
 }
 
 struct StateProductEdge {
@@ -3538,7 +3563,8 @@ fn state_product_node(
     call_cycles: &BTreeMap<NodeIndex, f64>,
     models: &CacheIpetModels,
     branch: Option<&BranchIpetModel>,
-) -> StateProductNode {
+    pipeline_model: Option<&PipelineFunctionModel>,
+) -> Option<StateProductNode> {
     debug_assert_eq!(
         models.instruction.is_some(),
         key.instruction.is_some(),
@@ -3554,8 +3580,21 @@ fn state_product_node(
         key.prediction.is_some(),
         "branch-prediction state/model mismatch"
     );
+    debug_assert_eq!(
+        pipeline_model.is_some(),
+        key.pipeline.is_some(),
+        "pipeline state/model mismatch"
+    );
     let block = &cfg.graph[key.node];
-    let mut cost = state_base_cost(block, key.node, call_cycles, models, branch);
+    let (pipeline_cost, exit_pipeline) = if let Some(model) = pipeline_model {
+        let state = key.pipeline.as_ref()?;
+        let (state_cost, exit) = model.transition(block.address, state)?;
+        let default = model.default_cost(block.address)?;
+        (Some((default, state_cost)), Some(exit))
+    } else {
+        (None, None)
+    };
+    let mut cost = state_base_cost(block, key.node, call_cycles, models, branch, pipeline_cost);
     let mut exit_instruction = key.instruction.clone();
     let mut exit_data = key.data.clone();
     if let Some(model) = &models.instruction
@@ -3574,12 +3613,13 @@ fn state_product_node(
         cost += f64::from(simulation.misses) * f64::from(model.miss_penalty);
         exit_data = Some(simulation.state);
     }
-    StateProductNode {
+    Some(StateProductNode {
         key,
         cost,
         exit_instruction,
         exit_data,
-    }
+        exit_pipeline,
+    })
 }
 
 fn branch_edge_transition(
@@ -3619,12 +3659,14 @@ fn build_state_product_graph(
     call_cycles: &BTreeMap<NodeIndex, f64>,
     models: &CacheIpetModels,
     branch: Option<&BranchIpetModel>,
+    pipeline_model: Option<&PipelineFunctionModel>,
 ) -> Option<(Vec<StateProductNode>, Vec<StateProductEdge>)> {
     let start_key = StateProductKey {
         node: entry,
         instruction: models.instruction.map(|model| model.geometry.cold()),
         data: models.data.map(|model| model.geometry.cold()),
         prediction: branch.map(|_| PredictorState::default()),
+        pipeline: pipeline_model.map(|model| model.entry_state().clone()),
     };
     let mut index_by_key: BTreeMap<StateProductKey, usize> = BTreeMap::new();
     index_by_key.insert(start_key.clone(), 0);
@@ -3634,13 +3676,15 @@ fn build_state_product_graph(
         call_cycles,
         models,
         branch,
-    )];
+        pipeline_model,
+    )?];
     let mut edges = Vec::new();
     let mut queue = VecDeque::from([0_usize]);
     while let Some(from) = queue.pop_front() {
         let key = nodes[from].key.clone();
         let exit_instruction = nodes[from].exit_instruction.clone();
         let exit_data = nodes[from].exit_data.clone();
+        let exit_pipeline = nodes[from].exit_pipeline.clone();
         for edge in cfg
             .graph
             .edges_directed(key.node, petgraph::Direction::Outgoing)
@@ -3669,6 +3713,11 @@ fn build_state_product_graph(
                     exit_data.clone()
                 },
                 prediction: branch.map(|_| prediction.clone()),
+                pipeline: match pipeline_model {
+                    Some(model) if reset => Some(model.entry_state().clone()),
+                    Some(_) => Some(exit_pipeline.clone()?),
+                    None => None,
+                },
             };
             let to = if let Some(&index) = index_by_key.get(&next_key) {
                 index
@@ -3684,7 +3733,8 @@ fn build_state_product_graph(
                     call_cycles,
                     models,
                     branch,
-                ));
+                    pipeline_model,
+                )?);
                 queue.push_back(index);
                 index
             };
@@ -3721,10 +3771,17 @@ fn solve_function_with_state_products(
     models: &CacheIpetModels,
     branch: Option<&BranchIpetModel>,
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
+    pipeline_model: Option<&PipelineFunctionModel>,
 ) -> Result<Option<IpetOutcome>, IpetError> {
-    let Some((product_nodes, product_edges)) =
-        build_state_product_graph(cfg, entry, reachable_nodes, call_cycles, models, branch)
-    else {
+    let Some((product_nodes, product_edges)) = build_state_product_graph(
+        cfg,
+        entry,
+        reachable_nodes,
+        call_cycles,
+        models,
+        branch,
+        pipeline_model,
+    ) else {
         return Ok(None);
     };
 
@@ -3964,7 +4021,11 @@ fn solve_function_with_state_products(
         }
     }
     for (index, edge) in product_edges.iter().enumerate() {
-        let stall = pipeline_stalls.get(&edge.original).copied().unwrap_or(0.0);
+        let stall = if pipeline_model.is_some() {
+            0.0
+        } else {
+            pipeline_stalls.get(&edge.original).copied().unwrap_or(0.0)
+        };
         if stall != 0.0 || edge.branch_cost != 0.0 {
             objective += edge_variables[index] * (stall + edge.branch_cost);
         }
@@ -4033,6 +4094,7 @@ fn solve_function_with_state_products(
             cache_model: (!models.is_empty()).then(|| "state-product".to_owned()),
             cache_conflicts: None,
             cache_ccg: None,
+            pipeline_model: pipeline_model.map(|_| "state-product".to_owned()),
             branch_model: branch.map(|_| "state-product".to_owned()),
             blocks,
         },

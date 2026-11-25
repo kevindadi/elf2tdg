@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.27";
+pub const CFG_SCHEMA_VERSION: &str = "2.28";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1055,7 +1055,7 @@ pub struct CfgDataMemoryInfo {
     pub caveats: Vec<String>,
 }
 
-/// Program-level edge-context pipeline metadata.
+/// Program-level pipeline metadata and fallback edge stalls.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgPipelineInfo {
     /// Model name.
@@ -1172,6 +1172,10 @@ pub struct CfgIpetSolution {
     /// Full cache conflict-graph flow, when the CCG model is used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_ccg: Option<CfgCacheCcgInfo>,
+    /// Pipeline model used by the IPET constraints (`state-product` or
+    /// `edge-context`), when a pipeline profile is active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipeline_model: Option<String>,
     /// Branch-prediction model used by the IPET constraints, when active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_model: Option<String>,
@@ -1863,8 +1867,10 @@ pub struct ProgramCfg {
     pub branch_prediction: Option<CfgBranchPredictionInfo>,
     /// Data-memory latency analysis metadata.
     pub data_memory: Option<CfgDataMemoryInfo>,
-    /// Edge-context pipeline cost metadata.
+    /// Pipeline model metadata and fallback edge stalls.
     pub pipeline: Option<CfgPipelineInfo>,
+    /// Full inter-block pipeline state tables, keyed by function address.
+    pub(crate) pipeline_states: BTreeMap<u64, crate::timing::PipelineFunctionModel>,
     /// Multicore interference analysis metadata.
     pub multicore: Option<CfgMulticoreInfo>,
     /// WCET analysis metadata.

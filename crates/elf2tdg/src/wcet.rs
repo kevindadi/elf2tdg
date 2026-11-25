@@ -254,7 +254,7 @@ pub(crate) fn analyze_program_with_facts(
     }
     if program.pipeline.is_some() {
         info.caveats.push(
-            "Pipeline edge-context stalls are applied only by the IPET backend; longest-path uses block-local pipeline costs and ignores them."
+            "Full pipeline state propagation is applied only by the IPET backend; longest-path uses block-local pipeline costs and ignores inter-block state. IPET functions where the pipeline state table is unavailable fall back to edge-context stalls."
                 .to_owned(),
         );
     }

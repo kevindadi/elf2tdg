@@ -1160,6 +1160,9 @@ fn render_function_wcet(out: &mut String, function: &CfgFunction, analysis_enabl
         if let Some(branch_model) = &ipet.branch_model {
             kv(out, "ipet branch model", branch_model);
         }
+        if let Some(pipeline_model) = &ipet.pipeline_model {
+            kv(out, "ipet pipeline model", pipeline_model);
+        }
         kv(
             out,
             "ipet objective",

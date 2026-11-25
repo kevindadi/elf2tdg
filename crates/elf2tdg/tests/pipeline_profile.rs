@@ -72,7 +72,7 @@ fn applies_cortex_m4_pipeline_profile() {
         model
             .caveats
             .iter()
-            .any(|caveat| caveat.contains("inter-block pipeline state")),
+            .any(|caveat| caveat.contains("state table")),
         "pipeline limitations must be explicit"
     );
 
