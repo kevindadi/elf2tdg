@@ -3018,6 +3018,15 @@ impl<'a> Analyzer<'a> {
             let info = crate::branch_prediction::analyze_program(&mut program_cfg, prediction);
             program_cfg.branch_prediction = Some(info);
         }
+        if let Some(btb) = self
+            .timing
+            .as_ref()
+            .and_then(TimingCostModel::profile)
+            .and_then(BoardProfile::branch_target_buffer)
+        {
+            let info = crate::btb::analyze_program(&mut program_cfg, btb);
+            program_cfg.btb = Some(info);
+        }
         if let Some(profile) = self
             .timing
             .as_ref()

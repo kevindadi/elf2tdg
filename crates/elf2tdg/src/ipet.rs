@@ -29,6 +29,7 @@ use elf2tdg_schema::{BlockId, CostRange, FunctionId};
 
 use crate::board_profile::BranchPredictionProfile;
 use crate::branch_prediction::{PredictorModel, PredictorState, conditional_branch};
+use crate::btb::{BtbGeometry, BtbState, probes_btb};
 use crate::cache_persistence::{self, PersistenceAnalysis, PersistenceRegion};
 use crate::cache_state::{
     CacheGeometry, CacheState, data_accesses, instruction_accesses, simulate,
@@ -539,6 +540,12 @@ fn solve_function(
         function_id,
         cache_ccg.is_some(),
     );
+    let has_btb = reachable_nodes.iter().any(|node| {
+        cfg.graph
+            .edges_directed(*node, petgraph::Direction::Outgoing)
+            .any(|edge| probes_btb(edge.weight().kind))
+    });
+    let btb_model = build_btb_ipet_model(program, cfg, reachable_nodes);
     if !cross.is_empty() {
         let mut outcome = solve_function_with_cross_function_automata(
             program,
@@ -561,6 +568,7 @@ fn solve_function(
         }
         outcome.solution.branch_model = branch_fallback_model(branch_prediction);
         apply_pipeline_fallback(&mut outcome, program);
+        apply_btb_fallback(&mut outcome, program, has_btb);
         return Ok(outcome);
     }
     if !automata.is_empty() {
@@ -583,6 +591,7 @@ fn solve_function(
         }
         outcome.solution.branch_model = branch_fallback_model(branch_prediction);
         apply_pipeline_fallback(&mut outcome, program);
+        apply_btb_fallback(&mut outcome, program, has_btb);
         return Ok(outcome);
     }
     let cache_models = build_cache_ipet_models(program, cfg, reachable_nodes);
@@ -596,7 +605,11 @@ fn solve_function(
         reachable_nodes,
         active_interproc.is_some(),
     );
-    if !cache_models.is_empty() || branch_model.is_some() || pipeline_model.is_some() {
+    if !cache_models.is_empty()
+        || branch_model.is_some()
+        || pipeline_model.is_some()
+        || btb_model.is_some()
+    {
         let state_call_cycles = if active_interproc.is_some() {
             base_call_cycles.unwrap_or(call_cycles)
         } else {
@@ -617,6 +630,7 @@ fn solve_function(
             pipeline_model,
             active_interproc,
             None,
+            btb_model.as_ref(),
         ) {
             Ok(outcome) => outcome,
             Err(IpetError::Unknown(reason)) if reason == "ipet-model-too-large" => None,
@@ -630,11 +644,16 @@ fn solve_function(
                 outcome.solution.branch_model = branch_fallback_model(branch_prediction);
             }
             apply_pipeline_fallback(&mut outcome, program);
+            apply_btb_fallback(&mut outcome, program, has_btb);
             return Ok(outcome);
         }
     }
     branch_model = build_branch_ipet_model(branch_prediction, cfg, reachable_nodes, false);
-    if !cache_models.is_empty() || branch_model.is_some() || pipeline_model.is_some() {
+    if !cache_models.is_empty()
+        || branch_model.is_some()
+        || pipeline_model.is_some()
+        || btb_model.is_some()
+    {
         let state_outcome = match solve_function_with_state_products(
             cfg,
             entry,
@@ -650,6 +669,7 @@ fn solve_function(
             pipeline_model,
             None,
             None,
+            btb_model.as_ref(),
         ) {
             Ok(outcome) => outcome,
             Err(IpetError::Unknown(reason)) if reason == "ipet-model-too-large" => None,
@@ -663,6 +683,7 @@ fn solve_function(
                 outcome.solution.branch_model = branch_fallback_model(branch_prediction);
             }
             apply_pipeline_fallback(&mut outcome, program);
+            apply_btb_fallback(&mut outcome, program, has_btb);
             return Ok(outcome);
         }
     }
@@ -860,18 +881,26 @@ fn solve_function(
             cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
             pipeline_model: None,
             branch_model: branch_fallback_model(branch_prediction),
+            btb_model: None,
             blocks,
         },
         partial,
         prediction_exit_costs: BTreeMap::new(),
     };
     apply_pipeline_fallback(&mut outcome, program);
+    apply_btb_fallback(&mut outcome, program, has_btb);
     Ok(outcome)
 }
 
 fn apply_pipeline_fallback(outcome: &mut IpetOutcome, program: &ProgramCfg) {
     if outcome.solution.pipeline_model.is_none() && program.pipeline.is_some() {
         outcome.solution.pipeline_model = Some("edge-context".to_owned());
+    }
+}
+
+fn apply_btb_fallback(outcome: &mut IpetOutcome, program: &ProgramCfg, has_btb: bool) {
+    if outcome.solution.btb_model.is_none() && has_btb && program.btb.is_some() {
+        outcome.solution.btb_model = Some("block-bounds".to_owned());
     }
 }
 
@@ -1817,6 +1846,7 @@ fn solve_function_with_automata(
             cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
             pipeline_model: None,
             branch_model: None,
+            btb_model: None,
             blocks,
         },
         partial,
@@ -3004,6 +3034,7 @@ fn solve_function_with_cross_function_automata(
             cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
             pipeline_model: None,
             branch_model: None,
+            btb_model: None,
             blocks,
         },
         partial,
@@ -3234,6 +3265,7 @@ impl BranchInterprocModel {
             None,
             Some(self),
             Some(state),
+            None,
         )
         .ok()??;
         if outcome.partial || outcome.prediction_exit_costs.is_empty() {
@@ -3243,6 +3275,46 @@ impl BranchInterprocModel {
             exits: outcome.prediction_exit_costs,
         })
     }
+}
+
+struct BtbIpetModel {
+    geometry: BtbGeometry,
+}
+
+impl BtbIpetModel {
+    fn penalty(&self) -> f64 {
+        f64::from(self.geometry.miss_penalty)
+    }
+}
+
+fn build_btb_ipet_model(
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+) -> Option<BtbIpetModel> {
+    let info = program.btb.as_ref()?;
+    let mut has_transfer = false;
+    for node in reachable_nodes {
+        let transfers = cfg
+            .graph
+            .edges_directed(*node, petgraph::Direction::Outgoing)
+            .any(|edge| probes_btb(edge.weight().kind));
+        if !transfers {
+            continue;
+        }
+        has_transfer = true;
+        let metadata = cfg.graph[*node].btb.as_ref()?;
+        if metadata.fallback {
+            return None;
+        }
+    }
+    has_transfer.then(|| BtbIpetModel {
+        geometry: BtbGeometry {
+            sets: info.sets,
+            ways: usize::try_from(info.ways).unwrap_or(usize::MAX),
+            miss_penalty: info.miss_penalty,
+        },
+    })
 }
 
 fn branch_fallback_model(profile: Option<&BranchPredictionProfile>) -> Option<String> {
@@ -3775,6 +3847,7 @@ fn state_base_cost(
     models: &CacheIpetModels,
     branch: Option<&BranchIpetModel>,
     pipeline_cost: Option<(f64, f64)>,
+    btb_model: Option<&BtbIpetModel>,
 ) -> f64 {
     let mut cost = block.cycles.map_or(0.0, |cycles| cycles.max)
         + call_cycles.get(&node).copied().unwrap_or(0.0);
@@ -3797,6 +3870,11 @@ fn state_base_cost(
         cost -= default;
         cost += state_cost;
     }
+    if let Some(model) = btb_model
+        && let Some(btb) = &block.btb
+    {
+        cost -= f64::from(btb.misses_max) * model.penalty();
+    }
     cost.max(0.0)
 }
 
@@ -3807,6 +3885,7 @@ struct StateProductKey {
     data: Option<CacheState>,
     prediction: Option<PredictorState>,
     pipeline: Option<PipelineState>,
+    btb: Option<BtbState>,
 }
 
 struct StateProductNode {
@@ -3831,6 +3910,7 @@ fn state_product_node(
     models: &CacheIpetModels,
     branch: Option<&BranchIpetModel>,
     pipeline_model: Option<&PipelineFunctionModel>,
+    btb_model: Option<&BtbIpetModel>,
 ) -> Option<StateProductNode> {
     debug_assert_eq!(
         models.instruction.is_some(),
@@ -3852,6 +3932,11 @@ fn state_product_node(
         key.pipeline.is_some(),
         "pipeline state/model mismatch"
     );
+    debug_assert_eq!(
+        btb_model.is_some(),
+        key.btb.is_some(),
+        "BTB state/model mismatch"
+    );
     let block = &cfg.graph[key.node];
     let (pipeline_cost, exit_pipeline) = if let Some(model) = pipeline_model {
         let state = key.pipeline.as_ref()?;
@@ -3861,7 +3946,15 @@ fn state_product_node(
     } else {
         (None, None)
     };
-    let mut cost = state_base_cost(block, key.node, call_cycles, models, branch, pipeline_cost);
+    let mut cost = state_base_cost(
+        block,
+        key.node,
+        call_cycles,
+        models,
+        branch,
+        pipeline_cost,
+        btb_model,
+    );
     let mut exit_instruction = key.instruction.clone();
     let mut exit_data = key.data.clone();
     if let Some(model) = &models.instruction
@@ -3939,6 +4032,7 @@ fn build_state_product_graph(
     pipeline_model: Option<&PipelineFunctionModel>,
     branch_interproc: Option<&BranchInterprocModel>,
     entry_prediction: Option<&PredictorState>,
+    btb_model: Option<&BtbIpetModel>,
 ) -> Option<(Vec<StateProductNode>, Vec<StateProductEdge>)> {
     let start_key = StateProductKey {
         node: entry,
@@ -3950,6 +4044,7 @@ fn build_state_product_graph(
                 .unwrap_or_else(|| model.predictor.entry_state())
         }),
         pipeline: pipeline_model.map(|model| model.entry_state().clone()),
+        btb: btb_model.map(|_| BtbState::default()),
     };
     let mut index_by_key: BTreeMap<StateProductKey, usize> = BTreeMap::new();
     index_by_key.insert(start_key.clone(), 0);
@@ -3960,6 +4055,7 @@ fn build_state_product_graph(
         models,
         branch,
         pipeline_model,
+        btb_model,
     )?];
     let mut edges = Vec::new();
     let mut queue = VecDeque::from([0_usize]);
@@ -3987,6 +4083,20 @@ fn build_state_product_graph(
                 } else {
                     vec![(PredictorState::default(), 0.0)]
                 };
+            let (btb_cost, next_btb) = if let Some(model) = btb_model {
+                let state = key.btb.as_ref()?;
+                if probes_btb(edge.weight().kind) {
+                    let (miss, next) =
+                        model
+                            .geometry
+                            .access(state, edge.weight().site, cfg.graph[target].address);
+                    (if miss { model.penalty() } else { 0.0 }, Some(next))
+                } else {
+                    (0.0, Some(state.clone()))
+                }
+            } else {
+                (0.0, None)
+            };
             for (prediction, branch_cost) in transitions {
                 let next_key = StateProductKey {
                     node: target,
@@ -4006,6 +4116,7 @@ fn build_state_product_graph(
                         Some(_) => Some(exit_pipeline.clone()?),
                         None => None,
                     },
+                    btb: next_btb.clone(),
                 };
                 let to = if let Some(&index) = index_by_key.get(&next_key) {
                     index
@@ -4022,6 +4133,7 @@ fn build_state_product_graph(
                         models,
                         branch,
                         pipeline_model,
+                        btb_model,
                     )?);
                     queue.push_back(index);
                     index
@@ -4033,7 +4145,7 @@ fn build_state_product_graph(
                     from,
                     to,
                     original: edge.id(),
-                    branch_cost,
+                    branch_cost: branch_cost + btb_cost,
                 });
             }
         }
@@ -4106,6 +4218,7 @@ fn solve_function_with_state_products(
     pipeline_model: Option<&PipelineFunctionModel>,
     branch_interproc: Option<&BranchInterprocModel>,
     entry_prediction: Option<&PredictorState>,
+    btb_model: Option<&BtbIpetModel>,
 ) -> Result<Option<IpetOutcome>, IpetError> {
     let Some((product_nodes, product_edges)) = build_state_product_graph(
         cfg,
@@ -4117,6 +4230,7 @@ fn solve_function_with_state_products(
         pipeline_model,
         branch_interproc,
         entry_prediction,
+        btb_model,
     ) else {
         return Ok(None);
     };
@@ -4497,6 +4611,7 @@ fn solve_function_with_state_products(
                 }
                 .to_owned()
             }),
+            btb_model: btb_model.map(|_| "state-product".to_owned()),
             blocks,
         },
         partial,
@@ -6415,6 +6530,45 @@ auto_loop_bounds = false
 "#
         ))
         .expect("valid unknown-first branch profile")
+    }
+
+    #[test]
+    fn btb_state_product_models_cold_and_repeated_transfers() {
+        let board = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:ipet-btb-test"
+arch = "thumb"
+cpu = "cortex-m7"
+
+[clocks.core]
+hz = 1_000_000
+
+[branch_target_buffer]
+entries = 2
+ways = 1
+miss_penalty = 2
+max_states = 16
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+"#,
+        )
+        .expect("valid BTB profile");
+        let btb_profile = board.branch_target_buffer().expect("BTB profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut program = diamond_program();
+        let info = crate::btb::analyze_program(&mut program, btb_profile);
+        program.btb = Some(info);
+        let _ = analyze_program(&mut program, &facts);
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("BTB IPET");
+        assert_eq!(ipet.btb_model.as_deref(), Some("state-product"));
+        assert!(ipet.objective > 0.0);
     }
 
     #[test]

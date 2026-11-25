@@ -1108,7 +1108,24 @@ impl TimingCostModel {
                     );
                 }
                 caveats.push(
-                    "Branch prediction models conditional direction only; indirect/table target prediction, returns, branch-target buffers and global history are not modeled."
+                    "Branch prediction models conditional direction only; indirect/table target prediction, returns and non-modeled history schemes are not part of the direction predictor."
+                        .to_owned(),
+                );
+            }
+            if let Some(btb) = profile.branch_target_buffer() {
+                params.extras.insert(
+                    "board_profile_btb_entries".to_owned(),
+                    btb.entries().to_string(),
+                );
+                params
+                    .extras
+                    .insert("board_profile_btb_ways".to_owned(), btb.ways().to_string());
+                params.extras.insert(
+                    "board_profile_btb_miss_penalty".to_owned(),
+                    btb.miss_penalty().to_string(),
+                );
+                caveats.push(
+                    "Branch-target-buffer misses model intra-function taken conditional branches and jump edges with set-associative LRU replacement; calls, returns, fallthrough fetches and cross-function replacement are not modeled."
                         .to_owned(),
                 );
             }
@@ -1208,11 +1225,11 @@ impl TimingCostModel {
                 core: Some(self.model.core().to_owned()),
                 determinism: if self.model.is_bounded_abstract() {
                     self.model.determinism()
-                } else if self
-                    .profile
-                    .as_ref()
-                    .is_some_and(|profile| profile.pipeline().is_some())
-                {
+                } else if self.profile.as_ref().is_some_and(|profile| {
+                    profile.pipeline().is_some()
+                        || profile.branch_prediction().is_some()
+                        || profile.branch_target_buffer().is_some()
+                }) {
                     Determinism::Statistical
                 } else {
                     self.model.determinism()

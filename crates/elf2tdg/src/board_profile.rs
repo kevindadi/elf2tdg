@@ -154,6 +154,13 @@ cpu = "__CPU__"
 # initial_state = "weakly-not-taken"
 # max_states = 128
 
+# Branch target buffer.
+# [branch_target_buffer]
+# entries = 64
+# ways = 2
+# miss_penalty = 2
+# max_states = 128
+
 # Multicore contention budget.
 # [multicore]
 # model = "access-budget"
@@ -467,6 +474,8 @@ pub struct BoardProfile {
     data_cache: Option<DataCacheProfile>,
     #[serde(default)]
     branch_prediction: Option<BranchPredictionProfile>,
+    #[serde(default)]
+    branch_target_buffer: Option<BtbProfile>,
     #[serde(default)]
     multicore: Option<MulticoreProfile>,
     #[serde(default)]
@@ -909,6 +918,39 @@ pub(crate) struct BranchPredictionProfile {
     max_states: usize,
 }
 
+/// Optional set-associative LRU branch-target buffer.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BtbProfile {
+    entries: u64,
+    ways: u32,
+    miss_penalty: u32,
+    #[serde(default = "default_max_branch_states")]
+    max_states: usize,
+}
+
+impl BtbProfile {
+    pub(crate) fn entries(&self) -> u64 {
+        self.entries
+    }
+
+    pub(crate) fn ways(&self) -> u32 {
+        self.ways
+    }
+
+    pub(crate) fn sets(&self) -> u64 {
+        self.entries / u64::from(self.ways)
+    }
+
+    pub(crate) fn miss_penalty(&self) -> u32 {
+        self.miss_penalty
+    }
+
+    pub(crate) fn max_states(&self) -> usize {
+        self.max_states
+    }
+}
+
 impl BranchPredictionProfile {
     pub(crate) fn model(&self) -> BranchPredictionModel {
         self.model
@@ -1257,6 +1299,7 @@ impl BoardProfile {
         self.validate_instruction_cache()?;
         self.validate_data_cache()?;
         self.validate_branch_prediction()?;
+        self.validate_branch_target_buffer()?;
         self.validate_multicore()?;
         self.validate_wcet()?;
         self.validate_system()?;
@@ -1617,6 +1660,43 @@ impl BoardProfile {
             return Err(Error::Config(
                 "board profile branch_prediction.choice_initial_state requires tournament"
                     .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_branch_target_buffer(&self) -> Result<()> {
+        let Some(btb) = &self.branch_target_buffer else {
+            return Ok(());
+        };
+        if self.schema_version < 2 {
+            return Err(Error::Config(
+                "board profile branch_target_buffer requires schema_version 2".to_owned(),
+            ));
+        }
+        if btb.entries == 0 {
+            return Err(Error::Config(
+                "board profile branch_target_buffer.entries must be positive".to_owned(),
+            ));
+        }
+        if btb.ways == 0 {
+            return Err(Error::Config(
+                "board profile branch_target_buffer.ways must be positive".to_owned(),
+            ));
+        }
+        if btb.entries % u64::from(btb.ways) != 0 {
+            return Err(Error::Config(
+                "board profile branch_target_buffer.entries must be divisible by ways".to_owned(),
+            ));
+        }
+        if btb.miss_penalty == 0 {
+            return Err(Error::Config(
+                "board profile branch_target_buffer.miss_penalty must be positive".to_owned(),
+            ));
+        }
+        if btb.max_states == 0 {
+            return Err(Error::Config(
+                "board profile branch_target_buffer.max_states must be positive".to_owned(),
             ));
         }
         Ok(())
@@ -2010,6 +2090,10 @@ impl BoardProfile {
     #[must_use]
     pub(crate) fn branch_prediction(&self) -> Option<&BranchPredictionProfile> {
         self.branch_prediction.as_ref()
+    }
+
+    pub(crate) fn branch_target_buffer(&self) -> Option<&BtbProfile> {
+        self.branch_target_buffer.as_ref()
     }
 
     /// Optional WCET analysis configuration.
@@ -2561,6 +2645,34 @@ occupancy = 1
         assert!(BoardProfile::parse_toml(&zero_ways).is_err());
         let zero_penalty = valid.replace("miss_penalty = 10", "miss_penalty = 0");
         assert!(BoardProfile::parse_toml(&zero_penalty).is_err());
+    }
+
+    #[test]
+    fn validates_branch_target_buffer_profiles() {
+        let valid = format!(
+            "{}\n[branch_target_buffer]\nentries = 64\nways = 2\nmiss_penalty = 2\nmax_states = 32\n",
+            VALID.replace("schema_version = 1", "schema_version = 2")
+        );
+        let profile = BoardProfile::parse_toml(&valid).expect("valid BTB profile");
+        let btb = profile.branch_target_buffer().expect("BTB profile");
+        assert_eq!(btb.entries(), 64);
+        assert_eq!(btb.ways(), 2);
+        assert_eq!(btb.sets(), 32);
+        assert_eq!(btb.miss_penalty(), 2);
+        assert_eq!(btb.max_states(), 32);
+        assert!(
+            BoardProfile::parse_toml(&valid.replace("schema_version = 2", "schema_version = 1"))
+                .is_err()
+        );
+        for bad in [
+            valid.replace("entries = 64", "entries = 0"),
+            valid.replace("ways = 2", "ways = 0"),
+            valid.replace("entries = 64", "entries = 65"),
+            valid.replace("miss_penalty = 2", "miss_penalty = 0"),
+            valid.replace("max_states = 32", "max_states = 0"),
+        ] {
+            assert!(BoardProfile::parse_toml(&bad).is_err());
+        }
     }
 
     #[test]

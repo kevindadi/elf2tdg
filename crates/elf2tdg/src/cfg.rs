@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.34";
+pub const CFG_SCHEMA_VERSION: &str = "2.35";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -263,6 +263,9 @@ pub struct CfgBlock {
     /// Branch-prediction analysis for this block, when a prediction profile is
     /// active and this is a modeled conditional branch.
     pub branch_prediction: Option<CfgBlockBranchPrediction>,
+    /// Branch-target-buffer analysis for this block, when a BTB profile is
+    /// active and the block ends in a modeled transfer.
+    pub btb: Option<CfgBlockBtb>,
     /// Data-memory latency analysis for this block, when memory regions declare
     /// data-access timing.
     pub data_memory: Option<CfgBlockDataMemory>,
@@ -962,6 +965,46 @@ pub struct CfgBlockBranchPrediction {
     pub outcomes: Vec<CfgBranchOutcome>,
 }
 
+/// Branch-target-buffer analysis for one basic block.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBlockBtb {
+    /// Minimum modeled BTB misses on this block's outgoing transfers.
+    pub misses_min: u32,
+    /// Maximum modeled BTB misses on this block's outgoing transfers.
+    pub misses_max: u32,
+    /// Number of distinct BTB states reaching the block.
+    pub entry_states: u32,
+    /// Whether the function fell back to an all-miss BTB bound.
+    pub fallback: bool,
+}
+
+/// Program-level branch-target-buffer analysis metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgBtbInfo {
+    /// BTB model name.
+    pub model: String,
+    /// Total modeled BTB entries.
+    pub entries: u64,
+    /// Associativity.
+    pub ways: u32,
+    /// Number of sets (`entries / ways`).
+    pub sets: u64,
+    /// Cycles charged for one BTB miss.
+    pub miss_penalty: u32,
+    /// Per-block BTB state limit.
+    pub max_states: usize,
+    /// Functions with complete BTB analysis.
+    pub functions_analyzed: u32,
+    /// Functions that fell back to an all-miss bound.
+    pub functions_fallback: u32,
+    /// Transfer blocks with complete analysis.
+    pub transfers_analyzed: u32,
+    /// Transfer blocks that fell back to an all-miss bound.
+    pub transfers_fallback: u32,
+    /// Analysis caveats.
+    pub caveats: Vec<String>,
+}
+
 /// Program-level branch-prediction analysis metadata.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgBranchPredictionInfo {
@@ -1200,6 +1243,11 @@ pub struct CfgIpetSolution {
     /// carries predictor state and branch costs through direct calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_model: Option<String>,
+    /// Branch-target-buffer model used by the IPET constraints, when active.
+    /// `state-product` propagates concrete BTB state; `block-bounds` falls
+    /// back to per-block miss bounds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub btb_model: Option<String>,
     /// Positive block execution counts from the solution.
     pub blocks: Vec<CfgIpetBlockCount>,
 }
@@ -1495,6 +1543,7 @@ impl FunctionCfg {
                 cache: None,
                 data_cache: None,
                 branch_prediction: None,
+                btb: None,
                 data_memory: None,
                 multicore: None,
                 terminator: block.terminator,
@@ -1886,6 +1935,8 @@ pub struct ProgramCfg {
     pub data_cache: Option<CfgDataCacheInfo>,
     /// Branch-prediction analysis metadata.
     pub branch_prediction: Option<CfgBranchPredictionInfo>,
+    /// Branch-target-buffer analysis metadata.
+    pub btb: Option<CfgBtbInfo>,
     /// Data-memory latency analysis metadata.
     pub data_memory: Option<CfgDataMemoryInfo>,
     /// Pipeline model metadata and fallback edge stalls.
@@ -3074,6 +3125,8 @@ struct CfgDocument<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     branch_prediction: Option<&'a CfgBranchPredictionInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    btb: Option<&'a CfgBtbInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     data_memory: Option<&'a CfgDataMemoryInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pipeline: Option<&'a CfgPipelineInfo>,
@@ -3167,6 +3220,8 @@ struct CfgBlockView {
     data_cache: Option<CfgBlockDataCache>,
     #[serde(skip_serializing_if = "Option::is_none")]
     branch_prediction: Option<CfgBlockBranchPrediction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    btb: Option<CfgBlockBtb>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data_memory: Option<CfgBlockDataMemory>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3319,6 +3374,7 @@ pub fn render_json_selected(
         cache: program.cache.as_ref(),
         data_cache: program.data_cache.as_ref(),
         branch_prediction: program.branch_prediction.as_ref(),
+        btb: program.btb.as_ref(),
         data_memory: program.data_memory.as_ref(),
         pipeline: program.pipeline.as_ref(),
         multicore: program.multicore.as_ref(),
@@ -3404,6 +3460,7 @@ fn function_view(
             cache: block.cache.clone(),
             data_cache: block.data_cache.clone(),
             branch_prediction: block.branch_prediction.clone(),
+            btb: block.btb.clone(),
             data_memory: block.data_memory.clone(),
             multicore: block.multicore.clone(),
             terminator: block.terminator,

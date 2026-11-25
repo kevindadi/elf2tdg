@@ -12,10 +12,11 @@ use elf2tdg_schema::{Addr, CostRange, Diagnostic, FunctionId, SourceLoc};
 use petgraph::visit::EdgeRef;
 
 use crate::cfg::{
-    CFG_SCHEMA_VERSION, CfgBlock, CfgBranchPredictionInfo, CfgCacheInfo, CfgCachePersistenceInfo,
-    CfgCallEdge, CfgCallSite, CfgConcurrencyKind, CfgDataCacheInfo, CfgDataMemoryInfo, CfgFunction,
-    CfgFunctionWcet, CfgInstruction, CfgLockEvent, CfgMulticoreInfo, CfgPipelineInfo, CfgRoot,
-    CfgSystemModelInfo, CfgWcetInfo, CfgWcetRoot, CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CFG_SCHEMA_VERSION, CfgBlock, CfgBranchPredictionInfo, CfgBtbInfo, CfgCacheInfo,
+    CfgCachePersistenceInfo, CfgCallEdge, CfgCallSite, CfgConcurrencyKind, CfgDataCacheInfo,
+    CfgDataMemoryInfo, CfgFunction, CfgFunctionWcet, CfgInstruction, CfgLockEvent,
+    CfgMulticoreInfo, CfgPipelineInfo, CfgRoot, CfgSystemModelInfo, CfgWcetInfo, CfgWcetRoot,
+    CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::rules::normalize_crate_hashes;
 
@@ -237,6 +238,7 @@ fn render_analysis_models(out: &mut String, program: &ProgramCfg) {
     any |= render_instruction_cache(out, program.cache.as_ref());
     any |= render_data_cache(out, program.data_cache.as_ref());
     any |= render_branch_prediction(out, program.branch_prediction.as_ref());
+    any |= render_btb(out, program.btb.as_ref());
     any |= render_data_memory(out, program.data_memory.as_ref());
     any |= render_pipeline(out, program.pipeline.as_ref());
     any |= render_multicore(out, program.multicore.as_ref());
@@ -421,6 +423,42 @@ fn render_branch_prediction(
         ),
     );
     for caveat in &prediction.caveats {
+        let _ = writeln!(out, "    caveat: {caveat}");
+    }
+    true
+}
+
+fn render_btb(out: &mut String, info: Option<&CfgBtbInfo>) -> bool {
+    let Some(info) = info else {
+        return false;
+    };
+    let _ = writeln!(out, "* branch target buffer: {}", info.model);
+    kv_indent(
+        out,
+        "geometry",
+        &format!(
+            "{} entries, {} way(s), {} set(s)",
+            info.entries, info.ways, info.sets
+        ),
+    );
+    kv_indent(
+        out,
+        "miss penalty",
+        &format!("{} cycle(s)", info.miss_penalty),
+    );
+    kv_indent(out, "max states", &info.max_states.to_string());
+    kv_indent(
+        out,
+        "coverage",
+        &format!(
+            "{} function(s) analyzed, {} fallback; {} transfer block(s) analyzed, {} fallback",
+            info.functions_analyzed,
+            info.functions_fallback,
+            info.transfers_analyzed,
+            info.transfers_fallback
+        ),
+    );
+    for caveat in &info.caveats {
         let _ = writeln!(out, "    caveat: {caveat}");
     }
     true
@@ -1178,6 +1216,9 @@ fn render_function_wcet(out: &mut String, function: &CfgFunction, analysis_enabl
         if let Some(branch_model) = &ipet.branch_model {
             kv(out, "ipet branch model", branch_model);
         }
+        if let Some(btb_model) = &ipet.btb_model {
+            kv(out, "ipet btb model", btb_model);
+        }
         if let Some(pipeline_model) = &ipet.pipeline_model {
             kv(out, "ipet pipeline model", pipeline_model);
         }
@@ -1325,6 +1366,14 @@ fn render_block_annotations(out: &mut String, block: &CfgBlock) {
             prediction.mispredicts_min,
             prediction.mispredicts_max,
             prediction.entry_states
+        );
+    }
+    if let Some(btb) = block.btb.as_ref() {
+        let fallback = if btb.fallback { ", fallback" } else { "" };
+        let _ = writeln!(
+            out,
+            "    btb: misses {}..{}, {} state(s){fallback}",
+            btb.misses_min, btb.misses_max, btb.entry_states
         );
     }
     if let Some(memory) = block.data_memory.as_ref() {
