@@ -43,7 +43,8 @@ Implemented:
 - Optional TOML/JSON board profiles (`--board-profile`, schema v2) supply clock
   domains, memory regions, instruction-cost overrides and optional performance
   models:
-  - Cortex-M4 resource/dependency pipeline scheduling with branch penalties;
+  - Cortex-M4 resource/dependency pipeline scheduling with branch penalties
+    and first-order edge-context stalls in IPET;
   - LRU instruction and data caches with per-block hit/miss ranges and an
     optional per-function cache-state product in IPET;
   - static, BTFN or two-bit bimodal branch prediction;
@@ -325,9 +326,12 @@ patterns need explicit bounds, cache results are per-function with cold entry
 and call-return invalidation, branch/data-memory results remain block-local,
 and interrupts, DMA, bus contention and concurrency are not modeled.
 Cache-state IPET is used only when the cache analysis completes, for functions
-without ordered/cross-function automata; cache persistence, line splitting and
-pipeline constraints in IPET are not implemented. Context sensitivity applies
-to flow facts and WCET composition, not to the microarchitectural cache/branch
+without ordered/cross-function automata; cache persistence and line splitting
+are not implemented. Pipeline block costs remain statistical; IPET adds
+first-order edge-context stalls but does not propagate full inter-block
+pipeline state, so the pipeline timing model is rejected by `--require-safe`.
+Branch constraints in IPET are not implemented. Context sensitivity applies to
+flow facts and WCET composition, not to the microarchitectural cache/branch
 models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.
 Without `[wcet]`, static cycle counts remain per-block costs, not execution-time

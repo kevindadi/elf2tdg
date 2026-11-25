@@ -289,6 +289,16 @@ Block costs are therefore local pipeline-aware costs, not WCET bounds. While
 the pipeline model is active the CFG marks the timing model `statistical`, and
 a generated caveat records the limitation.
 
+For `--path-analysis ipet`, the analyzer additionally computes a **first-order
+edge-context stall** for every CFG edge. It schedules the target block using
+the source block's local exit resource/register state and adds the difference
+over the target's ready-entry cost to the IPET objective for that edge. This
+captures some inter-block resource and register hazards without expanding the
+IPET state. Source entry context, loop-carried accumulation, call-boundary
+pipeline state and memory dependencies are still not propagated, so the result
+remains a statistical estimate, not a safe WCET bound. The `longest-path`
+backend does not apply these edge stalls.
+
 When `[pipeline]` is active, block `cycles` come from this schedule, including
 profile fetch wait states. `[[instruction_costs]]` remains the fallback for
 non-pipeline analysis and per-instruction detail; it is not added to the
@@ -802,8 +812,10 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   and unresolved accesses are counted but do not contribute miss penalties.
   Dirty writeback, store buffers, prefetch and inter-function cache state are
   not modeled.
-- Pipeline state is not propagated across basic blocks yet. The first
-  instruction in each block assumes all source registers are ready.
+- Block schedules still assume all source registers are ready at block entry.
+  IPET adds a first-order edge-context stall derived from the source block's
+  local exit state; source entry context, loop-carried accumulation,
+  call-boundary pipeline state and memory dependencies are not propagated.
 - Interrupt entry, exception return, wait-for-interrupt and peripheral
   interaction are outside this model.
 - The same ELF can be analyzed repeatedly with different profiles; the CFG

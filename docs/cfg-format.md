@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.21`.
+`cfg_schema_version` is `2.22`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.21 adds the IPET `cache_model` field. Version 2.20 adds
-the cross-function conflict `call` boundary and per-element `function` fields.
+functions. Version 2.22 adds program-level `pipeline` edge-stall metadata.
+Version 2.21 adds the IPET `cache_model` field. Version 2.20 adds the
+cross-function conflict `call` boundary and per-element `function` fields.
 Version 2.19 adds the conflict enforcement `mode` (`aggregate` or `automaton`).
 Version 2.18 adds infeasible-path conflict records. Version 2.17
 adds optional caller `context` fields to resolved loop, branch and call
@@ -410,7 +411,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.21",
+  "cfg_schema_version": "2.22",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -486,6 +487,16 @@ global data.
     "unresolved_memory_accesses": 40, "line_accesses": 57,
     "functions_analyzed": 20, "functions_fallback": 0,
     "blocks_analyzed": 158, "blocks_fallback": 0, "caveats": []
+  },
+  "pipeline": {
+    "model": "cortex-m4-edge-context",
+    "edges": [
+      { "function": "fn:0x80000d8", "source": "0x80000e6",
+        "target": "0x80000e8", "site": "0x80000e6", "stall_cycles": 3.0 }
+    ],
+    "caveats": [
+      "Pipeline edge stalls use the source block's local exit state; source entry context, loop-carried accumulation, call-boundary pipeline state and memory dependencies are not propagated."
+    ]
   },
   "pointer_roots": ["0x8000120", "0x800013c"],
   "roots": [
@@ -668,6 +679,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `data_cache` | data-cache model parameters, access coverage, analysis counts and caveats |
 | `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
+| `pipeline` | edge-context pipeline stalls: model name, per-edge `source`/`target`/`site` and `stall_cycles`, caveats |
 | `multicore` | access-budget interference model, core topology, charged events, total cycles and caveats |
 | `wcet` | WCET model (`cfg-longest-path` or `cfg-ipet`), backend/solver, flow facts, per-root results and caveats |
 | `system_model` | layered task/place/transition model, concurrency dependencies, activation/periodic/resource budgets, explicit fork/join links, coarse system bound and optional timed feasibility |
@@ -721,6 +733,16 @@ unmapped access counts, read and write wait cycles, and a per-region breakdown
 with region name, kind, access count, bytes, and read/write wait cycles. An
 access spanning multiple regions is split at boundaries and can appear in more
 than one region. Wait cycles are included in block `cycles`.
+
+When the Cortex-M4 pipeline profile is active, the document carries a
+`pipeline` object with one entry for each CFG edge that has a positive
+inter-block stall. The stall is computed by scheduling the target block with
+the source block's local pipeline exit state and subtracting the target's
+ready-entry local cost. IPET adds `stall_cycles` to the objective for each
+execution of that edge. This is a first-order predecessor context: source
+entry state, loop-carried accumulation and call-boundary state are not
+propagated. The pipeline timing model remains `statistical`; `longest-path`
+does not apply these edge stalls.
 
 When a WCET profile is active, every analyzed function carries a `wcet`
 object with a `status` (`bounded`, `partial`, `unbounded` or `unknown`),
@@ -932,8 +954,11 @@ asserts that the CFG validates.
   cache, no unresolved memory accesses. Ordered/cross-function automata,
   cache-analysis fallback and product-size overflow keep the per-block cache
   bounds and record `cache_model = "block-bounds"`. Cache persistence, line
-  splitting, cache conflict graphs and pipeline/branch constraints in IPET are
-  not implemented. Conditional or multi-target call sites and F4 non-loop
+  splitting, cache conflict graphs and branch constraints in IPET are not
+  implemented. Pipeline edge-context stalls are integrated into the IPET
+  objective as first-order predecessor terms, but the pipeline timing model
+  remains `statistical` and is rejected by `--require-safe`.
+  Conditional or multi-target call sites and F4 non-loop
   directives are ignored conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a
   `partial` objective is not a safe upper bound. Multicore interference uses an explicit access budget; arbitration

@@ -77,7 +77,10 @@ unmapped accesses because those make the local cost optimistic.
 
 The board-profile `[pipeline]` model currently supports Cortex-M4 only. Bounded
 AArch64/RISC-V models deliberately use additive upper bounds instead of that
-pipeline schedule.
+pipeline schedule. The Cortex-M4 pipeline model remains `statistical`: block
+schedules assume ready registers at entry, and IPET only adds a first-order
+edge-context stall from the source block's local exit state. It is not a safe
+upper bound and is rejected by `--require-safe`.
 
 ## Selection hints
 
