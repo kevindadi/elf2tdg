@@ -28,12 +28,13 @@ use elf2tdg_schema::{BlockId, FunctionId};
 
 use crate::board_profile::BranchPredictionProfile;
 use crate::branch_prediction::{PredictorModel, PredictorState, conditional_branch};
+use crate::cache_persistence;
 use crate::cache_state::{
     CacheGeometry, CacheState, data_accesses, instruction_accesses, simulate,
 };
 use crate::cfg::{
-    CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus,
-    FunctionCfg, ProgramCfg,
+    CfgBlock, CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo,
+    CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::flow_facts::{
     BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
@@ -251,7 +252,7 @@ pub(crate) fn analyze_program_with_branch_prediction(
     };
     if program.cache.is_some() || program.data_cache.is_some() {
         info.caveats.push(
-            "Cache-state IPET simulates the configured LRU caches with cold per-function entry and call-return invalidation when the cache analysis completes and invalidate_on_call is enabled. Functions with ordered or cross-function automata, cache-analysis fallback, unresolved data addresses or cache-product overflow keep per-block miss bounds."
+            "Cache-state IPET simulates the configured LRU caches with cold per-function entry and call-return invalidation when the cache analysis completes and invalidate_on_call is enabled. When the cache-state product is unavailable (ordered/cross-function automata or product overflow), a per-loop working-set persistence model charges persistent lines at most once per loop entry; cache-analysis fallback, unresolved data addresses, loops with calls or non-persistent lines keep per-block miss bounds."
                 .to_owned(),
         );
     }
@@ -432,6 +433,7 @@ fn solve_function(
     let automata = ordered_automata(facts, function_id, scope);
     let cross = cross_function_constraints(facts, function_id, scope);
     let pipeline_stalls = pipeline_edge_stalls(program, cfg);
+    let cache_persistence = build_cache_persistence_models(program, cfg, reachable_nodes);
     if !cross.is_empty() {
         let mut outcome = solve_function_with_cross_function_automata(
             program,
@@ -446,8 +448,11 @@ fn solve_function(
             &automata,
             &cross,
             &pipeline_stalls,
+            &cache_persistence,
         )?;
-        outcome.solution.cache_model = cache_fallback_model(program);
+        if outcome.solution.cache_model.is_none() {
+            outcome.solution.cache_model = cache_fallback_model(program);
+        }
         outcome.solution.branch_model = branch_fallback_model(branch_prediction);
         return Ok(outcome);
     }
@@ -463,15 +468,18 @@ fn solve_function(
             &loops,
             &automata,
             &pipeline_stalls,
+            &cache_persistence,
         )?;
-        outcome.solution.cache_model = cache_fallback_model(program);
+        if outcome.solution.cache_model.is_none() {
+            outcome.solution.cache_model = cache_fallback_model(program);
+        }
         outcome.solution.branch_model = branch_fallback_model(branch_prediction);
         return Ok(outcome);
     }
     let cache_models = build_cache_ipet_models(program, cfg, reachable_nodes);
     let branch_model = build_branch_ipet_model(branch_prediction, cfg, reachable_nodes);
-    if (!cache_models.is_empty() || branch_model.is_some())
-        && let Some(mut outcome) = solve_function_with_state_products(
+    if !cache_models.is_empty() || branch_model.is_some() {
+        let state_outcome = match solve_function_with_state_products(
             cfg,
             entry,
             reachable_nodes,
@@ -483,15 +491,20 @@ fn solve_function(
             &cache_models,
             branch_model.as_ref(),
             &pipeline_stalls,
-        )?
-    {
-        if outcome.solution.cache_model.is_none() {
-            outcome.solution.cache_model = cache_fallback_model(program);
+        ) {
+            Ok(outcome) => outcome,
+            Err(IpetError::Unknown(reason)) if reason == "ipet-model-too-large" => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(mut outcome) = state_outcome {
+            if outcome.solution.cache_model.is_none() {
+                outcome.solution.cache_model = cache_fallback_model(program);
+            }
+            if outcome.solution.branch_model.is_none() {
+                outcome.solution.branch_model = branch_fallback_model(branch_prediction);
+            }
+            return Ok(outcome);
         }
-        if outcome.solution.branch_model.is_none() {
-            outcome.solution.branch_model = branch_fallback_model(branch_prediction);
-        }
-        return Ok(outcome);
     }
 
     let mut nodes: Vec<NodeIndex> = reachable_nodes.iter().copied().collect();
@@ -541,7 +554,7 @@ fn solve_function(
         return Err(IpetError::Unknown("entry-unreachable".to_owned()));
     }
 
-    let mut objective = objective(cfg, &block_vars, call_cycles);
+    let mut objective = objective(cfg, &block_vars, call_cycles, &cache_persistence);
     for (edge, variable) in &edge_vars {
         if let Some(stall) = pipeline_stalls.get(edge) {
             objective += *variable * *stall;
@@ -565,6 +578,49 @@ fn solve_function(
         function_id,
         scope,
     ));
+    let mut cache_variables = 0_usize;
+    if !cache_persistence.is_empty() {
+        let block_execution = |node: NodeIndex| -> Expression {
+            block_vars
+                .get(&node)
+                .copied()
+                .map_or(Expression::from(0.0), Expression::from)
+        };
+        let loop_entries = |loop_: &LoopModel| -> Expression {
+            let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
+            for edge in &loop_.entry_edges {
+                if let Some(variable) = edge_vars.get(edge) {
+                    expression += *variable;
+                }
+            }
+            expression
+        };
+        for model in [&cache_persistence.instruction, &cache_persistence.data]
+            .into_iter()
+            .flatten()
+        {
+            cache_variables += add_cache_persistence_model(
+                &mut vars,
+                model,
+                cfg,
+                reachable_nodes,
+                &loops,
+                &block_execution,
+                &loop_entries,
+                &mut model_constraints,
+                &mut objective,
+            );
+        }
+    }
+    if block_vars
+        .len()
+        .saturating_add(edge_vars.len())
+        .saturating_add(loop_exit_vars.len())
+        .saturating_add(cache_variables)
+        > MAX_MODEL_VARIABLES
+    {
+        return Err(IpetError::Unknown("ipet-model-too-large".to_owned()));
+    }
     let model = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = model
         .with_all(model_constraints)
@@ -609,7 +665,11 @@ fn solve_function(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: cache_fallback_model(program),
+            cache_model: if cache_persistence.is_empty() {
+                cache_fallback_model(program)
+            } else {
+                Some("persistence".to_owned())
+            },
             branch_model: branch_fallback_model(branch_prediction),
             blocks,
         },
@@ -621,13 +681,13 @@ fn objective(
     cfg: &FunctionCfg,
     block_vars: &BTreeMap<NodeIndex, Variable>,
     call_cycles: &BTreeMap<NodeIndex, f64>,
+    cache_persistence: &CachePersistenceModels,
 ) -> Expression {
     let mut objective = Expression::from(0.0);
     for (node, var) in block_vars {
-        let block = &cfg.graph[*node];
-        let base = block.cycles.map_or(0.0, |cycles| cycles.max);
-        let call = call_cycles.get(node).copied().unwrap_or(0.0);
-        objective += *var * (base + call);
+        let base =
+            cache_persistence_base_cost(&cfg.graph[*node], *node, call_cycles, cache_persistence);
+        objective += *var * base;
     }
     objective
 }
@@ -1156,6 +1216,7 @@ fn solve_function_with_automata(
     loops: &[LoopModel],
     automata: &[OrderedAutomaton],
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
+    cache_persistence: &CachePersistenceModels,
 ) -> Result<IpetOutcome, IpetError> {
     let runtimes = automaton_runtimes(cfg, automata)?;
     let (nodes, edges) = build_product_graph(cfg, entry, reachable_nodes, &runtimes)?;
@@ -1214,10 +1275,13 @@ fn solve_function_with_automata(
 
     let mut objective = Expression::from(0.0);
     for (index, node) in nodes.iter().enumerate() {
-        let block = &cfg.graph[node.original];
-        let base = block.cycles.map_or(0.0, |cycles| cycles.max);
-        let call = call_cycles.get(&node.original).copied().unwrap_or(0.0);
-        objective += node_variables[index] * (base + call);
+        let base = cache_persistence_base_cost(
+            &cfg.graph[node.original],
+            node.original,
+            call_cycles,
+            cache_persistence,
+        );
+        objective += node_variables[index] * base;
     }
     for (index, edge) in edges.iter().enumerate() {
         if let Some(stall) = pipeline_stalls.get(&edge.original) {
@@ -1403,6 +1467,55 @@ fn solve_function_with_automata(
         }
     }
 
+    let mut cache_variables = 0_usize;
+    if !cache_persistence.is_empty() {
+        let block_execution = |node: NodeIndex| -> Expression {
+            let mut expression = Expression::from(0.0);
+            if let Some(indices) = nodes_by_original.get(&node) {
+                for index in indices {
+                    expression += node_variables[*index];
+                }
+            }
+            expression
+        };
+        let loop_entries = |loop_: &LoopModel| -> Expression {
+            let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
+            for edge in &loop_.entry_edges {
+                if let Some(indices) = edges_by_original.get(edge) {
+                    for index in indices {
+                        expression += edge_variables[*index];
+                    }
+                }
+            }
+            expression
+        };
+        for model in [&cache_persistence.instruction, &cache_persistence.data]
+            .into_iter()
+            .flatten()
+        {
+            cache_variables += add_cache_persistence_model(
+                &mut vars,
+                model,
+                cfg,
+                reachable_nodes,
+                loops,
+                &block_execution,
+                &loop_entries,
+                &mut constraints,
+                &mut objective,
+            );
+        }
+    }
+    if nodes
+        .len()
+        .saturating_add(edges.len())
+        .saturating_add(exit_variables.len())
+        .saturating_add(cache_variables)
+        > MAX_MODEL_VARIABLES
+    {
+        return Err(IpetError::Unknown("ipet-model-too-large".to_owned()));
+    }
+
     let model = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = model
         .with_all(constraints)
@@ -1463,7 +1576,7 @@ fn solve_function_with_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: None,
+            cache_model: (!cache_persistence.is_empty()).then(|| "persistence".to_owned()),
             branch_model: None,
             blocks,
         },
@@ -2219,6 +2332,7 @@ fn solve_function_with_cross_function_automata(
     automata: &[OrderedAutomaton],
     cross: &[&CrossFunctionConstraint],
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
+    cache_persistence: &CachePersistenceModels,
 ) -> Result<IpetOutcome, IpetError> {
     let model = build_cross_model(
         program,
@@ -2480,7 +2594,11 @@ fn solve_function_with_cross_function_automata(
 
     let mut objective = Expression::from(0.0);
     for (index, product) in product_nodes.iter().enumerate() {
-        let cost = model.nodes[product.model].cost;
+        let cost = if let Some(caller) = model.nodes[product.model].caller {
+            cache_persistence_base_cost(&cfg.graph[caller], caller, call_cycles, cache_persistence)
+        } else {
+            model.nodes[product.model].cost
+        };
         if cost != 0.0 {
             objective += node_variables[index] * cost;
         }
@@ -2494,6 +2612,55 @@ fn solve_function_with_cross_function_automata(
         {
             objective += edge_variables[index] * *stall;
         }
+    }
+
+    let mut cache_variables = 0_usize;
+    if !cache_persistence.is_empty() {
+        let block_execution = |node: NodeIndex| -> Expression {
+            let mut expression = Expression::from(0.0);
+            if let Some(indices) = nodes_by_caller.get(&node) {
+                for index in indices {
+                    expression += node_variables[*index];
+                }
+            }
+            expression
+        };
+        let loop_entries = |loop_: &LoopModel| -> Expression {
+            let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
+            for edge in &loop_.entry_edges {
+                if let Some(indices) = edges_by_caller.get(edge) {
+                    for index in indices {
+                        expression += edge_variables[*index];
+                    }
+                }
+            }
+            expression
+        };
+        for model in [&cache_persistence.instruction, &cache_persistence.data]
+            .into_iter()
+            .flatten()
+        {
+            cache_variables += add_cache_persistence_model(
+                &mut vars,
+                model,
+                cfg,
+                reachable_nodes,
+                loops,
+                &block_execution,
+                &loop_entries,
+                &mut constraints,
+                &mut objective,
+            );
+        }
+    }
+    if product_nodes
+        .len()
+        .saturating_add(product_edges.len())
+        .saturating_add(exit_variables.len())
+        .saturating_add(cache_variables)
+        > MAX_MODEL_VARIABLES
+    {
+        return Err(IpetError::Unknown("ipet-model-too-large".to_owned()));
     }
 
     let problem = vars.maximise(objective.clone()).using(good_lp::microlp);
@@ -2562,7 +2729,7 @@ fn solve_function_with_cross_function_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: None,
+            cache_model: (!cache_persistence.is_empty()).then(|| "persistence".to_owned()),
             branch_model: None,
             blocks,
         },
@@ -2584,6 +2751,30 @@ struct CacheIpetModels {
 }
 
 impl CacheIpetModels {
+    fn is_empty(&self) -> bool {
+        self.instruction.is_none() && self.data.is_none()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PersistenceCacheKind {
+    Instruction,
+    Data,
+}
+
+struct CachePersistenceIpetModel {
+    kind: PersistenceCacheKind,
+    miss_penalty: u32,
+    analysis: cache_persistence::PersistenceAnalysis,
+}
+
+#[derive(Default)]
+struct CachePersistenceModels {
+    instruction: Option<CachePersistenceIpetModel>,
+    data: Option<CachePersistenceIpetModel>,
+}
+
+impl CachePersistenceModels {
     fn is_empty(&self) -> bool {
         self.instruction.is_none() && self.data.is_none()
     }
@@ -2707,8 +2898,205 @@ fn build_cache_ipet_models(
     models
 }
 
+fn build_cache_persistence_models(
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+) -> CachePersistenceModels {
+    let mut models = CachePersistenceModels::default();
+    if let Some(info) = &program.cache
+        && info.invalidate_on_call
+        && info.sets > 0
+        && info.line_bytes > 0
+        && let Ok(ways) = usize::try_from(info.ways)
+        && ways > 0
+        && reachable_nodes.iter().all(|node| {
+            cfg.graph[*node]
+                .cache
+                .as_ref()
+                .is_some_and(|cache| !cache.fallback)
+        })
+    {
+        let analysis = cache_persistence::instruction(
+            cfg,
+            CacheGeometry {
+                line_bytes: u64::from(info.line_bytes),
+                sets: info.sets,
+                ways,
+            },
+        );
+        if !analysis.is_empty() {
+            models.instruction = Some(CachePersistenceIpetModel {
+                kind: PersistenceCacheKind::Instruction,
+                miss_penalty: info.miss_penalty,
+                analysis,
+            });
+        }
+    }
+    if let Some(info) = &program.data_cache
+        && info.invalidate_on_call
+        && info.sets > 0
+        && info.line_bytes > 0
+        && let Ok(ways) = usize::try_from(info.ways)
+        && ways > 0
+        && reachable_nodes.iter().all(|node| {
+            cfg.graph[*node]
+                .data_cache
+                .as_ref()
+                .is_some_and(|cache| !cache.fallback && cache.unresolved_memory_accesses == 0)
+        })
+    {
+        let analysis = cache_persistence::data(
+            cfg,
+            CacheGeometry {
+                line_bytes: u64::from(info.line_bytes),
+                sets: info.sets,
+                ways,
+            },
+            info.write_allocate,
+        );
+        if !analysis.is_empty() {
+            models.data = Some(CachePersistenceIpetModel {
+                kind: PersistenceCacheKind::Data,
+                miss_penalty: info.miss_penalty,
+                analysis,
+            });
+        }
+    }
+    models
+}
+
+fn cache_persistence_base_cost(
+    block: &CfgBlock,
+    node: NodeIndex,
+    call_cycles: &BTreeMap<NodeIndex, f64>,
+    models: &CachePersistenceModels,
+) -> f64 {
+    let mut cost = block.cycles.map_or(0.0, |cycles| cycles.max)
+        + call_cycles.get(&node).copied().unwrap_or(0.0);
+    if let Some(model) = &models.instruction
+        && let Some(cache) = &block.cache
+    {
+        cost -= f64::from(cache.misses_max) * f64::from(model.miss_penalty);
+    }
+    if let Some(model) = &models.data
+        && let Some(cache) = &block.data_cache
+    {
+        cost -= f64::from(cache.misses_max) * f64::from(model.miss_penalty);
+    }
+    cost.max(0.0)
+}
+
+type BlockCacheLineData = (Vec<(u64, u32, u32)>, u32);
+
+fn cache_block_line_data(
+    block: &CfgBlock,
+    kind: PersistenceCacheKind,
+) -> Option<BlockCacheLineData> {
+    match kind {
+        PersistenceCacheKind::Instruction => {
+            let cache = block.cache.as_ref()?;
+            Some((
+                cache
+                    .lines
+                    .iter()
+                    .map(|line| (line.line.get(), line.accesses, line.misses_max))
+                    .collect(),
+                cache.misses_max,
+            ))
+        }
+        PersistenceCacheKind::Data => {
+            let cache = block.data_cache.as_ref()?;
+            Some((
+                cache
+                    .lines
+                    .iter()
+                    .map(|line| (line.line.get(), line.accesses, line.misses_max))
+                    .collect(),
+                cache.misses_max,
+            ))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_cache_persistence_model(
+    vars: &mut ProblemVariables,
+    model: &CachePersistenceIpetModel,
+    cfg: &FunctionCfg,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    loops: &[LoopModel],
+    block_execution: &dyn Fn(NodeIndex) -> Expression,
+    loop_entries: &dyn Fn(&LoopModel) -> Expression,
+    constraints: &mut Vec<good_lp::Constraint>,
+    objective: &mut Expression,
+) -> usize {
+    let mut added = 0_usize;
+    let mut line_variables: BTreeMap<(NodeIndex, u64), Variable> = BTreeMap::new();
+    for node in reachable_nodes {
+        let Some((lines, total_misses)) = cache_block_line_data(&cfg.graph[*node], model.kind)
+        else {
+            continue;
+        };
+        let execution = block_execution(*node);
+        let mut block_sum = Expression::from(0.0);
+        for (line, accesses, misses_max) in lines {
+            if accesses == 0 || misses_max == 0 {
+                continue;
+            }
+            let variable = vars.add(good_lp::variable().integer().min(0.0));
+            added = added.saturating_add(1);
+            constraints.push(constraint::leq(
+                Expression::from(variable) - execution.clone() * f64::from(accesses),
+                0.0,
+            ));
+            constraints.push(constraint::leq(
+                Expression::from(variable) - execution.clone() * f64::from(misses_max),
+                0.0,
+            ));
+            block_sum += variable;
+            *objective += variable * f64::from(model.miss_penalty);
+            line_variables.insert((*node, line), variable);
+        }
+        if total_misses > 0 {
+            constraints.push(constraint::leq(
+                block_sum - execution * f64::from(total_misses),
+                0.0,
+            ));
+        }
+    }
+    let node_by_id: BTreeMap<BlockId, NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    for region in &model.analysis.regions {
+        let Some(&header) = node_by_id.get(&region.header) else {
+            continue;
+        };
+        let Some(loop_model) = loops.iter().find(|candidate| candidate.header == header) else {
+            continue;
+        };
+        let entries = loop_entries(loop_model);
+        for line in &region.lines {
+            let mut sum = Expression::from(0.0);
+            let mut any = false;
+            for block in &region.blocks {
+                if let Some(variable) = line_variables.get(&(*block, *line)) {
+                    sum += *variable;
+                    any = true;
+                }
+            }
+            if any {
+                constraints.push(constraint::leq(sum - entries.clone(), 0.0));
+            }
+        }
+    }
+    added
+}
+
 fn state_base_cost(
-    block: &crate::cfg::CfgBlock,
+    block: &CfgBlock,
     node: NodeIndex,
     call_cycles: &BTreeMap<NodeIndex, f64>,
     models: &CacheIpetModels,
@@ -4461,6 +4849,32 @@ bound_nonterminating_loops = true
         )])
     }
 
+    fn cache_loop_header_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x2000,
+            FunctionCfg::build(
+                vec![
+                    block(0x2002, CfgTerminator::Branch, 1.0),
+                    block(0x2004, CfgTerminator::Fallthrough, 10.0),
+                    block(0x2006, CfgTerminator::Fallthrough, 20.0),
+                    block(0x2008, CfgTerminator::Fallthrough, 5.0),
+                    block(0x200a, CfgTerminator::Branch, 1.0),
+                    block(0x200c, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x2002, 0x2004, CfgEdgeKind::Branch),
+                    edge(0x2002, 0x2008, CfgEdgeKind::Fallthrough),
+                    edge(0x2004, 0x2006, CfgEdgeKind::Fallthrough),
+                    edge(0x2006, 0x200a, CfgEdgeKind::Fallthrough),
+                    edge(0x2008, 0x200a, CfgEdgeKind::Fallthrough),
+                    edge(0x200a, 0x2002, CfgEdgeKind::Branch),
+                    edge(0x200a, 0x200c, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x2002),
+            ),
+        )])
+    }
+
     fn data_cache_loop_program() -> ProgramCfg {
         let mut instruction = instruction(0x1000, CfgTerminator::Jump, 1.0);
         instruction.memory_accesses = vec![CfgMemoryAccess {
@@ -4571,6 +4985,74 @@ max_states = 16
         let (objective, model) = run_ipet(&mut program, &board);
         assert_eq!(objective, 14.0);
         assert_eq!(model.as_deref(), Some("state-product"));
+    }
+
+    #[test]
+    fn cache_persistence_constraints_apply_in_the_automaton_product() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 32
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 16
+",
+        );
+        let mut program = cache_loop_header_program();
+        prepare_cache_program(&mut program, &board);
+        let conflict = r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <conflict ordered="yes">
+        <block address="0x2004"/>
+        <block address="0x2006"/>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#;
+        let mut bounded = program.clone();
+        bounded
+            .cache
+            .as_mut()
+            .expect("cache info")
+            .invalidate_on_call = false;
+        let mut bounded_facts = facts();
+        let document =
+            FlowFactDocument::parse_text(conflict, "cache-persistence.ffx").expect("parse");
+        bounded_facts
+            .apply_document(document, &bounded)
+            .expect("apply conflict");
+        let _ = analyze_program(&mut bounded, &bounded_facts);
+        let bounded_ipet = bounded.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("bounded IPET");
+        assert_eq!(bounded_ipet.cache_model.as_deref(), Some("block-bounds"));
+
+        let mut constrained = program.clone();
+        let mut constrained_facts = facts();
+        let document =
+            FlowFactDocument::parse_text(conflict, "cache-persistence.ffx").expect("parse");
+        constrained_facts
+            .apply_document(document, &constrained)
+            .expect("apply conflict");
+        let _ = analyze_program(&mut constrained, &constrained_facts);
+        let ipet = constrained.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("persistence IPET");
+        assert_eq!(ipet.cache_model.as_deref(), Some("persistence"));
+        assert!(
+            ipet.objective < bounded_ipet.objective,
+            "persistence must cap repeated loop misses: {} < {}",
+            ipet.objective,
+            bounded_ipet.objective
+        );
     }
 
     #[test]
