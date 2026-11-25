@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.41";
+pub const CFG_SCHEMA_VERSION: &str = "2.42";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1264,6 +1264,9 @@ pub struct CfgIpetSolution {
     pub status: String,
     /// Maximal objective value in cycles.
     pub objective: f64,
+    /// CFG-partitioning summary, when IPET used region summaries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partitioning: Option<CfgIpetPartitioningInfo>,
     /// Cache model used by the IPET constraints, when cache analysis is active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_model: Option<String>,
@@ -1294,6 +1297,20 @@ pub struct CfgIpetSolution {
     pub ras_model: Option<String>,
     /// Positive block execution counts from the solution.
     pub blocks: Vec<CfgIpetBlockCount>,
+}
+
+/// CFG-partitioning summary for one IPET function version.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgIpetPartitioningInfo {
+    /// Partitioning model name.
+    pub model: String,
+    /// Number of summarized SESE regions.
+    pub regions: u32,
+    /// Original basic blocks hidden inside region summaries.
+    pub summarized_blocks: u32,
+    /// Model caveats.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
 }
 
 /// One block execution count from an IPET solution.

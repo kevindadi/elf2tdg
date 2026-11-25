@@ -1255,6 +1255,16 @@ fn render_function_wcet(out: &mut String, function: &CfgFunction, analysis_enabl
         if let Some(pipeline_model) = &ipet.pipeline_model {
             kv(out, "ipet pipeline model", pipeline_model);
         }
+        if let Some(partitioning) = &ipet.partitioning {
+            kv(
+                out,
+                "ipet partitioning",
+                &format!(
+                    "{}: {} region(s), {} block(s)",
+                    partitioning.model, partitioning.regions, partitioning.summarized_blocks
+                ),
+            );
+        }
         kv(
             out,
             "ipet objective",

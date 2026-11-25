@@ -22,7 +22,7 @@ use good_lp::{
 };
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::DiGraph;
-use petgraph::stable_graph::{EdgeIndex, NodeIndex};
+use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableDiGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use elf2tdg_schema::{BlockId, CostRange, FunctionId};
@@ -36,9 +36,9 @@ use crate::cache_state::{
 };
 use crate::ccg::{self, CcgApplication, CcgModel};
 use crate::cfg::{
-    CfgBlock, CfgCacheCcgInfo, CfgCacheConflictGraphInfo, CfgCachePersistenceInfo, CfgFunction,
-    CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus, FunctionCfg,
-    ProgramCfg,
+    CfgBlock, CfgCacheCcgInfo, CfgCacheConflictGraphInfo, CfgCachePersistenceInfo, CfgEdge,
+    CfgEdgeKind, CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetPartitioningInfo,
+    CfgIpetSolution, CfgTerminator, CfgWcetInfo, CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::flow_facts::{
     BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
@@ -55,6 +55,9 @@ use crate::wcet::{
 pub(crate) const MODEL_NAME: &str = "cfg-ipet";
 const SOLVER_NAME: &str = "microlp";
 const MAX_MODEL_VARIABLES: usize = 500_000;
+const MAX_PARTITION_BLOCKS: usize = 4096;
+const MAX_PARTITION_REGIONS: u32 = 512;
+const MAX_PARTITION_SCAN_STEPS: usize = 10_000_000;
 
 /// Runs IPET without a branch-prediction profile.
 #[cfg(test)]
@@ -368,6 +371,17 @@ fn analyze_program_impl(
         );
     }
     info.caveats.extend(facts.warnings().iter().cloned());
+    if summaries.iter().flatten().any(|summary| {
+        summary
+            .ipet
+            .as_ref()
+            .is_some_and(|ipet| ipet.partitioning.is_some())
+    }) {
+        info.caveats.push(
+            "IPET CFG partitioning summarizes call-free SESE branch regions with an exact per-entry local model and expands their block counts into the final solution. Functions with cache/pipeline/branch/BTB/RAS state models, non-loop flow facts, infeasible-path constraints or calls use the monolithic model."
+                .to_owned(),
+        );
+    }
     for (index, summary) in summaries.into_iter().enumerate() {
         let Some(summary) = summary else {
             continue;
@@ -528,6 +542,20 @@ fn solve_function(
     pipeline_model: Option<&PipelineFunctionModel>,
     branch_interproc: Option<&BranchInterprocModel>,
 ) -> Result<IpetOutcome, IpetError> {
+    if let Some(outcome) = try_solve_partitioned(
+        program,
+        cfg,
+        entry,
+        analysis,
+        reachable_nodes,
+        facts,
+        function_id,
+        scope,
+        branch_prediction,
+        pipeline_model,
+    ) {
+        return Ok(outcome);
+    }
     let loops = build_loops(cfg, entry, analysis, facts, scope)?;
     let automata = ordered_automata(facts, function_id, scope);
     let cross = cross_function_constraints(facts, function_id, scope);
@@ -884,6 +912,7 @@ fn solve_function(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
+            partitioning: None,
             cache_model: cache_model_name(cache_ccg.is_some(), cache_conflicts, &cache_persistence)
                 .or_else(|| cache_fallback_model(program)),
             cache_conflicts: cache_conflict_info(
@@ -923,6 +952,639 @@ fn apply_ras_fallback(outcome: &mut IpetOutcome, program: &ProgramCfg, has_ras: 
     if outcome.solution.ras_model.is_none() && has_ras && program.ras.is_some() {
         outcome.solution.ras_model = Some("block-bounds".to_owned());
     }
+}
+
+const PARTITION_MODEL: &str = "sese-branch-regions";
+
+#[derive(Clone, Debug)]
+struct SimpleIpetResult {
+    objective: f64,
+    status: String,
+    partial: bool,
+    block_counts: BTreeMap<BlockId, u64>,
+}
+
+#[derive(Clone, Debug)]
+struct PartitionSummary {
+    counts_per_entry: BTreeMap<BlockId, u64>,
+}
+
+struct PartitionRegion {
+    entry: NodeIndex,
+    exit: NodeIndex,
+    blocks: BTreeSet<NodeIndex>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn partition_eligible(
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    analysis: &crate::cfg_graph::CfgGraphAnalysis,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+    branch_prediction: Option<&BranchPredictionProfile>,
+    pipeline_model: Option<&PipelineFunctionModel>,
+) -> bool {
+    if cfg.graph.node_count() > MAX_PARTITION_BLOCKS
+        || analysis.blocked_by_unresolved
+        || !cfg.recovered_calls.is_empty()
+        || branch_prediction.is_some()
+        || pipeline_model.is_some()
+        || program.cache.is_some()
+        || program.data_cache.is_some()
+        || program.branch_prediction.is_some()
+        || program.btb.is_some()
+        || program.ras.is_some()
+        || program.pipeline.is_some()
+    {
+        return false;
+    }
+    let has_calls = reachable_nodes.iter().any(|node| {
+        let block = &cfg.graph[*node];
+        !block.calls.is_empty()
+            || matches!(
+                block.terminator,
+                CfgTerminator::Call | CfgTerminator::NoreturnCall
+            )
+    }) || cfg.graph.edge_references().any(|edge| {
+        reachable_nodes.contains(&edge.source())
+            && reachable_nodes.contains(&edge.target())
+            && edge.weight().kind == CfgEdgeKind::CallReturn
+    });
+    if has_calls {
+        return false;
+    }
+    if facts
+        .branches()
+        .iter()
+        .any(|branch| &branch.function == function_id && scope.matches(&branch.context))
+        || facts
+            .calls()
+            .iter()
+            .any(|call| &call.function == function_id && scope.matches(&call.context))
+        || facts.infeasible_paths().iter().any(|conflict| {
+            conflict.function.as_ref() == Some(function_id) && scope.matches(&conflict.context)
+        })
+    {
+        return false;
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_solve_partitioned(
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    entry: NodeIndex,
+    analysis: &crate::cfg_graph::CfgGraphAnalysis,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+    branch_prediction: Option<&BranchPredictionProfile>,
+    pipeline_model: Option<&PipelineFunctionModel>,
+) -> Option<IpetOutcome> {
+    if !partition_eligible(
+        program,
+        cfg,
+        analysis,
+        reachable_nodes,
+        facts,
+        function_id,
+        scope,
+        branch_prediction,
+        pipeline_model,
+    ) {
+        return None;
+    }
+    let mut working = cfg.clone();
+    let function_entry = entry;
+    let mut summaries: BTreeMap<BlockId, PartitionSummary> = BTreeMap::new();
+    let mut regions = 0_u32;
+    let mut summarized_blocks = 0_u32;
+    let mut partial = false;
+    let mut counter = 0_usize;
+    let mut scan_steps = 0_usize;
+    while regions < MAX_PARTITION_REGIONS {
+        let working_analysis = working.analyze_graph();
+        let Some(region) =
+            select_partition_region(&working, &working_analysis, function_entry, &mut scan_steps)
+        else {
+            break;
+        };
+        let local = solve_partition_region(&working, &region, facts, function_id, scope, counter)?;
+        partial |= local.partial;
+        let counts_per_entry = expand_partition_counts(&local.block_counts, &summaries);
+        let hidden_originals = region
+            .blocks
+            .iter()
+            .filter(|node| !summaries.contains_key(&working.graph[**node].id))
+            .count();
+        summarized_blocks =
+            summarized_blocks.saturating_add(u32::try_from(hidden_originals).unwrap_or(u32::MAX));
+        let macro_id = BlockId::new(format!("bb:partition:{counter}"));
+        let cost_per_entry = local.objective;
+        if !replace_region(&mut working, &region, &macro_id, cost_per_entry, counter) {
+            return None;
+        }
+        summaries.insert(macro_id, PartitionSummary { counts_per_entry });
+        regions = regions.saturating_add(1);
+        counter = counter.saturating_add(1);
+    }
+    if regions == 0 {
+        return None;
+    }
+    let final_entry = working.entry?;
+    let final_result = solve_simple_ipet(&working, final_entry, facts, function_id, scope).ok()?;
+    partial |= final_result.partial;
+    let counts = expand_partition_counts(&final_result.block_counts, &summaries);
+    let mut address_by_id: BTreeMap<BlockId, u64> = BTreeMap::new();
+    for (address, node) in &cfg.blocks_by_address {
+        address_by_id.insert(cfg.graph[*node].id.clone(), *address);
+    }
+    let mut ordered_counts: Vec<(BlockId, u64)> =
+        counts.into_iter().filter(|(_, count)| *count > 0).collect();
+    ordered_counts.sort_by_key(|(id, _)| address_by_id.get(id).copied().unwrap_or(u64::MAX));
+    let blocks = ordered_counts
+        .into_iter()
+        .map(|(block, executions)| CfgIpetBlockCount { block, executions })
+        .collect();
+    let partitioning = CfgIpetPartitioningInfo {
+        model: PARTITION_MODEL.to_owned(),
+        regions,
+        summarized_blocks,
+        caveats: vec![
+            "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
+            "Partitioning is used only for call-free functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models and without non-loop flow facts or infeasible-path constraints; otherwise the monolithic IPET model is used. Regions whose entry is the function entry are not summarized in this first version.".to_owned(),
+        ],
+    };
+    Some(IpetOutcome {
+        solution: CfgIpetSolution {
+            solver: SOLVER_NAME.to_owned(),
+            status: final_result.status,
+            objective: final_result.objective,
+            partitioning: Some(partitioning),
+            cache_model: None,
+            cache_conflicts: None,
+            cache_ccg: None,
+            pipeline_model: None,
+            branch_model: None,
+            btb_model: None,
+            ras_model: None,
+            blocks,
+        },
+        partial,
+        prediction_exit_costs: BTreeMap::new(),
+    })
+}
+
+fn select_partition_region(
+    cfg: &FunctionCfg,
+    analysis: &crate::cfg_graph::CfgGraphAnalysis,
+    function_entry: NodeIndex,
+    scan_steps: &mut usize,
+) -> Option<PartitionRegion> {
+    let node_by_id: BTreeMap<BlockId, NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    let mut candidates = Vec::new();
+    let mut branch_nodes: Vec<NodeIndex> = analysis
+        .reachable
+        .iter()
+        .filter_map(|id| node_by_id.get(id).copied())
+        .collect();
+    branch_nodes.sort_by_key(|node| (cfg.graph[*node].address, node.index()));
+    for entry in branch_nodes {
+        *scan_steps = scan_steps.saturating_add(1);
+        if *scan_steps > MAX_PARTITION_SCAN_STEPS {
+            return None;
+        }
+        if entry == function_entry {
+            continue;
+        }
+        let targets: BTreeSet<NodeIndex> = cfg
+            .graph
+            .edges_directed(entry, petgraph::Direction::Outgoing)
+            .map(|edge| edge.target())
+            .collect();
+        if targets.len() < 2 {
+            continue;
+        }
+        let entry_id = &cfg.graph[entry].id;
+        let Some(exit_id) = analysis.immediate_post_dominators.get(entry_id) else {
+            continue;
+        };
+        let Some(&exit) = node_by_id.get(exit_id) else {
+            continue;
+        };
+        if exit == entry || exit == function_entry || exit_id == entry_id {
+            continue;
+        }
+        let mut blocks = BTreeSet::new();
+        for id in &analysis.reachable {
+            *scan_steps = scan_steps.saturating_add(1);
+            if *scan_steps > MAX_PARTITION_SCAN_STEPS {
+                return None;
+            }
+            if id == exit_id {
+                continue;
+            }
+            let Some(&node) = node_by_id.get(id) else {
+                continue;
+            };
+            let dominated = analysis
+                .dominators
+                .get(id)
+                .is_some_and(|set| set.contains(entry_id));
+            let postdominated = analysis
+                .post_dominators
+                .get(id)
+                .is_some_and(|set| set.contains(exit_id));
+            if dominated && postdominated {
+                blocks.insert(node);
+            }
+        }
+        if blocks.len() < 2 || !blocks.contains(&entry) {
+            continue;
+        }
+        *scan_steps = scan_steps.saturating_add(blocks.len().saturating_mul(4));
+        if *scan_steps > MAX_PARTITION_SCAN_STEPS {
+            return None;
+        }
+        if !valid_partition_region(cfg, analysis, &blocks, entry, exit) {
+            continue;
+        }
+        candidates.push(PartitionRegion {
+            entry,
+            exit,
+            blocks,
+        });
+    }
+    candidates.sort_by_key(|region| {
+        (
+            region.blocks.len(),
+            cfg.graph[region.entry].address,
+            region.entry.index(),
+        )
+    });
+    candidates.into_iter().next()
+}
+
+fn valid_partition_region(
+    cfg: &FunctionCfg,
+    analysis: &crate::cfg_graph::CfgGraphAnalysis,
+    blocks: &BTreeSet<NodeIndex>,
+    entry: NodeIndex,
+    exit: NodeIndex,
+) -> bool {
+    let block_ids: BTreeSet<BlockId> = blocks
+        .iter()
+        .map(|node| cfg.graph[*node].id.clone())
+        .collect();
+    let mut external_incoming = 0_u32;
+    let mut boundary_exits = 0_u32;
+    for node in blocks {
+        for edge in cfg
+            .graph
+            .edges_directed(*node, petgraph::Direction::Incoming)
+        {
+            if !blocks.contains(&edge.source()) {
+                if *node != entry || edge.source() == exit {
+                    return false;
+                }
+                external_incoming = external_incoming.saturating_add(1);
+            }
+        }
+        for edge in cfg
+            .graph
+            .edges_directed(*node, petgraph::Direction::Outgoing)
+        {
+            if !blocks.contains(&edge.target()) {
+                if edge.target() != exit {
+                    return false;
+                }
+                boundary_exits = boundary_exits.saturating_add(1);
+            }
+        }
+    }
+    if external_incoming == 0 || boundary_exits == 0 {
+        return false;
+    }
+    for loop_ in &analysis.loops {
+        if !loop_.blocks.iter().any(|block| block_ids.contains(block)) {
+            continue;
+        }
+        let controls_loop = block_ids.contains(&loop_.header)
+            || loop_.latches.iter().any(|latch| block_ids.contains(latch));
+        if controls_loop && !loop_.blocks.iter().all(|block| block_ids.contains(block)) {
+            return false;
+        }
+    }
+    true
+}
+
+fn solve_partition_region(
+    cfg: &FunctionCfg,
+    region: &PartitionRegion,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+    counter: usize,
+) -> Option<SimpleIpetResult> {
+    let mut nodes: Vec<NodeIndex> = region.blocks.iter().copied().collect();
+    nodes.sort_by_key(|node| (cfg.graph[*node].address, node.index()));
+    let mut graph = StableDiGraph::new();
+    let mut node_map: BTreeMap<NodeIndex, NodeIndex> = BTreeMap::new();
+    let mut blocks_by_address: BTreeMap<u64, NodeIndex> = BTreeMap::new();
+    for node in &nodes {
+        let block = cfg.graph[*node].clone();
+        let address = block.address;
+        let new_node = graph.add_node(block);
+        node_map.insert(*node, new_node);
+        blocks_by_address.insert(address, new_node);
+    }
+    let dummy_address = unique_address(&blocks_by_address, u64::MAX, counter);
+    let dummy_id = BlockId::new(format!("bb:partition-exit:{counter}"));
+    let dummy = CfgBlock {
+        id: dummy_id.clone(),
+        address: dummy_address,
+        size: 0,
+        instructions: Vec::new(),
+        calls: Vec::new(),
+        cycles: Some(CostRange::exact(0.0)),
+        cache: None,
+        data_cache: None,
+        branch_prediction: None,
+        btb: None,
+        ras: None,
+        data_memory: None,
+        multicore: None,
+        terminator: CfgTerminator::Return,
+    };
+    let dummy_node = graph.add_node(dummy);
+    blocks_by_address.insert(dummy_address, dummy_node);
+    for node in &nodes {
+        let source = *node_map.get(node)?;
+        for edge in cfg
+            .graph
+            .edges_directed(*node, petgraph::Direction::Outgoing)
+        {
+            let target = if region.blocks.contains(&edge.target()) {
+                *node_map.get(&edge.target())?
+            } else if edge.target() == region.exit {
+                dummy_node
+            } else {
+                return None;
+            };
+            graph.add_edge(source, target, edge.weight().clone());
+        }
+    }
+    let entry = *node_map.get(&region.entry)?;
+    let region_cfg = FunctionCfg {
+        entry: Some(entry),
+        graph,
+        blocks_by_address,
+        recovered_calls: Vec::new(),
+        referenced_addresses: Vec::new(),
+    };
+    let mut result = solve_simple_ipet(&region_cfg, entry, facts, function_id, scope).ok()?;
+    result.block_counts.remove(&dummy_id);
+    Some(result)
+}
+
+fn replace_region(
+    cfg: &mut FunctionCfg,
+    region: &PartitionRegion,
+    macro_id: &BlockId,
+    cost_per_entry: f64,
+    counter: usize,
+) -> bool {
+    let mut incoming: Vec<(NodeIndex, CfgEdge)> = Vec::new();
+    let mut boundary_exits = 0_u32;
+    for node in &region.blocks {
+        for edge in cfg
+            .graph
+            .edges_directed(*node, petgraph::Direction::Incoming)
+        {
+            if !region.blocks.contains(&edge.source()) {
+                incoming.push((edge.source(), edge.weight().clone()));
+            }
+        }
+        for edge in cfg
+            .graph
+            .edges_directed(*node, petgraph::Direction::Outgoing)
+        {
+            if !region.blocks.contains(&edge.target()) {
+                if edge.target() != region.exit {
+                    return false;
+                }
+                boundary_exits = boundary_exits.saturating_add(1);
+            }
+        }
+    }
+    if incoming.is_empty() || boundary_exits == 0 {
+        return false;
+    }
+    let removed_addresses: Vec<u64> = region
+        .blocks
+        .iter()
+        .map(|node| cfg.graph[*node].address)
+        .collect();
+    for node in &region.blocks {
+        cfg.graph.remove_node(*node);
+    }
+    for address in removed_addresses {
+        cfg.blocks_by_address.remove(&address);
+    }
+    let address = unique_address(&cfg.blocks_by_address, u64::MAX, counter);
+    let macro_block = CfgBlock {
+        id: macro_id.clone(),
+        address,
+        size: 0,
+        instructions: Vec::new(),
+        calls: Vec::new(),
+        cycles: Some(CostRange::exact(cost_per_entry)),
+        cache: None,
+        data_cache: None,
+        branch_prediction: None,
+        btb: None,
+        ras: None,
+        data_memory: None,
+        multicore: None,
+        terminator: CfgTerminator::Fallthrough,
+    };
+    let node = cfg.graph.add_node(macro_block);
+    cfg.blocks_by_address.insert(address, node);
+    for (source, weight) in incoming {
+        cfg.graph.add_edge(source, node, weight);
+    }
+    cfg.graph.add_edge(
+        node,
+        region.exit,
+        CfgEdge {
+            kind: CfgEdgeKind::Fallthrough,
+            site: address,
+            conditional: false,
+        },
+    );
+    true
+}
+
+fn unique_address(blocks_by_address: &BTreeMap<u64, NodeIndex>, start: u64, offset: usize) -> u64 {
+    let mut candidate = start.saturating_sub(u64::try_from(offset).unwrap_or(u64::MAX));
+    while blocks_by_address.contains_key(&candidate) {
+        candidate = candidate.saturating_sub(1);
+    }
+    candidate
+}
+
+fn expand_partition_counts(
+    counts: &BTreeMap<BlockId, u64>,
+    summaries: &BTreeMap<BlockId, PartitionSummary>,
+) -> BTreeMap<BlockId, u64> {
+    let mut expanded: BTreeMap<BlockId, u64> = BTreeMap::new();
+    for (block, count) in counts {
+        if let Some(summary) = summaries.get(block) {
+            for (original, per_entry) in &summary.counts_per_entry {
+                let scaled = per_entry.saturating_mul(*count);
+                let total = expanded.entry(original.clone()).or_default();
+                *total = total.saturating_add(scaled);
+            }
+        } else {
+            let total = expanded.entry(block.clone()).or_default();
+            *total = total.saturating_add(*count);
+        }
+    }
+    expanded
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
+)]
+fn solve_simple_ipet(
+    cfg: &FunctionCfg,
+    entry: NodeIndex,
+    facts: &FlowFacts,
+    _function_id: &FunctionId,
+    scope: FactScope<'_>,
+) -> Result<SimpleIpetResult, IpetError> {
+    let analysis = cfg.analyze_graph();
+    let reachable_nodes: BTreeSet<NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .copied()
+        .filter(|node| analysis.reachable.contains(&cfg.graph[*node].id))
+        .collect();
+    if reachable_nodes.is_empty() {
+        return Err(IpetError::Unknown("no-reachable-blocks".to_owned()));
+    }
+    if reachable_nodes
+        .iter()
+        .any(|node| cfg.graph[*node].cycles.is_none())
+    {
+        return Err(IpetError::Unknown("missing-block-timing".to_owned()));
+    }
+    let loops = build_loops(cfg, entry, &analysis, facts, scope)?;
+    let mut nodes: Vec<NodeIndex> = reachable_nodes.iter().copied().collect();
+    nodes.sort_by_key(|node| (cfg.graph[*node].address, node.index()));
+    let mut vars = ProblemVariables::new();
+    let mut block_vars: BTreeMap<NodeIndex, Variable> = BTreeMap::new();
+    for node in &nodes {
+        block_vars.insert(*node, vars.add(good_lp::variable().integer().min(0.0)));
+    }
+    let mut edges: Vec<(EdgeIndex, NodeIndex, NodeIndex, u64)> = cfg
+        .graph
+        .edge_references()
+        .filter(|edge| {
+            reachable_nodes.contains(&edge.source()) && reachable_nodes.contains(&edge.target())
+        })
+        .map(|edge| (edge.id(), edge.source(), edge.target(), edge.weight().site))
+        .collect();
+    edges.sort_by_key(|(_, source, target, site)| {
+        (
+            cfg.graph[*source].address,
+            cfg.graph[*target].address,
+            *site,
+        )
+    });
+    let mut edge_vars: BTreeMap<EdgeIndex, Variable> = BTreeMap::new();
+    for (id, _, _, _) in &edges {
+        edge_vars.insert(*id, vars.add(good_lp::variable().integer().min(0.0)));
+    }
+    let mut loop_exit_vars: BTreeMap<NodeIndex, Variable> = BTreeMap::new();
+    for loop_ in &loops {
+        if !loop_.has_exit && !loop_exit_vars.contains_key(&loop_.header) {
+            loop_exit_vars.insert(
+                loop_.header,
+                vars.add(good_lp::variable().integer().min(0.0)),
+            );
+        }
+    }
+    if block_vars
+        .len()
+        .saturating_add(edge_vars.len())
+        .saturating_add(loop_exit_vars.len())
+        > MAX_MODEL_VARIABLES
+    {
+        return Err(IpetError::Unknown("ipet-model-too-large".to_owned()));
+    }
+    if !block_vars.contains_key(&entry) {
+        return Err(IpetError::Unknown("entry-unreachable".to_owned()));
+    }
+    let mut objective = Expression::from(0.0);
+    for (node, variable) in &block_vars {
+        let cycles = cfg.graph[*node].cycles.expect("checked block timing");
+        objective += *variable * cycles.max;
+    }
+    let constraints = constraints(cfg, entry, &loops, &block_vars, &edge_vars, &loop_exit_vars);
+    let model = vars.maximise(objective.clone()).using(good_lp::microlp);
+    let solution = model
+        .with_all(constraints)
+        .solve()
+        .map_err(|error| match error {
+            good_lp::ResolutionError::Unbounded => {
+                IpetError::Unbounded("ipet-unbounded".to_owned())
+            }
+            other => IpetError::Unknown(format!("ipet-solver: {other}")),
+        })?;
+    let status = match solution.status() {
+        SolutionStatus::Optimal => "optimal",
+        SolutionStatus::TimeLimit => "time-limit",
+        SolutionStatus::GapLimit => "gap-limit",
+    };
+    let mut partial = status != "optimal" || loops.iter().any(|loop_| !loop_.has_exit);
+    let mut block_counts = BTreeMap::new();
+    for (node, variable) in &block_vars {
+        let value = solution.value(*variable);
+        let rounded = value.round();
+        if (value - rounded).abs() > 1e-4 {
+            partial = true;
+        }
+        if rounded >= f64::from(i32::MAX) {
+            return Err(IpetError::Unbounded(
+                "ipet-solver-bound-saturated".to_owned(),
+            ));
+        }
+        if rounded > 0.0 {
+            block_counts.insert(cfg.graph[*node].id.clone(), rounded as u64);
+        }
+    }
+    let objective = solution.eval(&objective);
+    if !objective.is_finite() || objective < 0.0 {
+        return Err(IpetError::Unknown("ipet-objective-not-finite".to_owned()));
+    }
+    Ok(SimpleIpetResult {
+        objective,
+        status: status.to_owned(),
+        partial,
+        block_counts,
+    })
 }
 
 fn objective(
@@ -1858,6 +2520,7 @@ fn solve_function_with_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
+            partitioning: None,
             cache_model: cache_model_name(cache_ccg.is_some(), cache_conflicts, cache_persistence),
             cache_conflicts: cache_conflict_info(
                 cache_conflict_sets,
@@ -3047,6 +3710,7 @@ fn solve_function_with_cross_function_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
+            partitioning: None,
             cache_model: cache_model_name(cache_ccg.is_some(), cache_conflicts, cache_persistence),
             cache_conflicts: cache_conflict_info(
                 cache_conflict_sets,
@@ -4697,6 +5361,7 @@ fn solve_function_with_state_products(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
+            partitioning: None,
             cache_model: (!models.is_empty()).then(|| "state-product".to_owned()),
             cache_conflicts: None,
             cache_ccg: None,
@@ -4787,17 +5452,20 @@ fn non_loop_constraints(
 
 #[cfg(test)]
 mod tests {
-    use super::{analyze_program, analyze_program_with_branch_prediction};
+    use super::{analyze_program, analyze_program_with_branch_prediction, solve_simple_ipet};
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
-        CfgMemoryAccess, CfgMemoryAccessKind, CfgMemoryResolution, CfgPipelineEdgeInfo,
-        CfgPipelineInfo, CfgTerminator, FunctionCfg, ProgramCfg,
+        CfgIpetSolution, CfgMemoryAccess, CfgMemoryAccessKind, CfgMemoryResolution,
+        CfgPipelineEdgeInfo, CfgPipelineInfo, CfgTerminator, CfgWcetStatus, FunctionCfg,
+        ProgramCfg,
     };
     use crate::flow_facts::{
-        FlowFactDocument, FlowFacts, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
+        FactScope, FlowFactDocument, FlowFacts, InfeasibleEnforcement, InfeasibleScope,
+        OrderedReset,
     };
     use elf2tdg_schema::{Addr, CostRange, FunctionId, FunctionKind, Language};
+    use std::collections::BTreeMap;
 
     fn profile() -> BoardProfile {
         BoardProfile::parse_toml(
@@ -4966,6 +5634,121 @@ auto_loop_bounds = false
         let mut function = function(address, cfg);
         function.primary_name = name.to_owned();
         function
+    }
+
+    fn partition_diamond_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x5000,
+            FunctionCfg::build(
+                vec![
+                    block(0x5000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x5002, CfgTerminator::Branch, 1.0),
+                    block(0x5004, CfgTerminator::Fallthrough, 2.0),
+                    block(0x5006, CfgTerminator::Fallthrough, 5.0),
+                    block(0x5008, CfgTerminator::Fallthrough, 1.0),
+                    block(0x500a, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x5000, 0x5002, CfgEdgeKind::Fallthrough),
+                    edge(0x5002, 0x5004, CfgEdgeKind::Branch),
+                    edge(0x5002, 0x5006, CfgEdgeKind::Fallthrough),
+                    edge(0x5004, 0x5008, CfgEdgeKind::Fallthrough),
+                    edge(0x5006, 0x5008, CfgEdgeKind::Fallthrough),
+                    edge(0x5008, 0x500a, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x5000),
+            ),
+        )])
+    }
+
+    fn nested_partition_diamond_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x6000,
+            FunctionCfg::build(
+                vec![
+                    block(0x6000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x6002, CfgTerminator::Branch, 1.0),
+                    block(0x6004, CfgTerminator::Branch, 1.0),
+                    block(0x6006, CfgTerminator::Fallthrough, 5.0),
+                    block(0x6008, CfgTerminator::Fallthrough, 2.0),
+                    block(0x600a, CfgTerminator::Fallthrough, 7.0),
+                    block(0x600c, CfgTerminator::Fallthrough, 1.0),
+                    block(0x600e, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x6000, 0x6002, CfgEdgeKind::Fallthrough),
+                    edge(0x6002, 0x6004, CfgEdgeKind::Branch),
+                    edge(0x6002, 0x6006, CfgEdgeKind::Fallthrough),
+                    edge(0x6004, 0x6008, CfgEdgeKind::Branch),
+                    edge(0x6004, 0x600a, CfgEdgeKind::Fallthrough),
+                    edge(0x6008, 0x600c, CfgEdgeKind::Fallthrough),
+                    edge(0x600a, 0x600c, CfgEdgeKind::Fallthrough),
+                    edge(0x6006, 0x600c, CfgEdgeKind::Fallthrough),
+                    edge(0x600c, 0x600e, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x6000),
+            ),
+        )])
+    }
+
+    fn loop_partition_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x7000,
+            FunctionCfg::build(
+                vec![
+                    block(0x7000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x7002, CfgTerminator::Branch, 1.0),
+                    block(0x7004, CfgTerminator::Branch, 1.0),
+                    block(0x7006, CfgTerminator::Fallthrough, 2.0),
+                    block(0x7008, CfgTerminator::Fallthrough, 7.0),
+                    block(0x700a, CfgTerminator::Fallthrough, 1.0),
+                    block(0x700c, CfgTerminator::Fallthrough, 1.0),
+                    block(0x700e, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x7000, 0x7002, CfgEdgeKind::Fallthrough),
+                    edge(0x7002, 0x7004, CfgEdgeKind::Branch),
+                    edge(0x7002, 0x700e, CfgEdgeKind::Fallthrough),
+                    edge(0x7004, 0x7006, CfgEdgeKind::Branch),
+                    edge(0x7004, 0x7008, CfgEdgeKind::Fallthrough),
+                    edge(0x7006, 0x700a, CfgEdgeKind::Fallthrough),
+                    edge(0x7008, 0x700a, CfgEdgeKind::Fallthrough),
+                    edge(0x700a, 0x700c, CfgEdgeKind::Fallthrough),
+                    edge(0x700c, 0x7002, CfgEdgeKind::Branch),
+                ],
+                Some(0x7000),
+            ),
+        )])
+    }
+
+    fn simple_partition_objective(program: &ProgramCfg, facts: &FlowFacts) -> f64 {
+        let function = &program.functions[0];
+        let entry = function.cfg.entry.expect("entry");
+        solve_simple_ipet(
+            &function.cfg,
+            entry,
+            facts,
+            &function.id,
+            FactScope::Insensitive,
+        )
+        .expect("simple IPET")
+        .objective
+    }
+
+    fn partitioned_solution(program: &ProgramCfg, facts: &FlowFacts) -> CfgIpetSolution {
+        let mut program = program.clone();
+        let _ = analyze_program(&mut program, facts);
+        let wcet = program.functions[0].wcet.as_ref().expect("function WCET");
+        assert_ne!(wcet.status, CfgWcetStatus::Unbounded);
+        wcet.ipet.clone().expect("IPET solution")
+    }
+
+    fn block_counts(solution: &CfgIpetSolution) -> BTreeMap<&str, u64> {
+        solution
+            .blocks
+            .iter()
+            .map(|block| (block.block.as_str(), block.executions))
+            .collect()
     }
 
     fn call_site(site: u64, target: u64) -> CfgCallSite {
@@ -5180,6 +5963,87 @@ auto_loop_bounds = false
             named_function(0x1000, "main", caller),
             named_function(0x2000, "helper", helper_cfg),
         ])
+    }
+
+    #[test]
+    fn sese_partition_summarizes_diamond_exactly() {
+        let program = partition_diamond_program();
+        let facts = facts();
+        let baseline = simple_partition_objective(&program, &facts);
+        let solution = partitioned_solution(&program, &facts);
+        assert_eq!(solution.objective, baseline);
+        let partitioning = solution.partitioning.as_ref().expect("partitioning");
+        assert_eq!(partitioning.regions, 1);
+        assert_eq!(partitioning.summarized_blocks, 3);
+        assert_eq!(partitioning.model, "sese-branch-regions");
+        let counts = block_counts(&solution);
+        assert_eq!(counts.get("bb:0x5002"), Some(&1));
+        assert_eq!(counts.get("bb:0x5006"), Some(&1));
+        assert!(!counts.contains_key("bb:0x5004"));
+        assert!(
+            solution
+                .blocks
+                .iter()
+                .all(|block| !block.block.as_str().starts_with("bb:partition:"))
+        );
+    }
+
+    #[test]
+    fn sese_partition_summarizes_nested_regions_exactly() {
+        let program = nested_partition_diamond_program();
+        let facts = facts();
+        let baseline = simple_partition_objective(&program, &facts);
+        let solution = partitioned_solution(&program, &facts);
+        assert_eq!(solution.objective, baseline);
+        let partitioning = solution.partitioning.as_ref().expect("partitioning");
+        assert_eq!(partitioning.regions, 2);
+        assert_eq!(partitioning.summarized_blocks, 5);
+        let counts = block_counts(&solution);
+        assert_eq!(counts.get("bb:0x600a"), Some(&1));
+        assert!(!counts.contains_key("bb:0x6006"));
+        assert!(!counts.contains_key("bb:0x6008"));
+    }
+
+    #[test]
+    fn sese_partition_handles_a_region_inside_a_loop() {
+        let program = loop_partition_program();
+        let facts = facts();
+        let baseline = simple_partition_objective(&program, &facts);
+        let solution = partitioned_solution(&program, &facts);
+        assert_eq!(solution.objective, baseline);
+        let partitioning = solution.partitioning.as_ref().expect("partitioning");
+        assert!(partitioning.regions >= 1);
+        assert!(partitioning.summarized_blocks >= 3);
+        assert!(
+            solution
+                .blocks
+                .iter()
+                .all(|block| !block.block.as_str().starts_with("bb:partition:"))
+        );
+    }
+
+    #[test]
+    fn non_loop_facts_disable_partitioning() {
+        let program = partition_diamond_program();
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conditional address="0x5002">
+      <case cond="1" executed="false"/>
+    </conditional>
+  </function>
+</flowfacts>
+"#,
+            "partition-branch.ffx",
+        )
+        .expect("branch fact");
+        facts
+            .apply_document(document, &program)
+            .expect("apply branch fact");
+        let solution = partitioned_solution(&program, &facts);
+        assert!(solution.partitioning.is_none());
     }
 
     #[test]

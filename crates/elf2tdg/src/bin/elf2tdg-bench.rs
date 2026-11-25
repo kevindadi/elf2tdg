@@ -373,6 +373,7 @@ struct ModelMetrics {
     branch_models: BTreeMap<String, u32>,
     btb_models: BTreeMap<String, u32>,
     ras_models: BTreeMap<String, u32>,
+    partitioning_models: BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -609,6 +610,9 @@ fn collect_models(program: &elf2tdg::cfg::ProgramCfg) -> ModelMetrics {
         increment_optional(&mut metrics.branch_models, solution.branch_model.as_deref());
         increment_optional(&mut metrics.btb_models, solution.btb_model.as_deref());
         increment_optional(&mut metrics.ras_models, solution.ras_model.as_deref());
+        if let Some(partitioning) = &solution.partitioning {
+            increment(&mut metrics.partitioning_models, &partitioning.model);
+        }
     }
     metrics
 }
@@ -749,6 +753,7 @@ fn model_summary(models: &ModelMetrics) -> String {
         ("branch", &models.branch_models),
         ("btb", &models.btb_models),
         ("ras", &models.ras_models),
+        ("partition", &models.partitioning_models),
     ] {
         if map.is_empty() {
             continue;
