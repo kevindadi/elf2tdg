@@ -406,6 +406,9 @@ fn render_branch_prediction(
     if let Some(level2) = &prediction.level2_table {
         kv_indent(out, "level-2 table", level2);
     }
+    if let Some(choice) = &prediction.choice_initial_state {
+        kv_indent(out, "choice initial state", choice);
+    }
     kv_indent(
         out,
         "coverage",

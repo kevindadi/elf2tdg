@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.33";
+pub const CFG_SCHEMA_VERSION: &str = "2.34";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -988,6 +988,9 @@ pub struct CfgBranchPredictionInfo {
     /// Level-2 pattern-table scope for `two-level` (`global` or `per-address`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level2_table: Option<String>,
+    /// Initial choice-predictor counter for `tournament`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub choice_initial_state: Option<String>,
     /// Per-block predictor-state limit.
     pub max_states: usize,
     /// Functions with complete prediction analysis.

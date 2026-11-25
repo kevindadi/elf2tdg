@@ -19,14 +19,15 @@ use petgraph::visit::EdgeRef;
 use elf2tdg_schema::{Addr, CostRange};
 
 use crate::board_profile::{
-    BranchPredictionModel, BranchPredictionProfile, FirstExecutionHistory, HistorySource,
-    PatternTableScope,
+    BranchPredictionModel, BranchPredictionProfile, BranchPredictionState, FirstExecutionHistory,
+    HistorySource, PatternTableScope,
 };
 use crate::cfg::{
     CfgBlockBranchPrediction, CfgBranchDirection, CfgBranchOutcome, CfgBranchPredictionInfo,
     CfgBranchPredictionOutcome, CfgEdgeKind, CfgTerminator, FunctionCfg, ProgramCfg,
 };
 
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct PredictorModel {
     model: BranchPredictionModel,
     mispredict_penalty: u32,
@@ -36,7 +37,22 @@ pub(crate) struct PredictorModel {
     initial_history: u64,
     level1_local: bool,
     level2_per_address: bool,
+    tournament: bool,
+    choice_initial: u8,
     max_states: usize,
+}
+
+type CounterKey = (u8, u64, u64);
+const KIND_MAIN: u8 = 0;
+const KIND_GLOBAL: u8 = 1;
+const KIND_LOCAL: u8 = 2;
+const KIND_CHOICE: u8 = 3;
+
+fn next_counter(current: u8, actual: CfgBranchDirection) -> u8 {
+    match actual {
+        CfgBranchDirection::Taken => current.saturating_add(1).min(3),
+        CfgBranchDirection::NotTaken => current.saturating_sub(1),
+    }
 }
 
 impl PredictorModel {
@@ -48,6 +64,7 @@ impl PredictorModel {
                 | BranchPredictionModel::Gshare
                 | BranchPredictionModel::LocalHistory
                 | BranchPredictionModel::TwoLevel
+                | BranchPredictionModel::Tournament
         ) && profile.first_execution()
             == FirstExecutionHistory::Unknown;
         let level1_local = if profile.is_two_level() {
@@ -69,6 +86,11 @@ impl PredictorModel {
             initial_history: profile.initial_history().unwrap_or(0),
             level1_local,
             level2_per_address,
+            tournament: profile.is_tournament(),
+            choice_initial: profile
+                .choice_initial_state()
+                .unwrap_or(BranchPredictionState::WeaklyNotTaken)
+                .counter(),
             max_states: profile.max_states(),
         }
     }
@@ -80,6 +102,7 @@ impl PredictorModel {
                 BranchPredictionModel::GlobalHistory
                     | BranchPredictionModel::Gshare
                     | BranchPredictionModel::TwoLevel
+                    | BranchPredictionModel::Tournament
             )
         {
             PredictorState {
@@ -101,13 +124,18 @@ impl PredictorModel {
         }
     }
 
-    fn counter_key(&self, state: &PredictorState, site: u64) -> (u64, u64) {
+    fn counter_key(&self, state: &PredictorState, site: u64) -> CounterKey {
         match self.model {
-            BranchPredictionModel::GlobalHistory => (0, state.history & self.history_mask()),
-            BranchPredictionModel::Gshare => {
-                (0, (state.history ^ (site >> 1)) & self.history_mask())
+            BranchPredictionModel::GlobalHistory => {
+                (KIND_MAIN, 0, state.history & self.history_mask())
             }
+            BranchPredictionModel::Gshare => (
+                KIND_MAIN,
+                0,
+                (state.history ^ (site >> 1)) & self.history_mask(),
+            ),
             BranchPredictionModel::LocalHistory => (
+                KIND_MAIN,
                 site,
                 state.local_history(site, self.initial_history) & self.history_mask(),
             ),
@@ -118,16 +146,41 @@ impl PredictorModel {
                     state.history
                 } & self.history_mask();
                 if self.level2_per_address {
-                    (site, history)
+                    (KIND_MAIN, site, history)
                 } else {
-                    (0, history)
+                    (KIND_MAIN, 0, history)
                 }
             }
-            BranchPredictionModel::StaticNotTaken
+            BranchPredictionModel::Tournament
+            | BranchPredictionModel::StaticNotTaken
             | BranchPredictionModel::StaticTaken
             | BranchPredictionModel::Btfn
-            | BranchPredictionModel::Bimodal => (site, 0),
+            | BranchPredictionModel::Bimodal => (KIND_MAIN, site, 0),
         }
+    }
+
+    fn counter_values(&self, state: &PredictorState, key: CounterKey, initial: u8) -> Vec<u8> {
+        if self.first_execution_unknown && !state.seen(key) {
+            (0..=3).collect()
+        } else {
+            vec![state.counter(key, initial)]
+        }
+    }
+
+    fn tournament_keys(
+        &self,
+        state: &PredictorState,
+        site: u64,
+    ) -> (CounterKey, CounterKey, CounterKey) {
+        (
+            (KIND_GLOBAL, 0, state.history & self.history_mask()),
+            (
+                KIND_LOCAL,
+                site,
+                state.local_history(site, self.initial_history) & self.history_mask(),
+            ),
+            (KIND_CHOICE, site, 0),
+        )
     }
 
     fn predict_counter(
@@ -157,6 +210,17 @@ impl PredictorModel {
                     CfgBranchDirection::NotTaken
                 }
             }
+            BranchPredictionModel::Tournament => {
+                let global = (counter >> 4) & 3;
+                let local = (counter >> 2) & 3;
+                let choice = counter & 3;
+                let predicted_taken = if choice >= 2 { global >= 2 } else { local >= 2 };
+                if predicted_taken {
+                    CfgBranchDirection::Taken
+                } else {
+                    CfgBranchDirection::NotTaken
+                }
+            }
         }
     }
 
@@ -165,12 +229,20 @@ impl PredictorModel {
     /// A known table entry has one value. An unexecuted entry under the
     /// unknown first-execution policy has all four two-bit values.
     pub(crate) fn possible_counters(&self, state: &PredictorState, site: u64) -> Vec<u8> {
-        let key = self.counter_key(state, site);
-        if self.first_execution_unknown && !state.seen(key) {
-            (0..=3).collect()
-        } else {
-            vec![state.counter(key, self.initial_state)]
+        if self.tournament {
+            let (global_key, local_key, choice_key) = self.tournament_keys(state, site);
+            let mut packed = Vec::new();
+            for global in self.counter_values(state, global_key, self.initial_state) {
+                for local in self.counter_values(state, local_key, self.initial_state) {
+                    for choice in self.counter_values(state, choice_key, self.choice_initial) {
+                        packed.push((global << 4) | (local << 2) | choice);
+                    }
+                }
+            }
+            return packed;
         }
+        let key = self.counter_key(state, site);
+        self.counter_values(state, key, self.initial_state)
     }
 
     pub(crate) fn predict_with_counter(
@@ -189,6 +261,9 @@ impl PredictorModel {
         current: u8,
         actual: CfgBranchDirection,
     ) -> PredictorState {
+        if self.tournament {
+            return self.next_tournament_state(state, site, current, actual);
+        }
         if !matches!(
             self.model,
             BranchPredictionModel::Bimodal
@@ -200,10 +275,7 @@ impl PredictorModel {
             return state.clone();
         }
         let key = self.counter_key(state, site);
-        let next = match actual {
-            CfgBranchDirection::Taken => current.saturating_add(1).min(3),
-            CfgBranchDirection::NotTaken => current.saturating_sub(1),
-        };
+        let next = next_counter(current, actual);
         let mut state = state.clone();
         state.set(key, next, self.initial_state, self.first_execution_unknown);
         let bit = u64::from(actual == CfgBranchDirection::Taken);
@@ -226,6 +298,57 @@ impl PredictorModel {
         state
     }
 
+    fn next_tournament_state(
+        &self,
+        state: &PredictorState,
+        site: u64,
+        packed: u8,
+        actual: CfgBranchDirection,
+    ) -> PredictorState {
+        let global = (packed >> 4) & 3;
+        let local = (packed >> 2) & 3;
+        let choice = packed & 3;
+        let actual_taken = actual == CfgBranchDirection::Taken;
+        let global_correct = (global >= 2) == actual_taken;
+        let local_correct = (local >= 2) == actual_taken;
+        let chosen_global = choice >= 2;
+        let next_choice = match (chosen_global, global_correct, local_correct) {
+            (true, true, false) | (false, false, true) => choice.saturating_add(1).min(3),
+            (true, false, true) | (false, true, false) => choice.saturating_sub(1),
+            _ => choice,
+        };
+        let (global_key, local_key, choice_key) = self.tournament_keys(state, site);
+        let mut state = state.clone();
+        state.set(
+            global_key,
+            next_counter(global, actual),
+            self.initial_state,
+            self.first_execution_unknown,
+        );
+        state.set(
+            local_key,
+            next_counter(local, actual),
+            self.initial_state,
+            self.first_execution_unknown,
+        );
+        state.set(
+            choice_key,
+            next_choice,
+            self.choice_initial,
+            self.first_execution_unknown,
+        );
+        let bit = u64::from(actual_taken);
+        state.history = ((state.history << 1) | bit) & self.history_mask();
+        let history = state.local_history(site, self.initial_history);
+        let next_history = ((history << 1) | bit) & self.history_mask();
+        if next_history == self.initial_history {
+            state.local_history.remove(&site);
+        } else {
+            state.local_history.insert(site, next_history);
+        }
+        state
+    }
+
     pub(crate) fn mispredict_penalty(&self) -> u32 {
         self.mispredict_penalty
     }
@@ -235,8 +358,8 @@ impl PredictorModel {
 pub(crate) struct PredictorState {
     history: u64,
     local_history: BTreeMap<u64, u64>,
-    counters: BTreeMap<(u64, u64), u8>,
-    seen: BTreeSet<(u64, u64)>,
+    counters: BTreeMap<CounterKey, u8>,
+    seen: BTreeSet<CounterKey>,
 }
 
 impl PredictorState {
@@ -244,15 +367,15 @@ impl PredictorState {
         self.local_history.get(&site).copied().unwrap_or(initial)
     }
 
-    fn counter(&self, key: (u64, u64), initial: u8) -> u8 {
+    fn counter(&self, key: CounterKey, initial: u8) -> u8 {
         self.counters.get(&key).copied().unwrap_or(initial)
     }
 
-    fn seen(&self, key: (u64, u64)) -> bool {
+    fn seen(&self, key: CounterKey) -> bool {
         self.seen.contains(&key)
     }
 
-    fn set(&mut self, key: (u64, u64), value: u8, initial: u8, mark_seen: bool) {
+    fn set(&mut self, key: CounterKey, value: u8, initial: u8, mark_seen: bool) {
         if value == initial {
             self.counters.remove(&key);
         } else {
@@ -413,6 +536,7 @@ pub(crate) fn analyze_program(
                 | BranchPredictionModel::Gshare
                 | BranchPredictionModel::LocalHistory
                 | BranchPredictionModel::TwoLevel
+                | BranchPredictionModel::Tournament
         )
         .then(|| profile.initial_state_name().to_owned()),
         first_execution: (matches!(
@@ -422,6 +546,7 @@ pub(crate) fn analyze_program(
                 | BranchPredictionModel::Gshare
                 | BranchPredictionModel::LocalHistory
                 | BranchPredictionModel::TwoLevel
+                | BranchPredictionModel::Tournament
         ) && profile.first_execution() == FirstExecutionHistory::Unknown)
             .then(|| profile.first_execution_name().to_owned()),
         history_bits: profile
@@ -440,6 +565,10 @@ pub(crate) fn analyze_program(
             .is_two_level()
             .then(|| profile.level2_table().map(|scope| scope.name().to_owned()))
             .flatten(),
+        choice_initial_state: profile
+            .is_tournament()
+            .then(|| profile.choice_initial_state().unwrap_or(BranchPredictionState::WeaklyNotTaken))
+            .map(|state| state.name().to_owned()),
         max_states: profile.max_states(),
         functions_analyzed: 0,
         functions_fallback: 0,
@@ -448,7 +577,7 @@ pub(crate) fn analyze_program(
         caveats: vec![
             "Each function starts with the configured predictor state for its standalone block ranges unless first_execution = \"unknown\" is selected; in that mode every unexecuted pattern-table entry is evaluated against all four possible two-bit counters and the worst modeled outcome is kept. IPET can propagate predictor state through direct calls when the per-function branch-cost and exit-state summaries are available."
                 .to_owned(),
-            "Only conditional branches with one taken edge and one fallthrough edge are modeled. global-history uses a branch-history register to index one shared pattern table; gshare XORs the history with branch-PC bits; local-history keeps a local history register per branch site and indexes a pattern table by the branch and local history; two-level selects a global or local level-1 history and a global or per-address level-2 pattern table. Indirect/table target prediction, returns, branch-target buffers and tournament predictors are not modeled."
+            "Only conditional branches with one taken edge and one fallthrough edge are modeled. global-history uses a branch-history register to index one shared pattern table; gshare XORs the history with branch-PC bits; local-history keeps a local history register per branch site and indexes a pattern table by the branch and local history; two-level selects a global or local level-1 history and a global or per-address level-2 pattern table; tournament selects between a global-history and a local-history component with per-branch choice counters. Other tournament component pairs, indirect/table target prediction, returns and branch-target buffers are not modeled."
                 .to_owned(),
             "Block cycle ranges include mispredictions for either successor; path-specific branch and predictor correlation is not modeled."
                 .to_owned(),
@@ -678,7 +807,9 @@ fn add_penalty(
 
 #[cfg(test)]
 mod tests {
-    use super::{PredictorModel, analyze_function};
+    use super::{
+        KIND_CHOICE, KIND_GLOBAL, KIND_LOCAL, KIND_MAIN, PredictorModel, analyze_function,
+    };
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
         CfgBlockDraft, CfgEdgeDraft, CfgEdgeKind, CfgInstruction, CfgTerminator, FunctionCfg,
@@ -881,6 +1012,12 @@ hz = 1_000_000
         )
     }
 
+    fn tournament_profile(bits: u8, history: u64, choice: &str) -> String {
+        format!(
+            "{BASE}\n[branch_prediction]\nmodel = \"tournament\"\nmispredict_penalty = 3\ninitial_state = \"weakly-not-taken\"\nhistory_bits = {bits}\ninitial_history = {history}\nchoice_initial_state = \"{choice}\"\nmax_states = 16\n"
+        )
+    }
+
     #[test]
     fn btfn_predicts_backward_taken_branches() {
         let mut cfg = branch_cfg(0x0ff0, 0x1002);
@@ -1057,7 +1194,7 @@ hz = 1_000_000
             crate::cfg::CfgBranchDirection::Taken,
         );
         assert_eq!(taken.local_history(0x1000, 0), 1);
-        assert_eq!(taken.counters.get(&(0, 0)), Some(&2));
+        assert_eq!(taken.counters.get(&(KIND_MAIN, 0, 0)), Some(&2));
         assert_eq!(taken.local_history(0x2000, 0), 0);
         assert_eq!(predictor.possible_counters(&taken, 0x2000), vec![2]);
     }
@@ -1074,7 +1211,7 @@ hz = 1_000_000
             crate::cfg::CfgBranchDirection::Taken,
         );
         assert_eq!(taken.history, 1);
-        assert_eq!(taken.counters.get(&(0x1000, 0)), Some(&2));
+        assert_eq!(taken.counters.get(&(KIND_MAIN, 0x1000, 0)), Some(&2));
         assert_eq!(predictor.possible_counters(&taken, 0x2000), vec![1]);
     }
 
@@ -1090,6 +1227,58 @@ hz = 1_000_000
             assert_eq!(prediction.entry_states, 1);
             assert_eq!(block.cycles.expect("cycles").max, 4.0);
         }
+    }
+
+    #[test]
+    fn tournament_choice_selects_between_global_and_local_components() {
+        let predictor = model(&tournament_profile(2, 0, "weakly-not-taken"));
+        let site = 0x1000_u64;
+        let mut state = predictor.entry_state();
+        state.counters.insert((KIND_GLOBAL, 0, 0), 2);
+        state.counters.insert((KIND_LOCAL, site, 0), 0);
+        state.counters.insert((KIND_CHOICE, site, 0), 2);
+        let counters = predictor.possible_counters(&state, site);
+        assert_eq!(counters, vec![(2 << 4) | 2]);
+        assert_eq!(
+            predictor.predict_with_counter(site, true, counters[0]),
+            crate::cfg::CfgBranchDirection::Taken
+        );
+
+        let taken = predictor.next_state_for_counter(
+            &state,
+            site,
+            counters[0],
+            crate::cfg::CfgBranchDirection::Taken,
+        );
+        assert_eq!(taken.counter((KIND_GLOBAL, 0, 0), 1), 3);
+        assert_eq!(taken.counter((KIND_LOCAL, site, 0), 1), 1);
+        assert_eq!(taken.counter((KIND_CHOICE, site, 0), 1), 3);
+        assert_eq!(taken.history, 1);
+        assert_eq!(taken.local_history(site, 0), 1);
+
+        let not_taken = predictor.next_state_for_counter(
+            &state,
+            site,
+            counters[0],
+            crate::cfg::CfgBranchDirection::NotTaken,
+        );
+        assert_eq!(not_taken.counter((KIND_GLOBAL, 0, 0), 1), 1);
+        assert_eq!(not_taken.counter((KIND_LOCAL, site, 0), 1), 0);
+        assert_eq!(not_taken.counter((KIND_CHOICE, site, 0), 1), 1);
+    }
+
+    #[test]
+    fn tournament_models_analyze_conditional_branches() {
+        let mut cfg = branch_cfg(0x1004, 0x1002);
+        let result = analyze_function(
+            &mut cfg,
+            &model(&tournament_profile(3, 0, "weakly-not-taken")),
+        );
+        assert!(!result.fallback);
+        let block = &cfg.graph[cfg.entry.expect("entry")];
+        let prediction = block.branch_prediction.as_ref().expect("prediction");
+        assert_eq!(prediction.entry_states, 1);
+        assert_eq!(block.cycles.expect("cycles").max, 4.0);
     }
 
     #[test]

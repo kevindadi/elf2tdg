@@ -769,6 +769,9 @@ pub(crate) enum BranchPredictionModel {
     /// history register and a level-2 global or per-address pattern table.
     #[serde(rename = "two-level", alias = "two-level-history")]
     TwoLevel,
+    /// Global/local component predictors selected by a per-branch choice table.
+    #[serde(alias = "hybrid")]
+    Tournament,
 }
 
 impl BranchPredictionModel {
@@ -782,6 +785,7 @@ impl BranchPredictionModel {
             Self::Gshare => "gshare",
             Self::LocalHistory => "local-history",
             Self::TwoLevel => "two-level",
+            Self::Tournament => "tournament",
         }
     }
 }
@@ -899,6 +903,8 @@ pub(crate) struct BranchPredictionProfile {
     level1_history: Option<HistorySource>,
     #[serde(default)]
     level2_table: Option<PatternTableScope>,
+    #[serde(default)]
+    choice_initial_state: Option<BranchPredictionState>,
     #[serde(default = "default_max_branch_states")]
     max_states: usize,
 }
@@ -951,11 +957,17 @@ impl BranchPredictionProfile {
         self.model == BranchPredictionModel::TwoLevel
     }
 
+    pub(crate) fn is_tournament(&self) -> bool {
+        self.model == BranchPredictionModel::Tournament
+    }
+
     pub(crate) fn is_history_model(&self) -> bool {
         self.is_global_history()
             || matches!(
                 self.model,
-                BranchPredictionModel::LocalHistory | BranchPredictionModel::TwoLevel
+                BranchPredictionModel::LocalHistory
+                    | BranchPredictionModel::TwoLevel
+                    | BranchPredictionModel::Tournament
             )
     }
 
@@ -965,6 +977,10 @@ impl BranchPredictionProfile {
 
     pub(crate) fn level2_table(&self) -> Option<PatternTableScope> {
         self.level2_table
+    }
+
+    pub(crate) fn choice_initial_state(&self) -> Option<BranchPredictionState> {
+        self.choice_initial_state
     }
 
     pub(crate) fn max_states(&self) -> usize {
@@ -1597,6 +1613,12 @@ impl BoardProfile {
                     .to_owned(),
             ));
         }
+        if !prediction.is_tournament() && prediction.choice_initial_state.is_some() {
+            return Err(Error::Config(
+                "board profile branch_prediction.choice_initial_state requires tournament"
+                    .to_owned(),
+            ));
+        }
         Ok(())
     }
 
@@ -2128,8 +2150,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BOARD_PROFILE_SCHEMA_VERSION, BoardProfile, HistorySource, PatternTableScope,
-        SystemBlockingModel, UnknownInstructionPolicy,
+        BOARD_PROFILE_SCHEMA_VERSION, BoardProfile, BranchPredictionState, HistorySource,
+        PatternTableScope, SystemBlockingModel, UnknownInstructionPolicy,
     };
 
     const VALID: &str = r#"
@@ -2677,6 +2699,24 @@ max_states = 32
         );
         assert!(
             BoardProfile::parse_toml(&format!("{valid}\nlevel1_history = \"global\"\n")).is_err()
+        );
+
+        let tournament = format!(
+            "{}\nhistory_bits = 4\ninitial_history = 0\nchoice_initial_state = \"weakly-taken\"\n",
+            valid.replace("model = \"bimodal\"", "model = \"tournament\"")
+        );
+        let profile = BoardProfile::parse_toml(&tournament).expect("valid tournament profile");
+        let prediction = profile.branch_prediction().expect("tournament profile");
+        assert_eq!(prediction.model_name(), "tournament");
+        assert_eq!(
+            prediction.choice_initial_state(),
+            Some(BranchPredictionState::WeaklyTaken)
+        );
+        assert!(
+            BoardProfile::parse_toml(&format!(
+                "{valid}\nchoice_initial_state = \"weakly-taken\"\n"
+            ))
+            .is_err()
         );
     }
 

@@ -344,7 +344,7 @@ fn analyze_program_impl(
     }
     if program.branch_prediction.is_some() {
         info.caveats.push(
-            "Branch-prediction state IPET follows concrete predictor states from the configured initial state when the branch analysis completes. For bimodal, global-history, gshare, local-history and two-level it builds per-function branch-cost/exit-state summaries and carries predictor state through direct, statically resolved calls, including nested calls; indirect, unresolved or recursive calls, contextual facts, ordered/cross-function automata, callee analysis fallback and state/summary caps keep the per-function or per-block model."
+            "Branch-prediction state IPET follows concrete predictor states from the configured initial state when the branch analysis completes. For bimodal, global-history, gshare, local-history, two-level and tournament it builds per-function branch-cost/exit-state summaries and carries predictor state through direct, statically resolved calls, including nested calls; indirect, unresolved or recursive calls, contextual facts, ordered/cross-function automata, callee analysis fallback and state/summary caps keep the per-function or per-block model."
                 .to_owned(),
         );
     }
@@ -6363,6 +6363,34 @@ auto_loop_bounds = false
         .expect("valid two-level branch profile")
     }
 
+    fn tournament_board(max_states: usize) -> BoardProfile {
+        BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:ipet-tournament-test"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 1_000_000
+
+[branch_prediction]
+model = "tournament"
+mispredict_penalty = 3
+initial_state = "weakly-not-taken"
+history_bits = 3
+initial_history = 0
+choice_initial_state = "weakly-not-taken"
+max_states = {max_states}
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+"#
+        ))
+        .expect("valid tournament branch profile")
+    }
+
     fn unknown_first_branch_board(max_states: usize) -> BoardProfile {
         BoardProfile::parse_toml(&format!(
             r#"
@@ -6499,6 +6527,48 @@ auto_loop_bounds = false
             );
             assert!(ipet.objective > 0.0);
         }
+    }
+
+    #[test]
+    fn branch_state_product_models_tournament_history() {
+        let board = tournament_board(32);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut program = branch_loop_program();
+        let info = crate::branch_prediction::analyze_program(&mut program, prediction);
+        assert_eq!(info.model, "tournament");
+        assert_eq!(
+            info.choice_initial_state.as_deref(),
+            Some("weakly-not-taken")
+        );
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("tournament IPET");
+        assert_eq!(ipet.branch_model.as_deref(), Some("state-product"));
+        assert!(ipet.objective > 0.0);
+    }
+
+    #[test]
+    fn interprocedural_state_product_models_tournament_history() {
+        let board = tournament_board(128);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut program = two_call_branching_program();
+        let _ = crate::branch_prediction::analyze_program(&mut program, prediction);
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("tournament interprocedural IPET");
+        assert_eq!(
+            ipet.branch_model.as_deref(),
+            Some("interprocedural-state-product")
+        );
+        assert!(ipet.objective > 0.0);
     }
 
     #[test]
