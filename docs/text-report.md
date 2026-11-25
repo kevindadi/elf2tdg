@@ -30,9 +30,9 @@ The report is deterministic and uses plain text only.
 4. **Timing** — the instruction timing model, determinism, cost-table version,
    frequency domains and model caveats.
 5. **Analysis models** — instruction/data cache (including line-split
-   first-miss regions), branch prediction, data-memory latency, the pipeline
-   model and its fallback edge stalls, and multicore interference summaries
-   when enabled.
+   first-miss regions), branch prediction (including the first-execution
+   policy), data-memory latency, the pipeline model and its fallback edge
+   stalls, and multicore interference summaries when enabled.
 6. **WCET** — model name, loop-bound configuration, resolved branch/call flow
    facts, result counts, per-root cycles/nanoseconds and the analysis caveats.
 7. **Layered system model** — when a WCET profile is active: task/place/
@@ -112,9 +112,10 @@ cold entry and call-return invalidation, CCG flow, line splitting and aggregate
 conflict bounds over-approximate cache evictions, IPET pipeline costs
 propagate reachable inter-block pipeline state and fall back to a first-order
 edge context when the state table is unavailable, branch-prediction IPET
-starts from the configured predictor state and (for bimodal) can carry state
-and branch cost through direct calls while first-execution/global history is
-not modeled, data-memory results remain block-local, and interrupts, DMA, bus contention and
+starts from the configured predictor state, can treat the first execution of
+each bimodal site as unknown history, and (for bimodal) can carry state and
+branch cost through direct calls while global/two-level history is not modeled,
+data-memory results remain block-local, and interrupts, DMA, bus contention and
 concurrency are not modeled. A
 function marked `partial` has unresolved inputs; `unbounded` means no finite
 estimate was produced. A partial IPET objective is not a safe upper bound.

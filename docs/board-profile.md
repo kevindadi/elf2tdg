@@ -468,7 +468,8 @@ analysis. It requires `schema_version = 2`.
 |---|---|---|
 | `model` | yes | `static-not-taken`, `static-taken`, `btfn` (backward-taken/forward-not-taken) or `bimodal`. |
 | `mispredict_penalty` | yes | Extra core cycles charged for each modeled misprediction; must be positive. |
-| `initial_state` | no | Initial two-bit counter for `bimodal`: `strongly-not-taken`, `weakly-not-taken` (default), `weakly-taken` or `strongly-taken`. Used only by `bimodal`. |
+| `initial_state` | no | Initial two-bit counter for `bimodal`: `strongly-not-taken`, `weakly-not-taken` (default), `weakly-taken` or `strongly-taken`. Used only by `bimodal` and only with the default first-execution policy. |
+| `first_execution` | no | `initial` (default) starts each branch site at `initial_state`; `unknown` treats its first-execution counter as unknown and considers all four two-bit values, charging the worst modeled outcome. Bimodal only. |
 | `max_states` | no | Maximum concrete predictor states per block; defaults to `128`. |
 
 ```toml
@@ -481,11 +482,16 @@ max_states = 128
 Static policies predict every conditional branch in one direction. `btfn`
 predicts taken when the taken target lies below the branch instruction, and
 not-taken when it lies forward. `bimodal` keeps a two-bit local
-saturating counter per branch site, starts each function from `initial_state`,
-and updates the counter with each modeled taken/not-taken outcome. Only
-conditional branches with exactly one taken edge and one fallthrough edge are
-modeled. Indirect/table target prediction, return-address stacks,
-branch-target buffers and global history are not modeled.
+saturating counter per branch site, starts each branch site from `initial_state`
+under the default policy, and updates the counter with each modeled
+taken/not-taken outcome. With `first_execution = "unknown"`, a site that has
+not executed yet is evaluated against all four possible two-bit counters; each
+actual edge keeps the maximum modeled misprediction and all possible resulting
+counters. After that first execution the site has concrete history, and the
+`seen` marker survives calls and loops. Only conditional branches with exactly
+one taken edge and one fallthrough edge are modeled. Indirect/table target
+prediction, return-address stacks, branch-target buffers and global history
+are not modeled.
 
 The analyzer propagates concrete predictor states over each function CFG and
 adds `mispredicts * mispredict_penalty` to block cycle ranges. Because a block
@@ -516,7 +522,7 @@ state-specific branch cost. Indirect, unresolved or recursive calls,
 contextual flow facts, branch-analysis fallback, ordered/cross-function
 automata and the branch-effect (4096 states) and exit-state (256 per summary)
 caps fall back to the per-function `state-product` or `block-bounds` model.
-First-execution predictor history and global history are not modeled.
+Global branch history and two-level history predictors are not modeled.
 
 ### Multicore interference
 
@@ -875,11 +881,12 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   are not modeled. For such cores the profile can refine table values, but the
   result remains statistical.
 - Branch prediction covers conditional direction only. Indirect/table target
-  prediction, return prediction, branch-target buffers and global history are
-  not modeled. Bimodal IPET summaries can carry predictor state through direct
-  calls when all branch effects and base callee costs are available; first
-  execution, unresolved/indirect/recursive boundaries and summary caps fall
-  back to per-function bounds.
+  prediction, return prediction, branch-target buffers and global/two-level
+  history are not modeled. Bimodal IPET summaries can carry predictor state
+  through direct calls when all branch effects and base callee costs are
+  available; the `first_execution = "unknown"` site history is carried with
+  the same state, while unresolved/indirect/recursive boundaries and summary
+  caps fall back to per-function bounds.
 - Data-memory latency is region-based. Only statically resolved accesses with
   addresses inside configured regions contribute wait cycles. If data-cache
   analysis is enabled too, its miss penalties and the wait cycles are additive.

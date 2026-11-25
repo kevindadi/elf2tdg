@@ -51,8 +51,9 @@ Implemented:
     IPET, a full instruction-cache CCG flow model, plus per-line first-miss and
     aggregate conflict constraints when the concrete product is unavailable;
   - static, BTFN or two-bit bimodal branch prediction, with concrete
-    predictor-state IPET for per-edge misprediction costs and bimodal
-    predictor-state/branch-cost propagation through direct calls;
+    predictor-state IPET for per-edge misprediction costs, optional unknown
+    first-execution history and bimodal predictor-state/branch-cost
+    propagation through direct calls;
   - per-region data-memory bus widths and read/write wait states;
   - explicit multicore access-budget interference (`[multicore]`) with
     per-block read/write/fetch attribution;
@@ -353,7 +354,10 @@ concrete state, charges the state-specific callee branch cost at direct calls
 and continues from the callee exit state, including nested calls. The caller
 uses a branch-excluded callee base cost; indirect, unresolved or recursive
 calls, contextual facts and summary caps fall back to per-function or per-block
-bounds. First-execution and global predictor history are not modeled. Context
+bounds. With `first_execution = "unknown"`, each branch site's first execution
+considers all four possible two-bit counters and keeps the worst modeled
+outcome before the site becomes concrete. Global and two-level predictor
+history are not modeled. Context
 sensitivity applies to flow facts and WCET composition, not to the
 microarchitectural cache/branch models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.

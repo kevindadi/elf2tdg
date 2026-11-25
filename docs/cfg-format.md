@@ -362,11 +362,13 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.29`.
+`cfg_schema_version` is `2.30`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.29 adds the `interprocedural-state-product` branch model
-and predictor-state propagation through direct calls. Version 2.28 adds the
-IPET `pipeline_model` field and full inter-block pipeline state propagation.
+functions. Version 2.30 adds the branch-prediction `first_execution` policy
+and the option to model an unknown first-execution counter. Version 2.29 adds
+the `interprocedural-state-product` branch model and predictor-state
+propagation through direct calls. Version 2.28 adds the IPET `pipeline_model`
+field and full inter-block pipeline state propagation.
 Version 2.27 adds the `ccg` IPET cache flow model and `cache_ccg`
 summary. Version 2.26 adds the `conflict-graph` aggregate cache model and
 `cache_conflicts` summary. Version 2.25 adds line-split logical-block fields to
@@ -420,7 +422,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.29",
+  "cfg_schema_version": "2.30",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -781,7 +783,11 @@ per-call callee branch bound with an interprocedural summary: each callee is
 analyzed branch-only from the caller's concrete predictor state, and every
 feasible exit state keeps the maximum branch cost of the callee paths ending
 there. The caller product applies that cost at the call edge and continues from
-the resulting predictor state.
+the resulting predictor state. When `first_execution = "unknown"` is selected,
+the program-level branch metadata carries `first_execution: "unknown"`; each
+unexecuted branch site is evaluated against all four possible two-bit counters,
+the worst modeled misprediction is kept, and every resulting counter remains a
+possible successor state until that site's first execution makes it concrete.
 
 When per-region data-memory timing is active, each block with data accesses
 can carry a `data_memory` object. It records resolved, unresolved, mapped and
@@ -1051,7 +1057,10 @@ asserts that the CFG validates.
   carry predictor state and callee branch costs through call edges, including
   nested calls; indirect, unresolved or recursive calls, contextual facts and
   summary/state caps fall back to the per-function or per-block model.
-  First-execution predictor history is not modeled. Full inter-block
+  With `first_execution = "unknown"`, the first execution of each branch site
+  considers all four possible counters and keeps the worst outcome; later
+  executions use the resulting concrete counter. Global/two-level branch
+  history is not modeled. Full inter-block
   pipeline state is integrated into the IPET state product when the
   per-function state table is available, with first-order edge stalls as the
   fallback for ordered/cross-function automata, state-cap overflow or
