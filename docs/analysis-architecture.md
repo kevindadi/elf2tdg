@@ -70,7 +70,8 @@ block execution counts. Call-free functions without cache/pipeline/branch/BTB/
 RAS state models and without non-loop flow facts or infeasible-path constraints
 first summarize branch-entry SESE regions bottom-up, replacing each region
 by an exact per-entry cost block and expanding block counts into the original
-CFG. The first partitioner is capped at 4096 blocks, 512 regions and a bounded
+CFG. A region whose entry is the function entry replaces it with a new entry
+block. The first partitioner is capped at 4096 blocks, 512 regions and a bounded
 scan-work budget, and is skipped for the unsupported shapes above; those
 functions use monolithic IPET. The remaining P1 work is:
 
@@ -134,10 +135,9 @@ from summed local estimates.
 
 - IPET CFG partitioning currently covers branch-entry SESE regions in
   call-free functions without cache/pipeline/branch/BTB/RAS state models and
-  without non-loop flow facts or infeasible-path constraints. Regions whose
-  entry is the function entry are not summarized in the first version. It is
-  capped at 4096 blocks, 512 regions and a bounded scan-work budget; other
-  functions use monolithic IPET. Region summaries assume homogeneous per-entry
+  without non-loop flow facts or infeasible-path constraints. It is capped at
+  4096 blocks, 512 regions and a bounded scan-work budget; other functions use
+  monolithic IPET. Region summaries assume homogeneous per-entry
   scaling and reconstruct block counts from per-region optima.
 - Context-sensitive flow facts use caller-chain function versions: F4 `in ...`
   chains and FFX `<call>` nesting select per-context loop bounds and, in IPET,

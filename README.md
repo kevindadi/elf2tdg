@@ -70,7 +70,8 @@ Implemented:
   - IPET SESE CFG partitioning: call-free functions without cache/pipeline/
     branch/BTB/RAS state models and without non-loop flow facts or
     infeasible-path constraints are solved through bottom-up per-entry region
-    summaries, with block counts expanded back to the original CFG;
+    summaries, including function-entry regions, with block counts expanded
+    back to the original CFG;
   - conservative automatic loop-bound inference for canonical counted loops
     (`auto_loop_bounds`, enabled by default);
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add

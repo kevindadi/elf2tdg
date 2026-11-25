@@ -714,13 +714,13 @@ table exceeds its per-function state cap or the ordered/cross-function
 automata are selected. When IPET summarizes CFG partitions, `ipet.partitioning`
 records `model` (`sese-branch-regions`), the number of summarized regions,
 the number of original blocks hidden in region summaries and model caveats.
-Block execution counts in `ipet.blocks` are expanded back to original block
-IDs. Partitioning is disabled for functions with calls, cache/pipeline/
+A summarized region whose entry is the function entry becomes the new function
+entry. Block execution counts in `ipet.blocks` are expanded back to original
+block IDs. Partitioning is disabled for functions with calls, cache/pipeline/
 branch/BTB/RAS state models, non-loop flow facts or infeasible-path
-constraints. Regions whose entry is the function entry are not summarized in
-the first version. Partitioning is capped at 4096 blocks, 512 regions and a
-bounded scan-work budget; functions outside the eligible shape use the
-monolithic IPET model. The top-level `wcet.flow_facts` object records the loop bounds and
+constraints. Partitioning is capped at 4096 blocks, 512 regions and a bounded
+scan-work budget; functions outside the eligible shape use the monolithic IPET
+model. The top-level `wcet.flow_facts` object records the loop bounds and
 defaults used by the model, including bounds imported from F4/FFX files and
 conservatively inferred counted-loop bounds; each loop bound carries a
 `source` such as `board-profile [wcet]`, an imported file, or
