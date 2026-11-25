@@ -331,6 +331,15 @@ The analysis is local: it does not model inter-function cache state, prefetch,
 data-cache effects, bus contention or execution-count/loop bounds. With
 `invalidate_on_call = true`, call-return edges conservatively clear the state.
 
+With `--path-analysis ipet`, a completed instruction-cache analysis and
+`invalidate_on_call = true` enable a per-function cache-state product: IPET
+replaces the per-block worst-case miss penalty with the misses modeled on each
+cache-state transition, so loop reuse is not charged a miss on every iteration.
+Functions with ordered/cross-function automata, cache-analysis fallback or
+product-size overflow keep per-block miss bounds; `ipet.cache_model` records
+`state-product` or `block-bounds`. `--require-safe` rejects
+`invalidate_on_call = false` because inter-function cache state is not modeled.
+
 ### Data cache
 
 The optional `[data_cache]` table enables intra-function data-cache analysis.
@@ -379,6 +388,12 @@ contention. Base-register recovery is not path-sensitive. Unresolved accesses ar
 `unresolved_memory_accesses`; they are excluded from miss penalties and cache
 state propagation, so modeled hits are optimistic. With
 `invalidate_on_call = true`, call-return edges conservatively clear the state.
+
+IPET uses the same cache-state product as the instruction cache when the
+data-cache analysis completes, `invalidate_on_call = true`, and every reachable
+block has zero unresolved accesses. Unresolved data accesses therefore keep
+the per-block cache bounds (`ipet.cache_model = "block-bounds"`); they are
+still rejected by `--require-safe`, as is `invalidate_on_call = false`.
 
 ### Branch prediction
 

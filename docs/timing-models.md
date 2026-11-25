@@ -25,7 +25,9 @@ These models are explicit and conservative:
 - base costs assume single-cycle instruction/data memory;
 - branch/call/return includes a fixed pipeline-restart allowance;
 - cache and data-memory wait-state analyses add their upper-bound penalties on
-  top of the base block cost when enabled by the profile;
+  top of the base block cost when enabled by the profile; IPET may replace the
+  cache part with a per-function cache-state product when that analysis
+  completes and `invalidate_on_call = true`;
 - branch-prediction penalties are added when a `[branch_prediction]` profile is
   enabled.
 
@@ -69,7 +71,9 @@ per-access budget, not part of the base timing table.
 modeled configuration and its documented assumptions**, not a hardware proof.
 For certified use, the board profile must describe the memory system, caches,
 branch predictor and clock; interrupts, DMA and multicore interference are
-still outside the model.
+still outside the model. `--require-safe` rejects cache profiles with
+`invalidate_on_call = false`, unresolved data-cache addresses and data-memory
+unmapped accesses because those make the local cost optimistic.
 
 The board-profile `[pipeline]` model currently supports Cortex-M4 only. Bounded
 AArch64/RISC-V models deliberately use additive upper bounds instead of that

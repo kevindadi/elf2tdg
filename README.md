@@ -44,7 +44,8 @@ Implemented:
   domains, memory regions, instruction-cost overrides and optional performance
   models:
   - Cortex-M4 resource/dependency pipeline scheduling with branch penalties;
-  - LRU instruction and data caches with per-block hit/miss ranges;
+  - LRU instruction and data caches with per-block hit/miss ranges and an
+    optional per-function cache-state product in IPET;
   - static, BTFN or two-bit bimodal branch prediction;
   - per-region data-memory bus widths and read/write wait states;
   - explicit multicore access-budget interference (`[multicore]`) with
@@ -320,10 +321,14 @@ Irreducible cycles and recursive call cycles are unbounded, while unresolved
 calls/control flow or non-terminating loops bounded by assumption mark a result
 `partial`; a partial objective is not a safe upper bound. Results are static
 estimates, not hardware proofs: loops outside the recognized counted-loop
-patterns need explicit bounds, cache/branch/data-memory results are not
-call-path context-sensitive, and interrupts, DMA, bus contention and
-concurrency are not modeled. Context sensitivity applies to flow facts and WCET
-composition, not to the microarchitectural cache/branch models. Multicore interference is an explicit
+patterns need explicit bounds, cache results are per-function with cold entry
+and call-return invalidation, branch/data-memory results remain block-local,
+and interrupts, DMA, bus contention and concurrency are not modeled.
+Cache-state IPET is used only when the cache analysis completes, for functions
+without ordered/cross-function automata; cache persistence, line splitting and
+pipeline constraints in IPET are not implemented. Context sensitivity applies
+to flow facts and WCET composition, not to the microarchitectural cache/branch
+models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.
 Without `[wcet]`, static cycle counts remain per-block costs, not execution-time
 bounds.

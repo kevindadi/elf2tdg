@@ -52,7 +52,7 @@ Rust `dylib` interface.
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
 | P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one direct call group), per-function IPET, pure-Rust `microlp`; call-site-sensitive contexts, richer FFX constructs and conflict scalability are next |
-| P2 | Cache, pipeline and branch constraints in IPET | partial models exist; constraint integration planned |
+| P2 | Cache, pipeline and branch constraints in IPET | first cache version implemented: per-block LRU I/D-cache models plus a per-function cache-state product in IPET (cold entry, call-return invalidation, fallback to block bounds); cache persistence/line splitting, pipeline/branch constraints and cache-conflict graphs are next |
 | P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | planned; caller-function context summaries are implemented in P1 |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
@@ -96,9 +96,9 @@ assumption all mark a result `partial`. Irreducible cycles are reported
 `unbounded` because no configured loop bound covers them. The text report
 prints these statuses and caveats; later passes must preserve them. The
 `--require-safe` CLI gate requires the IPET backend, a timing model classified
-as `deterministic` or `bounded` (not `statistical`), complete cache/memory
-address coverage, and a `bounded` result for every execution root; otherwise the
-run fails before emitting a CFG.
+as `deterministic` or `bounded` (not `statistical`), call-invalidated cache
+state, complete cache/memory address coverage, and a `bounded` result for every
+execution root; otherwise the run fails before emitting a CFG.
 
 ## Multicore direction
 
@@ -146,7 +146,15 @@ from summed local estimates.
   conflicts are ignored with warnings. `longest-path` records but does not
   enforce conflicts. Conditional call sites remain unsupported for call-count
   facts.
-- Cache/branch/data-memory analyses are per-function and not path-sensitive.
+- Cache analysis is per-function with cold entry and call-return invalidation.
+  IPET selects a cache-state product when the instruction/data-cache analysis
+  completes and `invalidate_on_call` is true; the product substitutes modeled
+  misses for the per-block worst-case penalty. Cache persistence, line
+  splitting, cache-conflict graphs, ordered/cross-function integration and
+  product states beyond the cap keep the per-block cache bounds. Data-cache
+  state integration also requires zero unresolved memory accesses.
+  Branch-prediction and data-memory results remain per-block and not
+  path-sensitive.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.
 - The layered system model solves the state-equation relaxation and computes

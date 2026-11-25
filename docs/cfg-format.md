@@ -362,12 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.20`.
+`cfg_schema_version` is `2.21`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.20 adds the cross-function conflict `call` boundary and
-per-element `function` fields. Version 2.19 adds the conflict enforcement
-`mode` (`aggregate` or `automaton`). Version 2.18 adds infeasible-path conflict
-records. Version 2.17
+functions. Version 2.21 adds the IPET `cache_model` field. Version 2.20 adds
+the cross-function conflict `call` boundary and per-element `function` fields.
+Version 2.19 adds the conflict enforcement `mode` (`aggregate` or `automaton`).
+Version 2.18 adds infeasible-path conflict records. Version 2.17
 adds optional caller `context` fields to resolved loop, branch and call
 flow-fact records. Version 2.16 adds those records.
 Version 2.15 adds priority-ceiling blocking, per-task lock hold times and
@@ -410,7 +410,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.20",
+  "cfg_schema_version": "2.21",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -606,6 +606,7 @@ block address:
     "solver": "microlp",
     "status": "optimal",
     "objective": 87.0,
+    "cache_model": "state-product",
     "blocks": [
       { "block": "bb:0x800085c", "executions": 1 },
       { "block": "bb:0x800086a", "executions": 1 }
@@ -615,7 +616,11 @@ block address:
 ```
 
 A `partial` IPET objective is an estimate over the resolved inputs, not a safe
-upper bound. The top-level `wcet.flow_facts` object records the loop bounds and
+upper bound. When a cache profile is active, `ipet.cache_model` is
+`state-product` for the per-function cache-state product and `block-bounds`
+when the function falls back to the per-block miss bounds (ordered/cross-function
+automata, cache-analysis fallback, unresolved data addresses or product-size
+overflow). The top-level `wcet.flow_facts` object records the loop bounds and
 defaults used by the model, including bounds imported from F4/FFX files and
 conservatively inferred counted-loop bounds; each loop bound carries a
 `source` such as `board-profile [wcet]`, an imported file, or
@@ -918,8 +923,18 @@ asserts that the CFG validates.
   The product is capped; exceeding the cap makes the function `unknown`.
   Specific-iteration, multi-group, nested-group, ambiguous-call-site and
   duplicate-edge conflicts are ignored with warnings.
-  Conditional or multi-target call sites and F4 non-loop directives are ignored
-  conservatively. Irreducible
+  When LRU instruction/data-cache profiles are active, the IPET backend builds
+  a per-function product with the concrete cache states, replaces the per-block
+  worst-case miss penalty with the modeled misses on each product state, and
+  records `ipet.cache_model = "state-product"`. The model assumes a cold cache
+  at function entry and resets it on call-return edges; it requires
+  `invalidate_on_call = true`, a complete cache analysis and, for the data
+  cache, no unresolved memory accesses. Ordered/cross-function automata,
+  cache-analysis fallback and product-size overflow keep the per-block cache
+  bounds and record `cache_model = "block-bounds"`. Cache persistence, line
+  splitting, cache conflict graphs and pipeline/branch constraints in IPET are
+  not implemented. Conditional or multi-target call sites and F4 non-loop
+  directives are ignored conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a
   `partial` objective is not a safe upper bound. Multicore interference uses an explicit access budget; arbitration
   schedules, shared caches, DMA and concurrency are not modeled. The layered
