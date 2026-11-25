@@ -52,7 +52,7 @@ Rust `dylib` interface.
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
 | P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one direct call group), per-function IPET, pure-Rust `microlp`; call-site-sensitive contexts, richer FFX constructs and conflict scalability are next |
-| P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, a full instruction-cache CCG flow model, per-line first-miss and aggregate conflict bounds for fallback, concrete branch-predictor state products with per-edge misprediction costs, and Cortex-M4 first-order edge-context pipeline stalls; full inter-block pipeline state and inter-function predictor history are next |
+| P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, a full instruction-cache CCG flow model, per-line first-miss and aggregate conflict bounds for fallback, concrete branch-predictor state products with per-edge misprediction costs, and Cortex-M4 full inter-block pipeline state tables in the IPET state product with first-order edge stalls as fallback; general AArch64/RISC-V pipeline models and inter-function predictor history are next |
 | P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | planned; caller-function context summaries are implemented in P1 |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
@@ -179,11 +179,14 @@ from summed local estimates.
   ordered/cross-function integration and product-state caps keep the per-block
   misprediction bounds; inter-function and first-execution history is not
   modeled.
-- The Cortex-M4 pipeline model remains statistical. IPET adds a first-order
-  edge-context stall derived from the source block's local exit state; source
-  entry context, loop-carried accumulation, call-boundary pipeline state and
-  memory dependencies are not propagated. `longest-path` ignores these edge
-  stalls, and `--require-safe` rejects the statistical pipeline model.
+- The Cortex-M4 pipeline model remains statistical. IPET precomputes a
+  per-function table of pipeline entry states reachable from function entry
+  and charges the state-dependent block cost in its state product, including
+  loop-carried resource/register state. Call-return edges reset the modeled
+  state; a state-cap overflow, ordered/cross-function automata and
+  `longest-path` fall back to block-local costs or first-order edge-context
+  stalls. Memory dependencies and cross-function pipeline state are not
+  propagated, and `--require-safe` rejects the statistical pipeline model.
 - Multicore interference is an explicit access/fetch budget; arbitration
   schedules, shared caches, DMA, CRPD and concurrency are not modeled.
 - The layered system model solves the state-equation relaxation and computes

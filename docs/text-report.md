@@ -30,8 +30,9 @@ The report is deterministic and uses plain text only.
 4. **Timing** — the instruction timing model, determinism, cost-table version,
    frequency domains and model caveats.
 5. **Analysis models** — instruction/data cache (including line-split
-   first-miss regions), branch prediction, data-memory latency, pipeline edge
-   stalls and multicore interference summaries when enabled.
+   first-miss regions), branch prediction, data-memory latency, the pipeline
+   model and its fallback edge stalls, and multicore interference summaries
+   when enabled.
 6. **WCET** — model name, loop-bound configuration, resolved branch/call flow
    facts, result counts, per-root cycles/nanoseconds and the analysis caveats.
 7. **Layered system model** — when a WCET profile is active: task/place/
@@ -94,9 +95,10 @@ The `wcet` section reports the selected backend:
   `block-bounds`) when a cache profile is active, CCG and aggregate
   conflict-graph summaries when those constraints apply, branch model
   (`state-product` or `block-bounds`) when a branch-prediction profile is
-  active, and positive block execution counts for each function. The cache
-  model section also lists each first-miss loop and its line addresses. The
-  flow-facts section
+  active, pipeline model (`state-product` or `edge-context`) when a pipeline
+  profile is active, and positive block execution counts for each function.
+  The cache model section also lists each first-miss loop and its line
+  addresses. The flow-facts section
   lists each explicit loop bound with its source (board profile or F4/FFX file)
   and any caller context; contextual branch/call facts use the same
   `[context: ...]` suffix. Infeasible-path conflict records show whether the
@@ -107,8 +109,9 @@ The `wcet` section reports the selected backend:
 Both are static estimates, not hardware proofs: loop bounds must be configured,
 recursive call-graph SCCs are unbounded, cache models are per-function with
 cold entry and call-return invalidation, CCG flow, line splitting and aggregate
-conflict bounds over-approximate cache evictions, IPET pipeline costs add only
-a first-order edge context, branch-prediction IPET
+conflict bounds over-approximate cache evictions, IPET pipeline costs
+propagate reachable inter-block pipeline state and fall back to a first-order
+edge context when the state table is unavailable, branch-prediction IPET
 follows a per-function initial predictor state with no inter-function history,
 data-memory results remain block-local, and interrupts, DMA, bus contention and
 concurrency are not modeled. A

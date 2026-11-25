@@ -281,23 +281,29 @@ ready, then marks destination registers ready `latency` cycles after issue.
 `branch_penalty` is added when the block's last instruction is a branch, call
 or return; conditional transfers use the worst case.
 
-Register readiness is assumed at block entry. Memory dependencies,
-store-to-load forwarding, inter-block pipeline state, exception entry and
-multi-issue are not modeled in this phase; caches and branch prediction are
-modeled separately when their profile sections are enabled.
-Block costs are therefore local pipeline-aware costs, not WCET bounds. While
-the pipeline model is active the CFG marks the timing model `statistical`, and
-a generated caveat records the limitation.
+Register readiness is assumed ready at block entry for block-local costing.
+For `--path-analysis ipet`, the analyzer builds a per-function table of
+pipeline entry states reachable from function entry, starting with ready
+registers and resources, and the IPET state product carries the actual
+resource/register readiness across CFG edges. This includes loop-carried
+accumulation. Call-return edges reset the modeled state because the callee's
+pipeline state is not part of the caller summary. Memory dependencies,
+store-to-load forwarding, exception entry, multi-issue and cross-function
+pipeline state are not modeled; caches and branch prediction are modeled
+separately when their profile sections are enabled.
+Block-local costs are therefore pipeline-aware estimates, not WCET bounds.
+While the pipeline model is active the CFG marks the timing model
+`statistical`, and a generated caveat records the limitation.
 
-For `--path-analysis ipet`, the analyzer additionally computes a **first-order
-edge-context stall** for every CFG edge. It schedules the target block using
-the source block's local exit resource/register state and adds the difference
-over the target's ready-entry cost to the IPET objective for that edge. This
-captures some inter-block resource and register hazards without expanding the
-IPET state. Source entry context, loop-carried accumulation, call-boundary
-pipeline state and memory dependencies are still not propagated, so the result
-remains a statistical estimate, not a safe WCET bound. The `longest-path`
-backend does not apply these edge stalls.
+For `--path-analysis ipet`, the full state product is the primary pipeline
+model. When the per-function state table exceeds its cap, or an
+ordered/cross-function automaton solver is selected, IPET falls back to a
+**first-order edge-context stall** for every CFG edge: it schedules the target
+block using the source block's local exit resource/register state and adds the
+difference over the target's ready-entry cost to the objective for that edge.
+The result remains a statistical estimate, not a safe WCET bound. The
+`longest-path` backend uses block-local pipeline costs and does not apply
+inter-block pipeline state.
 
 When `[pipeline]` is active, block `cycles` come from this schedule, including
 profile fetch wait states. `[[instruction_costs]]` remains the fallback for
@@ -870,10 +876,12 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   and unresolved accesses are counted but do not contribute miss penalties.
   Dirty writeback, store buffers, prefetch and inter-function cache state are
   not modeled.
-- Block schedules still assume all source registers are ready at block entry.
-  IPET adds a first-order edge-context stall derived from the source block's
-  local exit state; source entry context, loop-carried accumulation,
-  call-boundary pipeline state and memory dependencies are not propagated.
+- Block-local pipeline schedules assume source registers are ready at block
+  entry. IPET propagates reachable pipeline entry states through the CFG and
+  charges state-dependent block costs, with edge-context stalls as a fallback
+  when the state table is unavailable. Call-return edges reset the state;
+  cross-function pipeline state, memory dependencies and exception entry are
+  not propagated.
 - Interrupt entry, exception return, wait-for-interrupt and peripheral
   interaction are outside this model.
 - The same ELF can be analyzed repeatedly with different profiles; the CFG

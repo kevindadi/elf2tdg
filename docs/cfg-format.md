@@ -362,9 +362,10 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.27`.
+`cfg_schema_version` is `2.28`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.27 adds the `ccg` IPET cache flow model and `cache_ccg`
+functions. Version 2.28 adds the IPET `pipeline_model` field and full
+inter-block pipeline state propagation. Version 2.27 adds the `ccg` IPET cache flow model and `cache_ccg`
 summary. Version 2.26 adds the `conflict-graph` aggregate cache model and
 `cache_conflicts` summary. Version 2.25 adds line-split logical-block fields to
 instruction cache lines and the `line-split` IPET cache model. Version 2.24
@@ -417,7 +418,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.27",
+  "cfg_schema_version": "2.28",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -511,7 +512,7 @@ global data.
         "target": "0x80000e8", "site": "0x80000e6", "stall_cycles": 3.0 }
     ],
     "caveats": [
-      "Pipeline edge stalls use the source block's local exit state; source entry context, loop-carried accumulation, call-boundary pipeline state and memory dependencies are not propagated."
+      "Pipeline edge stalls are a fallback for IPET functions where the full inter-block state product is unavailable. IPET propagates the full resource/register pipeline state from function entry through the CFG when a state table is available; call-return edges reset the modeled state and memory dependencies are not propagated."
     ]
   },
   "pointer_roots": ["0x8000120", "0x800013c"],
@@ -643,6 +644,7 @@ block address:
       "constraints": 5, "caveats": []
     },
     "branch_model": "state-product",
+    "pipeline_model": "state-product",
     "blocks": [
       { "block": "bb:0x800085c", "executions": 1 },
       { "block": "bb:0x800086a", "executions": 1 }
@@ -667,7 +669,14 @@ a branch-prediction profile is active, `ipet.branch_model` is
 `state-product` for the concrete per-function predictor-state product and
 `block-bounds` when the function falls back to per-block misprediction bounds
 (unsupported branches, analysis state-limit fallback, ordered/cross-function
-automata or product-size overflow). The top-level `wcet.flow_facts` object records the loop bounds and
+automata or product-size overflow). When a pipeline profile is active,
+`ipet.pipeline_model` is `state-product` when IPET propagated the full
+per-function pipeline state table through the CFG, or `edge-context` when only
+first-order edge stalls were available. The state product starts with ready
+registers and resources at function entry, carries the exit state across
+edges, and resets on call-return edges; it falls back to edge stalls when the
+table exceeds its per-function state cap or the ordered/cross-function
+automata are selected. The top-level `wcet.flow_facts` object records the loop bounds and
 defaults used by the model, including bounds imported from F4/FFX files and
 conservatively inferred counted-loop bounds; each loop bound carries a
 `source` such as `board-profile [wcet]`, an imported file, or
@@ -715,7 +724,7 @@ inlined Rust functions. It is independent of `--no-cfg-instructions`. See
 | `data_cache` | data-cache model parameters, access coverage, analysis counts, line-split first-miss regions and caveats |
 | `branch_prediction` | branch-prediction model parameters, branch counts and caveats |
 | `data_memory` | region-based data-memory latency model, access coverage, wait cycles and caveats |
-| `pipeline` | edge-context pipeline stalls: model name, per-edge `source`/`target`/`site` and `stall_cycles`, caveats |
+| `pipeline` | pipeline model parameters and fallback edge stalls: model name, per-edge `source`/`target`/`site` and `stall_cycles`, caveats |
 | `multicore` | access-budget interference model, core topology, charged events, total cycles and caveats |
 | `wcet` | WCET model (`cfg-longest-path` or `cfg-ipet`), backend/solver, flow facts, per-root results and caveats |
 | `system_model` | layered task/place/transition model, concurrency dependencies, activation/periodic/resource budgets, explicit fork/join links, coarse system bound and optional timed feasibility |
@@ -775,11 +784,18 @@ When the Cortex-M4 pipeline profile is active, the document carries a
 `pipeline` object with one entry for each CFG edge that has a positive
 inter-block stall. The stall is computed by scheduling the target block with
 the source block's local pipeline exit state and subtracting the target's
-ready-entry local cost. IPET adds `stall_cycles` to the objective for each
-execution of that edge. This is a first-order predecessor context: source
-entry state, loop-carried accumulation and call-boundary state are not
-propagated. The pipeline timing model remains `statistical`; `longest-path`
-does not apply these edge stalls.
+ready-entry local cost. These edge entries are a fallback: for `ipet`, the
+analyzer precomputes a per-function table of reachable pipeline entry states
+and their block cost/exit state. IPET's state product then carries the actual
+resource/register readiness across CFG edges, including loop-carried state,
+and charges the state-dependent pipeline cost instead of the edge stall.
+Call-return edges reset the modeled state because the callee's pipeline state
+is not part of the caller summary. The table is capped per function; when the
+cap is exceeded, or a non-state-product solver is selected, IPET falls back to
+the first-order edge stalls. Memory dependencies, exception entry and
+cross-function pipeline history are not modeled. The pipeline timing model
+remains `statistical`; `longest-path` does not apply inter-block pipeline
+state.
 
 When a WCET profile is active, every analyzed function carries a `wcet`
 object with a `status` (`bounded`, `partial`, `unbounded` or `unknown`),
@@ -1021,10 +1037,12 @@ asserts that the CFG validates.
   actual predicted/actual edge outcome instead of the per-block maximum;
   unsupported branches, analysis fallback, ordered/cross-function automata or
   product-size overflow keep `branch_model = "block-bounds"`. Inter-function
-  and first-execution predictor history is not modeled. Pipeline edge-context
-  stalls are integrated into the IPET objective as first-order predecessor
-  terms, but the pipeline timing model remains `statistical` and is rejected
-  by `--require-safe`.
+  and first-execution predictor history is not modeled. Full inter-block
+  pipeline state is integrated into the IPET state product when the
+  per-function state table is available, with first-order edge stalls as the
+  fallback for ordered/cross-function automata, state-cap overflow or
+  non-state-product solvers. The pipeline timing model remains `statistical`
+  and is rejected by `--require-safe`.
   Conditional or multi-target call sites and F4 non-loop
   directives are ignored conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a
