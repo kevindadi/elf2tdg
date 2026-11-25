@@ -95,8 +95,10 @@ estimate is wanted rather than a safe bound. The pipeline model is rejected by
 
 The built-in per-class pipeline values are generic in-order presets, not
 per-board measurements. Override them in `[[pipeline.instructions]]` from the
-target core's documentation or measurements. Multi-issue is not modeled;
-`issue_width` must be `1`.
+target core's documentation or measurements. `issue_width` sets the issue
+limit per cycle (`1..8`), and `[pipeline.resources]` gives explicit unit counts
+for resources that can accept more than one instruction per cycle. Resource
+multiplicity is never inferred from `issue_width`.
 
 ## Selection hints
 

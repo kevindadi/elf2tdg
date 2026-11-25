@@ -242,17 +242,37 @@ write buffers, prefetch and per-region cacheability are not modeled.
 ### Pipeline / resource model
 
 The optional `[pipeline]` table switches block costing from independent
-instruction sums to an in-order resource/dependency schedule. It requires
-`schema_version = 2`. It is supported for `cortex-m4` and for the generic and
-bounded AArch64/RISC-V timing models (`riscv32`, `riscv64`,
+instruction sums to an in-order, multiple-issue resource/dependency schedule. It
+requires `schema_version = 2`. It is supported for `cortex-m4` and for the
+generic and bounded AArch64/RISC-V timing models (`riscv32`, `riscv64`,
 `riscv32-bounded`, `riscv64-bounded`, `aarch64`, `aarch64-bounded`). Other
-cores are rejected. The scheduler is single issue only; `issue_width` must be
-`1`.
+cores are rejected. Issue is in program order; out-of-order and speculative
+issue are not modeled.
 
 | Field | Required | Meaning |
 |---|---|---|
-| `issue_width` | no | Must be `1` in the current implementation; defaults to `1`. |
+| `issue_width` | no | Maximum instructions issued per cycle, `1..8`; defaults to `1`. |
+| `resources` | no | Optional table of resource unit counts; unlisted resources have one unit. |
 | `branch_penalty` | no | Extra cycles for the block's final branch/call/return, exact or `{ min, max }`; default `1..3`. |
+
+`[pipeline.resources]` maps a resource name used by an instruction to the
+number of parallel units (`1..64`). It is required only when a resource has
+more than one unit; each name not listed defaults to one unit. Resource
+multiplicity is never inferred from `issue_width`.
+
+```toml
+[pipeline]
+issue_width = 2
+
+[pipeline.resources]
+alu = 2
+load_store = 1
+branch = 1
+```
+
+With `issue_width > 1` and no `[pipeline.resources]` table, only instructions
+whose resource names differ can co-issue; two ALU operations still serialize on
+the default single `alu` unit.
 
 Each `[[pipeline.instructions]]` entry overrides the built-in class mapping:
 
@@ -308,21 +328,29 @@ AArch64 (generic and bounded models):
 | alu/nop/barrier/other | `alu` | 1 | 1 |
 
 The scheduler consumes Capstone's explicit and implicit register read/write
-sets. It stalls an instruction until its source registers and resources are
-ready, then marks destination registers ready `latency` cycles after issue.
-`branch_penalty` is added when the block's last instruction is a branch, call
-or return; conditional transfers use the worst case.
+sets. Within a basic block it issues instructions in program order, at most
+`issue_width` per cycle. An instruction is eligible when its source registers
+are ready, one unit of each required resource is free, and the cycle has a free
+issue slot. Each resource has the configured number of units; instructions
+sharing a single-unit resource serialize. Block boundaries are issue
+boundaries: co-issue across a CFG edge is not modeled. `branch_penalty` is
+added when the block's last instruction is a branch, call or return;
+conditional transfers use the worst case. Fetch wait states are charged per
+instruction and are not reduced by co-issue; fetch bandwidth is not modeled.
 
 Register readiness is assumed ready at block entry for block-local costing.
 For `--path-analysis ipet`, the analyzer builds a per-function table of
 pipeline entry states reachable from function entry, starting with ready
 registers and resources, and the IPET state product carries the actual
-resource/register readiness across CFG edges. This includes loop-carried
-accumulation. Call-return edges reset the modeled state because the callee's
-pipeline state is not part of the caller summary. Memory dependencies,
-store-to-load forwarding, exception entry, multi-issue and cross-function
-pipeline state are not modeled; caches and branch prediction are modeled
-separately when their profile sections are enabled.
+resource/register readiness across CFG edges. The state records the sorted
+free times of every busy resource unit, so multiple units remain distinct
+across a block boundary. This includes loop-carried accumulation. Call-return
+edges reset the modeled state because the callee's pipeline state is not part
+of the caller summary. Memory dependencies, register-file port limits,
+store-to-load forwarding, exception entry, speculative/out-of-order execution,
+cross-block co-issue and cross-function pipeline state are not modeled; caches
+and branch prediction are modeled separately when their profile sections are
+enabled.
 Block-local costs are therefore pipeline-aware estimates, not WCET bounds.
 While the pipeline model is active the CFG marks the timing model
 `statistical`, and a generated caveat records the limitation. This also applies
@@ -968,6 +996,7 @@ a profile only adds overrides and can set `ignore`.
 - `board_profile_pipeline`
 - `board_profile_pipeline_issue_width`
 - `board_profile_pipeline_instruction_overrides`
+- `board_profile_pipeline_resources` (configured `name=units` entries only)
 - `board_profile_pipeline_branch_penalty`
 - `bounded_cost_table` (`replaced-by-pipeline` when a bounded model has `[pipeline]`)
 - `pipeline_overlap` (`profile-pipeline-schedule` when a bounded model has `[pipeline]`)

@@ -362,10 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.37`.
+`cfg_schema_version` is `2.38`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.37 extends the pipeline metadata names and deterministic
-classification to generic/bounded AArch64 and RISC-V timing models. Version
+functions. Version 2.38 adds multi-issue pipeline timing metadata, including
+the configured issue width and per-resource unit counts. Version 2.37 extends
+the pipeline metadata names and deterministic classification to
+generic/bounded AArch64 and RISC-V timing models. Version
 2.36 adds `return_address_stack` metadata, per-block RAS misses and
 `ipet.ras_model`. Version 2.35 adds the `branch_target_buffer`
 metadata, per-block BTB misses and `ipet.btb_model`. Version 2.34 adds the `tournament` branch
@@ -433,7 +435,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.37",
+  "cfg_schema_version": "2.38",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
