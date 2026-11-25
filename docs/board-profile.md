@@ -492,19 +492,31 @@ adds `mispredicts * mispredict_penalty` to block cycle ranges. Because a block
 can branch to either successor, its cost range includes the minimum and
 maximum misprediction count across both outcomes and all modeled entry states;
 path-specific branch/predictor correlation is not modeled. If a block exceeds
-`max_states`, the function falls back to an all-mispredict bound. Each function
-starts from the configured predictor state and call-return edges do not reset
-it, but callee branches remain outside the analysis.
+`max_states`, the function falls back to an all-mispredict bound. The
+standalone block-range analysis starts each function from the configured
+predictor state and does not model callee branches; the IPET summary below
+extends predictor state across direct calls.
 
 With `--path-analysis ipet`, a completed branch analysis without fallback
 enables a per-function predictor-state product. IPET tracks the concrete
 predictor state through the product, charges the modeled prediction for the
 actual edge rather than the block-level maximum, and records
 `ipet.branch_model = "state-product"`. This can remove repeated loop
-mispredictions after predictor warm-up. The initial state remains per
-function; inter-function/first-execution history, callee branches,
-analysis-fallback states, ordered/cross-function automata and product-state
-caps keep `branch_model = "block-bounds"`.
+mispredictions after predictor warm-up.
+
+For the bimodal model, IPET also builds branch-only callee summaries. A
+summary maps one concrete caller predictor state to the feasible callee exit
+states and the maximum branch cost of the callee paths reaching each exit. At
+a direct, statically resolved call edge, IPET charges that branch cost and
+continues from the callee exit state, so predictor counters survive into
+later calls and nested callees. This records
+`ipet.branch_model = "interprocedural-state-product"`. The caller uses a
+branch-excluded callee WCET (computed by a separate pass) plus the
+state-specific branch cost. Indirect, unresolved or recursive calls,
+contextual flow facts, branch-analysis fallback, ordered/cross-function
+automata and the branch-effect (4096 states) and exit-state (256 per summary)
+caps fall back to the per-function `state-product` or `block-bounds` model.
+First-execution predictor history and global history are not modeled.
 
 ### Multicore interference
 
@@ -864,7 +876,10 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   result remains statistical.
 - Branch prediction covers conditional direction only. Indirect/table target
   prediction, return prediction, branch-target buffers and global history are
-  not modeled.
+  not modeled. Bimodal IPET summaries can carry predictor state through direct
+  calls when all branch effects and base callee costs are available; first
+  execution, unresolved/indirect/recursive boundaries and summary caps fall
+  back to per-function bounds.
 - Data-memory latency is region-based. Only statically resolved accesses with
   addresses inside configured regions contribute wait cycles. If data-cache
   analysis is enabled too, its miss penalties and the wait cycles are additive.

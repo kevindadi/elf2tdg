@@ -362,10 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.28`.
+`cfg_schema_version` is `2.29`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.28 adds the IPET `pipeline_model` field and full
-inter-block pipeline state propagation. Version 2.27 adds the `ccg` IPET cache flow model and `cache_ccg`
+functions. Version 2.29 adds the `interprocedural-state-product` branch model
+and predictor-state propagation through direct calls. Version 2.28 adds the
+IPET `pipeline_model` field and full inter-block pipeline state propagation.
+Version 2.27 adds the `ccg` IPET cache flow model and `cache_ccg`
 summary. Version 2.26 adds the `conflict-graph` aggregate cache model and
 `cache_conflicts` summary. Version 2.25 adds line-split logical-block fields to
 instruction cache lines and the `line-split` IPET cache model. Version 2.24
@@ -418,7 +420,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.28",
+  "cfg_schema_version": "2.29",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -666,10 +668,13 @@ sets/nodes/edges/constraints. Aggregate conflict bounds can still apply after
 the concrete cache analysis falls back. `cache_conflicts` summarizes those
 bounds. When
 a branch-prediction profile is active, `ipet.branch_model` is
-`state-product` for the concrete per-function predictor-state product and
-`block-bounds` when the function falls back to per-block misprediction bounds
-(unsupported branches, analysis state-limit fallback, ordered/cross-function
-automata or product-size overflow). When a pipeline profile is active,
+`state-product` for the concrete per-function predictor-state product,
+`interprocedural-state-product` when the bimodal predictor state and callee
+branch costs are propagated through direct calls, and `block-bounds` when the
+function falls back to per-block misprediction bounds (unsupported branches,
+analysis state-limit fallback, indirect/unresolved/recursive calls, contextual
+facts, ordered/cross-function automata or product-size overflow). When a
+pipeline profile is active,
 `ipet.pipeline_model` is `state-product` when IPET propagated the full
 per-function pipeline state table through the CFG, or `edge-context` when only
 first-order edge stalls were available. The state product starts with ready
@@ -771,7 +776,12 @@ fallback flag, and one outcome per successor. Each outcome records its actual
 direction (`taken` or `not-taken`), the branch-level predicted direction
 (`taken`, `not-taken` or `mixed`), and its own misprediction range. An outcome's
 `predicted` value is the direction the predictor chose, not whether that
-particular successor was selected.
+particular successor was selected. For the bimodal model, IPET may replace the
+per-call callee branch bound with an interprocedural summary: each callee is
+analyzed branch-only from the caller's concrete predictor state, and every
+feasible exit state keeps the maximum branch cost of the callee paths ending
+there. The caller product applies that cost at the call edge and continues from
+the resulting predictor state.
 
 When per-region data-memory timing is active, each block with data accesses
 can carry a `data_memory` object. It records resolved, unresolved, mapped and
@@ -1032,12 +1042,16 @@ asserts that the CFG validates.
   exists, data accesses are unresolved or the model is too large.
   `cache_conflicts` reports the aggregate set/line/constraint counts.
   Branch-prediction
-  state IPET follows concrete predictor states from the configured
-  per-function initial state when the branch analysis completes, charging the
+  state IPET follows concrete predictor states from the configured initial
+  state when the branch analysis completes, charging the
   actual predicted/actual edge outcome instead of the per-block maximum;
   unsupported branches, analysis fallback, ordered/cross-function automata or
-  product-size overflow keep `branch_model = "block-bounds"`. Inter-function
-  and first-execution predictor history is not modeled. Full inter-block
+  product-size overflow keep `branch_model = "block-bounds"`. For the bimodal
+  model, direct, statically resolved calls use branch-only callee summaries to
+  carry predictor state and callee branch costs through call edges, including
+  nested calls; indirect, unresolved or recursive calls, contextual facts and
+  summary/state caps fall back to the per-function or per-block model.
+  First-execution predictor history is not modeled. Full inter-block
   pipeline state is integrated into the IPET state product when the
   per-function state table is available, with first-order edge stalls as the
   fallback for ordered/cross-function automata, state-cap overflow or

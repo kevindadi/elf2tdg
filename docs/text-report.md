@@ -94,8 +94,8 @@ The `wcet` section reports the selected backend:
   cache model (`state-product`, `ccg`, `conflict-graph`, `line-split` or
   `block-bounds`) when a cache profile is active, CCG and aggregate
   conflict-graph summaries when those constraints apply, branch model
-  (`state-product` or `block-bounds`) when a branch-prediction profile is
-  active, pipeline model (`state-product` or `edge-context`) when a pipeline
+  (`state-product`, `interprocedural-state-product` or `block-bounds`) when a
+  branch-prediction profile is active, pipeline model (`state-product` or `edge-context`) when a pipeline
   profile is active, and positive block execution counts for each function.
   The cache model section also lists each first-miss loop and its line
   addresses. The flow-facts section
@@ -112,8 +112,9 @@ cold entry and call-return invalidation, CCG flow, line splitting and aggregate
 conflict bounds over-approximate cache evictions, IPET pipeline costs
 propagate reachable inter-block pipeline state and fall back to a first-order
 edge context when the state table is unavailable, branch-prediction IPET
-follows a per-function initial predictor state with no inter-function history,
-data-memory results remain block-local, and interrupts, DMA, bus contention and
+starts from the configured predictor state and (for bimodal) can carry state
+and branch cost through direct calls while first-execution/global history is
+not modeled, data-memory results remain block-local, and interrupts, DMA, bus contention and
 concurrency are not modeled. A
 function marked `partial` has unresolved inputs; `unbounded` means no finite
 estimate was produced. A partial IPET objective is not a safe upper bound.
