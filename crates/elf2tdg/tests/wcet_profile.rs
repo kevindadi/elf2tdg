@@ -186,6 +186,10 @@ write_ports = 2
 [pipeline.forwarding]
 default_latency = 1
 
+[pipeline.store_forwarding]
+latency = 1
+entries = 4
+
 [[pipeline.instructions]]
 mnemonic = "ldr"
 resources = ["load_store"]
@@ -271,6 +275,36 @@ auto_loop_bounds = false
             .caveats
             .iter()
             .any(|caveat| caveat.contains("Data forwarding is modeled"))
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_store_forwarding")
+            .map(String::as_str),
+        Some("enabled")
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_store_forwarding_latency")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_store_forwarding_entries")
+            .map(String::as_str),
+        Some("4")
+    );
+    assert!(
+        timing.models[0]
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("Store-to-load forwarding is modeled"))
     );
     assert!(output.cfg.functions.iter().any(|function| {
         function

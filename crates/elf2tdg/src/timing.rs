@@ -14,7 +14,7 @@ use elf2tdg_schema::{
 };
 use serde::Deserialize;
 
-use crate::arch::DecodedInsn;
+use crate::arch::{DecodedInsn, MemoryAccess, MemoryAccessKind};
 use crate::board_profile::{BoardProfile, BranchPredictionModel, UnknownInstructionPolicy};
 use crate::error::{Error, Result};
 use crate::loader::{ArchKind, Image};
@@ -529,6 +529,135 @@ impl PipelineFunctionModel {
     }
 }
 
+/// Symbolic address used by the block-local store buffer. Only an absolute
+/// address or a base register plus displacement is tracked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StoreAddress {
+    Absolute(u64),
+    Base {
+        register: capstone::RegId,
+        disp: i64,
+    },
+}
+
+impl StoreAddress {
+    fn uses_register(self, register: capstone::RegId) -> bool {
+        matches!(self, Self::Base { register: base, .. } if base == register)
+    }
+}
+
+fn address_range(start: i128, width: u8) -> Option<(i128, i128)> {
+    if width == 0 {
+        return None;
+    }
+    Some((start, start.saturating_add(i128::from(width))))
+}
+
+fn ranges_overlap(left: (i128, i128), right: (i128, i128)) -> bool {
+    left.0 < right.1 && right.0 < left.1
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StoreBufferEntry {
+    address: StoreAddress,
+    width: u8,
+    issue: u32,
+}
+
+impl StoreBufferEntry {
+    /// Whether this store and a load can touch at least one common byte. Only
+    /// the same base register or two absolute addresses are compared; distinct
+    /// symbolic expressions are assumed not to alias.
+    fn overlaps(&self, address: StoreAddress, width: u8) -> bool {
+        match (self.address, address) {
+            (StoreAddress::Absolute(left), StoreAddress::Absolute(right)) => {
+                address_range(i128::from(left), self.width)
+                    .zip(address_range(i128::from(right), width))
+                    .is_some_and(|(left, right)| ranges_overlap(left, right))
+            }
+            (
+                StoreAddress::Base {
+                    register: left,
+                    disp: left_disp,
+                },
+                StoreAddress::Base {
+                    register: right,
+                    disp: right_disp,
+                },
+            ) if left == right => address_range(i128::from(left_disp), self.width)
+                .zip(address_range(i128::from(right_disp), width))
+                .is_some_and(|(left, right)| ranges_overlap(left, right)),
+            _ => false,
+        }
+    }
+}
+
+/// Block-local FIFO store buffer used for store-to-load forwarding.
+struct StoreBuffer {
+    capacity: usize,
+    entries: VecDeque<StoreBufferEntry>,
+}
+
+impl StoreBuffer {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn push(&mut self, address: StoreAddress, width: u8, issue: u32) {
+        while self.entries.len() >= self.capacity {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(StoreBufferEntry {
+            address,
+            width,
+            issue,
+        });
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn invalidate_register(&mut self, register: capstone::RegId) {
+        self.entries
+            .retain(|entry| !entry.address.uses_register(register));
+    }
+
+    /// Whether a load can take its value from the newest overlapping store.
+    /// A newer partial-overlap store blocks forwarding from an older exact
+    /// match, and the matching store must be older than the load's issue.
+    fn can_forward(&self, address: StoreAddress, width: u8, load_issue: u32) -> bool {
+        for entry in self.entries.iter().rev() {
+            if !entry.overlaps(address, width) {
+                continue;
+            }
+            return entry.address == address && entry.width == width && entry.issue < load_issue;
+        }
+        false
+    }
+}
+
+fn simple_memory_address(access: &MemoryAccess) -> Option<(StoreAddress, u8)> {
+    if access.width == 0 || access.index.is_some() {
+        return None;
+    }
+    if let Some(address) = access.absolute {
+        return Some((StoreAddress::Absolute(address), access.width));
+    }
+    access.base.map(|register| {
+        (
+            StoreAddress::Base {
+                register,
+                disp: access.disp,
+            },
+            access.width,
+        )
+    })
+}
+
 /// Upper bound on per-function pipeline state entries.
 const MAX_PIPELINE_STATES: usize = 100_000;
 
@@ -560,6 +689,9 @@ fn pipeline_schedule(
     let mut reads_in_cycle = 0_u32;
     let mut writes_in_cycle = 0_u32;
     let mut port_end = 0_u32;
+    let store_forwarding = pipeline.store_forwarding();
+    let mut store_buffer = store_forwarding
+        .map(|profile| StoreBuffer::new(usize::try_from(profile.entries()).unwrap_or(usize::MAX)));
     let mut completion = 0_u32;
     let mut fetch_cycles = 0_u32;
     let mut unknown = Vec::new();
@@ -589,6 +721,24 @@ fn pipeline_schedule(
                     !classification.known,
                 )
             };
+        let accesses = instruction.memory_accesses.as_slice();
+        let single_read = accesses.len() == 1 && accesses[0].kind == MemoryAccessKind::Read;
+        let single_write = accesses.len() == 1 && accesses[0].kind == MemoryAccessKind::Write;
+        let has_memory_write = accesses.iter().any(|access| {
+            matches!(
+                access.kind,
+                MemoryAccessKind::Write | MemoryAccessKind::ReadWrite
+            )
+        }) || instruction.memory_write.is_some()
+            || classification.class == InstructionClass::Store;
+        let load_candidate = (single_read && !has_memory_write)
+            .then(|| simple_memory_address(&accesses[0]))
+            .flatten();
+        let store_candidate = single_write
+            .then(|| simple_memory_address(&accesses[0]))
+            .flatten();
+        let clears_store_buffer = has_memory_write && store_candidate.is_none();
+        let store_barrier = classification.class == InstructionClass::Barrier;
         let operand_ready = instruction
             .regs_read
             .iter()
@@ -658,6 +808,17 @@ fn pipeline_schedule(
             issue_floor = start;
             port_end = port_end.max(start.saturating_add(port_cycles));
         }
+        let store_forwarded = store_forwarding.is_some()
+            && load_candidate.is_some_and(|(address, width)| {
+                store_buffer
+                    .as_ref()
+                    .is_some_and(|buffer| buffer.can_forward(address, width, start))
+            });
+        let effective_latency = if store_forwarded {
+            store_forwarding.map_or(latency, |profile| profile.latency().max(1).min(latency))
+        } else {
+            latency
+        };
         for resource in &resources {
             let capacity = pipeline.resource_units(resource);
             let times = resource_free.entry((*resource).to_owned()).or_default();
@@ -667,8 +828,13 @@ fn pipeline_schedule(
             times.push(start.saturating_add(occupancy));
             times.sort_unstable();
         }
-        let result_ready = start.saturating_add(latency);
-        let source_ready = start.saturating_add(forwarding_latency.max(port_cycles));
+        let result_ready = start.saturating_add(effective_latency);
+        let forwarding_after_store = if store_forwarded {
+            forwarding_latency.min(effective_latency)
+        } else {
+            forwarding_latency
+        };
+        let source_ready = start.saturating_add(forwarding_after_store.max(port_cycles));
         for register in &instruction.regs_write {
             register_ready
                 .entry(*register)
@@ -676,6 +842,16 @@ fn pipeline_schedule(
                 .or_insert(source_ready);
         }
         completion = completion.max(result_ready);
+        if let Some(buffer) = &mut store_buffer {
+            if store_barrier || clears_store_buffer {
+                buffer.clear();
+            } else if let Some((address, width)) = store_candidate {
+                buffer.push(address, width, start);
+            }
+            for register in &instruction.regs_write {
+                buffer.invalidate_register(*register);
+            }
+        }
         fetch_cycles = fetch_cycles
             .saturating_add(profile.fetch_wait_cycles(instruction.address, instruction.size));
         if is_unknown {
@@ -858,11 +1034,12 @@ impl TimingCostModel {
     /// resources, result latencies and register dependencies. Up to
     /// `issue_width` instructions may issue per cycle, each resource name has
     /// the configured number of units, an optional register-file section
-    /// budgets register reads and writes per issue cycle, and an optional
+    /// budgets register reads and writes per issue cycle, an optional
     /// forwarding section makes producer results readable before full
-    /// latency. It models local hazards within one block; pipeline state at
-    /// block entry is assumed ready, so this is a local cost rather than a
-    /// whole-program WCET bound.
+    /// latency, and an optional store-forwarding section shortens matching
+    /// loads through a block-local store buffer. It models local hazards
+    /// within one block; pipeline state at block entry is assumed ready, so
+    /// this is a local cost rather than a whole-program WCET bound.
     #[must_use]
     pub fn block_cost(&self, instructions: &[DecodedInsn]) -> (CostRange, Vec<(String, u64)>) {
         if self.model.supports_pipeline_model()
@@ -1215,6 +1392,20 @@ impl TimingCostModel {
                         pipeline.forwarding_override_count().to_string(),
                     );
                 }
+                if let Some(store_forwarding) = pipeline.store_forwarding() {
+                    params.extras.insert(
+                        "board_profile_pipeline_store_forwarding".to_owned(),
+                        "enabled".to_owned(),
+                    );
+                    params.extras.insert(
+                        "board_profile_pipeline_store_forwarding_latency".to_owned(),
+                        store_forwarding.latency().to_string(),
+                    );
+                    params.extras.insert(
+                        "board_profile_pipeline_store_forwarding_entries".to_owned(),
+                        store_forwarding.entries().to_string(),
+                    );
+                }
                 params.extras.insert(
                     "board_profile_pipeline_branch_penalty".to_owned(),
                     format!(
@@ -1540,6 +1731,17 @@ impl TimingCostModel {
                 } else {
                     caveats.push(
                         "Data forwarding is not modeled; consumers wait for the producer's full result latency. Add [pipeline.forwarding] to enable bypass latencies."
+                            .to_owned(),
+                    );
+                }
+                if pipeline.store_forwarding().is_some() {
+                    caveats.push(
+                        "Store-to-load forwarding is modeled within one basic block for exactly matching base-plus-displacement or absolute addresses and equal access widths. The newest overlapping store must be an exact match, older than the load's issue cycle and still in the configured store buffer; a newer partial-overlap store blocks forwarding. Unknown, indexed or multi-access stores and barriers clear the buffer; writes to address registers invalidate matching entries. Store-buffer drain/age, partial-overlap and distinct-symbolic-alias forwarding, cross-block forwarding and suppression of cache/data-memory penalties are not modeled."
+                            .to_owned(),
+                    );
+                } else {
+                    caveats.push(
+                        "Store-to-load forwarding is not modeled; loads use their full latency. Add [pipeline.store_forwarding] to enable block-local store-buffer forwarding."
                             .to_owned(),
                     );
                 }
@@ -2133,7 +2335,7 @@ fn x86_64_cost(class: InstructionClass) -> CostRange {
 #[cfg(test)]
 mod tests {
     use super::{TimingCostModel, TimingModel, parse_frequency};
-    use crate::arch::DecodedInsn;
+    use crate::arch::{DecodedInsn, MemoryAccess, MemoryAccessKind};
     use crate::board_profile::BoardProfile;
     use crate::cfg::{CfgBlockDraft, CfgEdgeDraft, CfgEdgeKind, CfgTerminator};
     use crate::loader::{ArchKind, ByteOrder, ElfKind, Image, Section};
@@ -2472,6 +2674,98 @@ executable = true
         instruction.regs_read = reads.iter().copied().map(capstone::RegId).collect();
         instruction.regs_write = writes.iter().copied().map(capstone::RegId).collect();
         instruction
+    }
+
+    fn memory_access(
+        kind: MemoryAccessKind,
+        width: u8,
+        base: Option<u16>,
+        index: Option<u16>,
+        disp: i64,
+        absolute: Option<u64>,
+    ) -> MemoryAccess {
+        MemoryAccess {
+            kind,
+            width,
+            base: base.map(capstone::RegId),
+            index: index.map(capstone::RegId),
+            disp,
+            absolute,
+        }
+    }
+
+    fn insn_with_memory(
+        address: u64,
+        size: u8,
+        mnemonic: &str,
+        reads: &[u16],
+        writes: &[u16],
+        accesses: Vec<MemoryAccess>,
+    ) -> DecodedInsn {
+        let mut instruction = insn_with_regs(address, size, mnemonic, reads, writes);
+        instruction.memory_accesses = accesses;
+        instruction
+    }
+
+    fn store_forwarding_model(latency: u32, entries: u32) -> TimingCostModel {
+        let profile = BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:store-forwarding"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[pipeline]
+issue_width = 1
+
+[pipeline.store_forwarding]
+latency = {latency}
+entries = {entries}
+"#
+        ))
+        .expect("valid store-forwarding profile");
+        TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model")
+    }
+
+    fn store_pair(store_disp: i64, load_disp: i64) -> [DecodedInsn; 2] {
+        [
+            insn_with_memory(
+                0x1000,
+                4,
+                "sd",
+                &[1, 2],
+                &[],
+                vec![memory_access(
+                    MemoryAccessKind::Write,
+                    8,
+                    Some(1),
+                    None,
+                    store_disp,
+                    None,
+                )],
+            ),
+            insn_with_memory(
+                0x1004,
+                4,
+                "ld",
+                &[1],
+                &[3],
+                vec![memory_access(
+                    MemoryAccessKind::Read,
+                    8,
+                    Some(1),
+                    None,
+                    load_disp,
+                    None,
+                )],
+            ),
+        ]
     }
 
     fn board_profile() -> BoardProfile {
@@ -3547,6 +3841,369 @@ issue_width = 1
                 .caveats
                 .iter()
                 .any(|caveat| caveat.contains("Data forwarding is not modeled"))
+        );
+    }
+
+    #[test]
+    fn store_forwarding_reduces_matching_load_latency() {
+        let model = store_forwarding_model(1, 4);
+        let (cost, _) = model.block_cost(&store_pair(0, 0));
+        assert_eq!(cost.max, 2.0);
+
+        let (cost, _) = model.block_cost(&store_pair(0, 8));
+        assert_eq!(cost.max, 3.0, "different displacement must not forward");
+
+        let width_mismatch = [
+            insn_with_memory(
+                0x1000,
+                4,
+                "sd",
+                &[1, 2],
+                &[],
+                vec![memory_access(
+                    MemoryAccessKind::Write,
+                    4,
+                    Some(1),
+                    None,
+                    0,
+                    None,
+                )],
+            ),
+            insn_with_memory(
+                0x1004,
+                4,
+                "ld",
+                &[1],
+                &[3],
+                vec![memory_access(
+                    MemoryAccessKind::Read,
+                    8,
+                    Some(1),
+                    None,
+                    0,
+                    None,
+                )],
+            ),
+        ];
+        let (cost, _) = model.block_cost(&width_mismatch);
+        assert_eq!(cost.max, 3.0, "different widths must not forward");
+
+        let indexed_load = [
+            store_pair(0, 0)[0].clone(),
+            insn_with_memory(
+                0x1004,
+                4,
+                "ld",
+                &[1, 2],
+                &[3],
+                vec![memory_access(
+                    MemoryAccessKind::Read,
+                    8,
+                    Some(1),
+                    Some(2),
+                    0,
+                    None,
+                )],
+            ),
+        ];
+        let (cost, _) = model.block_cost(&indexed_load);
+        assert_eq!(cost.max, 3.0, "indexed loads are not forwarded");
+
+        let absolute_pair = [
+            insn_with_memory(
+                0x1000,
+                4,
+                "sd",
+                &[1, 2],
+                &[],
+                vec![memory_access(
+                    MemoryAccessKind::Write,
+                    8,
+                    None,
+                    None,
+                    0,
+                    Some(0x2000),
+                )],
+            ),
+            insn_with_memory(
+                0x1004,
+                4,
+                "ld",
+                &[1],
+                &[3],
+                vec![memory_access(
+                    MemoryAccessKind::Read,
+                    8,
+                    None,
+                    None,
+                    0,
+                    Some(0x2000),
+                )],
+            ),
+        ];
+        let (cost, _) = model.block_cost(&absolute_pair);
+        assert_eq!(cost.max, 2.0);
+    }
+
+    #[test]
+    fn store_forwarding_invalidates_after_address_register_write() {
+        let model = store_forwarding_model(1, 4);
+        let instructions = [
+            store_pair(0, 0)[0].clone(),
+            insn_with_regs(0x1004, 4, "add", &[1, 2], &[1]),
+            insn_with_memory(
+                0x1008,
+                4,
+                "ld",
+                &[1],
+                &[3],
+                vec![memory_access(
+                    MemoryAccessKind::Read,
+                    8,
+                    Some(1),
+                    None,
+                    0,
+                    None,
+                )],
+            ),
+        ];
+        let (cost, _) = model.block_cost(&instructions);
+        assert_eq!(cost.max, 4.0);
+    }
+
+    #[test]
+    fn store_forwarding_blocks_partial_overlap() {
+        let model = store_forwarding_model(1, 4);
+        let instructions = [
+            insn_with_memory(
+                0x1000,
+                4,
+                "sd",
+                &[1, 2],
+                &[],
+                vec![memory_access(
+                    MemoryAccessKind::Write,
+                    8,
+                    Some(1),
+                    None,
+                    0,
+                    None,
+                )],
+            ),
+            insn_with_memory(
+                0x1004,
+                4,
+                "sw",
+                &[1, 2],
+                &[],
+                vec![memory_access(
+                    MemoryAccessKind::Write,
+                    4,
+                    Some(1),
+                    None,
+                    0,
+                    None,
+                )],
+            ),
+            insn_with_memory(
+                0x1008,
+                4,
+                "ld",
+                &[1],
+                &[3],
+                vec![memory_access(
+                    MemoryAccessKind::Read,
+                    8,
+                    Some(1),
+                    None,
+                    0,
+                    None,
+                )],
+            ),
+        ];
+        let (cost, _) = model.block_cost(&instructions);
+        assert_eq!(cost.max, 4.0, "a newer partial store blocks forwarding");
+    }
+
+    #[test]
+    fn store_forwarding_respects_store_buffer_capacity() {
+        let sequence = |entries| {
+            let model = store_forwarding_model(1, entries);
+            let instructions = [
+                store_pair(0, 0)[0].clone(),
+                insn_with_memory(
+                    0x1004,
+                    4,
+                    "sd",
+                    &[1, 2],
+                    &[],
+                    vec![memory_access(
+                        MemoryAccessKind::Write,
+                        8,
+                        Some(1),
+                        None,
+                        8,
+                        None,
+                    )],
+                ),
+                insn_with_memory(
+                    0x1008,
+                    4,
+                    "ld",
+                    &[1],
+                    &[3],
+                    vec![memory_access(
+                        MemoryAccessKind::Read,
+                        8,
+                        Some(1),
+                        None,
+                        0,
+                        None,
+                    )],
+                ),
+            ];
+            model.block_cost(&instructions).0.max
+        };
+        assert_eq!(sequence(1), 4.0, "the first store was evicted");
+        assert_eq!(sequence(2), 3.0, "both stores fit in the buffer");
+    }
+
+    #[test]
+    fn store_forwarding_clears_on_unknown_store_and_barrier() {
+        let model = store_forwarding_model(1, 4);
+        let unknown_store = [
+            store_pair(0, 0)[0].clone(),
+            insn_with_memory(
+                0x1004,
+                4,
+                "sd",
+                &[1, 2],
+                &[],
+                vec![memory_access(
+                    MemoryAccessKind::Write,
+                    8,
+                    Some(1),
+                    Some(2),
+                    0,
+                    None,
+                )],
+            ),
+            insn_with_memory(
+                0x1008,
+                4,
+                "ld",
+                &[1],
+                &[3],
+                vec![memory_access(
+                    MemoryAccessKind::Read,
+                    8,
+                    Some(1),
+                    None,
+                    0,
+                    None,
+                )],
+            ),
+        ];
+        let (cost, _) = model.block_cost(&unknown_store);
+        assert_eq!(cost.max, 4.0, "unknown store clears the buffer");
+
+        let barrier = [
+            store_pair(0, 0)[0].clone(),
+            insn(0x1004, 4, "dmb"),
+            insn_with_memory(
+                0x1008,
+                4,
+                "ld",
+                &[1],
+                &[3],
+                vec![memory_access(
+                    MemoryAccessKind::Read,
+                    8,
+                    Some(1),
+                    None,
+                    0,
+                    None,
+                )],
+            ),
+        ];
+        let (cost, _) = model.block_cost(&barrier);
+        assert_eq!(cost.max, 4.0, "barrier clears the buffer");
+    }
+
+    #[test]
+    fn store_forwarding_requires_an_older_store() {
+        let profile = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:store-forwarding-coissue"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[pipeline]
+issue_width = 2
+
+[pipeline.resources]
+load_store = 2
+
+[pipeline.store_forwarding]
+latency = 1
+entries = 4
+"#,
+        )
+        .expect("valid co-issue store-forwarding profile");
+        let model = TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model");
+        let (cost, _) = model.block_cost(&store_pair(0, 0));
+        assert_eq!(cost.max, 2.0, "a same-cycle store cannot be forwarded");
+    }
+
+    #[test]
+    fn store_forwarding_metadata_records_parameters() {
+        let model = store_forwarding_model(1, 4);
+        let info = model.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_store_forwarding")
+                .map(String::as_str),
+            Some("enabled")
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_store_forwarding_latency")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_store_forwarding_entries")
+                .map(String::as_str),
+            Some("4")
+        );
+        assert!(
+            info.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("Store-to-load forwarding is modeled"))
+        );
+
+        let baseline = multi_issue_model(2, Some(2));
+        let info = baseline.timing_info(None, &BTreeSet::new());
+        assert!(
+            info.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("Store-to-load forwarding is not modeled"))
         );
     }
 

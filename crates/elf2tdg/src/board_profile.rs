@@ -37,6 +37,12 @@ pub(crate) const MAX_PIPELINE_RESOURCE_UNITS: u32 = 64;
 /// Maximum accepted read or write ports in a pipeline register file.
 pub(crate) const MAX_PIPELINE_REGISTER_PORTS: u32 = 64;
 
+/// Maximum accepted effective load latency after store forwarding.
+pub(crate) const MAX_STORE_FORWARDING_LATENCY: u32 = 64;
+
+/// Maximum accepted store-buffer entry count.
+pub(crate) const MAX_STORE_BUFFER_ENTRIES: u32 = 64;
+
 const fn default_profile_schema_version() -> u32 {
     BOARD_PROFILE_SCHEMA_VERSION
 }
@@ -146,6 +152,11 @@ cpu = "__CPU__"
 # default_latency, built-in per-class bypass latencies are used.
 # [pipeline.forwarding]
 # default_latency = 1              # optional uniform default, clamped to latency
+#
+# Optional store-to-load forwarding within one basic block.
+# [pipeline.store_forwarding]
+# latency = 1                      # 1..64, effective load latency on a hit
+# entries = 8                      # 1..64 tracked store-buffer entries
 #
 # [[pipeline.instructions]]
 # mnemonic = "ldr"
@@ -1152,6 +1163,8 @@ pub(crate) struct PipelineProfile {
     #[serde(default)]
     forwarding: Option<PipelineForwardingProfile>,
     #[serde(default)]
+    store_forwarding: Option<PipelineStoreForwardingProfile>,
+    #[serde(default)]
     branch_penalty: Option<CostSpec>,
     #[serde(default)]
     instructions: Vec<PipelineInstruction>,
@@ -1182,6 +1195,10 @@ impl PipelineProfile {
 
     pub(crate) fn forwarding(&self) -> Option<&PipelineForwardingProfile> {
         self.forwarding.as_ref()
+    }
+
+    pub(crate) fn store_forwarding(&self) -> Option<&PipelineStoreForwardingProfile> {
+        self.store_forwarding.as_ref()
     }
 
     pub(crate) fn forwarding_override_count(&self) -> usize {
@@ -1255,6 +1272,23 @@ pub(crate) struct PipelineForwardingProfile {
 impl PipelineForwardingProfile {
     pub(crate) fn default_latency(&self) -> Option<u32> {
         self.default_latency
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PipelineStoreForwardingProfile {
+    latency: u32,
+    entries: u32,
+}
+
+impl PipelineStoreForwardingProfile {
+    pub(crate) fn latency(&self) -> u32 {
+        self.latency
+    }
+
+    pub(crate) fn entries(&self) -> u32 {
+        self.entries
     }
 }
 
@@ -1611,6 +1645,23 @@ impl BoardProfile {
             return Err(Error::Config(
                 "board profile pipeline.forwarding.default_latency must be positive".to_owned(),
             ));
+        }
+        if let Some(store_forwarding) = &pipeline.store_forwarding {
+            if store_forwarding.latency == 0
+                || store_forwarding.latency > MAX_STORE_FORWARDING_LATENCY
+            {
+                return Err(Error::Config(format!(
+                    "board profile pipeline.store_forwarding.latency must be between 1 and {MAX_STORE_FORWARDING_LATENCY}, not {}",
+                    store_forwarding.latency
+                )));
+            }
+            if store_forwarding.entries == 0 || store_forwarding.entries > MAX_STORE_BUFFER_ENTRIES
+            {
+                return Err(Error::Config(format!(
+                    "board profile pipeline.store_forwarding.entries must be between 1 and {MAX_STORE_BUFFER_ENTRIES}, not {}",
+                    store_forwarding.entries
+                )));
+            }
         }
         if let Some(branch_penalty) = &pipeline.branch_penalty
             && !branch_penalty.cost_range().is_valid()
@@ -2833,6 +2884,10 @@ write_ports = 2
 [pipeline.forwarding]
 default_latency = 2
 
+[pipeline.store_forwarding]
+latency = 1
+entries = 4
+
 [[pipeline.instructions]]
 class = "load"
 resources = ["load_store"]
@@ -2853,6 +2908,9 @@ occupancy = 1
         let forwarding = pipeline.forwarding().expect("forwarding");
         assert_eq!(forwarding.default_latency(), Some(2));
         assert_eq!(pipeline.forwarding_override_count(), 1);
+        let store_forwarding = pipeline.store_forwarding().expect("store forwarding");
+        assert_eq!(store_forwarding.latency(), 1);
+        assert_eq!(store_forwarding.entries(), 4);
 
         let legacy = valid.replace("schema_version = 2", "schema_version = 1");
         assert!(BoardProfile::parse_toml(&legacy).is_err());
@@ -2946,6 +3004,36 @@ occupancy = 1
                 .default_latency(),
             None
         );
+
+        for (old, new, label) in [
+            (
+                "[pipeline.store_forwarding]\nlatency = 1",
+                "[pipeline.store_forwarding]\nlatency = 0",
+                "latency = 0",
+            ),
+            ("entries = 4", "entries = 0", "entries = 0"),
+            (
+                "[pipeline.store_forwarding]\nlatency = 1",
+                "[pipeline.store_forwarding]\nlatency = 65",
+                "latency = 65",
+            ),
+            ("entries = 4", "entries = 65", "entries = 65"),
+        ] {
+            let invalid = valid.replace(old, new);
+            assert!(
+                BoardProfile::parse_toml(&invalid).is_err(),
+                "store_forwarding {label}"
+            );
+        }
+
+        let missing_store_entries = valid.replace("entries = 4\n", "");
+        assert!(BoardProfile::parse_toml(&missing_store_entries).is_err());
+
+        let missing_store_latency = valid.replace(
+            "[pipeline.store_forwarding]\nlatency = 1\n",
+            "[pipeline.store_forwarding]\n",
+        );
+        assert!(BoardProfile::parse_toml(&missing_store_latency).is_err());
 
         let no_resources = valid.replace("resources = [\"load_store\"]", "resources = []");
         assert!(BoardProfile::parse_toml(&no_resources).is_err());
