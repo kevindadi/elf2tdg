@@ -47,8 +47,8 @@ Implemented:
     and first-order edge-context stalls in IPET;
   - LRU instruction and data caches with per-block hit/miss ranges and
     line-split logical blocks, an optional per-function cache-state product in
-    IPET, and per-line first-miss constraints when the concrete product is
-    unavailable;
+    IPET, plus per-line first-miss and cache-conflict-graph constraints when
+    the concrete product is unavailable;
   - static, BTFN or two-bit bimodal branch prediction, with concrete
     predictor-state IPET for per-edge misprediction costs;
   - per-region data-memory bus widths and read/write wait states;
@@ -329,13 +329,14 @@ patterns need explicit bounds, cache results are per-function with cold entry
 and call-return invalidation, branch/data-memory results remain block-local,
 and interrupts, DMA, bus contention and concurrency are not modeled.
 Cache-state IPET is used only when the cache analysis completes; functions
-with ordered/cross-function automata use a line-split model instead. Line
-splitting proves per-line first-miss from the concrete cache states, so a line
-may persist even when its loop's total set working set is larger than the
-associativity; loops with call-return invalidation, multi-entry loops or
-state-limit overflow do not get the first-miss bound. Cache-conflict graphs
-and inter-function cache state are not implemented. Pipeline block costs remain
-statistical; IPET adds
+with ordered/cross-function automata use line-split and conflict-graph models
+instead. Line splitting proves per-line first-miss from the concrete cache
+states, so a line may persist even when its loop's total set working set is
+larger than the associativity. Conflict-graph bounds additionally allow one
+miss per loop entry plus accesses to other lines in the same set; they remain
+valid when cache analysis falls back. Loops with call-return invalidation or
+non-header entries do not get these bounds, and inter-function cache state is
+not modeled. Pipeline block costs remain statistical; IPET adds
 first-order edge-context stalls but does not propagate full inter-block
 pipeline state, so the pipeline timing model is rejected by `--require-safe`.
 Branch-prediction state IPET follows the configured per-function initial

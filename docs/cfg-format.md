@@ -362,12 +362,13 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.25`.
+`cfg_schema_version` is `2.26`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.25 adds line-split logical-block fields to instruction
-cache lines and the `line-split` IPET cache model. Version 2.24 adds cache-line
-persistence metadata. Version 2.23 adds the IPET `branch_model`
-field. Version 2.22 adds
+functions. Version 2.26 adds the `conflict-graph` IPET cache model and
+`cache_conflicts` summary. Version 2.25 adds line-split logical-block fields to
+instruction cache lines and the `line-split` IPET cache model. Version 2.24
+adds cache-line persistence metadata. Version 2.23 adds the IPET
+`branch_model` field. Version 2.22 adds
 program-level `pipeline` edge-stall metadata. Version 2.21 adds the IPET
 `cache_model` field. Version 2.20 adds the
 cross-function conflict `call` boundary and per-element `function` fields.
@@ -415,7 +416,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.25",
+  "cfg_schema_version": "2.26",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -631,7 +632,11 @@ block address:
     "solver": "microlp",
     "status": "optimal",
     "objective": 87.0,
-    "cache_model": "state-product",
+    "cache_model": "conflict-graph",
+    "cache_conflicts": {
+      "model": "line-conflict-graph", "sets": 4, "lines": 9,
+      "constraints": 9, "caveats": []
+    },
     "branch_model": "state-product",
     "blocks": [
       { "block": "bb:0x800085c", "executions": 1 },
@@ -643,12 +648,14 @@ block address:
 
 A `partial` IPET objective is an estimate over the resolved inputs, not a safe
 upper bound. When a cache profile is active, `ipet.cache_model` is
-`state-product` for the per-function cache-state product, `line-split` when
-the concrete product is unavailable but per-line first-miss constraints apply,
-or `block-bounds` when the function falls back to per-block miss bounds
-(cache-analysis fallback, unresolved data addresses, loops containing
-call-return invalidation, multi-entry loops, state-limit overflow, no
-persistent line, or product-size overflow). When
+`state-product` for the per-function cache-state product, `conflict-graph`
+when per-line conflict bounds are generated, `line-split` when only the
+per-line first-miss regions apply, or `block-bounds` when the function falls
+back to per-block miss bounds (unresolved data addresses, no eligible loop,
+or model-size overflow). The conflict-graph model can still apply after the
+concrete cache analysis falls back; it uses line access counts rather than
+abstract cache categories. `cache_conflicts` summarizes the applied graph.
+When
 a branch-prediction profile is active, `ipet.branch_model` is
 `state-product` for the concrete per-function predictor-state product and
 `block-bounds` when the function falls back to per-block misprediction bounds
@@ -976,16 +983,19 @@ asserts that the CFG validates.
   `invalidate_on_call = true`, a complete cache analysis and, for the data
   cache, no unresolved memory accesses. When the cache-state product is
   unavailable (ordered/cross-function automata or product overflow), IPET
-  uses line splitting. Each block's cache cost is split into per-cache-line
-  logical blocks, and the concrete state graph proves per-line first-miss: a
-  line is persistent when the modeled loop never evicts it after it is loaded,
-  even if the loop's total set working set exceeds the associativity. A
-  persistent line may miss at most once per loop entry; non-persistent lines
-  keep per-line block bounds. `line-split` records that model;
-  cache-analysis fallback, unresolved data addresses, loops with call-return
-  edges, multi-entry loops, state-limit overflow or no persistent line record
-  `cache_model = "block-bounds"`. Cache-conflict graphs are not implemented.
-  Branch-prediction
+  splits each block's cache cost into per-cache-line logical blocks. A
+  per-line conflict bound limits a line to one miss per loop entry plus one
+  potential eviction per access to another line in the same cache set:
+  `line-misses <= entries + conflicting-line-accesses`. This bound remains
+  valid when the concrete cache analysis falls back. Separately, the concrete
+  state graph can prove per-line first-miss when the modeled loop never evicts
+  a line after it is loaded; that permits the tighter `line-misses <= entries`
+  even when the loop's total set working set exceeds the associativity.
+  Non-persistent lines keep per-line block bounds. `conflict-graph` records a
+  model with conflict constraints, `line-split` a first-miss-only model, and
+  `block-bounds` the fallback when no eligible loop exists, data accesses are
+  unresolved or the model is too large. `cache_conflicts` reports the applied
+  set/line/constraint counts. Branch-prediction
   state IPET follows concrete predictor states from the configured
   per-function initial state when the branch analysis completes, charging the
   actual predicted/actual edge outcome instead of the per-block maximum;

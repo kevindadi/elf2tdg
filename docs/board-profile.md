@@ -358,11 +358,26 @@ evicts it after it is loaded. This is more precise than a whole-loop working-set
 check, because a line can persist even when the loop's total set working set is
 larger than the associativity. IPET permits at most one miss per persistent
 line per loop entry; non-persistent lines retain per-line block bounds. The
-line-split regions are recorded in `cache.persistence`, and `ipet.cache_model`
-records `state-product`, `line-split` or `block-bounds`. Cache-analysis
-fallback, loops with calls, multi-entry loops, state-limit overflow and loops
-with no persistent line keep `block-bounds`. `--require-safe` rejects
-`invalidate_on_call = false` because inter-function cache state is not modeled.
+line-split regions are recorded in `cache.persistence`.
+
+When per-line block bounds are still active, IPET also builds a **cache
+conflict graph** per loop and cache set and adds:
+
+```text
+line-misses <= loop-entries + sum(accesses to other lines in the same set)
+```
+
+Every miss after the first one in a loop entry must follow an access to a
+different line that can evict the line, so this is a sound upper bound. It is
+independent of the concrete cache categories and therefore also applies when
+the cache analysis falls back to all-miss block bounds. It skips loops with
+call-return invalidation or non-header entries. `ipet.cache_model` records
+`state-product`, `conflict-graph`, `line-split` or `block-bounds`, and
+`ipet.cache_conflicts` reports the applied sets, lines and constraints.
+Cache-analysis fallback alone no longer forces `block-bounds`; unresolved data
+addresses, loops with calls, multi-entry loops, no eligible loop or
+model-size overflow do. `--require-safe` rejects `invalidate_on_call = false`
+because inter-function cache state is not modeled.
 
 ### Data cache
 
@@ -416,12 +431,14 @@ state propagation, so modeled hits are optimistic. With
 IPET uses the same cache-state product as the instruction cache when the
 data-cache analysis completes, `invalidate_on_call = true`, and every reachable
 block has zero unresolved accesses. When the product is unavailable, data-cache
-line splitting applies with the same per-line first-miss proof, recorded in
-`data_cache.persistence` and `ipet.cache_model = "line-split"`. With
-`write_allocate = false`, lines with any store are excluded from the first-miss
-claim because a store miss does not install a line; purely written lines also
-do not occupy a set. Unresolved data accesses therefore keep the per-block
-cache bounds (`ipet.cache_model = "block-bounds"`); they are still rejected by
+line splitting and conflict-graph bounds apply. The conflict bound counts all
+accesses to other lines in the same set, which over-approximates evictions when
+`write_allocate = false`; this remains sound. First-miss regions are recorded
+in `data_cache.persistence`. With `write_allocate = false`, lines with any
+store are excluded from the first-miss claim because a store miss does not
+install a line; purely written lines also do not occupy a set. Unresolved data
+accesses disable the concrete model and keep per-block cache bounds
+(`ipet.cache_model = "block-bounds"`); they are still rejected by
 `--require-safe`, as is `invalidate_on_call = false`.
 
 ### Branch prediction
