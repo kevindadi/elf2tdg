@@ -142,10 +142,16 @@ cpu = "__CPU__"
 # read_ports = 4                   # 1..64
 # write_ports = 2                  # 1..64
 #
+# Optional data forwarding. The section enables forwarding; without
+# default_latency, built-in per-class bypass latencies are used.
+# [pipeline.forwarding]
+# default_latency = 1              # optional uniform default, clamped to latency
+#
 # [[pipeline.instructions]]
 # mnemonic = "ldr"
 # resources = ["load_store"]
 # latency = 2
+# forwarding_latency = 2           # optional; 1..latency, requires [pipeline.forwarding]
 # occupancy = 2
 
 # Instruction cache.
@@ -1144,6 +1150,8 @@ pub(crate) struct PipelineProfile {
     #[serde(default)]
     register_file: Option<PipelineRegisterFileProfile>,
     #[serde(default)]
+    forwarding: Option<PipelineForwardingProfile>,
+    #[serde(default)]
     branch_penalty: Option<CostSpec>,
     #[serde(default)]
     instructions: Vec<PipelineInstruction>,
@@ -1170,6 +1178,17 @@ impl PipelineProfile {
 
     pub(crate) fn register_file(&self) -> Option<&PipelineRegisterFileProfile> {
         self.register_file.as_ref()
+    }
+
+    pub(crate) fn forwarding(&self) -> Option<&PipelineForwardingProfile> {
+        self.forwarding.as_ref()
+    }
+
+    pub(crate) fn forwarding_override_count(&self) -> usize {
+        self.instructions
+            .iter()
+            .filter(|instruction| instruction.forwarding_latency.is_some())
+            .count()
     }
 
     pub(crate) fn resource_summary(&self) -> String {
@@ -1228,6 +1247,19 @@ impl PipelineRegisterFileProfile {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct PipelineForwardingProfile {
+    #[serde(default)]
+    default_latency: Option<u32>,
+}
+
+impl PipelineForwardingProfile {
+    pub(crate) fn default_latency(&self) -> Option<u32> {
+        self.default_latency
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PipelineInstruction {
     #[serde(default)]
     class: Option<InstructionClass>,
@@ -1235,6 +1267,8 @@ pub(crate) struct PipelineInstruction {
     mnemonic: Option<String>,
     resources: Vec<String>,
     latency: u32,
+    #[serde(default)]
+    forwarding_latency: Option<u32>,
     #[serde(default = "default_occupancy")]
     occupancy: u32,
 }
@@ -1254,6 +1288,10 @@ impl PipelineInstruction {
 
     pub(crate) fn latency(&self) -> u32 {
         self.latency
+    }
+
+    pub(crate) fn forwarding_latency(&self) -> Option<u32> {
+        self.forwarding_latency
     }
 
     pub(crate) fn occupancy(&self) -> u32 {
@@ -1567,6 +1605,13 @@ impl BoardProfile {
                 }
             }
         }
+        if let Some(forwarding) = &pipeline.forwarding
+            && forwarding.default_latency == Some(0)
+        {
+            return Err(Error::Config(
+                "board profile pipeline.forwarding.default_latency must be positive".to_owned(),
+            ));
+        }
         if let Some(branch_penalty) = &pipeline.branch_penalty
             && !branch_penalty.cost_range().is_valid()
         {
@@ -1617,6 +1662,19 @@ impl BoardProfile {
                 return Err(Error::Config(format!(
                     "board profile pipeline.instructions[{index}] latency and occupancy must be positive"
                 )));
+            }
+            if let Some(forwarding_latency) = instruction.forwarding_latency {
+                if pipeline.forwarding.is_none() {
+                    return Err(Error::Config(format!(
+                        "board profile pipeline.instructions[{index}].forwarding_latency requires [pipeline.forwarding]"
+                    )));
+                }
+                if forwarding_latency == 0 || forwarding_latency > instruction.latency {
+                    return Err(Error::Config(format!(
+                        "board profile pipeline.instructions[{index}].forwarding_latency must be between 1 and its latency ({}), not {forwarding_latency}",
+                        instruction.latency
+                    )));
+                }
             }
             if !selectors.insert((instruction.class, mnemonic)) {
                 return Err(Error::Config(format!(
@@ -2754,6 +2812,7 @@ locks = { uart = 500 }
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn validates_pipeline_profiles() {
         let valid = VALID
             .replace("schema_version = 1", "schema_version = 2")
@@ -2771,10 +2830,14 @@ load_store = 1
 read_ports = 4
 write_ports = 2
 
+[pipeline.forwarding]
+default_latency = 2
+
 [[pipeline.instructions]]
 class = "load"
 resources = ["load_store"]
 latency = 2
+forwarding_latency = 1
 occupancy = 1
 "#;
         let profile = BoardProfile::parse_toml(&valid).expect("valid pipeline profile");
@@ -2787,6 +2850,9 @@ occupancy = 1
         let register_file = pipeline.register_file().expect("register file");
         assert_eq!(register_file.read_ports(), 4);
         assert_eq!(register_file.write_ports(), 2);
+        let forwarding = pipeline.forwarding().expect("forwarding");
+        assert_eq!(forwarding.default_latency(), Some(2));
+        assert_eq!(pipeline.forwarding_override_count(), 1);
 
         let legacy = valid.replace("schema_version = 2", "schema_version = 1");
         assert!(BoardProfile::parse_toml(&legacy).is_err());
@@ -2849,6 +2915,37 @@ occupancy = 1
 
         let missing_write_ports = valid.replace("write_ports = 2\n", "");
         assert!(BoardProfile::parse_toml(&missing_write_ports).is_err());
+
+        let zero_forwarding_default = valid.replace("default_latency = 2", "default_latency = 0");
+        assert!(BoardProfile::parse_toml(&zero_forwarding_default).is_err());
+
+        let zero_forwarding_latency =
+            valid.replace("forwarding_latency = 1", "forwarding_latency = 0");
+        assert!(BoardProfile::parse_toml(&zero_forwarding_latency).is_err());
+
+        let excessive_forwarding_latency =
+            valid.replace("forwarding_latency = 1", "forwarding_latency = 3");
+        assert!(BoardProfile::parse_toml(&excessive_forwarding_latency).is_err());
+
+        let forwarding_without_section =
+            valid.replace("[pipeline.forwarding]\ndefault_latency = 2\n\n", "");
+        assert!(BoardProfile::parse_toml(&forwarding_without_section).is_err());
+
+        let empty_forwarding = valid.replace(
+            "[pipeline.forwarding]\ndefault_latency = 2",
+            "[pipeline.forwarding]",
+        );
+        let profile =
+            BoardProfile::parse_toml(&empty_forwarding).expect("empty forwarding section");
+        assert_eq!(
+            profile
+                .pipeline()
+                .expect("pipeline")
+                .forwarding()
+                .expect("forwarding")
+                .default_latency(),
+            None
+        );
 
         let no_resources = valid.replace("resources = [\"load_store\"]", "resources = []");
         assert!(BoardProfile::parse_toml(&no_resources).is_err());

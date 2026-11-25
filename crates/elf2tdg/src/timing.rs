@@ -566,7 +566,7 @@ fn pipeline_schedule(
     for instruction in instructions {
         let classification = classify(instruction);
         let mnemonic = canonical_mnemonic(&instruction.mnemonic);
-        let (resources, latency, occupancy, is_unknown) =
+        let (resources, latency, occupancy, forwarding_override, is_unknown) =
             if let Some(spec) = pipeline.instruction_for(classification.class, mnemonic) {
                 (
                     spec.resources()
@@ -575,6 +575,7 @@ fn pipeline_schedule(
                         .collect::<Vec<_>>(),
                     spec.latency(),
                     spec.occupancy(),
+                    spec.forwarding_latency(),
                     false,
                 )
             } else {
@@ -584,6 +585,7 @@ fn pipeline_schedule(
                     resources.to_vec(),
                     latency,
                     occupancy,
+                    None,
                     !classification.known,
                 )
             };
@@ -611,15 +613,22 @@ fn pipeline_schedule(
         let reads = u32::try_from(instruction.regs_read.len()).unwrap_or(u32::MAX);
         let writes = u32::try_from(instruction.regs_write.len()).unwrap_or(u32::MAX);
         let oversized = reads > read_ports || writes > write_ports;
+        let port_cycles = reads
+            .div_ceil(read_ports)
+            .max(writes.div_ceil(write_ports))
+            .max(1);
+        let forwarding_latency = pipeline.forwarding().map_or(latency, |forwarding| {
+            forwarding_override
+                .or(forwarding.default_latency())
+                .unwrap_or_else(|| pipeline_class_forwarding_default(model, classification.class))
+                .min(latency)
+                .max(1)
+        });
         let mut start = issue_floor.max(operand_ready).max(resource_ready);
         if oversized {
             if current_cycle == Some(start) {
                 start = start.saturating_add(1);
             }
-            let port_cycles = reads
-                .div_ceil(read_ports)
-                .max(writes.div_ceil(write_ports))
-                .max(1);
             issue_floor = start.saturating_add(port_cycles);
             port_end = port_end.max(issue_floor);
             current_cycle = None;
@@ -647,7 +656,7 @@ fn pipeline_schedule(
             reads_in_cycle = reads_in_cycle.saturating_add(reads);
             writes_in_cycle = writes_in_cycle.saturating_add(writes);
             issue_floor = start;
-            port_end = port_end.max(start.saturating_add(1));
+            port_end = port_end.max(start.saturating_add(port_cycles));
         }
         for resource in &resources {
             let capacity = pipeline.resource_units(resource);
@@ -659,11 +668,12 @@ fn pipeline_schedule(
             times.sort_unstable();
         }
         let result_ready = start.saturating_add(latency);
+        let source_ready = start.saturating_add(forwarding_latency.max(port_cycles));
         for register in &instruction.regs_write {
             register_ready
                 .entry(*register)
-                .and_modify(|current| *current = (*current).max(result_ready))
-                .or_insert(result_ready);
+                .and_modify(|current| *current = (*current).max(source_ready))
+                .or_insert(source_ready);
         }
         completion = completion.max(result_ready);
         fetch_cycles = fetch_cycles
@@ -847,10 +857,12 @@ impl TimingCostModel {
     /// The pipeline model schedules instructions in order using per-class
     /// resources, result latencies and register dependencies. Up to
     /// `issue_width` instructions may issue per cycle, each resource name has
-    /// the configured number of units, and an optional register-file section
-    /// budgets register reads and writes per issue cycle. It models local
-    /// hazards within one block; pipeline state at block entry is assumed
-    /// ready, so this is a local cost rather than a whole-program WCET bound.
+    /// the configured number of units, an optional register-file section
+    /// budgets register reads and writes per issue cycle, and an optional
+    /// forwarding section makes producer results readable before full
+    /// latency. It models local hazards within one block; pipeline state at
+    /// block entry is assumed ready, so this is a local cost rather than a
+    /// whole-program WCET bound.
     #[must_use]
     pub fn block_cost(&self, instructions: &[DecodedInsn]) -> (CostRange, Vec<(String, u64)>) {
         if self.model.supports_pipeline_model()
@@ -1183,6 +1195,26 @@ impl TimingCostModel {
                         register_file.write_ports().to_string(),
                     );
                 }
+                if let Some(forwarding) = pipeline.forwarding() {
+                    params.extras.insert(
+                        "board_profile_pipeline_forwarding".to_owned(),
+                        if forwarding.default_latency().is_some() {
+                            "uniform-default".to_owned()
+                        } else {
+                            "isa-class-presets".to_owned()
+                        },
+                    );
+                    if let Some(latency) = forwarding.default_latency() {
+                        params.extras.insert(
+                            "board_profile_pipeline_forwarding_default_latency".to_owned(),
+                            latency.to_string(),
+                        );
+                    }
+                    params.extras.insert(
+                        "board_profile_pipeline_forwarding_overrides".to_owned(),
+                        pipeline.forwarding_override_count().to_string(),
+                    );
+                }
                 params.extras.insert(
                     "board_profile_pipeline_branch_penalty".to_owned(),
                     format!(
@@ -1497,6 +1529,17 @@ impl TimingCostModel {
                 } else {
                     caveats.push(
                         "Register-file port limits are not modeled; add [pipeline.register_file] to enable issue-cycle read/write port budgets."
+                            .to_owned(),
+                    );
+                }
+                if pipeline.forwarding().is_some() {
+                    caveats.push(
+                        "Data forwarding is modeled by making a register producer's value readable after its configured forwarding latency while its execution still completes at full latency. Forwarding-network arbitration, partial bypass paths, writeback ordering/WAW effects and cross-block forwarding are not modeled; block boundaries wait for full completion."
+                            .to_owned(),
+                    );
+                } else {
+                    caveats.push(
+                        "Data forwarding is not modeled; consumers wait for the producer's full result latency. Add [pipeline.forwarding] to enable bypass latencies."
                             .to_owned(),
                     );
                 }
@@ -1913,6 +1956,38 @@ fn pipeline_class_default(
             aarch64_pipeline_default(class)
         }
         _ => cortex_m4_pipeline_default(class),
+    }
+}
+
+/// Generic per-class forwarding latency used by `[pipeline.forwarding]` when
+/// no uniform default or instruction override applies. Values equal to the
+/// class latency mean the result is not available before writeback, which is
+/// the default for loads and divides.
+fn pipeline_class_forwarding_default(model: TimingModel, class: InstructionClass) -> u32 {
+    match model {
+        TimingModel::CortexM4 => match class {
+            InstructionClass::Load | InstructionClass::PushPop | InstructionClass::LdmStm => 2,
+            InstructionClass::Divide => 12,
+            _ => 1,
+        },
+        TimingModel::RiscV32
+        | TimingModel::RiscV64
+        | TimingModel::RiscV32Bounded
+        | TimingModel::RiscV64Bounded => match class {
+            InstructionClass::Load
+            | InstructionClass::PushPop
+            | InstructionClass::LdmStm
+            | InstructionClass::Multiply => 2,
+            InstructionClass::Divide => 20,
+            _ => 1,
+        },
+        TimingModel::Aarch64Generic | TimingModel::Aarch64Bounded => match class {
+            InstructionClass::Load | InstructionClass::PushPop | InstructionClass::LdmStm => 3,
+            InstructionClass::Multiply => 2,
+            InstructionClass::Divide => 12,
+            _ => 1,
+        },
+        _ => 1,
     }
 }
 
@@ -3248,6 +3323,230 @@ write_ports = {write_ports}
                 .caveats
                 .iter()
                 .any(|caveat| caveat.contains("Register-file port limits are not modeled"))
+        );
+    }
+
+    #[allow(clippy::option_option)]
+    fn forwarding_add_model(
+        forwarding: Option<Option<u32>>,
+        latency: u32,
+        forwarding_latency: Option<u32>,
+    ) -> TimingCostModel {
+        let forwarding_section = forwarding.map_or_else(String::new, |default_latency| {
+            default_latency.map_or_else(
+                || "[pipeline.forwarding]\n".to_owned(),
+                |latency| format!("[pipeline.forwarding]\ndefault_latency = {latency}\n"),
+            )
+        });
+        let forwarding_line = forwarding_latency.map_or_else(String::new, |latency| {
+            format!("forwarding_latency = {latency}\n")
+        });
+        let profile = BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:forwarding"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[pipeline]
+issue_width = 1
+{forwarding_section}
+[[pipeline.instructions]]
+mnemonic = "add"
+resources = ["alu"]
+latency = {latency}
+{forwarding_line}"#
+        ))
+        .expect("valid forwarding profile");
+        TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model")
+    }
+
+    fn dependent_adds() -> [DecodedInsn; 2] {
+        [
+            insn_with_regs(0x1000, 4, "add", &[1], &[2]),
+            insn_with_regs(0x1004, 4, "add", &[2], &[3]),
+        ]
+    }
+
+    #[test]
+    fn forwarding_class_preset_reduces_raw_stalls() {
+        let baseline = forwarding_add_model(None, 4, None);
+        let (cost, _) = baseline.block_cost(&dependent_adds());
+        assert_eq!(cost.max, 8.0);
+
+        let forwarded = forwarding_add_model(Some(None), 4, None);
+        let (cost, _) = forwarded.block_cost(&dependent_adds());
+        assert_eq!(cost.max, 5.0);
+    }
+
+    #[test]
+    fn forwarding_default_and_instruction_override_are_applied() {
+        let uniform = forwarding_add_model(Some(Some(2)), 4, None);
+        let (cost, _) = uniform.block_cost(&dependent_adds());
+        assert_eq!(cost.max, 6.0);
+
+        let overridden = forwarding_add_model(Some(Some(2)), 4, Some(3));
+        let (cost, _) = overridden.block_cost(&dependent_adds());
+        assert_eq!(cost.max, 7.0);
+    }
+
+    #[test]
+    fn forwarding_does_not_reduce_completion_latency() {
+        let model = forwarding_add_model(Some(None), 5, None);
+        let (cost, _) = model.block_cost(&[insn_with_regs(0x1000, 4, "add", &[1], &[2])]);
+        assert_eq!(cost.max, 5.0);
+    }
+
+    #[test]
+    fn forwarding_default_is_clamped_to_instruction_latency() {
+        let model = forwarding_add_model(Some(Some(10)), 4, None);
+        let (cost, _) = model.block_cost(&dependent_adds());
+        assert_eq!(cost.max, 8.0);
+    }
+
+    #[test]
+    fn forwarding_keeps_the_default_load_use_stall() {
+        let toml = r#"
+schema_version = 2
+id = "board:forwarding-load"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[pipeline]
+issue_width = 1
+
+[pipeline.forwarding]
+"#;
+        let profile = BoardProfile::parse_toml(toml).expect("valid load forwarding profile");
+        let model = TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model");
+        let instructions = [
+            insn_with_regs(0x1000, 4, "ld", &[1], &[2]),
+            insn_with_regs(0x1004, 4, "add", &[2], &[3]),
+        ];
+        let (cost, _) = model.block_cost(&instructions);
+        assert_eq!(cost.max, 3.0, "load-use waits for the full load latency");
+
+        let uniform = toml.replace(
+            "[pipeline.forwarding]",
+            "[pipeline.forwarding]\ndefault_latency = 1",
+        );
+        let profile = BoardProfile::parse_toml(&uniform).expect("valid uniform load forwarding");
+        let model = TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model");
+        let (cost, _) = model.block_cost(&instructions);
+        assert_eq!(
+            cost.max, 2.0,
+            "a uniform bypass latency can override load-use"
+        );
+    }
+
+    #[test]
+    fn forwarding_class_presets_cover_multiply() {
+        for (cpu, arch) in [
+            ("aarch64-bounded", ArchKind::Aarch64),
+            ("riscv64-bounded", ArchKind::Riscv64),
+        ] {
+            let arch_name = if arch == ArchKind::Aarch64 {
+                "aarch64"
+            } else {
+                "riscv64"
+            };
+            let profile = BoardProfile::parse_toml(&format!(
+                r#"
+schema_version = 2
+id = "board:forwarding-multiply"
+arch = "{arch_name}"
+cpu = "{cpu}"
+
+[pipeline]
+issue_width = 1
+
+[pipeline.forwarding]
+"#
+            ))
+            .expect("valid multiply forwarding profile");
+            let model = TimingCostModel::select(Some(cpu), Some(&profile), &image(arch))
+                .expect("select")
+                .expect("model");
+            let instructions = [
+                insn_with_regs(0x1000, 4, "mul", &[1, 2], &[3]),
+                insn_with_regs(0x1004, 4, "add", &[3], &[4]),
+            ];
+            let (cost, _) = model.block_cost(&instructions);
+            assert_eq!(cost.max, 3.0, "{cpu} multiply forwards one cycle early");
+        }
+    }
+
+    #[test]
+    fn forwarding_metadata_records_model_and_overrides() {
+        let model = forwarding_add_model(Some(None), 4, Some(2));
+        let info = model.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_forwarding")
+                .map(String::as_str),
+            Some("isa-class-presets")
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_forwarding_overrides")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert!(
+            info.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("Data forwarding is modeled"))
+        );
+
+        let uniform = forwarding_add_model(Some(Some(3)), 4, None);
+        let info = uniform.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_forwarding")
+                .map(String::as_str),
+            Some("uniform-default")
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_forwarding_default_latency")
+                .map(String::as_str),
+            Some("3")
+        );
+
+        let baseline = forwarding_add_model(None, 4, None);
+        let info = baseline.timing_info(None, &BTreeSet::new());
+        assert!(
+            info.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("Data forwarding is not modeled"))
         );
     }
 

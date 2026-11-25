@@ -183,6 +183,9 @@ load_store = 1
 read_ports = 4
 write_ports = 2
 
+[pipeline.forwarding]
+default_latency = 1
+
 [[pipeline.instructions]]
 mnemonic = "ldr"
 resources = ["load_store"]
@@ -246,6 +249,28 @@ auto_loop_bounds = false
             .get("board_profile_pipeline_write_ports")
             .map(String::as_str),
         Some("2")
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_forwarding")
+            .map(String::as_str),
+        Some("uniform-default")
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_forwarding_default_latency")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert!(
+        timing.models[0]
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("Data forwarding is modeled"))
     );
     assert!(output.cfg.functions.iter().any(|function| {
         function
