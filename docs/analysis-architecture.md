@@ -52,7 +52,7 @@ Rust `dylib` interface.
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
 | P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one direct call group), per-function IPET, pure-Rust `microlp`; call-site-sensitive contexts, richer FFX constructs and conflict scalability are next |
-| P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with a per-function cache-state product, per-loop working-set cache-line persistence constraints for automata and product fallback, concrete branch-predictor state products with per-edge misprediction costs, and Cortex-M4 first-order edge-context pipeline stalls; line splitting, cache-conflict graphs, full inter-block pipeline state and inter-function predictor history are next |
+| P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, per-line first-miss constraints for automata and product fallback, concrete branch-predictor state products with per-edge misprediction costs, and Cortex-M4 first-order edge-context pipeline stalls; cache-conflict graphs, full inter-block pipeline state and inter-function predictor history are next |
 | P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | planned; caller-function context summaries are implemented in P1 |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
@@ -150,16 +150,20 @@ from summed local estimates.
   IPET selects a cache-state product when the instruction/data-cache analysis
   completes and `invalidate_on_call` is true; the product substitutes modeled
   misses for the per-block worst-case penalty. When the product is unavailable
-  (ordered/cross-function automata or product overflow), a per-loop
-  working-set persistence model allows at most one miss per persistent line
-  per loop entry; persistence requires the loop's distinct lines per set to
-  fit in the associativity and no call-return edge inside the loop. Line
-  splitting, cache-conflict graphs, non-LRU replacement and cache state shared
-  with callees remain unimplemented; cache-analysis fallback, unresolved data
-  addresses, a non-fitting loop or no persistent line keep per-block bounds.
-  Data-cache state integration also requires zero unresolved memory accesses,
-  and with `write_allocate = false` lines with any store are excluded from
-  persistence. Data-memory results remain per-block and not path-sensitive.
+  (ordered/cross-function automata or product overflow), line splitting models
+  each basic block's cache cost per logical line block and allows at most one
+  miss per persistent line per loop entry. Per-line first-miss is proved from
+  the concrete cache-state graph: a line qualifies when it is never evicted
+  after being loaded within the loop. This is more precise than a whole-set
+  working-set check, because a line can persist even when the loop's total set
+  working set exceeds the associativity. Cache-conflict graphs, non-LRU
+  replacement and cache state shared with callees remain unimplemented;
+  cache-analysis fallback, unresolved data addresses, loops with call-return
+  edges, multi-entry loops, state-limit overflow or no persistent line keep
+  per-block bounds. Data-cache state integration also requires zero unresolved
+  memory accesses, and with `write_allocate = false` lines with any store are
+  excluded from the first-miss claim. Data-memory results remain per-block and
+  not path-sensitive.
 - Branch-prediction state IPET starts each function from the configured
   predictor state and follows concrete predictor transitions, charging the
   actual outcome on each edge. Unsupported branches, analysis fallback,

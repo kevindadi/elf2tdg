@@ -29,9 +29,9 @@ The report is deterministic and uses plain text only.
    including vector/IRQ numbers and confidence.
 4. **Timing** — the instruction timing model, determinism, cost-table version,
    frequency domains and model caveats.
-5. **Analysis models** — instruction/data cache (including per-loop
-   persistent-line regions), branch prediction, data-memory latency, pipeline
-   edge stalls and multicore interference summaries when enabled.
+5. **Analysis models** — instruction/data cache (including line-split
+   first-miss regions), branch prediction, data-memory latency, pipeline edge
+   stalls and multicore interference summaries when enabled.
 6. **WCET** — model name, loop-bound configuration, resolved branch/call flow
    facts, result counts, per-root cycles/nanoseconds and the analysis caveats.
 7. **Layered system model** — when a WCET profile is active: task/place/
@@ -90,10 +90,10 @@ The `wcet` section reports the selected backend:
 - `cfg-longest-path` (default): CFG longest path with bounded loop visits.
 - `cfg-ipet` (`--path-analysis ipet`): IPET integer-linear program solved with
   the pure-Rust `microlp` backend. The report prints the solver status, objective,
-  cache model (`state-product`, `persistence` or `block-bounds`) when a cache
+  cache model (`state-product`, `line-split` or `block-bounds`) when a cache
   profile is active, branch model (`state-product` or `block-bounds`) when a
   branch-prediction profile is active, and positive block execution counts for
-  each function. The cache model section also lists each persistent loop and
+  each function. The cache model section also lists each first-miss loop and
   its line addresses. The
   flow-facts section
   lists each explicit loop bound with its source (board profile or F4/FFX file)
@@ -105,8 +105,8 @@ The `wcet` section reports the selected backend:
 
 Both are static estimates, not hardware proofs: loop bounds must be configured,
 recursive call-graph SCCs are unbounded, cache models are per-function with
-cold entry and call-return invalidation, cache persistence is a per-loop
-working-set proof rather than line splitting or a cache-conflict graph, IPET
+cold entry and call-return invalidation, line splitting proves first-miss per
+cache line from modeled states rather than a cache-conflict graph, IPET
 pipeline costs add only a first-order edge context, branch-prediction IPET
 follows a per-function initial predictor state with no inter-function history,
 data-memory results remain block-local, and interrupts, DMA, bus contention and

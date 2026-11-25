@@ -27,8 +27,8 @@ These models are explicit and conservative:
 - cache and data-memory wait-state analyses add their upper-bound penalties on
   top of the base block cost when enabled by the profile; IPET may replace the
   cache part with a per-function cache-state product when that analysis
-  completes and `invalidate_on_call = true`, or with a per-loop working-set
-  persistence model when the state product is unavailable;
+  completes and `invalidate_on_call = true`, or with per-line first-miss
+  constraints from line splitting when the state product is unavailable;
 - branch-prediction penalties are added when a `[branch_prediction]` profile is
   enabled; IPET may replace the per-block maximum with a concrete
   predictor-state product when the branch analysis completes.
