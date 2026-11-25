@@ -150,7 +150,7 @@ pub(crate) fn analyze_program(
         blocks_analyzed: 0,
         blocks_fallback: 0,
         persistence: CfgCachePersistenceInfo::new(
-            "data-working-set-lru",
+            "data-line-split-lru",
             cache_persistence::caveats(true),
         ),
         caveats: vec![
@@ -188,17 +188,15 @@ pub(crate) fn analyze_program(
             info.functions_analyzed = info.functions_analyzed.saturating_add(1);
             info.blocks_analyzed = info.blocks_analyzed.saturating_add(result.blocks);
         }
-        let persistence =
-            cache_persistence::data(&function.cfg, model.geometry(), model.write_allocate);
         info.persistence.loops_analyzed = info
             .persistence
             .loops_analyzed
-            .saturating_add(persistence.loops_analyzed);
+            .saturating_add(result.persistence.loops_analyzed);
         info.persistence.loops_persistent = info
             .persistence
             .loops_persistent
-            .saturating_add(persistence.loops_persistent);
-        for region in &persistence.regions {
+            .saturating_add(result.persistence.loops_persistent);
+        for region in &result.persistence.regions {
             persistent_lines.extend(region.lines.iter().copied());
             info.persistence
                 .regions
@@ -216,6 +214,7 @@ struct FunctionResult {
     resolved_memory_accesses: u32,
     unresolved_memory_accesses: u32,
     line_accesses: u32,
+    persistence: cache_persistence::PersistenceAnalysis,
 }
 
 impl FunctionResult {
@@ -227,6 +226,7 @@ impl FunctionResult {
             resolved_memory_accesses: 0,
             unresolved_memory_accesses: 0,
             line_accesses: 0,
+            persistence: cache_persistence::PersistenceAnalysis::default(),
         }
     }
 }
@@ -333,6 +333,18 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
             .saturating_add(trace.unresolved_memory_accesses);
         summary.line_accesses = summary.line_accesses.saturating_add(line_accesses);
     }
+    let state_accesses: BTreeMap<NodeIndex, Vec<CacheAccess>> = traces
+        .iter()
+        .map(|(node, trace)| (*node, trace.lines.clone()))
+        .collect();
+    summary.persistence = cache_persistence::data_from_states(
+        cfg,
+        &entry_states,
+        &state_accesses,
+        geometry,
+        model.write_allocate,
+        model.max_states,
+    );
     summary
 }
 

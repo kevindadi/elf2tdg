@@ -53,7 +53,7 @@ fn applies_instruction_cache_penalties() {
     assert_eq!(info.miss_penalty, 20);
     assert!(info.functions_analyzed > 0);
     assert!(info.blocks_analyzed > 0);
-    assert_eq!(info.persistence.model, "instruction-working-set-lru");
+    assert_eq!(info.persistence.model, "instruction-line-split-lru");
     assert!(info.persistence.loops_analyzed >= info.persistence.loops_persistent);
     assert!(base.cfg.cache.is_none());
 
@@ -62,6 +62,7 @@ fn applies_instruction_cache_penalties() {
     let mut saw_misses = false;
     let mut saw_hits = false;
     let mut saw_line_class = false;
+    let mut saw_line_block = false;
     for function in &cached.cfg.functions {
         for node in function.cfg.blocks_by_address.values() {
             let block = &function.cfg.graph[*node];
@@ -82,6 +83,10 @@ fn applies_instruction_cache_penalties() {
                         | cfg::CfgCacheLineClass::MayHit
                 )
             });
+            saw_line_block |= cache_block
+                .lines
+                .iter()
+                .any(|line| line.instructions > 0 && line.size > 0);
             let base_cycles = base_costs.get(&block.id).expect("base block");
             if let Some(cycles) = block.cycles {
                 let expected_min =
@@ -98,6 +103,10 @@ fn applies_instruction_cache_penalties() {
     assert!(saw_penalty, "cache misses must add cycle penalties");
     assert!(saw_hits, "some analyzed line must always hit");
     assert!(saw_line_class, "every line must have a classification");
+    assert!(
+        saw_line_block,
+        "line splitting must record instruction spans"
+    );
 
     let json = cfg::render_json(&cached.cfg, None, false).expect("CFG JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("CFG JSON");
@@ -105,7 +114,7 @@ fn applies_instruction_cache_penalties() {
     assert_eq!(document["cache"]["miss_penalty"], 20);
     assert_eq!(
         document["cache"]["persistence"]["model"],
-        "instruction-working-set-lru"
+        "instruction-line-split-lru"
     );
     assert_eq!(
         document["cache"]["persistence"]["loops_analyzed"],
@@ -122,7 +131,9 @@ fn applies_instruction_cache_penalties() {
                                 lines.iter().all(|line| {
                                     line["classification"].as_str().is_some_and(|class| {
                                         matches!(class, "always-hit" | "always-miss" | "may-hit")
-                                    })
+                                    }) && line["first_address"].is_string()
+                                        && line["size"].is_number()
+                                        && line["instructions"].is_number()
                                 })
                             })
                     })

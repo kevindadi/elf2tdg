@@ -28,13 +28,13 @@ use elf2tdg_schema::{BlockId, FunctionId};
 
 use crate::board_profile::BranchPredictionProfile;
 use crate::branch_prediction::{PredictorModel, PredictorState, conditional_branch};
-use crate::cache_persistence;
+use crate::cache_persistence::{self, PersistenceAnalysis, PersistenceRegion};
 use crate::cache_state::{
     CacheGeometry, CacheState, data_accesses, instruction_accesses, simulate,
 };
 use crate::cfg::{
-    CfgBlock, CfgFunction, CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo,
-    CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CfgBlock, CfgCachePersistenceInfo, CfgFunction, CfgFunctionWcet, CfgIpetBlockCount,
+    CfgIpetSolution, CfgWcetInfo, CfgWcetStatus, FunctionCfg, ProgramCfg,
 };
 use crate::flow_facts::{
     BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
@@ -252,7 +252,7 @@ pub(crate) fn analyze_program_with_branch_prediction(
     };
     if program.cache.is_some() || program.data_cache.is_some() {
         info.caveats.push(
-            "Cache-state IPET simulates the configured LRU caches with cold per-function entry and call-return invalidation when the cache analysis completes and invalidate_on_call is enabled. When the cache-state product is unavailable (ordered/cross-function automata or product overflow), a per-loop working-set persistence model charges persistent lines at most once per loop entry; cache-analysis fallback, unresolved data addresses, loops with calls or non-persistent lines keep per-block miss bounds."
+            "Cache-state IPET simulates the configured LRU caches with cold per-function entry and call-return invalidation when the cache analysis completes and invalidate_on_call is enabled. When the cache-state product is unavailable (ordered/cross-function automata or product overflow), a line-split model charges each persistent cache line at most once per loop entry and otherwise keeps per-line block bounds; cache-analysis fallback, unresolved data addresses, loops with calls or non-persistent lines keep per-block miss bounds."
                 .to_owned(),
         );
     }
@@ -433,7 +433,8 @@ fn solve_function(
     let automata = ordered_automata(facts, function_id, scope);
     let cross = cross_function_constraints(facts, function_id, scope);
     let pipeline_stalls = pipeline_edge_stalls(program, cfg);
-    let cache_persistence = build_cache_persistence_models(program, cfg, reachable_nodes);
+    let cache_persistence =
+        build_cache_persistence_models(program, cfg, reachable_nodes, function_id);
     if !cross.is_empty() {
         let mut outcome = solve_function_with_cross_function_automata(
             program,
@@ -668,7 +669,7 @@ fn solve_function(
             cache_model: if cache_persistence.is_empty() {
                 cache_fallback_model(program)
             } else {
-                Some("persistence".to_owned())
+                Some("line-split".to_owned())
             },
             branch_model: branch_fallback_model(branch_prediction),
             blocks,
@@ -1576,7 +1577,7 @@ fn solve_function_with_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: (!cache_persistence.is_empty()).then(|| "persistence".to_owned()),
+            cache_model: (!cache_persistence.is_empty()).then(|| "line-split".to_owned()),
             branch_model: None,
             blocks,
         },
@@ -2729,7 +2730,7 @@ fn solve_function_with_cross_function_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: (!cache_persistence.is_empty()).then(|| "persistence".to_owned()),
+            cache_model: (!cache_persistence.is_empty()).then(|| "line-split".to_owned()),
             branch_model: None,
             blocks,
         },
@@ -2902,6 +2903,7 @@ fn build_cache_persistence_models(
     program: &ProgramCfg,
     cfg: &FunctionCfg,
     reachable_nodes: &BTreeSet<NodeIndex>,
+    function_id: &FunctionId,
 ) -> CachePersistenceModels {
     let mut models = CachePersistenceModels::default();
     if let Some(info) = &program.cache
@@ -2917,14 +2919,7 @@ fn build_cache_persistence_models(
                 .is_some_and(|cache| !cache.fallback)
         })
     {
-        let analysis = cache_persistence::instruction(
-            cfg,
-            CacheGeometry {
-                line_bytes: u64::from(info.line_bytes),
-                sets: info.sets,
-                ways,
-            },
-        );
+        let analysis = persistence_from_info(&info.persistence, function_id, cfg);
         if !analysis.is_empty() {
             models.instruction = Some(CachePersistenceIpetModel {
                 kind: PersistenceCacheKind::Instruction,
@@ -2946,15 +2941,7 @@ fn build_cache_persistence_models(
                 .is_some_and(|cache| !cache.fallback && cache.unresolved_memory_accesses == 0)
         })
     {
-        let analysis = cache_persistence::data(
-            cfg,
-            CacheGeometry {
-                line_bytes: u64::from(info.line_bytes),
-                sets: info.sets,
-                ways,
-            },
-            info.write_allocate,
-        );
+        let analysis = persistence_from_info(&info.persistence, function_id, cfg);
         if !analysis.is_empty() {
             models.data = Some(CachePersistenceIpetModel {
                 kind: PersistenceCacheKind::Data,
@@ -2964,6 +2951,56 @@ fn build_cache_persistence_models(
         }
     }
     models
+}
+
+fn persistence_from_info(
+    info: &CfgCachePersistenceInfo,
+    function_id: &FunctionId,
+    cfg: &FunctionCfg,
+) -> PersistenceAnalysis {
+    if info.regions.is_empty() || cfg.blocks_by_address.is_empty() {
+        return PersistenceAnalysis::default();
+    }
+    let graph = crate::cfg_graph::analyze(cfg);
+    let node_by_id: BTreeMap<BlockId, NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    let mut regions = Vec::new();
+    for region in &info.regions {
+        if &region.function != function_id || region.lines.is_empty() {
+            continue;
+        }
+        let Some(loop_) = graph
+            .loops
+            .iter()
+            .find(|candidate| candidate.header == region.header)
+        else {
+            continue;
+        };
+        let blocks: Vec<NodeIndex> = loop_
+            .blocks
+            .iter()
+            .filter_map(|block| node_by_id.get(block).copied())
+            .collect();
+        if blocks.is_empty() {
+            continue;
+        }
+        regions.push(PersistenceRegion {
+            header: region.header.clone(),
+            blocks,
+            lines: region.lines.iter().map(|line| line.get()).collect(),
+        });
+    }
+    if regions.is_empty() {
+        return PersistenceAnalysis::default();
+    }
+    PersistenceAnalysis {
+        loops_analyzed: u32::try_from(graph.loops.len()).unwrap_or(u32::MAX),
+        loops_persistent: u32::try_from(regions.len()).unwrap_or(u32::MAX),
+        regions,
+    }
 }
 
 fn cache_persistence_base_cost(
@@ -4849,6 +4886,28 @@ bound_nonterminating_loops = true
         )])
     }
 
+    fn cache_line_split_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x3000,
+            FunctionCfg::build(
+                vec![
+                    block(0x3000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x3010, CfgTerminator::Branch, 1.0),
+                    block(0x3030, CfgTerminator::Jump, 1.0),
+                    block(0x3050, CfgTerminator::Jump, 1.0),
+                ],
+                vec![
+                    edge(0x3000, 0x3010, CfgEdgeKind::Fallthrough),
+                    edge(0x3010, 0x3030, CfgEdgeKind::Fallthrough),
+                    edge(0x3010, 0x3050, CfgEdgeKind::Branch),
+                    edge(0x3030, 0x3000, CfgEdgeKind::Jump),
+                    edge(0x3050, 0x3000, CfgEdgeKind::Jump),
+                ],
+                Some(0x3000),
+            ),
+        )])
+    }
+
     fn cache_loop_header_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x2000,
@@ -5046,10 +5105,84 @@ max_states = 16
             .as_ref()
             .and_then(|wcet| wcet.ipet.as_ref())
             .expect("persistence IPET");
-        assert_eq!(ipet.cache_model.as_deref(), Some("persistence"));
+        assert_eq!(ipet.cache_model.as_deref(), Some("line-split"));
         assert!(
             ipet.objective < bounded_ipet.objective,
-            "persistence must cap repeated loop misses: {} < {}",
+            "line splitting must cap repeated loop misses: {} < {}",
+            ipet.objective,
+            bounded_ipet.objective
+        );
+    }
+
+    #[test]
+    fn line_split_tracks_a_persistent_line_inside_a_conflicting_set() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 64
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 64
+",
+        );
+        let mut program = cache_line_split_program();
+        prepare_cache_program(&mut program, &board);
+        let persistence = &program.cache.as_ref().expect("cache info").persistence;
+        assert!(
+            persistence
+                .regions
+                .iter()
+                .any(|region| region.lines.iter().any(|line| line.get() == 0x3010)),
+            "the shared branch line must be persistent even though the set has three lines"
+        );
+        let conflict = r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x3000">
+      <conflict ordered="yes">
+        <block address="0x3010"/>
+        <block address="0x3030"/>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#;
+        let mut bounded = program.clone();
+        bounded
+            .cache
+            .as_mut()
+            .expect("cache info")
+            .invalidate_on_call = false;
+        let mut bounded_facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let document = FlowFactDocument::parse_text(conflict, "line-split.ffx").expect("parse");
+        bounded_facts
+            .apply_document(document, &bounded)
+            .expect("apply conflict");
+        let _ = analyze_program(&mut bounded, &bounded_facts);
+        let bounded_ipet = bounded.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("bounded IPET");
+
+        let mut constrained = program.clone();
+        let mut constrained_facts =
+            FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let document = FlowFactDocument::parse_text(conflict, "line-split.ffx").expect("parse");
+        constrained_facts
+            .apply_document(document, &constrained)
+            .expect("apply conflict");
+        let _ = analyze_program(&mut constrained, &constrained_facts);
+        let ipet = constrained.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("line-split IPET");
+        assert_eq!(ipet.cache_model.as_deref(), Some("line-split"));
+        assert!(
+            ipet.objective < bounded_ipet.objective,
+            "line splitting must cap the persistent line: {} < {}",
             ipet.objective,
             bounded_ipet.objective
         );

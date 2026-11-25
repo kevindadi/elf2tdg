@@ -150,6 +150,14 @@ impl CacheState {
         }
     }
 
+    /// Returns whether `line` is resident in its set.
+    pub(crate) fn contains(&self, line: u64, set_count: u64) -> bool {
+        let set = usize::try_from(line % set_count).unwrap_or(0);
+        self.sets
+            .get(set)
+            .is_some_and(|lines| lines.contains(&line))
+    }
+
     /// Accesses `line`, inserting on a miss and refreshing LRU order on a hit.
     pub(crate) fn access(&mut self, line: u64, ways: usize, set_count: u64) -> bool {
         let set = usize::try_from(line % set_count).unwrap_or(0);

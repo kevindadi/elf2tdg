@@ -91,7 +91,7 @@ pub(crate) fn analyze_program(
         blocks_analyzed: 0,
         blocks_fallback: 0,
         persistence: CfgCachePersistenceInfo::new(
-            "instruction-working-set-lru",
+            "instruction-line-split-lru",
             cache_persistence::caveats(false),
         ),
         caveats: vec![
@@ -115,16 +115,15 @@ pub(crate) fn analyze_program(
             info.functions_analyzed = info.functions_analyzed.saturating_add(1);
             info.blocks_analyzed = info.blocks_analyzed.saturating_add(result.blocks);
         }
-        let persistence = cache_persistence::instruction(&function.cfg, model.geometry());
         info.persistence.loops_analyzed = info
             .persistence
             .loops_analyzed
-            .saturating_add(persistence.loops_analyzed);
+            .saturating_add(result.persistence.loops_analyzed);
         info.persistence.loops_persistent = info
             .persistence
             .loops_persistent
-            .saturating_add(persistence.loops_persistent);
-        for region in &persistence.regions {
+            .saturating_add(result.persistence.loops_persistent);
+        for region in &result.persistence.regions {
             persistent_lines.extend(region.lines.iter().copied());
             info.persistence
                 .regions
@@ -138,6 +137,7 @@ pub(crate) fn analyze_program(
 struct FunctionResult {
     fallback: bool,
     blocks: u32,
+    persistence: cache_persistence::PersistenceAnalysis,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -146,6 +146,7 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
         return FunctionResult {
             fallback: false,
             blocks: 0,
+            persistence: cache_persistence::PersistenceAnalysis::default(),
         };
     };
     let nodes: Vec<NodeIndex> = cfg.blocks_by_address.values().copied().collect();
@@ -222,8 +223,16 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
             .iter()
             .map(|(line, accesses)| {
                 let (hits_min, hits_max) = hits.get(line).copied().unwrap_or((0, 0));
+                let (first_address, size, instructions) = line_block_span(
+                    &cfg.graph[node],
+                    model.line_address(*line),
+                    model.line_bytes,
+                );
                 CfgBlockCacheLine {
                     line: Addr::new(model.line_address(*line)),
+                    first_address,
+                    size,
+                    instructions,
                     accesses: *accesses,
                     classification: if hits_min == *accesses {
                         crate::cfg::CfgCacheLineClass::AlwaysHit
@@ -256,9 +265,17 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &CacheModel) -> FunctionResult
         );
         block_count = block_count.saturating_add(1);
     }
+    let persistence = cache_persistence::instruction_from_states(
+        cfg,
+        &entry_states,
+        &accesses,
+        geometry,
+        model.max_states,
+    );
     FunctionResult {
         fallback: false,
         blocks: block_count,
+        persistence,
     }
 }
 
@@ -288,14 +305,24 @@ fn fallback_function(
         }
         let lines = access_counts
             .iter()
-            .map(|(line, accesses)| CfgBlockCacheLine {
-                line: Addr::new(model.line_address(*line)),
-                accesses: *accesses,
-                classification: crate::cfg::CfgCacheLineClass::AlwaysMiss,
-                hits_min: 0,
-                hits_max: 0,
-                misses_min: *accesses,
-                misses_max: *accesses,
+            .map(|(line, accesses)| {
+                let (first_address, size, instructions) = line_block_span(
+                    &cfg.graph[node],
+                    model.line_address(*line),
+                    model.line_bytes,
+                );
+                CfgBlockCacheLine {
+                    line: Addr::new(model.line_address(*line)),
+                    first_address,
+                    size,
+                    instructions,
+                    accesses: *accesses,
+                    classification: crate::cfg::CfgCacheLineClass::AlwaysMiss,
+                    hits_min: 0,
+                    hits_max: 0,
+                    misses_min: *accesses,
+                    misses_max: *accesses,
+                }
             })
             .collect();
         let fetches = u32::try_from(line_accesses.len()).unwrap_or(u32::MAX);
@@ -314,7 +341,38 @@ fn fallback_function(
     FunctionResult {
         fallback: true,
         blocks,
+        persistence: cache_persistence::PersistenceAnalysis::default(),
     }
+}
+
+fn line_block_span(
+    block: &crate::cfg::CfgBlock,
+    line_start: u64,
+    line_bytes: u64,
+) -> (Addr, u32, u32) {
+    let line_end = line_start.saturating_add(line_bytes);
+    let mut first = None;
+    let mut size = 0_u64;
+    let mut instructions = 0_u32;
+    for instruction in &block.instructions {
+        if instruction.size == 0 {
+            continue;
+        }
+        let start = instruction.address;
+        let end = start.saturating_add(u64::from(instruction.size));
+        let overlap_start = start.max(line_start);
+        let overlap_end = end.min(line_end);
+        if overlap_start < overlap_end {
+            first.get_or_insert(start);
+            size = size.saturating_add(overlap_end - overlap_start);
+            instructions = instructions.saturating_add(1);
+        }
+    }
+    (
+        Addr::new(first.unwrap_or(line_start)),
+        u32::try_from(size).unwrap_or(u32::MAX),
+        instructions,
+    )
 }
 
 #[allow(clippy::cast_precision_loss)]

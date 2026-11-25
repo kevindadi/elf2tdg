@@ -340,9 +340,9 @@ fn render_data_cache(out: &mut String, cache: Option<&CfgDataCacheInfo>) -> bool
 fn render_cache_persistence(out: &mut String, persistence: &CfgCachePersistenceInfo) {
     kv_indent(
         out,
-        "persistence",
+        "line split",
         &format!(
-            "{}; {} of {} loop(s), {} persistent line(s)",
+            "{}; {} of {} loop(s), {} first-miss line(s)",
             persistence.model,
             persistence.loops_persistent,
             persistence.loops_analyzed,
@@ -363,7 +363,7 @@ fn render_cache_persistence(out: &mut String, persistence: &CfgCachePersistenceI
         };
         let _ = writeln!(
             out,
-            "    persistent loop {} in {}: {} block(s), {} line(s) [{}{}]",
+            "    first-miss loop {} in {}: {} block(s), {} line(s) [{}{}]",
             region.header,
             region.function,
             region.blocks,
@@ -1249,18 +1249,23 @@ fn render_block_annotations(out: &mut String, block: &CfgBlock) {
         let fallback = if cache.fallback { ", fallback" } else { "" };
         let _ = writeln!(
             out,
-            "    icache: {} fetch(es), misses {}..{}, {} state(s){fallback}",
-            cache.fetches, cache.misses_min, cache.misses_max, cache.entry_states
+            "    icache: {} fetch(es), {} line block(s), misses {}..{}, {} state(s){fallback}",
+            cache.fetches,
+            cache.lines.len(),
+            cache.misses_min,
+            cache.misses_max,
+            cache.entry_states
         );
     }
     if let Some(cache) = block.data_cache.as_ref() {
         let fallback = if cache.fallback { ", fallback" } else { "" };
         let _ = writeln!(
             out,
-            "    dcache: {} access(es), {} resolved, {} unresolved, misses {}..{}, {} state(s){fallback}",
+            "    dcache: {} access(es), {} resolved, {} unresolved, {} line block(s), misses {}..{}, {} state(s){fallback}",
             cache.memory_accesses,
             cache.resolved_memory_accesses,
             cache.unresolved_memory_accesses,
+            cache.lines.len(),
             cache.misses_min,
             cache.misses_max,
             cache.entry_states

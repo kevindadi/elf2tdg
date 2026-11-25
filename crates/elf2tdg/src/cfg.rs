@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.24";
+pub const CFG_SCHEMA_VERSION: &str = "2.25";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -649,7 +649,7 @@ pub struct CfgBlockCache {
     /// Analysis fell back to an all-miss bound for this block.
     #[serde(skip_serializing_if = "is_false")]
     pub fallback: bool,
-    /// Per-line hit ranges.
+    /// Per-line logical blocks and their hit ranges.
     pub lines: Vec<CfgBlockCacheLine>,
 }
 
@@ -716,6 +716,13 @@ pub enum CfgCacheLineClass {
 pub struct CfgBlockCacheLine {
     /// Cache-line start address.
     pub line: Addr,
+    /// First instruction address in this line-split fragment.
+    pub first_address: Addr,
+    /// Bytes of instructions in this fragment.
+    pub size: u32,
+    /// Instructions touching this fragment (an instruction spanning two lines
+    /// is counted in both fragments).
+    pub instructions: u32,
     /// Number of fetch accesses to this line.
     pub accesses: u32,
     /// Classification across modeled entry states.
@@ -743,7 +750,7 @@ pub struct CfgCachePersistenceRegion {
     pub lines: Vec<Addr>,
 }
 
-/// Cache-line persistence analysis metadata.
+/// Line-split persistence and first-miss analysis metadata.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgCachePersistenceInfo {
     /// Persistence model name.
@@ -803,7 +810,7 @@ pub struct CfgCacheInfo {
     pub blocks_analyzed: u32,
     /// Blocks that fell back to an all-miss bound.
     pub blocks_fallback: u32,
-    /// Cache-line persistence analysis.
+    /// Line-split persistence and first-miss analysis.
     pub persistence: CfgCachePersistenceInfo,
     /// Analysis caveats.
     pub caveats: Vec<String>,

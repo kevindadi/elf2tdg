@@ -58,7 +58,7 @@ fn applies_data_cache_penalties() {
     assert!(info.memory_accesses > 0);
     assert!(info.resolved_memory_accesses > 0);
     assert!(info.unresolved_memory_accesses > 0);
-    assert_eq!(info.persistence.model, "data-working-set-lru");
+    assert_eq!(info.persistence.model, "data-line-split-lru");
     assert!(info.persistence.loops_analyzed >= info.persistence.loops_persistent);
     assert!(base.cfg.data_cache.is_none());
 
@@ -113,7 +113,7 @@ fn applies_data_cache_penalties() {
     assert_eq!(document["data_cache"]["write_allocate"], true);
     assert_eq!(
         document["data_cache"]["persistence"]["model"],
-        "data-working-set-lru"
+        "data-line-split-lru"
     );
     assert_eq!(
         document["data_cache"]["persistence"]["loops_analyzed"],
