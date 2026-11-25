@@ -466,12 +466,14 @@ analysis. It requires `schema_version = 2`.
 
 | Field | Required | Meaning |
 |---|---|---|
-| `model` | yes | `static-not-taken`, `static-taken`, `btfn` (backward-taken/forward-not-taken), `bimodal`, `global-history` (GAg), `gshare` or `local-history`. |
+| `model` | yes | `static-not-taken`, `static-taken`, `btfn` (backward-taken/forward-not-taken), `bimodal`, `global-history` (GAg), `gshare`, `local-history` or `two-level`. |
 | `mispredict_penalty` | yes | Extra core cycles charged for each modeled misprediction; must be positive. |
 | `initial_state` | no | Initial two-bit pattern-table counter: `strongly-not-taken`, `weakly-not-taken` (default), `weakly-taken` or `strongly-taken`. Used by counter-based models and ignored for `first_execution = "unknown"` first accesses. |
 | `first_execution` | no | `initial` (default) starts each table entry at `initial_state`; `unknown` treats an unexecuted table entry's counter as unknown and considers all four two-bit values, charging the worst modeled outcome. Used by `bimodal`, `global-history` and `gshare`. |
-| `history_bits` | history models | Width of the global or per-branch local history register, `1..=16`. Required for `global-history`/`gshare`/`local-history`; the history/pattern table has `2^history_bits` entries. |
-| `initial_history` | history models | Initial history-register value; must fit in `history_bits`. Required for `global-history`/`gshare`/`local-history`. |
+| `history_bits` | history models | Width of the global or per-branch local history register, `1..=16`. Required for `global-history`/`gshare`/`local-history`/`two-level`; the history/pattern table has `2^history_bits` entries. |
+| `initial_history` | history models | Initial history-register value; must fit in `history_bits`. Required for `global-history`/`gshare`/`local-history`/`two-level`. |
+| `level1_history` | `two-level` | `global` or `local`: whether the level-1 history register is shared or per branch site. Required for `two-level`. |
+| `level2_table` | `two-level` | `global` or `per-address`: whether the pattern table is shared or indexed by branch address. Required for `two-level`. |
 | `max_states` | no | Maximum concrete predictor states per block; defaults to `128`. |
 
 ```toml
@@ -490,10 +492,15 @@ taken/not-taken outcome. `global-history` keeps one global branch-history
 register and indexes one shared two-bit pattern table by that register (GAg);
 `gshare` indexes the table by the history XOR branch-PC bits. `local-history`
 keeps one local history register per branch site and indexes the pattern table
-by the branch site and that local history. All history models update their
-history with every modeled conditional outcome. The pattern table has
-`2^history_bits` entries per index, so only the low history/PC bits select a
-counter.
+by the branch site and that local history. `two-level` makes the two levels
+explicit:
+- `level1_history = "global"` uses one shared history register (GAg/GAs);
+  `"local"` uses one register per branch site (PAg/PAs).
+- `level2_table = "global"` shares one pattern table (GAg/PAg);
+  `"per-address"` indexes it by branch address (GAs/PAs).
+All history models update their history with every modeled conditional outcome.
+The pattern table has `2^history_bits` entries per index, so only the low
+history/PC bits select a counter.
 
 With `first_execution = "unknown"`, a table entry that has not executed yet is
 evaluated against all four possible two-bit counters; each actual edge keeps
@@ -503,8 +510,8 @@ survives calls and loops. The global history register still starts from
 `initial_history`; `first_execution` controls pattern-table entries, not the
 register's reset value. Only conditional branches with exactly one taken edge
 and one fallthrough edge are modeled. Indirect/table target prediction,
-return-address stacks, branch-target buffers, two-level history and tournament
-predictors are not modeled.
+return-address stacks, branch-target buffers and tournament predictors are not
+modeled.
 
 The analyzer propagates concrete predictor states over each function CFG and
 adds `mispredicts * mispredict_penalty` to block cycle ranges. Because a block
@@ -524,7 +531,7 @@ actual edge rather than the block-level maximum, and records
 mispredictions after predictor warm-up.
 
 For counter-based models (`bimodal`, `global-history`, `gshare`,
-`local-history`), IPET also builds branch-only callee summaries. A summary maps one concrete caller
+`local-history`, `two-level`), IPET also builds branch-only callee summaries. A summary maps one concrete caller
 predictor state to the feasible callee exit states and the maximum branch cost
 of the callee paths reaching each exit. At
 a direct, statically resolved call edge, IPET charges that branch cost and
@@ -536,8 +543,8 @@ state-specific branch cost. Indirect, unresolved or recursive calls,
 contextual flow facts, branch-analysis fallback, ordered/cross-function
 automata and the branch-effect (4096 states) and exit-state (256 per summary)
 caps fall back to the per-function `state-product` or `block-bounds` model.
-Global- and local-history predictors are modeled; two-level history and
-tournament predictors are not.
+Global-, local- and two-level history predictors are modeled; tournament
+predictors are not.
 
 ### Multicore interference
 
@@ -896,14 +903,14 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   are not modeled. For such cores the profile can refine table values, but the
   result remains statistical.
 - Branch prediction covers conditional direction only. Indirect/table target
-  prediction, return prediction, branch-target buffers and two-level/tournament
-  history are not modeled. Bimodal IPET summaries can carry predictor state
+  prediction, return prediction, branch-target buffers and tournament history
+  are not modeled. Counter-based IPET summaries can carry predictor state
   through direct calls when all branch effects and base callee costs are
   available; the `first_execution = "unknown"` entry history is carried with
   the same state, while unresolved/indirect/recursive boundaries and summary
-  caps fall back to per-function bounds. Global/local history models share the
-  per-function pattern-table state; two-level history, tournament predictors
-  and BTB behavior are not modeled.
+  caps fall back to per-function bounds. Global/local/two-level history models
+  share the per-function pattern-table state; tournament predictors and BTB
+  behavior are not modeled.
 - Data-memory latency is region-based. Only statically resolved accesses with
   addresses inside configured regions contribute wait cycles. If data-cache
   analysis is enabled too, its miss penalties and the wait cycles are additive.
