@@ -29,7 +29,8 @@ These models are explicit and conservative:
   cache part with a per-function cache-state product when that analysis
   completes and `invalidate_on_call = true`;
 - branch-prediction penalties are added when a `[branch_prediction]` profile is
-  enabled.
+  enabled; IPET may replace the per-block maximum with a concrete
+  predictor-state product when the branch analysis completes.
 
 Base per-class upper bounds:
 

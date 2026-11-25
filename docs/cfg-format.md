@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.22`.
+`cfg_schema_version` is `2.23`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.22 adds program-level `pipeline` edge-stall metadata.
-Version 2.21 adds the IPET `cache_model` field. Version 2.20 adds the
+functions. Version 2.23 adds the IPET `branch_model` field. Version 2.22 adds
+program-level `pipeline` edge-stall metadata. Version 2.21 adds the IPET
+`cache_model` field. Version 2.20 adds the
 cross-function conflict `call` boundary and per-element `function` fields.
 Version 2.19 adds the conflict enforcement `mode` (`aggregate` or `automaton`).
 Version 2.18 adds infeasible-path conflict records. Version 2.17
@@ -411,7 +412,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.22",
+  "cfg_schema_version": "2.23",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -618,6 +619,7 @@ block address:
     "status": "optimal",
     "objective": 87.0,
     "cache_model": "state-product",
+    "branch_model": "state-product",
     "blocks": [
       { "block": "bb:0x800085c", "executions": 1 },
       { "block": "bb:0x800086a", "executions": 1 }
@@ -631,7 +633,11 @@ upper bound. When a cache profile is active, `ipet.cache_model` is
 `state-product` for the per-function cache-state product and `block-bounds`
 when the function falls back to the per-block miss bounds (ordered/cross-function
 automata, cache-analysis fallback, unresolved data addresses or product-size
-overflow). The top-level `wcet.flow_facts` object records the loop bounds and
+overflow). When a branch-prediction profile is active, `ipet.branch_model` is
+`state-product` for the concrete per-function predictor-state product and
+`block-bounds` when the function falls back to per-block misprediction bounds
+(unsupported branches, analysis state-limit fallback, ordered/cross-function
+automata or product-size overflow). The top-level `wcet.flow_facts` object records the loop bounds and
 defaults used by the model, including bounds imported from F4/FFX files and
 conservatively inferred counted-loop bounds; each loop bound carries a
 `source` such as `board-profile [wcet]`, an imported file, or
@@ -954,10 +960,16 @@ asserts that the CFG validates.
   cache, no unresolved memory accesses. Ordered/cross-function automata,
   cache-analysis fallback and product-size overflow keep the per-block cache
   bounds and record `cache_model = "block-bounds"`. Cache persistence, line
-  splitting, cache conflict graphs and branch constraints in IPET are not
-  implemented. Pipeline edge-context stalls are integrated into the IPET
-  objective as first-order predecessor terms, but the pipeline timing model
-  remains `statistical` and is rejected by `--require-safe`.
+  splitting and cache conflict graphs are not implemented. Branch-prediction
+  state IPET follows concrete predictor states from the configured
+  per-function initial state when the branch analysis completes, charging the
+  actual predicted/actual edge outcome instead of the per-block maximum;
+  unsupported branches, analysis fallback, ordered/cross-function automata or
+  product-size overflow keep `branch_model = "block-bounds"`. Inter-function
+  and first-execution predictor history is not modeled. Pipeline edge-context
+  stalls are integrated into the IPET objective as first-order predecessor
+  terms, but the pipeline timing model remains `statistical` and is rejected
+  by `--require-safe`.
   Conditional or multi-target call sites and F4 non-loop
   directives are ignored conservatively. Irreducible
   cycles are unbounded, non-terminating bounded loops are `partial`, and a

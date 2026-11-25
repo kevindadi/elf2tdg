@@ -47,7 +47,8 @@ Implemented:
     and first-order edge-context stalls in IPET;
   - LRU instruction and data caches with per-block hit/miss ranges and an
     optional per-function cache-state product in IPET;
-  - static, BTFN or two-bit bimodal branch prediction;
+  - static, BTFN or two-bit bimodal branch prediction, with concrete
+    predictor-state IPET for per-edge misprediction costs;
   - per-region data-memory bus widths and read/write wait states;
   - explicit multicore access-budget interference (`[multicore]`) with
     per-block read/write/fetch attribution;
@@ -330,9 +331,11 @@ without ordered/cross-function automata; cache persistence and line splitting
 are not implemented. Pipeline block costs remain statistical; IPET adds
 first-order edge-context stalls but does not propagate full inter-block
 pipeline state, so the pipeline timing model is rejected by `--require-safe`.
-Branch constraints in IPET are not implemented. Context sensitivity applies to
-flow facts and WCET composition, not to the microarchitectural cache/branch
-models. Multicore interference is an explicit
+Branch-prediction state IPET follows the configured per-function initial
+predictor state; inter-function and first-execution history, unsupported
+branches and state-limit fallback keep per-block misprediction bounds. Context
+sensitivity applies to flow facts and WCET composition, not to the
+microarchitectural cache/branch models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.
 Without `[wcet]`, static cycle counts remain per-block costs, not execution-time
 bounds.

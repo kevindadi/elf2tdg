@@ -91,7 +91,9 @@ The `wcet` section reports the selected backend:
 - `cfg-ipet` (`--path-analysis ipet`): IPET integer-linear program solved with
   the pure-Rust `microlp` backend. The report prints the solver status, objective,
   cache model (`state-product` or `block-bounds`) when a cache profile is active,
-  and positive block execution counts for each function. The flow-facts section
+  branch model (`state-product` or `block-bounds`) when a branch-prediction
+  profile is active, and positive block execution counts for each function. The
+  flow-facts section
   lists each explicit loop bound with its source (board profile or F4/FFX file)
   and any caller context; contextual branch/call facts use the same
   `[context: ...]` suffix. Infeasible-path conflict records show whether the
@@ -102,8 +104,10 @@ The `wcet` section reports the selected backend:
 Both are static estimates, not hardware proofs: loop bounds must be configured,
 recursive call-graph SCCs are unbounded, cache models are per-function with
 cold entry and call-return invalidation, IPET pipeline costs add only a
-first-order edge context, branch/data-memory results remain block-local, and
-interrupts, DMA, bus contention and concurrency are not modeled. A
+first-order edge context, branch-prediction IPET follows a per-function initial
+predictor state with no inter-function history, data-memory results remain
+block-local, and interrupts, DMA, bus contention and concurrency are not
+modeled. A
 function marked `partial` has unresolved inputs; `unbounded` means no finite
 estimate was produced. A partial IPET objective is not a safe upper bound.
 Irreducible cycles are reported as `unbounded` rather than producing an

@@ -442,6 +442,16 @@ path-specific branch/predictor correlation is not modeled. If a block exceeds
 starts from the configured predictor state and call-return edges do not reset
 it, but callee branches remain outside the analysis.
 
+With `--path-analysis ipet`, a completed branch analysis without fallback
+enables a per-function predictor-state product. IPET tracks the concrete
+predictor state through the product, charges the modeled prediction for the
+actual edge rather than the block-level maximum, and records
+`ipet.branch_model = "state-product"`. This can remove repeated loop
+mispredictions after predictor warm-up. The initial state remains per
+function; inter-function/first-execution history, callee branches,
+analysis-fallback states, ordered/cross-function automata and product-state
+caps keep `branch_model = "block-bounds"`.
+
 ### Multicore interference
 
 The optional `[multicore]` table enables an explicit **access-budget**
