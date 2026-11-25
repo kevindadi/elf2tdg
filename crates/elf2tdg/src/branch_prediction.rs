@@ -24,7 +24,7 @@ use crate::cfg::{
     CfgBranchPredictionOutcome, CfgEdgeKind, CfgTerminator, FunctionCfg, ProgramCfg,
 };
 
-struct PredictorModel {
+pub(crate) struct PredictorModel {
     model: BranchPredictionModel,
     mispredict_penalty: u32,
     initial_state: u8,
@@ -32,7 +32,7 @@ struct PredictorModel {
 }
 
 impl PredictorModel {
-    fn from_profile(profile: &BranchPredictionProfile) -> Self {
+    pub(crate) fn from_profile(profile: &BranchPredictionProfile) -> Self {
         Self {
             model: profile.model(),
             mispredict_penalty: profile.mispredict_penalty(),
@@ -41,7 +41,7 @@ impl PredictorModel {
         }
     }
 
-    fn predict(
+    pub(crate) fn predict(
         &self,
         site: u64,
         taken_is_backward: bool,
@@ -67,7 +67,7 @@ impl PredictorModel {
         }
     }
 
-    fn update(&self, state: &mut PredictorState, site: u64, actual: CfgBranchDirection) {
+    pub(crate) fn update(&self, state: &mut PredictorState, site: u64, actual: CfgBranchDirection) {
         if self.model != BranchPredictionModel::Bimodal {
             return;
         }
@@ -78,10 +78,14 @@ impl PredictorModel {
         };
         state.set(site, next, self.initial_state);
     }
+
+    pub(crate) fn mispredict_penalty(&self) -> u32 {
+        self.mispredict_penalty
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct PredictorState {
+pub(crate) struct PredictorState {
     counters: BTreeMap<u64, u8>,
 }
 
@@ -100,14 +104,14 @@ impl PredictorState {
 }
 
 #[derive(Clone, Copy)]
-struct ConditionalBranch {
-    site: u64,
-    taken: NodeIndex,
-    fallthrough: NodeIndex,
-    taken_is_backward: bool,
+pub(crate) struct ConditionalBranch {
+    pub(crate) site: u64,
+    pub(crate) taken: NodeIndex,
+    pub(crate) fallthrough: NodeIndex,
+    pub(crate) taken_is_backward: bool,
 }
 
-fn conditional_branch(cfg: &FunctionCfg, node: NodeIndex) -> Option<ConditionalBranch> {
+pub(crate) fn conditional_branch(cfg: &FunctionCfg, node: NodeIndex) -> Option<ConditionalBranch> {
     let block = &cfg.graph[node];
     if block.terminator != CfgTerminator::Branch {
         return None;

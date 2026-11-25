@@ -26,6 +26,8 @@ use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use elf2tdg_schema::{BlockId, FunctionId};
 
+use crate::board_profile::BranchPredictionProfile;
+use crate::branch_prediction::{PredictorModel, PredictorState, conditional_branch};
 use crate::cache_state::{
     CacheGeometry, CacheState, data_accesses, instruction_accesses, simulate,
 };
@@ -47,10 +49,21 @@ pub(crate) const MODEL_NAME: &str = "cfg-ipet";
 const SOLVER_NAME: &str = "microlp";
 const MAX_MODEL_VARIABLES: usize = 500_000;
 
-/// Runs IPET over the program and attaches per-function results.
+/// Runs IPET without a branch-prediction profile.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> CfgWcetInfo {
+    analyze_program_with_branch_prediction(program, facts, None)
+}
+
+/// Runs IPET with the selected branch-prediction profile.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> CfgWcetInfo {
+pub(crate) fn analyze_program_with_branch_prediction(
+    program: &mut ProgramCfg,
+    facts: &FlowFacts,
+    branch_prediction: Option<&BranchPredictionProfile>,
+) -> CfgWcetInfo {
     let frequency_hz = frequency_hz(program);
     let mut function_indices = Vec::new();
     let mut index_by_id: BTreeMap<FunctionId, usize> = BTreeMap::new();
@@ -148,6 +161,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                     facts,
                     FactScope::Context(context),
                     frequency_hz,
+                    branch_prediction,
                 );
                 versions.insert((function.id.clone(), context.clone()), summary.clone());
                 context_summaries.push(summary);
@@ -168,6 +182,7 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 facts,
                 FactScope::Insensitive,
                 frequency_hz,
+                branch_prediction,
             ));
         }
     }
@@ -246,6 +261,12 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
                 .to_owned(),
         );
     }
+    if program.branch_prediction.is_some() {
+        info.caveats.push(
+            "Branch-prediction state IPET follows concrete predictor states from the configured per-function initial state when the branch analysis completes. Inter-function and first-execution history, unsupported branches, state-limit fallback, ordered/cross-function automata and product-size overflow keep per-block misprediction bounds."
+                .to_owned(),
+        );
+    }
     if use_contexts {
         info.caveats.push(
             "Context-sensitive facts are analyzed per caller chain; function-level WCET is the maximum over analyzed contexts."
@@ -294,6 +315,7 @@ fn analyze_function<'a, F>(
     facts: &FlowFacts,
     scope: FactScope<'_>,
     frequency_hz: Option<u64>,
+    branch_prediction: Option<&BranchPredictionProfile>,
 ) -> CfgFunctionWcet
 where
     F: FnMut(&FunctionId) -> Option<&'a CfgFunctionWcet>,
@@ -340,6 +362,7 @@ where
         facts,
         &function.id,
         scope,
+        branch_prediction,
     ) {
         Ok(outcome) => outcome,
         Err(IpetError::Unbounded(reason)) => {
@@ -403,6 +426,7 @@ fn solve_function(
     facts: &FlowFacts,
     function_id: &FunctionId,
     scope: FactScope<'_>,
+    branch_prediction: Option<&BranchPredictionProfile>,
 ) -> Result<IpetOutcome, IpetError> {
     let loops = build_loops(cfg, entry, analysis, facts, scope)?;
     let automata = ordered_automata(facts, function_id, scope);
@@ -424,6 +448,7 @@ fn solve_function(
             &pipeline_stalls,
         )?;
         outcome.solution.cache_model = cache_fallback_model(program);
+        outcome.solution.branch_model = branch_fallback_model(branch_prediction);
         return Ok(outcome);
     }
     if !automata.is_empty() {
@@ -440,11 +465,13 @@ fn solve_function(
             &pipeline_stalls,
         )?;
         outcome.solution.cache_model = cache_fallback_model(program);
+        outcome.solution.branch_model = branch_fallback_model(branch_prediction);
         return Ok(outcome);
     }
     let cache_models = build_cache_ipet_models(program, cfg, reachable_nodes);
-    if !cache_models.is_empty()
-        && let Some(outcome) = solve_function_with_cache_states(
+    let branch_model = build_branch_ipet_model(branch_prediction, cfg, reachable_nodes);
+    if (!cache_models.is_empty() || branch_model.is_some())
+        && let Some(mut outcome) = solve_function_with_state_products(
             cfg,
             entry,
             reachable_nodes,
@@ -454,9 +481,16 @@ fn solve_function(
             scope,
             &loops,
             &cache_models,
+            branch_model.as_ref(),
             &pipeline_stalls,
         )?
     {
+        if outcome.solution.cache_model.is_none() {
+            outcome.solution.cache_model = cache_fallback_model(program);
+        }
+        if outcome.solution.branch_model.is_none() {
+            outcome.solution.branch_model = branch_fallback_model(branch_prediction);
+        }
         return Ok(outcome);
     }
 
@@ -576,6 +610,7 @@ fn solve_function(
             status: status.to_owned(),
             objective,
             cache_model: cache_fallback_model(program),
+            branch_model: branch_fallback_model(branch_prediction),
             blocks,
         },
         partial,
@@ -1429,6 +1464,7 @@ fn solve_function_with_automata(
             status: status.to_owned(),
             objective,
             cache_model: None,
+            branch_model: None,
             blocks,
         },
         partial,
@@ -2527,6 +2563,7 @@ fn solve_function_with_cross_function_automata(
             status: status.to_owned(),
             objective,
             cache_model: None,
+            branch_model: None,
             blocks,
         },
         partial,
@@ -2547,9 +2584,44 @@ struct CacheIpetModels {
 }
 
 impl CacheIpetModels {
-    fn is_empty(self) -> bool {
+    fn is_empty(&self) -> bool {
         self.instruction.is_none() && self.data.is_none()
     }
+}
+
+struct BranchIpetModel {
+    predictor: PredictorModel,
+}
+
+impl BranchIpetModel {
+    fn penalty(&self) -> f64 {
+        f64::from(self.predictor.mispredict_penalty())
+    }
+}
+
+fn branch_fallback_model(profile: Option<&BranchPredictionProfile>) -> Option<String> {
+    profile.map(|_| "block-bounds".to_owned())
+}
+
+fn build_branch_ipet_model(
+    profile: Option<&BranchPredictionProfile>,
+    cfg: &FunctionCfg,
+    reachable_nodes: &BTreeSet<NodeIndex>,
+) -> Option<BranchIpetModel> {
+    let profile = profile?;
+    let mut has_branch = false;
+    for node in reachable_nodes {
+        if conditional_branch(cfg, *node).is_some() {
+            has_branch = true;
+            let prediction = cfg.graph[*node].branch_prediction.as_ref()?;
+            if prediction.fallback {
+                return None;
+            }
+        }
+    }
+    has_branch.then(|| BranchIpetModel {
+        predictor: PredictorModel::from_profile(profile),
+    })
 }
 
 fn cache_fallback_model(program: &ProgramCfg) -> Option<String> {
@@ -2635,11 +2707,12 @@ fn build_cache_ipet_models(
     models
 }
 
-fn cache_base_cost(
+fn state_base_cost(
     block: &crate::cfg::CfgBlock,
     node: NodeIndex,
     call_cycles: &BTreeMap<NodeIndex, f64>,
     models: &CacheIpetModels,
+    branch: Option<&BranchIpetModel>,
 ) -> f64 {
     let mut cost = block.cycles.map_or(0.0, |cycles| cycles.max)
         + call_cycles.get(&node).copied().unwrap_or(0.0);
@@ -2653,35 +2726,43 @@ fn cache_base_cost(
     {
         cost -= f64::from(cache.misses_max) * f64::from(model.miss_penalty);
     }
+    if let Some(branch) = branch
+        && let Some(prediction) = &block.branch_prediction
+    {
+        cost -= f64::from(prediction.mispredicts_max) * branch.penalty();
+    }
     cost.max(0.0)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct CacheProductKey {
+struct StateProductKey {
     node: NodeIndex,
     instruction: Option<CacheState>,
     data: Option<CacheState>,
+    prediction: Option<PredictorState>,
 }
 
-struct CacheProductNode {
-    key: CacheProductKey,
+struct StateProductNode {
+    key: StateProductKey,
     cost: f64,
     exit_instruction: Option<CacheState>,
     exit_data: Option<CacheState>,
 }
 
-struct CacheProductEdge {
+struct StateProductEdge {
     from: usize,
     to: usize,
     original: EdgeIndex,
+    branch_cost: f64,
 }
 
-fn cache_product_node(
+fn state_product_node(
     cfg: &FunctionCfg,
-    key: CacheProductKey,
+    key: StateProductKey,
     call_cycles: &BTreeMap<NodeIndex, f64>,
     models: &CacheIpetModels,
-) -> CacheProductNode {
+    branch: Option<&BranchIpetModel>,
+) -> StateProductNode {
     debug_assert_eq!(
         models.instruction.is_some(),
         key.instruction.is_some(),
@@ -2692,8 +2773,13 @@ fn cache_product_node(
         key.data.is_some(),
         "data-cache state/model mismatch"
     );
+    debug_assert_eq!(
+        branch.is_some(),
+        key.prediction.is_some(),
+        "branch-prediction state/model mismatch"
+    );
     let block = &cfg.graph[key.node];
-    let mut cost = cache_base_cost(block, key.node, call_cycles, models);
+    let mut cost = state_base_cost(block, key.node, call_cycles, models, branch);
     let mut exit_instruction = key.instruction.clone();
     let mut exit_data = key.data.clone();
     if let Some(model) = &models.instruction
@@ -2712,7 +2798,7 @@ fn cache_product_node(
         cost += f64::from(simulation.misses) * f64::from(model.miss_penalty);
         exit_data = Some(simulation.state);
     }
-    CacheProductNode {
+    StateProductNode {
         key,
         cost,
         exit_instruction,
@@ -2720,21 +2806,59 @@ fn cache_product_node(
     }
 }
 
-fn build_cache_product_graph(
+fn branch_edge_transition(
+    cfg: &FunctionCfg,
+    node: NodeIndex,
+    state: &PredictorState,
+    model: &BranchIpetModel,
+    kind: crate::cfg::CfgEdgeKind,
+) -> (f64, PredictorState) {
+    let Some(branch) = conditional_branch(cfg, node) else {
+        return (0.0, state.clone());
+    };
+    let actual = match kind {
+        crate::cfg::CfgEdgeKind::Branch => crate::cfg::CfgBranchDirection::Taken,
+        crate::cfg::CfgEdgeKind::Fallthrough => crate::cfg::CfgBranchDirection::NotTaken,
+        crate::cfg::CfgEdgeKind::Jump | crate::cfg::CfgEdgeKind::CallReturn => {
+            return (0.0, state.clone());
+        }
+    };
+    let predicted = model
+        .predictor
+        .predict(branch.site, branch.taken_is_backward, state);
+    let cost = if predicted == actual {
+        0.0
+    } else {
+        model.penalty()
+    };
+    let mut next = state.clone();
+    model.predictor.update(&mut next, branch.site, actual);
+    (cost, next)
+}
+
+fn build_state_product_graph(
     cfg: &FunctionCfg,
     entry: NodeIndex,
     reachable_nodes: &BTreeSet<NodeIndex>,
     call_cycles: &BTreeMap<NodeIndex, f64>,
     models: &CacheIpetModels,
-) -> Option<(Vec<CacheProductNode>, Vec<CacheProductEdge>)> {
-    let start_key = CacheProductKey {
+    branch: Option<&BranchIpetModel>,
+) -> Option<(Vec<StateProductNode>, Vec<StateProductEdge>)> {
+    let start_key = StateProductKey {
         node: entry,
         instruction: models.instruction.map(|model| model.geometry.cold()),
         data: models.data.map(|model| model.geometry.cold()),
+        prediction: branch.map(|_| PredictorState::default()),
     };
-    let mut index_by_key: BTreeMap<CacheProductKey, usize> = BTreeMap::new();
+    let mut index_by_key: BTreeMap<StateProductKey, usize> = BTreeMap::new();
     index_by_key.insert(start_key.clone(), 0);
-    let mut nodes = vec![cache_product_node(cfg, start_key, call_cycles, models)];
+    let mut nodes = vec![state_product_node(
+        cfg,
+        start_key,
+        call_cycles,
+        models,
+        branch,
+    )];
     let mut edges = Vec::new();
     let mut queue = VecDeque::from([0_usize]);
     while let Some(from) = queue.pop_front() {
@@ -2750,7 +2874,13 @@ fn build_cache_product_graph(
                 continue;
             }
             let reset = edge.weight().kind == crate::cfg::CfgEdgeKind::CallReturn;
-            let next_key = CacheProductKey {
+            let (branch_cost, prediction) =
+                if let (Some(branch), Some(state)) = (branch, key.prediction.as_ref()) {
+                    branch_edge_transition(cfg, key.node, state, branch, edge.weight().kind)
+                } else {
+                    (0.0, PredictorState::default())
+                };
+            let next_key = StateProductKey {
                 node: target,
                 instruction: if reset {
                     models.instruction.map(|model| model.geometry.cold())
@@ -2762,6 +2892,7 @@ fn build_cache_product_graph(
                 } else {
                     exit_data.clone()
                 },
+                prediction: branch.map(|_| prediction.clone()),
             };
             let to = if let Some(&index) = index_by_key.get(&next_key) {
                 index
@@ -2771,17 +2902,24 @@ fn build_cache_product_graph(
                 }
                 let index = nodes.len();
                 index_by_key.insert(next_key.clone(), index);
-                nodes.push(cache_product_node(cfg, next_key, call_cycles, models));
+                nodes.push(state_product_node(
+                    cfg,
+                    next_key,
+                    call_cycles,
+                    models,
+                    branch,
+                ));
                 queue.push_back(index);
                 index
             };
             if edges.len() >= MAX_AUTOMATON_EDGES {
                 return None;
             }
-            edges.push(CacheProductEdge {
+            edges.push(StateProductEdge {
                 from,
                 to,
                 original: edge.id(),
+                branch_cost,
             });
         }
     }
@@ -2795,7 +2933,7 @@ fn build_cache_product_graph(
     clippy::too_many_arguments,
     clippy::too_many_lines
 )]
-fn solve_function_with_cache_states(
+fn solve_function_with_state_products(
     cfg: &FunctionCfg,
     entry: NodeIndex,
     reachable_nodes: &BTreeSet<NodeIndex>,
@@ -2805,10 +2943,11 @@ fn solve_function_with_cache_states(
     scope: FactScope<'_>,
     loops: &[LoopModel],
     models: &CacheIpetModels,
+    branch: Option<&BranchIpetModel>,
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
 ) -> Result<Option<IpetOutcome>, IpetError> {
     let Some((product_nodes, product_edges)) =
-        build_cache_product_graph(cfg, entry, reachable_nodes, call_cycles, models)
+        build_state_product_graph(cfg, entry, reachable_nodes, call_cycles, models, branch)
     else {
         return Ok(None);
     };
@@ -3049,8 +3188,9 @@ fn solve_function_with_cache_states(
         }
     }
     for (index, edge) in product_edges.iter().enumerate() {
-        if let Some(stall) = pipeline_stalls.get(&edge.original) {
-            objective += edge_variables[index] * *stall;
+        let stall = pipeline_stalls.get(&edge.original).copied().unwrap_or(0.0);
+        if stall != 0.0 || edge.branch_cost != 0.0 {
+            objective += edge_variables[index] * (stall + edge.branch_cost);
         }
     }
 
@@ -3114,7 +3254,8 @@ fn solve_function_with_cache_states(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: Some("state-product".to_owned()),
+            cache_model: (!models.is_empty()).then(|| "state-product".to_owned()),
+            branch_model: branch.map(|_| "state-product".to_owned()),
             blocks,
         },
         partial,
@@ -3190,7 +3331,7 @@ fn non_loop_constraints(
 
 #[cfg(test)]
 mod tests {
-    use super::analyze_program;
+    use super::{analyze_program, analyze_program_with_branch_prediction};
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgInstruction,
@@ -4463,6 +4604,152 @@ max_states = 16
         let (objective, model) = run_ipet(&mut program, &board);
         assert_eq!(objective, 24.0);
         assert_eq!(model.as_deref(), Some("state-product"));
+    }
+
+    fn branch_loop_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x1000,
+            FunctionCfg::build(
+                vec![
+                    block(0x1000, CfgTerminator::Branch, 1.0),
+                    block(0x1002, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x1000, 0x1000, CfgEdgeKind::Branch),
+                    edge(0x1000, 0x1002, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x1000),
+            ),
+        )])
+    }
+
+    fn branch_board(max_states: usize) -> BoardProfile {
+        BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:ipet-branch-test"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 1_000_000
+
+[branch_prediction]
+model = "bimodal"
+mispredict_penalty = 3
+initial_state = "weakly-not-taken"
+max_states = {max_states}
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+"#
+        ))
+        .expect("valid branch profile")
+    }
+
+    #[test]
+    fn branch_state_product_models_loop_warmup() {
+        let board = branch_board(16);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut program = branch_loop_program();
+        let _ = crate::branch_prediction::analyze_program(&mut program, prediction);
+
+        let mut block_bounds = program.clone();
+        let _ = analyze_program(&mut block_bounds, &facts);
+        let block_ipet = block_bounds.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("block-bounds IPET");
+        assert_eq!(block_ipet.objective, 17.0);
+
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let state_ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("state-product IPET");
+        assert_eq!(state_ipet.objective, 11.0);
+        assert_eq!(state_ipet.branch_model.as_deref(), Some("state-product"));
+        assert_eq!(state_ipet.cache_model, None);
+    }
+
+    #[test]
+    fn branch_state_ipet_falls_back_when_analysis_falls_back() {
+        let board = branch_board(1);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut program = branch_loop_program();
+        let _ = crate::branch_prediction::analyze_program(&mut program, prediction);
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("fallback IPET");
+        assert_eq!(ipet.objective, 17.0);
+        assert_eq!(ipet.branch_model.as_deref(), Some("block-bounds"));
+    }
+
+    #[test]
+    fn cache_and_branch_state_products_combine() {
+        let board = BoardProfile::parse_toml(
+            r"
+schema_version = 2
+id = 'board:ipet-cache-branch-test'
+arch = 'thumb'
+cpu = 'cortex-m4'
+
+[clocks.core]
+hz = 1_000_000
+
+[instruction_cache]
+size = 32
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 16
+
+[branch_prediction]
+model = 'bimodal'
+mispredict_penalty = 3
+initial_state = 'weakly-not-taken'
+max_states = 16
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+",
+        )
+        .expect("valid combined profile");
+        let cache = board.instruction_cache().expect("cache profile");
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut program = branch_loop_program();
+        let info = crate::icache::analyze_program(&mut program, cache);
+        program.cache = Some(info);
+        let _ = crate::branch_prediction::analyze_program(&mut program, prediction);
+
+        let mut block_bounds = program.clone();
+        let _ = analyze_program(&mut block_bounds, &facts);
+        let block_objective = block_bounds.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("block IPET")
+            .objective;
+
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("combined IPET");
+        assert_eq!(ipet.cache_model.as_deref(), Some("state-product"));
+        assert_eq!(ipet.branch_model.as_deref(), Some("state-product"));
+        assert!(ipet.objective > 0.0 && ipet.objective <= block_objective);
     }
 
     #[test]

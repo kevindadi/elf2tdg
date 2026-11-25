@@ -258,6 +258,12 @@ pub(crate) fn analyze_program_with_facts(
                 .to_owned(),
         );
     }
+    if program.branch_prediction.is_some() {
+        info.caveats.push(
+            "Branch-prediction state correlation is applied only by the IPET backend; longest-path uses per-block misprediction bounds."
+                .to_owned(),
+        );
+    }
     if facts.has_non_loop_facts() {
         info.caveats.push(
             "Branch and call flow facts are enforced only by the IPET backend; longest-path ignores them and remains a conservative overestimate."

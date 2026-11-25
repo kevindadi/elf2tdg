@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.22";
+pub const CFG_SCHEMA_VERSION: &str = "2.23";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1079,6 +1079,9 @@ pub struct CfgIpetSolution {
     /// Cache model used by the IPET constraints, when cache analysis is active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_model: Option<String>,
+    /// Branch-prediction model used by the IPET constraints, when active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_model: Option<String>,
     /// Positive block execution counts from the solution.
     pub blocks: Vec<CfgIpetBlockCount>,
 }

@@ -3316,11 +3316,20 @@ impl<'a> Analyzer<'a> {
                 );
                 facts.apply_inferred_loops(inferred);
             }
+            let branch_prediction = self
+                .timing
+                .as_ref()
+                .and_then(TimingCostModel::profile)
+                .and_then(BoardProfile::branch_prediction);
             let info = match self.options.path_analysis {
                 PathAnalysis::LongestPath => {
                     crate::wcet::analyze_program_with_facts(&mut program_cfg, profile, &facts)
                 }
-                PathAnalysis::Ipet => crate::ipet::analyze_program(&mut program_cfg, &facts),
+                PathAnalysis::Ipet => crate::ipet::analyze_program_with_branch_prediction(
+                    &mut program_cfg,
+                    &facts,
+                    branch_prediction,
+                ),
             };
             program_cfg.wcet = Some(info);
         }
