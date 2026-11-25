@@ -52,7 +52,7 @@ Rust `dylib` interface.
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
 | P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one direct call group), per-function IPET, pure-Rust `microlp`; call-site-sensitive contexts, richer FFX constructs and conflict scalability are next |
-| P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, a full instruction-cache CCG flow model, per-line first-miss and aggregate conflict bounds for fallback, concrete branch-predictor state products with per-edge misprediction costs, optional unknown first-execution history, bimodal interprocedural branch summaries that carry predictor state and branch costs through direct calls, and Cortex-M4 full inter-block pipeline state tables in the IPET state product with first-order edge stalls as fallback; general AArch64/RISC-V pipeline models and global/two-level history predictors are next |
+| P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, a full instruction-cache CCG flow model, per-line first-miss and aggregate conflict bounds for fallback, concrete branch-predictor state products with per-edge misprediction costs, optional unknown first-execution history, global-history and gshare pattern tables, interprocedural branch summaries that carry predictor state and branch costs through direct calls, and Cortex-M4 full inter-block pipeline state tables in the IPET state product with first-order edge stalls as fallback; general AArch64/RISC-V pipeline models and local/two-level history predictors are next |
 | P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | planned; caller-function context summaries are implemented in P1 |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
@@ -183,9 +183,11 @@ from summed local estimates.
   branch cost cross the call. Unsupported branches, analysis fallback,
   indirect/unresolved/recursive calls, contextual facts, ordered/cross-function
   integration and summary caps keep the per-function or per-block misprediction
-  bounds. With `first_execution = "unknown"`, each unexecuted site considers
-  all four two-bit counters and keeps the worst outcome; global and two-level
-  predictor history are not modeled.
+  bounds. With `first_execution = "unknown"`, each unexecuted pattern-table
+  entry considers all four two-bit counters and keeps the worst outcome.
+  `global-history` and `gshare` track a global history register and shared
+  pattern table; local/two-level history and tournament predictors are not
+  modeled.
 - The Cortex-M4 pipeline model remains statistical. IPET precomputes a
   per-function table of pipeline entry states reachable from function entry
   and charges the state-dependent block cost in its state product, including

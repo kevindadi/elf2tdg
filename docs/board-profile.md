@@ -466,10 +466,12 @@ analysis. It requires `schema_version = 2`.
 
 | Field | Required | Meaning |
 |---|---|---|
-| `model` | yes | `static-not-taken`, `static-taken`, `btfn` (backward-taken/forward-not-taken) or `bimodal`. |
+| `model` | yes | `static-not-taken`, `static-taken`, `btfn` (backward-taken/forward-not-taken), `bimodal`, `global-history` (GAg) or `gshare`. |
 | `mispredict_penalty` | yes | Extra core cycles charged for each modeled misprediction; must be positive. |
-| `initial_state` | no | Initial two-bit counter for `bimodal`: `strongly-not-taken`, `weakly-not-taken` (default), `weakly-taken` or `strongly-taken`. Used only by `bimodal` and only with the default first-execution policy. |
-| `first_execution` | no | `initial` (default) starts each branch site at `initial_state`; `unknown` treats its first-execution counter as unknown and considers all four two-bit values, charging the worst modeled outcome. Bimodal only. |
+| `initial_state` | no | Initial two-bit pattern-table counter: `strongly-not-taken`, `weakly-not-taken` (default), `weakly-taken` or `strongly-taken`. Used by counter-based models and ignored for `first_execution = "unknown"` first accesses. |
+| `first_execution` | no | `initial` (default) starts each table entry at `initial_state`; `unknown` treats an unexecuted table entry's counter as unknown and considers all four two-bit values, charging the worst modeled outcome. Used by `bimodal`, `global-history` and `gshare`. |
+| `history_bits` | global models | Width of the global branch-history register, `1..=16`. Required for `global-history`/`gshare`; the pattern table has `2^history_bits` entries. |
+| `initial_history` | global models | Initial branch-history register value; must fit in `history_bits`. Required for `global-history`/`gshare`. |
 | `max_states` | no | Maximum concrete predictor states per block; defaults to `128`. |
 
 ```toml
@@ -484,14 +486,22 @@ predicts taken when the taken target lies below the branch instruction, and
 not-taken when it lies forward. `bimodal` keeps a two-bit local
 saturating counter per branch site, starts each branch site from `initial_state`
 under the default policy, and updates the counter with each modeled
-taken/not-taken outcome. With `first_execution = "unknown"`, a site that has
-not executed yet is evaluated against all four possible two-bit counters; each
-actual edge keeps the maximum modeled misprediction and all possible resulting
-counters. After that first execution the site has concrete history, and the
-`seen` marker survives calls and loops. Only conditional branches with exactly
-one taken edge and one fallthrough edge are modeled. Indirect/table target
-prediction, return-address stacks, branch-target buffers and global history
-are not modeled.
+taken/not-taken outcome. `global-history` keeps one global branch-history
+register and indexes one shared two-bit pattern table by that register (GAg);
+`gshare` indexes the table by the history XOR branch-PC bits. Both update the
+history register with every modeled conditional outcome. The pattern table has
+`2^history_bits` entries, so only the low history/PC bits select a counter.
+
+With `first_execution = "unknown"`, a table entry that has not executed yet is
+evaluated against all four possible two-bit counters; each actual edge keeps
+the maximum modeled misprediction and all possible resulting counters. After
+that first access the entry has concrete history, and the `seen` marker
+survives calls and loops. The global history register still starts from
+`initial_history`; `first_execution` controls pattern-table entries, not the
+register's reset value. Only conditional branches with exactly one taken edge
+and one fallthrough edge are modeled. Indirect/table target prediction,
+return-address stacks, branch-target buffers, local/two-level history and
+tournament predictors are not modeled.
 
 The analyzer propagates concrete predictor states over each function CFG and
 adds `mispredicts * mispredict_penalty` to block cycle ranges. Because a block
@@ -510,9 +520,10 @@ actual edge rather than the block-level maximum, and records
 `ipet.branch_model = "state-product"`. This can remove repeated loop
 mispredictions after predictor warm-up.
 
-For the bimodal model, IPET also builds branch-only callee summaries. A
-summary maps one concrete caller predictor state to the feasible callee exit
-states and the maximum branch cost of the callee paths reaching each exit. At
+For counter-based models (`bimodal`, `global-history`, `gshare`), IPET also
+builds branch-only callee summaries. A summary maps one concrete caller
+predictor state to the feasible callee exit states and the maximum branch cost
+of the callee paths reaching each exit. At
 a direct, statically resolved call edge, IPET charges that branch cost and
 continues from the callee exit state, so predictor counters survive into
 later calls and nested callees. This records
@@ -884,9 +895,11 @@ profile use `source: "board-profile"`; a CLI override uses `source: "cli"`.
   prediction, return prediction, branch-target buffers and global/two-level
   history are not modeled. Bimodal IPET summaries can carry predictor state
   through direct calls when all branch effects and base callee costs are
-  available; the `first_execution = "unknown"` site history is carried with
+  available; the `first_execution = "unknown"` entry history is carried with
   the same state, while unresolved/indirect/recursive boundaries and summary
-  caps fall back to per-function bounds.
+  caps fall back to per-function bounds. Global-history/gshare model a shared
+  pattern table; local/two-level history, tournament predictors and BTB
+  behavior are not modeled.
 - Data-memory latency is region-based. Only statically resolved accesses with
   addresses inside configured regions contribute wait cycles. If data-cache
   analysis is enabled too, its miss penalties and the wait cycles are additive.

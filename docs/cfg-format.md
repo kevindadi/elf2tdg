@@ -362,10 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.30`.
+`cfg_schema_version` is `2.31`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.30 adds the branch-prediction `first_execution` policy
-and the option to model an unknown first-execution counter. Version 2.29 adds
+functions. Version 2.31 adds the `global-history`/`gshare` branch models and
+their `history_bits`/`initial_history` metadata. Version 2.30 adds the
+branch-prediction `first_execution` policy and the option to model an unknown
+first-execution counter. Version 2.29 adds
 the `interprocedural-state-product` branch model and predictor-state
 propagation through direct calls. Version 2.28 adds the IPET `pipeline_model`
 field and full inter-block pipeline state propagation.
@@ -422,7 +424,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.30",
+  "cfg_schema_version": "2.31",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -671,8 +673,9 @@ the concrete cache analysis falls back. `cache_conflicts` summarizes those
 bounds. When
 a branch-prediction profile is active, `ipet.branch_model` is
 `state-product` for the concrete per-function predictor-state product,
-`interprocedural-state-product` when the bimodal predictor state and callee
-branch costs are propagated through direct calls, and `block-bounds` when the
+`interprocedural-state-product` when the bimodal/global-history/gshare predictor
+state and callee branch costs are propagated through direct calls, and
+`block-bounds` when the
 function falls back to per-block misprediction bounds (unsupported branches,
 analysis state-limit fallback, indirect/unresolved/recursive calls, contextual
 facts, ordered/cross-function automata or product-size overflow). When a
@@ -778,8 +781,13 @@ fallback flag, and one outcome per successor. Each outcome records its actual
 direction (`taken` or `not-taken`), the branch-level predicted direction
 (`taken`, `not-taken` or `mixed`), and its own misprediction range. An outcome's
 `predicted` value is the direction the predictor chose, not whether that
-particular successor was selected. For the bimodal model, IPET may replace the
-per-call callee branch bound with an interprocedural summary: each callee is
+particular successor was selected. The `global-history` model indexes one
+shared two-bit pattern table from a global branch-history register; `gshare`
+XORs the history with branch-PC bits. Program-level metadata records
+`history_bits` and `initial_history` for those models. `first_execution =
+"unknown"` applies to unexecuted pattern-table entries; the history register
+still starts from `initial_history`. For counter-based models, IPET may replace
+the per-call callee branch bound with an interprocedural summary: each callee is
 analyzed branch-only from the caller's concrete predictor state, and every
 feasible exit state keeps the maximum branch cost of the callee paths ending
 there. The caller product applies that cost at the call edge and continues from
@@ -1057,10 +1065,12 @@ asserts that the CFG validates.
   carry predictor state and callee branch costs through call edges, including
   nested calls; indirect, unresolved or recursive calls, contextual facts and
   summary/state caps fall back to the per-function or per-block model.
-  With `first_execution = "unknown"`, the first execution of each branch site
-  considers all four possible counters and keeps the worst outcome; later
-  executions use the resulting concrete counter. Global/two-level branch
-  history is not modeled. Full inter-block
+  With `first_execution = "unknown"`, the first access to each pattern-table
+  entry considers all four possible counters and keeps the worst outcome; later
+  accesses use the resulting concrete counter. `global-history` (GAg) and
+  `gshare` track a global history register and shared pattern table, including
+  across direct calls. Local/two-level history, tournament predictors and
+  branch-target buffers are not modeled. Full inter-block
   pipeline state is integrated into the IPET state product when the
   per-function state table is available, with first-order edge stalls as the
   fallback for ordered/cross-function automata, state-cap overflow or

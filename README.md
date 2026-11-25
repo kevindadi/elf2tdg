@@ -50,10 +50,10 @@ Implemented:
     line-split logical blocks, an optional per-function cache-state product in
     IPET, a full instruction-cache CCG flow model, plus per-line first-miss and
     aggregate conflict constraints when the concrete product is unavailable;
-  - static, BTFN or two-bit bimodal branch prediction, with concrete
-    predictor-state IPET for per-edge misprediction costs, optional unknown
-    first-execution history and bimodal predictor-state/branch-cost
-    propagation through direct calls;
+  - static, BTFN, bimodal, global-history (GAg) or gshare branch prediction,
+    with concrete predictor-state IPET for per-edge misprediction costs,
+    optional unknown first-execution history and cross-call predictor-state and
+    branch-cost propagation;
   - per-region data-memory bus widths and read/write wait states;
   - explicit multicore access-budget interference (`[multicore]`) with
     per-block read/write/fetch attribution;
@@ -349,15 +349,18 @@ state, and first-order edge-context stalls remain the fallback when the state
 table is unavailable. The pipeline timing model is rejected by
 `--require-safe`.
 Branch-prediction state IPET starts from the configured predictor state. For
-the bimodal model it computes branch-only callee summaries from the caller's
-concrete state, charges the state-specific callee branch cost at direct calls
-and continues from the callee exit state, including nested calls. The caller
-uses a branch-excluded callee base cost; indirect, unresolved or recursive
-calls, contextual facts and summary caps fall back to per-function or per-block
-bounds. With `first_execution = "unknown"`, each branch site's first execution
+counter-based models (bimodal, global-history and gshare) it computes
+branch-only callee summaries from the caller's concrete state, charges the
+state-specific callee branch cost at direct calls and continues from the callee
+exit state, including nested calls. The caller uses a branch-excluded callee
+base cost; indirect, unresolved or recursive calls, contextual facts and
+summary caps fall back to per-function or per-block bounds. With
+`first_execution = "unknown"`, each pattern-table entry's first access
 considers all four possible two-bit counters and keeps the worst modeled
-outcome before the site becomes concrete. Global and two-level predictor
-history are not modeled. Context
+outcome before the entry becomes concrete. `global-history` keeps one branch
+history register and a shared pattern table; `gshare` XORs history with
+branch-PC bits. Local/two-level history, tournament predictors and BTB behavior
+are not modeled. Context
 sensitivity applies to flow facts and WCET composition, not to the
 microarchitectural cache/branch models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.
