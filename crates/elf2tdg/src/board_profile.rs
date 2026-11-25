@@ -763,6 +763,8 @@ pub(crate) enum BranchPredictionModel {
     GlobalHistory,
     /// Two-bit counters indexed by the global history XOR branch-PC bits.
     Gshare,
+    /// Per-branch local history registers indexing two-bit counters.
+    LocalHistory,
 }
 
 impl BranchPredictionModel {
@@ -774,6 +776,7 @@ impl BranchPredictionModel {
             Self::Bimodal => "bimodal",
             Self::GlobalHistory => "global-history",
             Self::Gshare => "gshare",
+            Self::LocalHistory => "local-history",
         }
     }
 }
@@ -893,6 +896,10 @@ impl BranchPredictionProfile {
             self.model,
             BranchPredictionModel::GlobalHistory | BranchPredictionModel::Gshare
         )
+    }
+
+    pub(crate) fn is_history_model(&self) -> bool {
+        self.is_global_history() || self.model == BranchPredictionModel::LocalHistory
     }
 
     pub(crate) fn max_states(&self) -> usize {
@@ -1480,10 +1487,10 @@ impl BoardProfile {
                 "board profile branch_prediction.max_states must be positive".to_owned(),
             ));
         }
-        if prediction.is_global_history() {
+        if prediction.is_history_model() {
             let Some(bits) = prediction.history_bits else {
                 return Err(Error::Config(
-                    "board profile branch_prediction.history_bits is required for global-history/gshare"
+                    "board profile branch_prediction.history_bits is required for history-based models"
                         .to_owned(),
                 ));
             };
@@ -1494,7 +1501,7 @@ impl BoardProfile {
             }
             let Some(history) = prediction.initial_history else {
                 return Err(Error::Config(
-                    "board profile branch_prediction.initial_history is required for global-history/gshare"
+                    "board profile branch_prediction.initial_history is required for history-based models"
                         .to_owned(),
                 ));
             };
@@ -1505,7 +1512,7 @@ impl BoardProfile {
             }
         } else if prediction.history_bits.is_some() || prediction.initial_history.is_some() {
             return Err(Error::Config(
-                "board profile branch_prediction.history_bits/initial_history require global-history or gshare"
+                "board profile branch_prediction.history_bits/initial_history require a history-based model"
                     .to_owned(),
             ));
         }
@@ -2526,6 +2533,15 @@ max_states = 32
                 .expect("gshare profile")
                 .model_name(),
             "gshare"
+        );
+        let local = global.replace("model = \"global-history\"", "model = \"local-history\"");
+        let profile = BoardProfile::parse_toml(&local).expect("valid local-history profile");
+        assert_eq!(
+            profile
+                .branch_prediction()
+                .expect("local-history profile")
+                .model_name(),
+            "local-history"
         );
 
         assert!(BoardProfile::parse_toml(&global.replace("history_bits = 4\n", "")).is_err());

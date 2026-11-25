@@ -41,6 +41,7 @@ impl PredictorModel {
             BranchPredictionModel::Bimodal
                 | BranchPredictionModel::GlobalHistory
                 | BranchPredictionModel::Gshare
+                | BranchPredictionModel::LocalHistory
         ) && profile.first_execution()
             == FirstExecutionHistory::Unknown;
         Self {
@@ -55,10 +56,21 @@ impl PredictorModel {
     }
 
     pub(crate) fn entry_state(&self) -> PredictorState {
-        PredictorState {
-            history: self.initial_history & self.history_mask(),
-            ..PredictorState::default()
+        if self.is_global_history() {
+            PredictorState {
+                history: self.initial_history & self.history_mask(),
+                ..PredictorState::default()
+            }
+        } else {
+            PredictorState::default()
         }
+    }
+
+    fn is_global_history(&self) -> bool {
+        matches!(
+            self.model,
+            BranchPredictionModel::GlobalHistory | BranchPredictionModel::Gshare
+        )
     }
 
     fn history_mask(&self) -> u64 {
@@ -71,14 +83,20 @@ impl PredictorModel {
         }
     }
 
-    fn counter_key(&self, state: &PredictorState, site: u64) -> u64 {
+    fn counter_key(&self, state: &PredictorState, site: u64) -> (u64, u64) {
         match self.model {
-            BranchPredictionModel::GlobalHistory => state.history & self.history_mask(),
-            BranchPredictionModel::Gshare => (state.history ^ (site >> 1)) & self.history_mask(),
+            BranchPredictionModel::GlobalHistory => (0, state.history & self.history_mask()),
+            BranchPredictionModel::Gshare => {
+                (0, (state.history ^ (site >> 1)) & self.history_mask())
+            }
+            BranchPredictionModel::LocalHistory => (
+                site,
+                state.local_history(site, self.initial_history) & self.history_mask(),
+            ),
             BranchPredictionModel::StaticNotTaken
             | BranchPredictionModel::StaticTaken
             | BranchPredictionModel::Btfn
-            | BranchPredictionModel::Bimodal => site,
+            | BranchPredictionModel::Bimodal => (site, 0),
         }
     }
 
@@ -100,7 +118,8 @@ impl PredictorModel {
             }
             BranchPredictionModel::Bimodal
             | BranchPredictionModel::GlobalHistory
-            | BranchPredictionModel::Gshare => {
+            | BranchPredictionModel::Gshare
+            | BranchPredictionModel::LocalHistory => {
                 if counter >= 2 {
                     CfgBranchDirection::Taken
                 } else {
@@ -144,6 +163,7 @@ impl PredictorModel {
             BranchPredictionModel::Bimodal
                 | BranchPredictionModel::GlobalHistory
                 | BranchPredictionModel::Gshare
+                | BranchPredictionModel::LocalHistory
         ) {
             return state.clone();
         }
@@ -154,12 +174,20 @@ impl PredictorModel {
         };
         let mut state = state.clone();
         state.set(key, next, self.initial_state, self.first_execution_unknown);
+        let bit = u64::from(actual == CfgBranchDirection::Taken);
         if matches!(
             self.model,
             BranchPredictionModel::GlobalHistory | BranchPredictionModel::Gshare
         ) {
-            let bit = u64::from(actual == CfgBranchDirection::Taken);
             state.history = ((state.history << 1) | bit) & self.history_mask();
+        } else if self.model == BranchPredictionModel::LocalHistory {
+            let history = state.local_history(site, self.initial_history);
+            let next_history = ((history << 1) | bit) & self.history_mask();
+            if next_history == self.initial_history {
+                state.local_history.remove(&site);
+            } else {
+                state.local_history.insert(site, next_history);
+            }
         }
         state
     }
@@ -172,20 +200,25 @@ impl PredictorModel {
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PredictorState {
     history: u64,
-    counters: BTreeMap<u64, u8>,
-    seen: BTreeSet<u64>,
+    local_history: BTreeMap<u64, u64>,
+    counters: BTreeMap<(u64, u64), u8>,
+    seen: BTreeSet<(u64, u64)>,
 }
 
 impl PredictorState {
-    fn counter(&self, key: u64, initial: u8) -> u8 {
+    fn local_history(&self, site: u64, initial: u64) -> u64 {
+        self.local_history.get(&site).copied().unwrap_or(initial)
+    }
+
+    fn counter(&self, key: (u64, u64), initial: u8) -> u8 {
         self.counters.get(&key).copied().unwrap_or(initial)
     }
 
-    fn seen(&self, key: u64) -> bool {
+    fn seen(&self, key: (u64, u64)) -> bool {
         self.seen.contains(&key)
     }
 
-    fn set(&mut self, key: u64, value: u8, initial: u8, mark_seen: bool) {
+    fn set(&mut self, key: (u64, u64), value: u8, initial: u8, mark_seen: bool) {
         if value == initial {
             self.counters.remove(&key);
         } else {
@@ -344,6 +377,7 @@ pub(crate) fn analyze_program(
             BranchPredictionModel::Bimodal
                 | BranchPredictionModel::GlobalHistory
                 | BranchPredictionModel::Gshare
+                | BranchPredictionModel::LocalHistory
         )
         .then(|| profile.initial_state_name().to_owned()),
         first_execution: (matches!(
@@ -351,14 +385,15 @@ pub(crate) fn analyze_program(
             BranchPredictionModel::Bimodal
                 | BranchPredictionModel::GlobalHistory
                 | BranchPredictionModel::Gshare
+                | BranchPredictionModel::LocalHistory
         ) && profile.first_execution() == FirstExecutionHistory::Unknown)
             .then(|| profile.first_execution_name().to_owned()),
         history_bits: profile
-            .is_global_history()
+            .is_history_model()
             .then(|| profile.history_bits())
             .flatten(),
         initial_history: profile
-            .is_global_history()
+            .is_history_model()
             .then(|| profile.initial_history())
             .flatten(),
         max_states: profile.max_states(),
@@ -369,7 +404,7 @@ pub(crate) fn analyze_program(
         caveats: vec![
             "Each function starts with the configured predictor state for its standalone block ranges unless first_execution = \"unknown\" is selected; in that mode every unexecuted pattern-table entry is evaluated against all four possible two-bit counters and the worst modeled outcome is kept. IPET can propagate predictor state through direct calls when the per-function branch-cost and exit-state summaries are available."
                 .to_owned(),
-            "Only conditional branches with one taken edge and one fallthrough edge are modeled. global-history uses a branch-history register to index one shared pattern table; gshare XORs the history with branch-PC bits. Indirect/table target prediction, returns, branch-target buffers, local/two-level history and tournament predictors are not modeled."
+            "Only conditional branches with one taken edge and one fallthrough edge are modeled. global-history uses a branch-history register to index one shared pattern table; gshare XORs the history with branch-PC bits; local-history keeps a local history register per branch site and indexes a pattern table by the branch and local history. Indirect/table target prediction, returns, branch-target buffers, two-level history and tournament predictors are not modeled."
                 .to_owned(),
             "Block cycle ranges include mispredictions for either successor; path-specific branch and predictor correlation is not modeled."
                 .to_owned(),
@@ -932,8 +967,35 @@ hz = 1_000_000
     }
 
     #[test]
-    fn global_history_and_gshare_analyze_conditional_branches() {
-        for model_name in ["global-history", "gshare"] {
+    fn local_history_updates_per_site_registers() {
+        let predictor = model(&global_history_profile("local-history", 2, 0));
+        let initial = predictor.entry_state();
+        assert_eq!(initial.history, 0);
+        assert_eq!(initial.local_history(0x1000, 0), 0);
+        let counters = predictor.possible_counters(&initial, 0x1000);
+        assert_eq!(counters, vec![1]);
+        let taken = predictor.next_state_for_counter(
+            &initial,
+            0x1000,
+            counters[0],
+            crate::cfg::CfgBranchDirection::Taken,
+        );
+        assert_eq!(taken.local_history(0x1000, 0), 1);
+        assert_eq!(taken.local_history(0x2000, 0), 0);
+        let counters = predictor.possible_counters(&taken, 0x1000);
+        assert_eq!(counters, vec![1]);
+        let not_taken = predictor.next_state_for_counter(
+            &taken,
+            0x1000,
+            counters[0],
+            crate::cfg::CfgBranchDirection::NotTaken,
+        );
+        assert_eq!(not_taken.local_history(0x1000, 0), 2);
+    }
+
+    #[test]
+    fn history_models_analyze_conditional_branches() {
+        for model_name in ["global-history", "gshare", "local-history"] {
             let mut cfg = branch_cfg(0x1004, 0x1002);
             let result =
                 analyze_function(&mut cfg, &model(&global_history_profile(model_name, 3, 5)));
