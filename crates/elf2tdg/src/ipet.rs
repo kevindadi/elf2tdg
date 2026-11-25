@@ -32,9 +32,11 @@ use crate::cache_persistence::{self, PersistenceAnalysis, PersistenceRegion};
 use crate::cache_state::{
     CacheGeometry, CacheState, data_accesses, instruction_accesses, simulate,
 };
+use crate::ccg::{self, CcgApplication, CcgModel};
 use crate::cfg::{
-    CfgBlock, CfgCacheConflictGraphInfo, CfgCachePersistenceInfo, CfgFunction, CfgFunctionWcet,
-    CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus, FunctionCfg, ProgramCfg,
+    CfgBlock, CfgCacheCcgInfo, CfgCacheConflictGraphInfo, CfgCachePersistenceInfo, CfgFunction,
+    CfgFunctionWcet, CfgIpetBlockCount, CfgIpetSolution, CfgWcetInfo, CfgWcetStatus, FunctionCfg,
+    ProgramCfg,
 };
 use crate::flow_facts::{
     BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
@@ -433,8 +435,15 @@ fn solve_function(
     let automata = ordered_automata(facts, function_id, scope);
     let cross = cross_function_constraints(facts, function_id, scope);
     let pipeline_stalls = pipeline_edge_stalls(program, cfg);
-    let cache_persistence =
-        build_cache_persistence_models(program, cfg, reachable_nodes, function_id);
+    let cache_ccg = ccg::build(program, cfg, reachable_nodes)
+        .filter(|model| model.variable_count() <= MAX_MODEL_VARIABLES / 2);
+    let cache_persistence = build_cache_persistence_models(
+        program,
+        cfg,
+        reachable_nodes,
+        function_id,
+        cache_ccg.is_some(),
+    );
     if !cross.is_empty() {
         let mut outcome = solve_function_with_cross_function_automata(
             program,
@@ -450,6 +459,7 @@ fn solve_function(
             &cross,
             &pipeline_stalls,
             &cache_persistence,
+            cache_ccg.as_ref(),
         )?;
         if outcome.solution.cache_model.is_none() {
             outcome.solution.cache_model = cache_fallback_model(program);
@@ -470,6 +480,7 @@ fn solve_function(
             &automata,
             &pipeline_stalls,
             &cache_persistence,
+            cache_ccg.as_ref(),
         )?;
         if outcome.solution.cache_model.is_none() {
             outcome.solution.cache_model = cache_fallback_model(program);
@@ -555,7 +566,13 @@ fn solve_function(
         return Err(IpetError::Unknown("entry-unreachable".to_owned()));
     }
 
-    let mut objective = objective(cfg, &block_vars, call_cycles, &cache_persistence);
+    let mut objective = objective(
+        cfg,
+        &block_vars,
+        call_cycles,
+        &cache_persistence,
+        cache_ccg.as_ref(),
+    );
     for (edge, variable) in &edge_vars {
         if let Some(stall) = pipeline_stalls.get(edge) {
             objective += *variable * *stall;
@@ -583,22 +600,34 @@ fn solve_function(
     let mut cache_conflicts = 0_usize;
     let mut cache_conflict_sets = 0_usize;
     let mut cache_conflict_lines = 0_usize;
-    if !cache_persistence.is_empty() {
-        let block_execution = |node: NodeIndex| -> Expression {
-            block_vars
-                .get(&node)
-                .copied()
-                .map_or(Expression::from(0.0), Expression::from)
-        };
-        let loop_entries = |loop_: &LoopModel| -> Expression {
-            let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
-            for edge in &loop_.entry_edges {
-                if let Some(variable) = edge_vars.get(edge) {
-                    expression += *variable;
-                }
+    let block_execution = |node: NodeIndex| -> Expression {
+        block_vars
+            .get(&node)
+            .copied()
+            .map_or(Expression::from(0.0), Expression::from)
+    };
+    let loop_entries = |loop_: &LoopModel| -> Expression {
+        let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
+        for edge in &loop_.entry_edges {
+            if let Some(variable) = edge_vars.get(edge) {
+                expression += *variable;
             }
-            expression
-        };
+        }
+        expression
+    };
+    let mut ccg_application: Option<CcgApplication> = None;
+    if let Some(ccg_model) = cache_ccg.as_ref() {
+        let application = ccg::add_constraints(
+            &mut vars,
+            ccg_model,
+            &block_execution,
+            &mut model_constraints,
+            &mut objective,
+        );
+        cache_variables = cache_variables.saturating_add(application.variables);
+        ccg_application = Some(application);
+    }
+    if !cache_persistence.is_empty() {
         for model in [&cache_persistence.instruction, &cache_persistence.data]
             .into_iter()
             .flatten()
@@ -673,13 +702,14 @@ fn solve_function(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: cache_model_name(cache_conflicts, &cache_persistence)
+            cache_model: cache_model_name(cache_ccg.is_some(), cache_conflicts, &cache_persistence)
                 .or_else(|| cache_fallback_model(program)),
             cache_conflicts: cache_conflict_info(
                 cache_conflict_sets,
                 cache_conflict_lines,
                 cache_conflicts,
             ),
+            cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
             branch_model: branch_fallback_model(branch_prediction),
             blocks,
         },
@@ -692,11 +722,17 @@ fn objective(
     block_vars: &BTreeMap<NodeIndex, Variable>,
     call_cycles: &BTreeMap<NodeIndex, f64>,
     cache_persistence: &CachePersistenceModels,
+    cache_ccg: Option<&CcgModel>,
 ) -> Expression {
     let mut objective = Expression::from(0.0);
     for (node, var) in block_vars {
-        let base =
-            cache_persistence_base_cost(&cfg.graph[*node], *node, call_cycles, cache_persistence);
+        let base = cache_persistence_base_cost(
+            &cfg.graph[*node],
+            *node,
+            call_cycles,
+            cache_persistence,
+            cache_ccg,
+        );
         objective += *var * base;
     }
     objective
@@ -1234,6 +1270,7 @@ fn solve_function_with_automata(
     automata: &[OrderedAutomaton],
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
     cache_persistence: &CachePersistenceModels,
+    cache_ccg: Option<&CcgModel>,
 ) -> Result<IpetOutcome, IpetError> {
     let runtimes = automaton_runtimes(cfg, automata)?;
     let (nodes, edges) = build_product_graph(cfg, entry, reachable_nodes, &runtimes)?;
@@ -1297,6 +1334,7 @@ fn solve_function_with_automata(
             node.original,
             call_cycles,
             cache_persistence,
+            cache_ccg,
         );
         objective += node_variables[index] * base;
     }
@@ -1488,27 +1526,39 @@ fn solve_function_with_automata(
     let mut cache_conflicts = 0_usize;
     let mut cache_conflict_sets = 0_usize;
     let mut cache_conflict_lines = 0_usize;
-    if !cache_persistence.is_empty() {
-        let block_execution = |node: NodeIndex| -> Expression {
-            let mut expression = Expression::from(0.0);
-            if let Some(indices) = nodes_by_original.get(&node) {
+    let block_execution = |node: NodeIndex| -> Expression {
+        let mut expression = Expression::from(0.0);
+        if let Some(indices) = nodes_by_original.get(&node) {
+            for index in indices {
+                expression += node_variables[*index];
+            }
+        }
+        expression
+    };
+    let loop_entries = |loop_: &LoopModel| -> Expression {
+        let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
+        for edge in &loop_.entry_edges {
+            if let Some(indices) = edges_by_original.get(edge) {
                 for index in indices {
-                    expression += node_variables[*index];
+                    expression += edge_variables[*index];
                 }
             }
-            expression
-        };
-        let loop_entries = |loop_: &LoopModel| -> Expression {
-            let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
-            for edge in &loop_.entry_edges {
-                if let Some(indices) = edges_by_original.get(edge) {
-                    for index in indices {
-                        expression += edge_variables[*index];
-                    }
-                }
-            }
-            expression
-        };
+        }
+        expression
+    };
+    let mut ccg_application: Option<CcgApplication> = None;
+    if let Some(ccg_model) = cache_ccg {
+        let application = ccg::add_constraints(
+            &mut vars,
+            ccg_model,
+            &block_execution,
+            &mut constraints,
+            &mut objective,
+        );
+        cache_variables = cache_variables.saturating_add(application.variables);
+        ccg_application = Some(application);
+    }
+    if !cache_persistence.is_empty() {
         for model in [&cache_persistence.instruction, &cache_persistence.data]
             .into_iter()
             .flatten()
@@ -1600,12 +1650,13 @@ fn solve_function_with_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: cache_model_name(cache_conflicts, cache_persistence),
+            cache_model: cache_model_name(cache_ccg.is_some(), cache_conflicts, cache_persistence),
             cache_conflicts: cache_conflict_info(
                 cache_conflict_sets,
                 cache_conflict_lines,
                 cache_conflicts,
             ),
+            cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
             branch_model: None,
             blocks,
         },
@@ -2362,6 +2413,7 @@ fn solve_function_with_cross_function_automata(
     cross: &[&CrossFunctionConstraint],
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
     cache_persistence: &CachePersistenceModels,
+    cache_ccg: Option<&CcgModel>,
 ) -> Result<IpetOutcome, IpetError> {
     let model = build_cross_model(
         program,
@@ -2624,7 +2676,13 @@ fn solve_function_with_cross_function_automata(
     let mut objective = Expression::from(0.0);
     for (index, product) in product_nodes.iter().enumerate() {
         let cost = if let Some(caller) = model.nodes[product.model].caller {
-            cache_persistence_base_cost(&cfg.graph[caller], caller, call_cycles, cache_persistence)
+            cache_persistence_base_cost(
+                &cfg.graph[caller],
+                caller,
+                call_cycles,
+                cache_persistence,
+                cache_ccg,
+            )
         } else {
             model.nodes[product.model].cost
         };
@@ -2647,27 +2705,39 @@ fn solve_function_with_cross_function_automata(
     let mut cache_conflicts = 0_usize;
     let mut cache_conflict_sets = 0_usize;
     let mut cache_conflict_lines = 0_usize;
-    if !cache_persistence.is_empty() {
-        let block_execution = |node: NodeIndex| -> Expression {
-            let mut expression = Expression::from(0.0);
-            if let Some(indices) = nodes_by_caller.get(&node) {
+    let block_execution = |node: NodeIndex| -> Expression {
+        let mut expression = Expression::from(0.0);
+        if let Some(indices) = nodes_by_caller.get(&node) {
+            for index in indices {
+                expression += node_variables[*index];
+            }
+        }
+        expression
+    };
+    let loop_entries = |loop_: &LoopModel| -> Expression {
+        let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
+        for edge in &loop_.entry_edges {
+            if let Some(indices) = edges_by_caller.get(edge) {
                 for index in indices {
-                    expression += node_variables[*index];
+                    expression += edge_variables[*index];
                 }
             }
-            expression
-        };
-        let loop_entries = |loop_: &LoopModel| -> Expression {
-            let mut expression = Expression::from(if loop_.is_entry { 1.0 } else { 0.0 });
-            for edge in &loop_.entry_edges {
-                if let Some(indices) = edges_by_caller.get(edge) {
-                    for index in indices {
-                        expression += edge_variables[*index];
-                    }
-                }
-            }
-            expression
-        };
+        }
+        expression
+    };
+    let mut ccg_application: Option<CcgApplication> = None;
+    if let Some(ccg_model) = cache_ccg {
+        let application = ccg::add_constraints(
+            &mut vars,
+            ccg_model,
+            &block_execution,
+            &mut constraints,
+            &mut objective,
+        );
+        cache_variables = cache_variables.saturating_add(application.variables);
+        ccg_application = Some(application);
+    }
+    if !cache_persistence.is_empty() {
         for model in [&cache_persistence.instruction, &cache_persistence.data]
             .into_iter()
             .flatten()
@@ -2765,12 +2835,13 @@ fn solve_function_with_cross_function_automata(
             solver: SOLVER_NAME.to_owned(),
             status: status.to_owned(),
             objective,
-            cache_model: cache_model_name(cache_conflicts, cache_persistence),
+            cache_model: cache_model_name(cache_ccg.is_some(), cache_conflicts, cache_persistence),
             cache_conflicts: cache_conflict_info(
                 cache_conflict_sets,
                 cache_conflict_lines,
                 cache_conflicts,
             ),
+            cache_ccg: ccg_application.as_ref().map(cache_ccg_info),
             branch_model: None,
             blocks,
         },
@@ -2833,13 +2904,33 @@ impl CachePersistenceModels {
     }
 }
 
-fn cache_model_name(conflicts: usize, models: &CachePersistenceModels) -> Option<String> {
-    if conflicts > 0 {
+fn cache_model_name(
+    ccg: bool,
+    conflicts: usize,
+    models: &CachePersistenceModels,
+) -> Option<String> {
+    if ccg {
+        Some("ccg".to_owned())
+    } else if conflicts > 0 {
         Some("conflict-graph".to_owned())
     } else if models.has_regions() {
         Some("line-split".to_owned())
     } else {
         None
+    }
+}
+
+fn cache_ccg_info(application: &CcgApplication) -> CfgCacheCcgInfo {
+    CfgCacheCcgInfo {
+        model: "instruction-ccg-lru".to_owned(),
+        sets: u32::try_from(application.sets).unwrap_or(u32::MAX),
+        nodes: u32::try_from(application.nodes).unwrap_or(u32::MAX),
+        edges: u32::try_from(application.edges).unwrap_or(u32::MAX),
+        constraints: u32::try_from(application.constraints).unwrap_or(u32::MAX),
+        caveats: vec![
+            "CCG flow guarantees a hit only when the immediate previous access in the same cache set is the same line; hits from other ways, call boundaries and unresolved control flow are not modeled."
+                .to_owned(),
+        ],
     }
 }
 
@@ -2983,9 +3074,11 @@ fn build_cache_persistence_models(
     cfg: &FunctionCfg,
     reachable_nodes: &BTreeSet<NodeIndex>,
     function_id: &FunctionId,
+    ccg_active: bool,
 ) -> CachePersistenceModels {
     let mut models = CachePersistenceModels::default();
-    if let Some(info) = &program.cache
+    if !ccg_active
+        && let Some(info) = &program.cache
         && info.invalidate_on_call
         && info.sets > 0
         && info.line_bytes > 0
@@ -3122,6 +3215,7 @@ fn cache_persistence_base_cost(
     node: NodeIndex,
     call_cycles: &BTreeMap<NodeIndex, f64>,
     models: &CachePersistenceModels,
+    ccg: Option<&CcgModel>,
 ) -> f64 {
     let mut cost = block.cycles.map_or(0.0, |cycles| cycles.max)
         + call_cycles.get(&node).copied().unwrap_or(0.0);
@@ -3129,6 +3223,10 @@ fn cache_persistence_base_cost(
         && let Some(cache) = &block.cache
     {
         cost -= f64::from(cache.misses_max) * f64::from(model.miss_penalty);
+    } else if let Some(model) = ccg
+        && let Some(cache) = &block.cache
+    {
+        cost -= f64::from(cache.misses_max) * f64::from(model.miss_penalty());
     }
     if let Some(model) = &models.data
         && let Some(cache) = &block.data_cache
@@ -3934,6 +4032,7 @@ fn solve_function_with_state_products(
             objective,
             cache_model: (!models.is_empty()).then(|| "state-product".to_owned()),
             cache_conflicts: None,
+            cache_ccg: None,
             branch_model: branch.map(|_| "state-product".to_owned()),
             blocks,
         },
@@ -5430,10 +5529,10 @@ max_states = 16
             .as_ref()
             .and_then(|wcet| wcet.ipet.as_ref())
             .expect("persistence IPET");
-        assert_eq!(ipet.cache_model.as_deref(), Some("conflict-graph"));
+        assert_eq!(ipet.cache_model.as_deref(), Some("ccg"));
         assert!(
             ipet.objective < bounded_ipet.objective,
-            "conflict-graph constraints must cap repeated loop misses: {} < {}",
+            "CCG flow must cap repeated loop misses: {} < {}",
             ipet.objective,
             bounded_ipet.objective
         );
@@ -5556,12 +5655,21 @@ max_states = 1
             .as_ref()
             .and_then(|wcet| wcet.ipet.as_ref())
             .expect("conflict-graph IPET");
-        assert_eq!(ipet.cache_model.as_deref(), Some("conflict-graph"));
+        assert_eq!(ipet.cache_model.as_deref(), Some("ccg"));
         assert!(
             ipet.objective < bounded_ipet.objective,
-            "conflict graph must work without concrete state persistence: {} < {}",
+            "CCG flow must work without concrete state persistence: {} < {}",
             ipet.objective,
             bounded_ipet.objective
+        );
+        let ccg = ipet.cache_ccg.as_ref().expect("CCG summary");
+        assert!(ccg.nodes > 0 && ccg.edges > 0 && ccg.constraints > 0);
+        let json = serde_json::to_value(ipet).expect("IPET JSON");
+        assert_eq!(json["cache_ccg"]["model"], "instruction-ccg-lru");
+        assert!(
+            json["cache_ccg"]["nodes"]
+                .as_u64()
+                .is_some_and(|nodes| nodes > 0)
         );
     }
 
@@ -5611,10 +5719,10 @@ max_states = 1
             .as_ref()
             .and_then(|wcet| wcet.ipet.as_ref())
             .expect("conflict-graph IPET");
-        assert_eq!(ipet.cache_model.as_deref(), Some("conflict-graph"));
+        assert_eq!(ipet.cache_model.as_deref(), Some("ccg"));
         assert!(
             ipet.objective < bounded_ipet.objective,
-            "conflict graph must cap repeated line misses: {} < {}",
+            "CCG flow must cap repeated line misses: {} < {}",
             ipet.objective,
             bounded_ipet.objective
         );

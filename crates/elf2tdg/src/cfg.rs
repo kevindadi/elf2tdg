@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.26";
+pub const CFG_SCHEMA_VERSION: &str = "2.27";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1122,6 +1122,23 @@ pub struct CfgFunctionWcet {
     pub ipet: Option<CfgIpetSolution>,
 }
 
+/// Full cache conflict-graph flow summary for one IPET function version.
+#[derive(Clone, Debug, Serialize)]
+pub struct CfgCacheCcgInfo {
+    /// CCG model name.
+    pub model: String,
+    /// Cache sets with CCG flow.
+    pub sets: u32,
+    /// CCG access nodes.
+    pub nodes: u32,
+    /// CCG transition edges.
+    pub edges: u32,
+    /// Number of generated CCG constraints.
+    pub constraints: u32,
+    /// Model caveats.
+    pub caveats: Vec<String>,
+}
+
 /// Cache conflict-graph constraint summary for one IPET function version.
 #[derive(Clone, Debug, Serialize)]
 pub struct CfgCacheConflictGraphInfo {
@@ -1149,9 +1166,12 @@ pub struct CfgIpetSolution {
     /// Cache model used by the IPET constraints, when cache analysis is active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_model: Option<String>,
-    /// Cache conflict-graph constraints, when the conflict-graph model is used.
+    /// Cache conflict-graph constraints, when the aggregate model is used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_conflicts: Option<CfgCacheConflictGraphInfo>,
+    /// Full cache conflict-graph flow, when the CCG model is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_ccg: Option<CfgCacheCcgInfo>,
     /// Branch-prediction model used by the IPET constraints, when active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_model: Option<String>,

@@ -1147,6 +1147,16 @@ fn render_function_wcet(out: &mut String, function: &CfgFunction, analysis_enabl
                 ),
             );
         }
+        if let Some(ccg) = &ipet.cache_ccg {
+            kv(
+                out,
+                "ipet ccg",
+                &format!(
+                    "{}: {} set(s), {} node(s), {} edge(s), {} constraint(s)",
+                    ccg.model, ccg.sets, ccg.nodes, ccg.edges, ccg.constraints
+                ),
+            );
+        }
         if let Some(branch_model) = &ipet.branch_model {
             kv(out, "ipet branch model", branch_model);
         }
