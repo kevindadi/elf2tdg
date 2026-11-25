@@ -362,10 +362,12 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.33`.
+`cfg_schema_version` is `2.34`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.33 adds the configurable `two-level` branch model and its
-`level1_history`/`level2_table` metadata. Version 2.32 adds the
+functions. Version 2.34 adds the `tournament` branch model and its
+`choice_initial_state` metadata. Version 2.33 adds the configurable `two-level`
+branch model and its `level1_history`/`level2_table` metadata. Version 2.32 adds
+the
 `local-history` branch model. Version 2.31 adds the
 `global-history`/`gshare` branch models and their
 `history_bits`/`initial_history` metadata. Version 2.30 adds the
@@ -427,7 +429,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.33",
+  "cfg_schema_version": "2.34",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -677,8 +679,8 @@ bounds. When
 a branch-prediction profile is active, `ipet.branch_model` is
 `state-product` for the concrete per-function predictor-state product,
 `interprocedural-state-product` when the bimodal/global-history/gshare/
-local-history/two-level predictor state and callee branch costs are propagated
-through direct calls, and `block-bounds` when the
+local-history/two-level/tournament predictor state and callee branch costs are
+propagated through direct calls, and `block-bounds` when the
 function falls back to per-block misprediction bounds (unsupported branches,
 analysis state-limit fallback, indirect/unresolved/recursive calls, contextual
 facts, ordered/cross-function automata or product-size overflow). When a
@@ -789,9 +791,11 @@ shared two-bit pattern table from a global branch-history register; `gshare`
 XORs the history with branch-PC bits; `local-history` keeps a local history
 register per branch site and indexes the table by branch and local history.
 `two-level` selects a global or local level-1 history register and a global or
-per-address level-2 table. Program-level metadata records `history_bits` and
-`initial_history` for history models, and `level1_history`/`level2_table` for
-`two-level`. `first_execution =
+per-address level-2 table. `tournament` combines global-history and
+local-history component predictions with per-branch choice counters.
+Program-level metadata records `history_bits` and `initial_history` for history
+models, `level1_history`/`level2_table` for `two-level`, and
+`choice_initial_state` for `tournament`. `first_execution =
 "unknown"` applies to unexecuted pattern-table entries; the history register
 still starts from `initial_history`. For counter-based models, IPET may replace
 the per-call callee branch bound with an interprocedural summary: each callee is

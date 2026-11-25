@@ -50,10 +50,11 @@ Implemented:
     line-split logical blocks, an optional per-function cache-state product in
     IPET, a full instruction-cache CCG flow model, plus per-line first-miss and
     aggregate conflict constraints when the concrete product is unavailable;
-  - static, BTFN, bimodal, global-history (GAg), gshare, local-history or
-    configurable two-level branch prediction, with concrete predictor-state
-    IPET for per-edge misprediction costs, optional unknown first-execution
-    history and cross-call predictor-state and branch-cost propagation;
+  - static, BTFN, bimodal, global-history (GAg), gshare, local-history,
+    configurable two-level or global/local tournament branch prediction, with
+    concrete predictor-state IPET for per-edge misprediction costs, optional
+    unknown first-execution history and cross-call predictor-state and
+    branch-cost propagation;
   - per-region data-memory bus widths and read/write wait states;
   - explicit multicore access-budget interference (`[multicore]`) with
     per-block read/write/fetch attribution;
@@ -349,8 +350,8 @@ state, and first-order edge-context stalls remain the fallback when the state
 table is unavailable. The pipeline timing model is rejected by
 `--require-safe`.
 Branch-prediction state IPET starts from the configured predictor state. For
-counter-based models (bimodal, global-history, gshare, local-history and
-two-level) it computes branch-only callee summaries from the caller's concrete state, charges the
+counter-based models (bimodal, global-history, gshare, local-history, two-level
+and tournament) it computes branch-only callee summaries from the caller's concrete state, charges the
 state-specific callee branch cost at direct calls and continues from the callee
 exit state, including nested calls. The caller uses a branch-excluded callee
 base cost; indirect, unresolved or recursive calls, contextual facts and
@@ -361,7 +362,9 @@ outcome before the entry becomes concrete. `global-history` keeps one branch
 history register and a shared pattern table; `gshare` XORs history with
 branch-PC bits; `local-history` keeps a history register per branch site;
 `two-level` selects global/local level-1 history and a global/per-address
-level-2 table. Tournament predictors and BTB behavior are not modeled. Context
+level-2 table; `tournament` selects between global-history and local-history
+components with per-branch choice counters. Other tournament component pairs
+and BTB behavior are not modeled. Context
 sensitivity applies to flow facts and WCET composition, not to the
 microarchitectural cache/branch models. Multicore interference is an explicit
 per-access/per-fetch budget, not a reconstructed arbitration schedule.
