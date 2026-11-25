@@ -73,6 +73,9 @@ block execution counts. The remaining P1 work is:
    canonical counted loops.
 2. A convenience API for programmatic flow facts beyond files and `[wcet]`.
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
+   `elf2tdg-bench` now provides a reproducible local suite with cycle results,
+   model/fallback summaries and external-reference slots; OTAWA reference
+   population, larger public benchmark sets and CFG partitioning remain.
 4. Making IPET the default only after the bounded-results contract is validated.
 
 The irreducible-cycle guard is deliberate: if removing all natural-loop

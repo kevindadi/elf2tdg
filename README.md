@@ -95,6 +95,10 @@ Implemented:
   and confirmed exclusions are recorded in
   [docs/otawa-parity.md](docs/otawa-parity.md).
 - Versioned CFG JSON plus readable text, DOT and Mermaid renderers.
+- Reproducible benchmark harness (`elf2tdg-bench`) over a declarative ELF/profile
+  suite: longest-path and IPET comparison, cycle results, model/fallback
+  selection, wall-clock timing and optional external reference cycles such as
+  OTAWA. See [docs/benchmarks.md](docs/benchmarks.md).
 - Compile-time analysis pass plan (`--list-passes`) with explicit pass
   dependencies and soundness labels; no runtime dynamic-library ABI.
 - Runtime rule engine for spawn/join/await on embedded no-std runtimes:
@@ -461,6 +465,10 @@ cargo run -p elf2tdg -- firmware.elf --view cfg --format json \
 cargo run -p elf2tdg -- --list-passes
 cargo run -p elf2tdg -- --list-passes --board-profile board.toml
 
+# Run the local benchmark corpus and write a machine-readable report
+cargo run --bin elf2tdg-bench -- --suite benchmarks/suite.toml \
+    --json target/benchmarks/report.json --markdown target/benchmarks/report.md
+
 # Generate a complete safe-default board profile template (no input ELF needed)
 cargo run -p elf2tdg -- --print-default-profile --cpu cortex-m4 > board.toml
 
@@ -609,6 +617,8 @@ docs/layered-model.md     local WCET -> layered system model and coarse bound
 docs/board-profile.md     board clocks, memory fetch costs and cycle overrides
 docs/analysis-profile.md  recommended firmware build flags and inline DWARF
 docs/elf-view.md          loader-backed ELF layout, colors and disassembly limits
+docs/benchmarks.md        benchmark suite format, report fields and OTAWA reference workflow
+benchmarks/               local benchmark corpus, suite and conservative profiles
 examples/                 worked Rust and Cortex-M examples plus artifacts
 tests/fixtures/           C firmware and Rust allocator/static-trait fixtures
 fuzz/                     cargo-fuzz ELF/CFG validation harness
@@ -622,5 +632,7 @@ bounded assumptions, [docs/analysis-architecture.md](docs/analysis-architecture.
 for the pass model and precision roadmap,
 [docs/layered-model.md](docs/layered-model.md) for the layered system model,
 [docs/analysis-profile.md](docs/analysis-profile.md)
-for the recommended firmware build profile, and
+for the recommended firmware build profile,
+[docs/benchmarks.md](docs/benchmarks.md) for the benchmark harness and OTAWA
+reference workflow, and
 [docs/elf-view.md](docs/elf-view.md) for the loader-backed ELF layout view.
