@@ -120,8 +120,9 @@ profiles. They are not evidence that a real board matches the timing values.
 - `partition:sese-branch-regions` means IPET summarized eligible branch-entry
   SESE regions before solving. The cycle objective should be identical to the
   monolithic model for the same eligible function; report a mismatch as a
-  partitioning regression. Functions with calls, state models, non-loop flow
-  facts or infeasible-path constraints intentionally stay monolithic.
+  partitioning regression. Functions with state models, non-loop flow facts,
+  infeasible-path constraints or recovered-call gaps intentionally stay
+  monolithic; fixed call-block summaries are allowed.
 - `partial`, `unbounded` and `unknown` function counts are more important than
   a single objective value. A benchmark with any partial/unbounded root is not
   a safe WCET result.
@@ -151,6 +152,5 @@ alongside the reference value.
 - populate OTAWA references for the local corpus and a public embedded
   benchmark set;
 - add benchmark cases with complete safe-mode flow facts;
-- add CFG-partitioning and large-function cases after that path is
-  implemented;
+- add large-function cases that exercise CFG partitioning and its limits;
 - use `--fail-on-error`/cycle baselines in CI once expected results stabilize.

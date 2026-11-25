@@ -716,11 +716,12 @@ records `model` (`sese-branch-regions`), the number of summarized regions,
 the number of original blocks hidden in region summaries and model caveats.
 A summarized region whose entry is the function entry becomes the new function
 entry. Block execution counts in `ipet.blocks` are expanded back to original
-block IDs. Partitioning is disabled for functions with calls, cache/pipeline/
-branch/BTB/RAS state models, non-loop flow facts or infeasible-path
-constraints. Partitioning is capped at 4096 blocks, 512 regions and a bounded
-scan-work budget; functions outside the eligible shape use the monolithic IPET
-model. The top-level `wcet.flow_facts` object records the loop bounds and
+block IDs. Fixed per-call-block callee costs are included in local region models
+and the final model. Partitioning is disabled for functions with cache/
+pipeline/branch/BTB/RAS state models, non-loop flow facts, infeasible-path
+constraints or recovered-call gaps. Partitioning is capped at 4096 blocks,
+512 regions and a bounded scan-work budget; functions outside the eligible
+shape use the monolithic IPET model. The top-level `wcet.flow_facts` object records the loop bounds and
 defaults used by the model, including bounds imported from F4/FFX files and
 conservatively inferred counted-loop bounds; each loop bound carries a
 `source` such as `board-profile [wcet]`, an imported file, or
