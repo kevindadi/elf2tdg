@@ -116,7 +116,9 @@ cpu = "__CPU__"
 # cycles = { min = 2, max = 3 }      # or a single number
 # note = "measured on target"
 
-# Cortex-M4 in-order resource/dependency pipeline; currently Cortex-M4 only.
+# In-order resource/dependency pipeline. Supported for Cortex-M4 and
+# AArch64/RISC-V timing models; single issue only. Values below are generic
+# presets, not verified target-core timings.
 # [pipeline]
 # issue_width = 1
 # branch_penalty = { min = 1, max = 3 }
@@ -1461,9 +1463,9 @@ impl BoardProfile {
                 self.cpu
             )));
         };
-        if model.id() != "cortex-m4" {
+        if !model.supports_pipeline_model() {
             return Err(Error::Config(format!(
-                "board profile pipeline model currently supports only cortex-m4, not {}",
+                "board profile [pipeline] supports cortex-m4 and AArch64/RISC-V models, not {}",
                 model.id()
             )));
         }
@@ -2679,6 +2681,24 @@ occupancy = 1
 
         let m0 = valid.replace("cpu = \"cortex-m4\"", "cpu = \"cortex-m0\"");
         assert!(BoardProfile::parse_toml(&m0).is_err());
+
+        for (cpu, arch) in [
+            ("aarch64-bounded", "aarch64"),
+            ("riscv32-bounded", "riscv32"),
+            ("riscv64-bounded", "riscv64"),
+            ("aarch64-generic", "aarch64"),
+            ("riscv64-generic", "riscv64"),
+        ] {
+            let targeted = valid
+                .replace("arch = \"thumb\"", &format!("arch = \"{arch}\""))
+                .replace("cpu = \"cortex-m4\"", &format!("cpu = \"{cpu}\""));
+            let profile = BoardProfile::parse_toml(&targeted)
+                .unwrap_or_else(|error| panic!("{cpu} pipeline rejected: {error}"));
+            assert!(profile.pipeline().is_some(), "{cpu}");
+        }
+
+        let m7 = valid.replace("cpu = \"cortex-m4\"", "cpu = \"cortex-m7\"");
+        assert!(BoardProfile::parse_toml(&m7).is_err());
 
         let multi_issue = valid.replace("issue_width = 1", "issue_width = 2");
         assert!(BoardProfile::parse_toml(&multi_issue).is_err());

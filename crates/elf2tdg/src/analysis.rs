@@ -3448,13 +3448,11 @@ impl<'a> Analyzer<'a> {
         let mut program = cfg::ProgramCfg::new(functions);
         program.pipeline_states = pipeline_states;
         program.pointer_roots = self.pointer_roots.iter().copied().collect();
-        if self
-            .timing
-            .as_ref()
-            .is_some_and(|model| model.active_pipeline().is_some())
+        if let Some(timing) = &self.timing
+            && timing.active_pipeline().is_some()
         {
             program.pipeline = Some(cfg::CfgPipelineInfo {
-                model: "cortex-m4-edge-context".to_owned(),
+                model: timing.pipeline_edge_model_name(),
                 edges: pipeline_edges,
                 caveats: vec![
                     "Pipeline edge stalls are a fallback for IPET functions where the full inter-block state product is unavailable. IPET propagates the full resource/register pipeline state from function entry through the CFG when a state table is available; call-return edges reset the modeled state and memory dependencies are not propagated."

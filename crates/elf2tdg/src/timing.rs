@@ -227,6 +227,22 @@ impl TimingModel {
         )
     }
 
+    /// Whether the board-profile in-order resource/dependency pipeline model
+    /// can be selected for this timing model.
+    #[must_use]
+    pub(crate) fn supports_pipeline_model(self) -> bool {
+        matches!(
+            self,
+            Self::CortexM4
+                | Self::RiscV32
+                | Self::RiscV64
+                | Self::RiscV32Bounded
+                | Self::RiscV64Bounded
+                | Self::Aarch64Generic
+                | Self::Aarch64Bounded
+        )
+    }
+
     /// Version of the cost table.
     #[must_use]
     pub fn table_version(self) -> &'static str {
@@ -514,6 +530,7 @@ const MAX_PIPELINE_STATES: usize = 100_000;
 )]
 fn pipeline_schedule(
     profile: &BoardProfile,
+    model: TimingModel,
     pipeline: &crate::board_profile::PipelineProfile,
     instructions: &[&DecodedInsn],
     entry: &PipelineState,
@@ -527,27 +544,27 @@ fn pipeline_schedule(
     for instruction in instructions {
         let classification = classify(instruction);
         let mnemonic = canonical_mnemonic(&instruction.mnemonic);
-        let (resources, latency, occupancy, is_unknown) = if let Some(spec) =
-            pipeline.instruction_for(classification.class, mnemonic)
-        {
-            (
-                spec.resources()
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-                spec.latency(),
-                spec.occupancy(),
-                false,
-            )
-        } else {
-            let (resources, latency, occupancy) = cortex_m4_pipeline_default(classification.class);
-            (
-                resources.to_vec(),
-                latency,
-                occupancy,
-                !classification.known,
-            )
-        };
+        let (resources, latency, occupancy, is_unknown) =
+            if let Some(spec) = pipeline.instruction_for(classification.class, mnemonic) {
+                (
+                    spec.resources()
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                    spec.latency(),
+                    spec.occupancy(),
+                    false,
+                )
+            } else {
+                let (resources, latency, occupancy) =
+                    pipeline_class_default(model, classification.class);
+                (
+                    resources.to_vec(),
+                    latency,
+                    occupancy,
+                    !classification.known,
+                )
+            };
         let operand_ready = instruction
             .regs_read
             .iter()
@@ -762,11 +779,11 @@ impl TimingCostModel {
     /// ready, so this is a local cost rather than a whole-program WCET bound.
     #[must_use]
     pub fn block_cost(&self, instructions: &[DecodedInsn]) -> (CostRange, Vec<(String, u64)>) {
-        if !self.model.is_bounded_abstract()
+        if self.model.supports_pipeline_model()
             && let Some(profile) = &self.profile
             && let Some(pipeline) = profile.pipeline()
         {
-            return Self::pipeline_block_cost(profile, pipeline, instructions);
+            return Self::pipeline_block_cost(self.model, profile, pipeline, instructions);
         }
         let mut min = 0.0_f64;
         let mut max = 0.0_f64;
@@ -783,13 +800,19 @@ impl TimingCostModel {
     }
 
     fn pipeline_block_cost(
+        model: TimingModel,
         profile: &BoardProfile,
         pipeline: &crate::board_profile::PipelineProfile,
         instructions: &[DecodedInsn],
     ) -> (CostRange, Vec<(String, u64)>) {
         let instructions: Vec<&DecodedInsn> = instructions.iter().collect();
-        let schedule =
-            pipeline_schedule(profile, pipeline, &instructions, &PipelineState::default());
+        let schedule = pipeline_schedule(
+            profile,
+            model,
+            pipeline,
+            &instructions,
+            &PipelineState::default(),
+        );
         (schedule.cost, schedule.unknown)
     }
 
@@ -832,8 +855,13 @@ impl TimingCostModel {
         let mut base = Vec::with_capacity(blocks.len());
         let mut exit_states = Vec::with_capacity(blocks.len());
         for instructions in &instructions_by_block {
-            let schedule =
-                pipeline_schedule(profile, pipeline, instructions, &PipelineState::default());
+            let schedule = pipeline_schedule(
+                profile,
+                self.model,
+                pipeline,
+                instructions,
+                &PipelineState::default(),
+            );
             base.push(schedule.cost.max);
             exit_states.push(schedule.exit_state);
         }
@@ -852,6 +880,7 @@ impl TimingCostModel {
                 let target = *index_by_address.get(&edge.to)?;
                 let schedule = pipeline_schedule(
                     profile,
+                    self.model,
                     pipeline,
                     &instructions_by_block[target],
                     &exit_states[source],
@@ -912,8 +941,13 @@ impl TimingCostModel {
             let instructions = instructions_by_block
                 .get(&block.address)
                 .map_or(&[][..], Vec::as_slice);
-            let schedule =
-                pipeline_schedule(profile, pipeline, instructions, &PipelineState::default());
+            let schedule = pipeline_schedule(
+                profile,
+                self.model,
+                pipeline,
+                instructions,
+                &PipelineState::default(),
+            );
             models.insert(
                 block.address,
                 PipelineBlockModel {
@@ -935,7 +969,7 @@ impl TimingCostModel {
             let instructions = instructions_by_block
                 .get(&address)
                 .map_or(&[][..], Vec::as_slice);
-            let schedule = pipeline_schedule(profile, pipeline, instructions, &state);
+            let schedule = pipeline_schedule(profile, self.model, pipeline, instructions, &state);
             let exit = schedule.exit_state.clone();
             block.states.insert(
                 state,
@@ -965,13 +999,25 @@ impl TimingCostModel {
         })
     }
 
-    /// Active Cortex-M4 pipeline profile, if the timing model uses it.
+    /// Active board-profile pipeline, if the timing model supports it.
     #[must_use]
     pub(crate) fn active_pipeline(&self) -> Option<&crate::board_profile::PipelineProfile> {
-        if self.model.is_bounded_abstract() {
+        if !self.model.supports_pipeline_model() {
             return None;
         }
         self.profile.as_ref()?.pipeline()
+    }
+
+    /// CFG pipeline metadata name for the selected timing model.
+    #[must_use]
+    pub(crate) fn pipeline_model_name(&self) -> String {
+        format!("{}-resource-dependency-model", self.model.id())
+    }
+
+    /// CFG edge-context pipeline metadata name for the selected timing model.
+    #[must_use]
+    pub(crate) fn pipeline_edge_model_name(&self) -> String {
+        format!("{}-edge-context", self.model.id())
     }
 
     /// Builds CFG timing metadata for the selected model and profile.
@@ -1037,7 +1083,7 @@ impl TimingCostModel {
             if let Some(pipeline) = profile.pipeline() {
                 params.extras.insert(
                     "board_profile_pipeline".to_owned(),
-                    "cortex-m4-resource-dependency-model".to_owned(),
+                    self.pipeline_model_name(),
                 );
                 params.extras.insert(
                     "board_profile_pipeline_issue_width".to_owned(),
@@ -1047,6 +1093,24 @@ impl TimingCostModel {
                     "board_profile_pipeline_instruction_overrides".to_owned(),
                     pipeline.instruction_override_count().to_string(),
                 );
+                params.extras.insert(
+                    "board_profile_pipeline_branch_penalty".to_owned(),
+                    format!(
+                        "{}..{}",
+                        pipeline.branch_penalty().min,
+                        pipeline.branch_penalty().max
+                    ),
+                );
+                if self.model.is_bounded_abstract() {
+                    params.extras.insert(
+                        "bounded_cost_table".to_owned(),
+                        "replaced-by-pipeline".to_owned(),
+                    );
+                    params.extras.insert(
+                        "pipeline_overlap".to_owned(),
+                        "profile-pipeline-schedule".to_owned(),
+                    );
+                }
             }
             if let Some(cache) = profile.instruction_cache() {
                 params.extras.insert(
@@ -1232,19 +1296,18 @@ impl TimingCostModel {
                 unknown_mnemonics.len()
             ));
         }
+        let statistical_profile = self.profile.as_ref().is_some_and(|profile| {
+            profile.pipeline().is_some()
+                || profile.branch_prediction().is_some()
+                || profile.branch_target_buffer().is_some()
+                || profile.return_address_stack().is_some()
+        });
         TimingInfo {
             models: vec![TimingModelInfo {
                 id: TimingModelId::new(self.model.id()),
                 arch: self.model.arch().to_owned(),
                 core: Some(self.model.core().to_owned()),
-                determinism: if self.model.is_bounded_abstract() {
-                    self.model.determinism()
-                } else if self.profile.as_ref().is_some_and(|profile| {
-                    profile.pipeline().is_some()
-                        || profile.branch_prediction().is_some()
-                        || profile.branch_target_buffer().is_some()
-                        || profile.return_address_stack().is_some()
-                }) {
+                determinism: if statistical_profile {
                     Determinism::Statistical
                 } else {
                     self.model.determinism()
@@ -1321,26 +1384,32 @@ impl TimingCostModel {
                         .to_owned(),
                 );
             }
-            if profile.pipeline().is_some() {
+            if let Some(pipeline) = profile.pipeline() {
+                caveats.retain(|caveat| {
+                    !caveat.contains("Load/store and branch penalties are table-based")
+                        && !caveat.contains("additive per-instruction upper bounds")
+                });
                 if self.model.is_bounded_abstract() {
                     caveats.push(
-                        "Board-profile [pipeline] is ignored by the bounded abstract model; block costs remain additive instruction upper bounds."
+                        "Board-profile pipeline scheduling replaces the additive bounded timing table for block costs. The pipeline-aware result is statistical, is not a safe upper bound, and is rejected by --require-safe."
                             .to_owned(),
                     );
-                } else {
-                    caveats.retain(|caveat| {
-                        !caveat.contains("Load/store and branch penalties are table-based")
-                    });
+                }
+                caveats.push(
+                    "Board-profile pipeline block costs use an in-order resource/dependency model. IPET builds a per-function state table from ready registers and resources at function entry and charges the state-dependent block cost; call-return edges reset the modeled state. Memory dependencies, exception entry, multi-issue and non-IPET inter-block state are not modeled. The model remains statistical."
+                        .to_owned(),
+                );
+                if pipeline.instruction_override_count() == 0 {
                     caveats.push(
-                        "Board-profile pipeline block costs use an in-order resource/dependency model. IPET builds a per-function state table from ready registers and resources at function entry and charges the state-dependent block cost; call-return edges reset the modeled state. Memory dependencies, exception entry, multi-issue and non-IPET inter-block state are not modeled. The model remains statistical."
+                        "Pipeline class defaults are generic in-order presets, not verified target-core timings; provide [pipeline.instructions] overrides from the core manual or measurements."
                             .to_owned(),
                     );
-                    if profile.instruction_cost_override_count() > 0 {
-                        caveats.push(
-                            "instruction_costs overrides are not added to pipeline block costs; use pipeline.instructions to override latency, occupancy or resources."
-                                .to_owned(),
-                        );
-                    }
+                }
+                if profile.instruction_cost_override_count() > 0 {
+                    caveats.push(
+                        "instruction_costs overrides are not added to pipeline block costs; use pipeline.instructions to override latency, occupancy or resources."
+                            .to_owned(),
+                    );
                 }
             }
             if profile.instruction_cache().is_some() {
@@ -1673,6 +1742,64 @@ fn cortex_m4_pipeline_default(class: InstructionClass) -> (&'static [&'static st
         | InstructionClass::Nop
         | InstructionClass::Barrier
         | InstructionClass::Other => (&["alu"], 1, 1),
+    }
+}
+
+/// Generic RISC-V in-order class defaults. These are structural estimates
+/// aligned with the generic RISC-V timing table; a concrete core must override
+/// them with verified pipeline timings.
+fn riscv_pipeline_default(class: InstructionClass) -> (&'static [&'static str], u32, u32) {
+    match class {
+        InstructionClass::Load | InstructionClass::PushPop => (&["load_store"], 2, 1),
+        InstructionClass::Store => (&["load_store"], 1, 1),
+        InstructionClass::LdmStm => (&["load_store"], 2, 2),
+        InstructionClass::Branch | InstructionClass::Call | InstructionClass::Return => {
+            (&["branch"], 1, 1)
+        }
+        InstructionClass::Multiply => (&["mul"], 3, 1),
+        InstructionClass::Divide => (&["div"], 20, 1),
+        InstructionClass::Alu
+        | InstructionClass::Nop
+        | InstructionClass::Barrier
+        | InstructionClass::Other => (&["alu"], 1, 1),
+    }
+}
+
+/// Generic `AArch64` in-order class defaults. These are structural estimates for
+/// the scheduler, not a claim about a specific out-of-order `AArch64` core; a
+/// concrete core must override them with verified pipeline timings.
+fn aarch64_pipeline_default(class: InstructionClass) -> (&'static [&'static str], u32, u32) {
+    match class {
+        InstructionClass::Load | InstructionClass::PushPop => (&["load_store"], 3, 1),
+        InstructionClass::Store => (&["load_store"], 1, 1),
+        InstructionClass::LdmStm => (&["load_store"], 3, 2),
+        InstructionClass::Branch | InstructionClass::Call | InstructionClass::Return => {
+            (&["branch"], 1, 1)
+        }
+        InstructionClass::Multiply => (&["mul"], 3, 1),
+        InstructionClass::Divide => (&["div"], 12, 1),
+        InstructionClass::Alu
+        | InstructionClass::Nop
+        | InstructionClass::Barrier
+        | InstructionClass::Other => (&["alu"], 1, 1),
+    }
+}
+
+#[allow(clippy::match_same_arms)]
+fn pipeline_class_default(
+    model: TimingModel,
+    class: InstructionClass,
+) -> (&'static [&'static str], u32, u32) {
+    match model {
+        TimingModel::CortexM4 => cortex_m4_pipeline_default(class),
+        TimingModel::RiscV32
+        | TimingModel::RiscV64
+        | TimingModel::RiscV32Bounded
+        | TimingModel::RiscV64Bounded => riscv_pipeline_default(class),
+        TimingModel::Aarch64Generic | TimingModel::Aarch64Bounded => {
+            aarch64_pipeline_default(class)
+        }
+        _ => cortex_m4_pipeline_default(class),
     }
 }
 
@@ -2521,6 +2648,208 @@ occupancy = 4
             reset.blocks[&0x1000]
                 .states
                 .contains_key(&super::PipelineState::default())
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn pipeline_model_supports_aarch64_and_riscv_bounded_models() {
+        for (cpu, arch, load) in [
+            ("aarch64-bounded", ArchKind::Aarch64, "ldr"),
+            ("riscv32-bounded", ArchKind::Riscv32, "ld"),
+            ("riscv64-bounded", ArchKind::Riscv64, "ld"),
+        ] {
+            let profile = BoardProfile::parse_toml(&format!(
+                r#"
+schema_version = 2
+id = "board:{cpu}"
+arch = "{arch}"
+cpu = "{cpu}"
+
+[clocks.core]
+hz = 1_000_000_000
+
+[pipeline]
+issue_width = 1
+branch_penalty = 2
+"#,
+                arch = match arch {
+                    ArchKind::Aarch64 => "aarch64",
+                    ArchKind::Riscv32 => "riscv32",
+                    _ => "riscv64",
+                }
+            ))
+            .expect("valid pipeline profile");
+            let model = TimingCostModel::select(Some(cpu), Some(&profile), &image(arch))
+                .expect("select")
+                .expect("model");
+            assert!(model.active_pipeline().is_some(), "{cpu}");
+
+            let loads = [
+                insn_with_regs(0x1000, 4, load, &[1], &[0]),
+                insn_with_regs(0x1004, 4, load, &[3], &[2]),
+            ];
+            let (cost, unknown) = model.block_cost(&loads);
+            assert!(unknown.is_empty(), "{cpu}");
+            assert!(
+                cost.max < 8.0,
+                "{cpu} pipeline cost {} should be below the additive bounded table",
+                cost.max
+            );
+
+            let blocks = [
+                CfgBlockDraft {
+                    address: 0x1000,
+                    size: 4,
+                    instructions: Vec::new(),
+                    calls: Vec::new(),
+                    cycles: None,
+                    terminator: CfgTerminator::Fallthrough,
+                },
+                CfgBlockDraft {
+                    address: 0x1004,
+                    size: 4,
+                    instructions: Vec::new(),
+                    calls: Vec::new(),
+                    cycles: None,
+                    terminator: CfgTerminator::Fallthrough,
+                },
+            ];
+            let edges = [CfgEdgeDraft {
+                from: 0x1000,
+                to: 0x1004,
+                kind: CfgEdgeKind::Fallthrough,
+                site: 0x1000,
+                conditional: false,
+            }];
+            let decoded = [
+                insn_with_regs(0x1000, 4, load, &[1], &[0]),
+                insn_with_regs(0x1004, 4, load, &[2], &[3]),
+            ];
+            assert!(
+                model
+                    .pipeline_state_model(&decoded, &blocks, &edges, 0x1000)
+                    .is_some(),
+                "{cpu} state table"
+            );
+            assert_eq!(
+                model.pipeline_edge_stalls(&decoded, &blocks, &edges).len(),
+                1
+            );
+
+            let info = model.timing_info(None, &BTreeSet::new());
+            assert_eq!(
+                info.models[0].determinism,
+                elf2tdg_schema::Determinism::Statistical,
+                "{cpu}"
+            );
+            assert_eq!(
+                info.models[0]
+                    .params
+                    .extras
+                    .get("board_profile_pipeline")
+                    .map(String::as_str),
+                Some(format!("{cpu}-resource-dependency-model").as_str())
+            );
+            assert_eq!(
+                model.pipeline_edge_model_name(),
+                format!("{cpu}-edge-context")
+            );
+            assert_eq!(
+                info.models[0]
+                    .params
+                    .extras
+                    .get("bounded_cost_table")
+                    .map(String::as_str),
+                Some("replaced-by-pipeline")
+            );
+            assert!(
+                info.models[0]
+                    .caveats
+                    .iter()
+                    .any(|caveat| caveat.contains("not a safe upper bound")),
+                "{cpu}"
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_class_defaults_follow_the_target_isa() {
+        let aarch64 = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:aarch64-pipeline"
+arch = "aarch64"
+cpu = "aarch64-bounded"
+
+[pipeline]
+issue_width = 1
+"#,
+        )
+        .expect("valid AArch64 pipeline profile");
+        let aarch64 = TimingCostModel::select(
+            Some("aarch64-bounded"),
+            Some(&aarch64),
+            &image(ArchKind::Aarch64),
+        )
+        .expect("select")
+        .expect("model");
+        let (multiply, _) = aarch64.block_cost(&[insn(0x1000, 4, "mul")]);
+        assert_eq!(multiply.max, 3.0);
+        let (divide, _) = aarch64.block_cost(&[insn(0x1000, 4, "sdiv")]);
+        assert_eq!(divide.max, 12.0);
+
+        let riscv = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:riscv-pipeline"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[pipeline]
+issue_width = 1
+"#,
+        )
+        .expect("valid RISC-V pipeline profile");
+        let riscv = TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&riscv),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model");
+        let (multiply, _) = riscv.block_cost(&[insn(0x1000, 4, "mul")]);
+        assert_eq!(multiply.max, 3.0);
+        let (divide, _) = riscv.block_cost(&[insn(0x1000, 4, "div")]);
+        assert_eq!(divide.max, 20.0);
+    }
+
+    #[test]
+    fn statistical_profile_overrides_bounded_determinism() {
+        let profile = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:bounded-branch"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[branch_prediction]
+model = "bimodal"
+mispredict_penalty = 3
+"#,
+        )
+        .expect("valid branch profile");
+        let model = TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model");
+        let info = model.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0].determinism,
+            elf2tdg_schema::Determinism::Statistical
         );
     }
 
