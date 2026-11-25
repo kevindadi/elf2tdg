@@ -1151,7 +1151,7 @@ impl TimingCostModel {
                         !caveat.contains("Load/store and branch penalties are table-based")
                     });
                     caveats.push(
-                        "Board-profile pipeline block costs use an in-order resource/dependency model with registers ready at block entry. IPET adds a first-order edge-context stall from the source block's local pipeline state; source entry context, loop-carried accumulation, call-boundary state, memory dependencies and exception entry are not modeled. The model remains statistical."
+                        "Board-profile pipeline block costs use an in-order resource/dependency model with registers ready at block entry. IPET adds a first-order edge-context stall from the source block's local pipeline state; full inter-block pipeline state, loop-carried accumulation, call-boundary state, memory dependencies and exception entry are not modeled. The model remains statistical."
                             .to_owned(),
                     );
                     if profile.instruction_cost_override_count() > 0 {
