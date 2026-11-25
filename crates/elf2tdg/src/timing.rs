@@ -452,22 +452,31 @@ pub struct InstructionCost {
     pub unknown: bool,
 }
 
+/// Pipeline resource availability and register readiness.
+///
+/// Each resource maps to the sorted free times of its busy units. A resource
+/// with configured capacity `n` never stores more than `n` entries; a missing
+/// unit is free at time zero. Entries at or before the normalized elapsed time
+/// are removed, so `PipelineState::default()` is the all-ready state.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PipelineState {
-    resource_free: BTreeMap<String, u32>,
+    resource_free: BTreeMap<String, Vec<u32>>,
     register_ready: BTreeMap<capstone::RegId, u32>,
 }
 
 impl PipelineState {
     fn normalize(&mut self, elapsed: u32) {
-        fn normalize_times<K: Ord>(times: &mut BTreeMap<K, u32>, elapsed: u32) {
-            times.retain(|_, time| {
+        self.resource_free.retain(|_, times| {
+            for time in times.iter_mut() {
                 *time = time.saturating_sub(elapsed);
-                *time > 0
-            });
-        }
-        normalize_times(&mut self.resource_free, elapsed);
-        normalize_times(&mut self.register_ready, elapsed);
+            }
+            times.retain(|time| *time > 0);
+            !times.is_empty()
+        });
+        self.register_ready.retain(|_, time| {
+            *time = time.saturating_sub(elapsed);
+            *time > 0
+        });
     }
 }
 
@@ -526,7 +535,8 @@ const MAX_PIPELINE_STATES: usize = 100_000;
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
 )]
 fn pipeline_schedule(
     profile: &BoardProfile,
@@ -537,7 +547,9 @@ fn pipeline_schedule(
 ) -> PipelineSchedule {
     let mut resource_free = entry.resource_free.clone();
     let mut register_ready = entry.register_ready.clone();
-    let mut issue_start = 0_u32;
+    let issue_width = pipeline.issue_width().max(1);
+    let mut last_issue: Option<u32> = None;
+    let mut issued_in_cycle = 0_u32;
     let mut completion = 0_u32;
     let mut fetch_cycles = 0_u32;
     let mut unknown = Vec::new();
@@ -574,18 +586,40 @@ fn pipeline_schedule(
             .unwrap_or(0);
         let resource_ready = resources
             .iter()
-            .filter_map(|resource| resource_free.get(*resource))
-            .copied()
+            .map(|resource| {
+                let capacity = pipeline.resource_units(resource);
+                resource_free.get(*resource).map_or(0, |times| {
+                    if times.len() < capacity {
+                        0
+                    } else {
+                        times.first().copied().unwrap_or(0)
+                    }
+                })
+            })
             .max()
             .unwrap_or(0);
-        let start = issue_start.max(operand_ready).max(resource_ready);
-        issue_start = start.saturating_add(1);
+        let mut start = last_issue
+            .unwrap_or(0)
+            .max(operand_ready)
+            .max(resource_ready);
+        if last_issue != Some(start) {
+            issued_in_cycle = 0;
+            last_issue = Some(start);
+        }
+        if issued_in_cycle >= issue_width {
+            start = start.saturating_add(1);
+            issued_in_cycle = 0;
+            last_issue = Some(start);
+        }
+        issued_in_cycle = issued_in_cycle.saturating_add(1);
         for resource in &resources {
-            let free = start.saturating_add(occupancy);
-            resource_free
-                .entry((*resource).to_owned())
-                .and_modify(|current| *current = (*current).max(free))
-                .or_insert(free);
+            let capacity = pipeline.resource_units(resource);
+            let times = resource_free.entry((*resource).to_owned()).or_default();
+            if times.len() >= capacity {
+                times.remove(0);
+            }
+            times.push(start.saturating_add(occupancy));
+            times.sort_unstable();
         }
         let ready = start.saturating_add(latency);
         for register in &instruction.regs_write {
@@ -601,7 +635,8 @@ fn pipeline_schedule(
             unknown.push((instruction.mnemonic.clone(), instruction.address));
         }
     }
-    let base = issue_start.max(completion).saturating_add(fetch_cycles);
+    let issue_cycles = last_issue.map_or(0, |cycle| cycle.saturating_add(1));
+    let base = issue_cycles.max(completion).saturating_add(fetch_cycles);
     let branch_penalty = pipeline.branch_penalty();
     let ends_in_transfer = instructions
         .last()
@@ -774,9 +809,11 @@ impl TimingCostModel {
     /// model.
     ///
     /// The pipeline model schedules instructions in order using per-class
-    /// resources, result latencies and register dependencies. It models local
-    /// hazards within one block; pipeline state at block entry is assumed
-    /// ready, so this is a local cost rather than a whole-program WCET bound.
+    /// resources, result latencies and register dependencies. Up to
+    /// `issue_width` instructions may issue per cycle, and each resource name
+    /// has the configured number of units. It models local hazards within one
+    /// block; pipeline state at block entry is assumed ready, so this is a
+    /// local cost rather than a whole-program WCET bound.
     #[must_use]
     pub fn block_cost(&self, instructions: &[DecodedInsn]) -> (CostRange, Vec<(String, u64)>) {
         if self.model.supports_pipeline_model()
@@ -1093,6 +1130,12 @@ impl TimingCostModel {
                     "board_profile_pipeline_instruction_overrides".to_owned(),
                     pipeline.instruction_override_count().to_string(),
                 );
+                if !pipeline.resources().is_empty() {
+                    params.extras.insert(
+                        "board_profile_pipeline_resources".to_owned(),
+                        pipeline.resource_summary(),
+                    );
+                }
                 params.extras.insert(
                     "board_profile_pipeline_branch_penalty".to_owned(),
                     format!(
@@ -1396,9 +1439,21 @@ impl TimingCostModel {
                     );
                 }
                 caveats.push(
-                    "Board-profile pipeline block costs use an in-order resource/dependency model. IPET builds a per-function state table from ready registers and resources at function entry and charges the state-dependent block cost; call-return edges reset the modeled state. Memory dependencies, exception entry, multi-issue and non-IPET inter-block state are not modeled. The model remains statistical."
+                    "Board-profile pipeline block costs use an in-order resource/dependency model. IPET builds a per-function state table from ready registers and resources at function entry and charges the state-dependent block cost; call-return edges reset the modeled state. Memory dependencies, register-file port limits, speculative/out-of-order execution, cross-block co-issue and non-IPET inter-block state are not modeled. The model remains statistical."
                         .to_owned(),
                 );
+                if pipeline.issue_width() > 1 {
+                    caveats.push(
+                        "Per-instruction fetch wait states are summed and are not reduced by co-issue; fetch bandwidth is not modeled."
+                            .to_owned(),
+                    );
+                }
+                if pipeline.issue_width() > 1 && pipeline.resources().is_empty() {
+                    caveats.push(
+                        "Pipeline issue_width > 1 without [pipeline.resources] only co-issues instructions whose resource names differ; each resource name still has one unit."
+                            .to_owned(),
+                    );
+                }
                 if pipeline.instruction_override_count() == 0 {
                     caveats.push(
                         "Pipeline class defaults are generic in-order presets, not verified target-core timings; provide [pipeline.instructions] overrides from the core manual or measurements."
@@ -2822,6 +2877,200 @@ issue_width = 1
         assert_eq!(multiply.max, 3.0);
         let (divide, _) = riscv.block_cost(&[insn(0x1000, 4, "div")]);
         assert_eq!(divide.max, 20.0);
+    }
+
+    fn multi_issue_profile(issue_width: u32, alu_units: Option<u32>) -> BoardProfile {
+        let resources = alu_units.map_or_else(String::new, |units| {
+            format!("[pipeline.resources]\nalu = {units}\n")
+        });
+        BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:multi-issue"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[clocks.core]
+hz = 1_000_000_000
+
+[pipeline]
+issue_width = {issue_width}
+branch_penalty = 1
+{resources}
+[[pipeline.instructions]]
+mnemonic = "add"
+resources = ["alu"]
+latency = 1
+occupancy = 1
+"#
+        ))
+        .expect("valid multi-issue profile")
+    }
+
+    fn multi_issue_model(issue_width: u32, alu_units: Option<u32>) -> TimingCostModel {
+        let profile = multi_issue_profile(issue_width, alu_units);
+        TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model")
+    }
+
+    #[test]
+    fn multi_issue_co_issues_independent_resources() {
+        let model = multi_issue_model(2, None);
+        let independent = [
+            insn_with_regs(0x1000, 4, "add", &[1, 2], &[3]),
+            insn_with_regs(0x1004, 4, "ld", &[5], &[4]),
+        ];
+        let (cost, unknown) = model.block_cost(&independent);
+        assert!(unknown.is_empty(), "unexpected fallback: {unknown:?}");
+        assert_eq!(cost.max, 2.0, "add and load should issue together");
+
+        let two_adds = [
+            insn_with_regs(0x1000, 4, "add", &[1, 2], &[3]),
+            insn_with_regs(0x1004, 4, "add", &[5, 6], &[7]),
+        ];
+        let (cost, _) = model.block_cost(&two_adds);
+        assert_eq!(cost.max, 2.0, "the default ALU has one unit");
+
+        let model = multi_issue_model(2, Some(2));
+        let (cost, _) = model.block_cost(&two_adds);
+        assert_eq!(cost.max, 1.0, "two ALU units allow co-issue");
+    }
+
+    #[test]
+    fn multi_issue_caps_issue_slots_per_cycle() {
+        let instructions = [
+            insn_with_regs(0x1000, 4, "add", &[1, 2], &[3]),
+            insn_with_regs(0x1004, 4, "add", &[5, 6], &[7]),
+            insn_with_regs(0x1008, 4, "add", &[8, 9], &[10]),
+        ];
+        let width_three = multi_issue_model(3, Some(3));
+        let (cost, _) = width_three.block_cost(&instructions);
+        assert_eq!(cost.max, 1.0);
+
+        let width_two = multi_issue_model(2, Some(3));
+        let (cost, _) = width_two.block_cost(&instructions);
+        assert_eq!(cost.max, 2.0);
+
+        let width_one = multi_issue_model(1, Some(3));
+        let (cost, _) = width_one.block_cost(&instructions);
+        assert_eq!(cost.max, 3.0);
+    }
+
+    #[test]
+    fn multi_issue_state_carries_unit_occupancy_across_blocks() {
+        let profile = BoardProfile::parse_toml(
+            r#"
+schema_version = 2
+id = "board:multi-issue-state"
+arch = "riscv64"
+cpu = "riscv64-bounded"
+
+[pipeline]
+issue_width = 2
+
+[pipeline.resources]
+alu = 2
+
+[[pipeline.instructions]]
+mnemonic = "add"
+resources = ["alu"]
+latency = 1
+occupancy = 3
+"#,
+        )
+        .expect("valid multi-issue state profile");
+        let model = TimingCostModel::select(
+            Some("riscv64-bounded"),
+            Some(&profile),
+            &image(ArchKind::Riscv64),
+        )
+        .expect("select")
+        .expect("model");
+        let decoded = [
+            insn_with_regs(0x1000, 4, "add", &[1, 2], &[3]),
+            insn_with_regs(0x1004, 4, "add", &[5, 6], &[7]),
+            insn_with_regs(0x1008, 4, "add", &[8, 9], &[10]),
+        ];
+        let blocks = [
+            CfgBlockDraft {
+                address: 0x1000,
+                size: 8,
+                instructions: Vec::new(),
+                calls: Vec::new(),
+                cycles: None,
+                terminator: CfgTerminator::Fallthrough,
+            },
+            CfgBlockDraft {
+                address: 0x1008,
+                size: 4,
+                instructions: Vec::new(),
+                calls: Vec::new(),
+                cycles: None,
+                terminator: CfgTerminator::Fallthrough,
+            },
+        ];
+        let edges = [CfgEdgeDraft {
+            from: 0x1000,
+            to: 0x1008,
+            kind: CfgEdgeKind::Fallthrough,
+            site: 0x1004,
+            conditional: false,
+        }];
+        let function = model
+            .pipeline_state_model(&decoded, &blocks, &edges, 0x1000)
+            .expect("multi-issue state table");
+        assert_eq!(function.default_cost(0x1000), Some(1.0));
+        assert_eq!(function.default_cost(0x1008), Some(1.0));
+        let (cost, exit) = function
+            .transition(0x1000, function.entry_state())
+            .expect("entry transition");
+        assert_eq!(cost, 1.0);
+        assert_ne!(exit, super::PipelineState::default());
+        assert_eq!(
+            function.transition(0x1008, &exit).map(|(cost, _)| cost),
+            Some(3.0)
+        );
+        assert_eq!(
+            model.pipeline_edge_stalls(&decoded, &blocks, &edges),
+            vec![Some(2.0)]
+        );
+    }
+
+    #[test]
+    fn multi_issue_metadata_records_width_and_resource_units() {
+        let model = multi_issue_model(2, Some(2));
+        let info = model.timing_info(None, &BTreeSet::new());
+        assert_eq!(
+            info.models[0].determinism,
+            elf2tdg_schema::Determinism::Statistical
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_issue_width")
+                .map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            info.models[0]
+                .params
+                .extras
+                .get("board_profile_pipeline_resources")
+                .map(String::as_str),
+            Some("alu=2")
+        );
+        assert!(
+            info.models[0]
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("cross-block co-issue"))
+        );
     }
 
     #[test]

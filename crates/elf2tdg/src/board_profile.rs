@@ -28,6 +28,12 @@ pub const MIN_BOARD_PROFILE_SCHEMA_VERSION: u32 = 1;
 
 const DEFAULT_FETCH_WIDTH_BYTES: u32 = 4;
 
+/// Maximum accepted pipeline issue width.
+pub(crate) const MAX_PIPELINE_ISSUE_WIDTH: u32 = 8;
+
+/// Maximum accepted units for one pipeline resource.
+pub(crate) const MAX_PIPELINE_RESOURCE_UNITS: u32 = 64;
+
 const fn default_profile_schema_version() -> u32 {
     BOARD_PROFILE_SCHEMA_VERSION
 }
@@ -117,11 +123,17 @@ cpu = "__CPU__"
 # note = "measured on target"
 
 # In-order resource/dependency pipeline. Supported for Cortex-M4 and
-# AArch64/RISC-V timing models; single issue only. Values below are generic
-# presets, not verified target-core timings.
+# AArch64/RISC-V timing models. Values below are generic presets, not verified
+# target-core timings.
 # [pipeline]
-# issue_width = 1
+# issue_width = 1                    # 1..8; raise only for a verified multi-issue core
 # branch_penalty = { min = 1, max = 3 }
+#
+# Optional per-resource unit counts. Unlisted resources have one unit.
+# [pipeline.resources]
+# alu = 2
+# load_store = 1
+#
 # [[pipeline.instructions]]
 # mnemonic = "ldr"
 # resources = ["load_store"]
@@ -1120,6 +1132,8 @@ pub(crate) struct PipelineProfile {
     #[serde(default = "default_issue_width")]
     issue_width: u32,
     #[serde(default)]
+    resources: BTreeMap<String, u32>,
+    #[serde(default)]
     branch_penalty: Option<CostSpec>,
     #[serde(default)]
     instructions: Vec<PipelineInstruction>,
@@ -1128,6 +1142,28 @@ pub(crate) struct PipelineProfile {
 impl PipelineProfile {
     pub(crate) fn issue_width(&self) -> u32 {
         self.issue_width
+    }
+
+    /// Number of units for a resource. Unlisted resources have one unit.
+    pub(crate) fn resource_units(&self, resource: &str) -> usize {
+        self.resources
+            .get(resource)
+            .copied()
+            .and_then(|units| usize::try_from(units).ok())
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    pub(crate) fn resources(&self) -> &BTreeMap<String, u32> {
+        &self.resources
+    }
+
+    pub(crate) fn resource_summary(&self) -> String {
+        self.resources
+            .iter()
+            .map(|(resource, units)| format!("{resource}={units}"))
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     pub(crate) fn branch_penalty(&self) -> CostRange {
@@ -1469,10 +1505,23 @@ impl BoardProfile {
                 model.id()
             )));
         }
-        if pipeline.issue_width != 1 {
-            return Err(Error::Config(
-                "board profile pipeline.issue_width other than 1 is not supported yet".to_owned(),
-            ));
+        if pipeline.issue_width == 0 || pipeline.issue_width > MAX_PIPELINE_ISSUE_WIDTH {
+            return Err(Error::Config(format!(
+                "board profile pipeline.issue_width must be between 1 and {MAX_PIPELINE_ISSUE_WIDTH}, not {}",
+                pipeline.issue_width
+            )));
+        }
+        for (resource, units) in &pipeline.resources {
+            if !valid_pipeline_resource_name(resource) {
+                return Err(Error::Config(format!(
+                    "board profile pipeline.resources has invalid resource {resource:?}"
+                )));
+            }
+            if *units == 0 || *units > MAX_PIPELINE_RESOURCE_UNITS {
+                return Err(Error::Config(format!(
+                    "board profile pipeline.resources[{resource:?}] must be between 1 and {MAX_PIPELINE_RESOURCE_UNITS} units, not {units}"
+                )));
+            }
         }
         if let Some(branch_penalty) = &pipeline.branch_penalty
             && !branch_penalty.cost_range().is_valid()
@@ -1509,12 +1558,7 @@ impl BoardProfile {
             }
             let mut resources = BTreeSet::new();
             for resource in &instruction.resources {
-                if resource.is_empty()
-                    || resource.len() > 64
-                    || resource
-                        .chars()
-                        .any(|character| character.is_whitespace() || character.is_control())
-                {
+                if !valid_pipeline_resource_name(resource) {
                     return Err(Error::Config(format!(
                         "board profile pipeline.instructions[{index}] has invalid resource {resource:?}"
                     )));
@@ -2271,6 +2315,14 @@ fn valid_domain_name(name: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
+fn valid_pipeline_resource_name(resource: &str) -> bool {
+    !resource.is_empty()
+        && resource.len() <= 64
+        && !resource
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+}
+
 fn arch_matches(profile: &str, model: &str) -> bool {
     let profile = profile.trim().to_ascii_lowercase().replace('_', "-");
     let model = model.trim().to_ascii_lowercase().replace('_', "-");
@@ -2667,6 +2719,10 @@ locks = { uart = 500 }
 issue_width = 1
 branch_penalty = { min = 1, max = 3 }
 
+[pipeline.resources]
+alu = 2
+load_store = 1
+
 [[pipeline.instructions]]
 class = "load"
 resources = ["load_store"]
@@ -2674,7 +2730,12 @@ latency = 2
 occupancy = 1
 "#;
         let profile = BoardProfile::parse_toml(&valid).expect("valid pipeline profile");
-        assert!(profile.pipeline().is_some());
+        let pipeline = profile.pipeline().expect("pipeline");
+        assert_eq!(pipeline.issue_width(), 1);
+        assert_eq!(pipeline.resource_units("alu"), 2);
+        assert_eq!(pipeline.resource_units("load_store"), 1);
+        assert_eq!(pipeline.resource_units("branch"), 1);
+        assert_eq!(pipeline.resource_summary(), "alu=2,load_store=1");
 
         let legacy = valid.replace("schema_version = 2", "schema_version = 1");
         assert!(BoardProfile::parse_toml(&legacy).is_err());
@@ -2701,7 +2762,23 @@ occupancy = 1
         assert!(BoardProfile::parse_toml(&m7).is_err());
 
         let multi_issue = valid.replace("issue_width = 1", "issue_width = 2");
-        assert!(BoardProfile::parse_toml(&multi_issue).is_err());
+        let profile = BoardProfile::parse_toml(&multi_issue).expect("multi-issue profile");
+        assert_eq!(profile.pipeline().expect("pipeline").issue_width(), 2);
+
+        let zero_width = valid.replace("issue_width = 1", "issue_width = 0");
+        assert!(BoardProfile::parse_toml(&zero_width).is_err());
+
+        let too_wide = valid.replace("issue_width = 1", "issue_width = 9");
+        assert!(BoardProfile::parse_toml(&too_wide).is_err());
+
+        let zero_units = valid.replace("alu = 2", "alu = 0");
+        assert!(BoardProfile::parse_toml(&zero_units).is_err());
+
+        let too_many_units = valid.replace("alu = 2", "alu = 65");
+        assert!(BoardProfile::parse_toml(&too_many_units).is_err());
+
+        let bad_resource_name = valid.replace("alu = 2", "\"bad name\" = 2");
+        assert!(BoardProfile::parse_toml(&bad_resource_name).is_err());
 
         let no_resources = valid.replace("resources = [\"load_store\"]", "resources = []");
         assert!(BoardProfile::parse_toml(&no_resources).is_err());

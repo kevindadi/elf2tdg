@@ -171,8 +171,12 @@ cpu = "cortex-m4"
 hz = 48_000_000
 
 [pipeline]
-issue_width = 1
+issue_width = 2
 branch_penalty = 2
+
+[pipeline.resources]
+alu = 2
+load_store = 1
 
 [[pipeline.instructions]]
 mnemonic = "ldr"
@@ -205,6 +209,22 @@ auto_loop_bounds = false
     assert_eq!(
         timing.models[0].determinism,
         elf2tdg_schema::Determinism::Statistical
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_issue_width")
+            .map(String::as_str),
+        Some("2")
+    );
+    assert_eq!(
+        timing.models[0]
+            .params
+            .extras
+            .get("board_profile_pipeline_resources")
+            .map(String::as_str),
+        Some("alu=2,load_store=1")
     );
     assert!(output.cfg.functions.iter().any(|function| {
         function
