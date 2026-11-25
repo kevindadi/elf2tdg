@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.28";
+pub const CFG_SCHEMA_VERSION: &str = "2.29";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1177,6 +1177,8 @@ pub struct CfgIpetSolution {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline_model: Option<String>,
     /// Branch-prediction model used by the IPET constraints, when active.
+    /// `state-product` is local to one function; `interprocedural-state-product`
+    /// carries predictor state and branch costs through direct calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_model: Option<String>,
     /// Positive block execution counts from the solution.

@@ -14,6 +14,7 @@
 //! incomplete callee summaries mark the result `partial`; a partial numeric
 //! objective is not a safe bound.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use good_lp::{
@@ -24,7 +25,7 @@ use petgraph::graph::DiGraph;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
-use elf2tdg_schema::{BlockId, FunctionId};
+use elf2tdg_schema::{BlockId, CostRange, FunctionId};
 
 use crate::board_profile::BranchPredictionProfile;
 use crate::branch_prediction::{PredictorModel, PredictorState, conditional_branch};
@@ -62,11 +63,84 @@ pub(crate) fn analyze_program(program: &mut ProgramCfg, facts: &FlowFacts) -> Cf
 
 /// Runs IPET with the selected branch-prediction profile.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub(crate) fn analyze_program_with_branch_prediction(
     program: &mut ProgramCfg,
     facts: &FlowFacts,
     branch_prediction: Option<&BranchPredictionProfile>,
+) -> CfgWcetInfo {
+    let interproc = branch_prediction
+        .filter(|profile| {
+            profile.model() == crate::board_profile::BranchPredictionModel::Bimodal
+                && !facts.has_contextual_facts()
+        })
+        .and_then(|profile| build_interproc_context(program, facts, profile));
+    analyze_program_impl(program, facts, branch_prediction, interproc.as_ref())
+}
+
+/// Per-function branch-excluded costs plus lazy predictor-state summaries.
+struct InterprocContext {
+    base: BTreeMap<FunctionId, CfgFunctionWcet>,
+    model: BranchInterprocModel,
+}
+
+fn build_interproc_context(
+    program: &ProgramCfg,
+    facts: &FlowFacts,
+    profile: &BranchPredictionProfile,
+) -> Option<InterprocContext> {
+    if !program
+        .functions
+        .iter()
+        .any(|function| !function_call_targets(&function.cfg).is_empty())
+    {
+        return None;
+    }
+    let effect_program = program.clone();
+    let mut base_program = program.clone();
+    strip_branch_penalties(&mut base_program, profile.mispredict_penalty());
+    let _ = analyze_program_impl(&mut base_program, facts, None, None);
+    let base: BTreeMap<FunctionId, CfgFunctionWcet> = base_program
+        .functions
+        .iter()
+        .filter_map(|function| {
+            function
+                .wcet
+                .clone()
+                .map(|wcet| (function.id.clone(), wcet))
+        })
+        .collect();
+    if base.is_empty() {
+        return None;
+    }
+    Some(InterprocContext {
+        base,
+        model: BranchInterprocModel::new(&effect_program, facts, profile),
+    })
+}
+
+fn strip_branch_penalties(program: &mut ProgramCfg, penalty: u32) {
+    let penalty = f64::from(penalty);
+    for function in &mut program.functions {
+        for block in function.cfg.graph.node_weights_mut() {
+            let Some(prediction) = block.branch_prediction.take() else {
+                continue;
+            };
+            if let Some(cycles) = &mut block.cycles {
+                cycles.min =
+                    (cycles.min - f64::from(prediction.mispredicts_min) * penalty).max(0.0);
+                cycles.max =
+                    (cycles.max - f64::from(prediction.mispredicts_max) * penalty).max(0.0);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn analyze_program_impl(
+    program: &mut ProgramCfg,
+    facts: &FlowFacts,
+    branch_prediction: Option<&BranchPredictionProfile>,
+    interproc: Option<&InterprocContext>,
 ) -> CfgWcetInfo {
     let frequency_hz = frequency_hz(program);
     let mut function_indices = Vec::new();
@@ -166,6 +240,7 @@ pub(crate) fn analyze_program_with_branch_prediction(
                     FactScope::Context(context),
                     frequency_hz,
                     branch_prediction,
+                    None,
                 );
                 versions.insert((function.id.clone(), context.clone()), summary.clone());
                 context_summaries.push(summary);
@@ -187,6 +262,7 @@ pub(crate) fn analyze_program_with_branch_prediction(
                 FactScope::Insensitive,
                 frequency_hz,
                 branch_prediction,
+                interproc,
             ));
         }
     }
@@ -267,7 +343,7 @@ pub(crate) fn analyze_program_with_branch_prediction(
     }
     if program.branch_prediction.is_some() {
         info.caveats.push(
-            "Branch-prediction state IPET follows concrete predictor states from the configured per-function initial state when the branch analysis completes. Inter-function and first-execution history, unsupported branches, state-limit fallback, ordered/cross-function automata and product-size overflow keep per-block misprediction bounds."
+            "Branch-prediction state IPET follows concrete predictor states from the configured initial state when the branch analysis completes. For the bimodal model it builds per-function branch-cost/exit-state summaries and carries predictor state through direct, statically resolved calls, including nested calls; indirect, unresolved or recursive calls, contextual facts, ordered/cross-function automata, callee analysis fallback and state/summary caps keep the per-function or per-block model."
                 .to_owned(),
         );
     }
@@ -312,6 +388,7 @@ pub(crate) fn analyze_program_with_branch_prediction(
     info
 }
 
+#[allow(clippy::too_many_arguments)]
 fn analyze_function<'a, F>(
     program: &ProgramCfg,
     function: &CfgFunction,
@@ -320,6 +397,7 @@ fn analyze_function<'a, F>(
     scope: FactScope<'_>,
     frequency_hz: Option<u64>,
     branch_prediction: Option<&BranchPredictionProfile>,
+    interproc: Option<&InterprocContext>,
 ) -> CfgFunctionWcet
 where
     F: FnMut(&FunctionId) -> Option<&'a CfgFunctionWcet>,
@@ -343,6 +421,14 @@ where
         Ok(info) => info,
         Err(reason) => return unbounded_summary(&reason, 0, 0),
     };
+    let base_call_cycles = interproc.and_then(|context| {
+        build_call_info_with(&function.cfg, &reachable_nodes, |target| {
+            context.base.get(target)
+        })
+        .ok()
+        .filter(|info| info.external_calls == 0 && info.unresolved_calls == 0 && !info.partial)
+        .map(|info| info.block_cycles)
+    });
     if reachable_nodes
         .iter()
         .any(|node| function.cfg.graph[*node].cycles.is_none())
@@ -363,11 +449,13 @@ where
         &analysis,
         &reachable_nodes,
         &call_info.block_cycles,
+        base_call_cycles.as_ref(),
         facts,
         &function.id,
         scope,
         branch_prediction,
         program.pipeline_states.get(&function.address),
+        interproc.map(|context| &context.model),
     ) {
         Ok(outcome) => outcome,
         Err(IpetError::Unbounded(reason)) => {
@@ -413,6 +501,7 @@ enum IpetError {
 struct IpetOutcome {
     solution: CfgIpetSolution,
     partial: bool,
+    prediction_exit_costs: BTreeMap<PredictorState, f64>,
 }
 
 #[allow(
@@ -428,11 +517,13 @@ fn solve_function(
     analysis: &crate::cfg_graph::CfgGraphAnalysis,
     reachable_nodes: &BTreeSet<NodeIndex>,
     call_cycles: &BTreeMap<NodeIndex, f64>,
+    base_call_cycles: Option<&BTreeMap<NodeIndex, f64>>,
     facts: &FlowFacts,
     function_id: &FunctionId,
     scope: FactScope<'_>,
     branch_prediction: Option<&BranchPredictionProfile>,
     pipeline_model: Option<&PipelineFunctionModel>,
+    branch_interproc: Option<&BranchInterprocModel>,
 ) -> Result<IpetOutcome, IpetError> {
     let loops = build_loops(cfg, entry, analysis, facts, scope)?;
     let automata = ordered_automata(facts, function_id, scope);
@@ -494,7 +585,54 @@ fn solve_function(
         return Ok(outcome);
     }
     let cache_models = build_cache_ipet_models(program, cfg, reachable_nodes);
-    let branch_model = build_branch_ipet_model(branch_prediction, cfg, reachable_nodes);
+    let has_calls = reachable_nodes
+        .iter()
+        .any(|node| !cfg.graph[*node].calls.is_empty());
+    let active_interproc = branch_interproc.filter(|_| base_call_cycles.is_some() && has_calls);
+    let mut branch_model = build_branch_ipet_model(
+        branch_prediction,
+        cfg,
+        reachable_nodes,
+        active_interproc.is_some(),
+    );
+    if !cache_models.is_empty() || branch_model.is_some() || pipeline_model.is_some() {
+        let state_call_cycles = if active_interproc.is_some() {
+            base_call_cycles.unwrap_or(call_cycles)
+        } else {
+            call_cycles
+        };
+        let state_outcome = match solve_function_with_state_products(
+            cfg,
+            entry,
+            reachable_nodes,
+            state_call_cycles,
+            facts,
+            function_id,
+            scope,
+            &loops,
+            &cache_models,
+            branch_model.as_ref(),
+            &pipeline_stalls,
+            pipeline_model,
+            active_interproc,
+            None,
+        ) {
+            Ok(outcome) => outcome,
+            Err(IpetError::Unknown(reason)) if reason == "ipet-model-too-large" => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(mut outcome) = state_outcome {
+            if outcome.solution.cache_model.is_none() {
+                outcome.solution.cache_model = cache_fallback_model(program);
+            }
+            if outcome.solution.branch_model.is_none() {
+                outcome.solution.branch_model = branch_fallback_model(branch_prediction);
+            }
+            apply_pipeline_fallback(&mut outcome, program);
+            return Ok(outcome);
+        }
+    }
+    branch_model = build_branch_ipet_model(branch_prediction, cfg, reachable_nodes, false);
     if !cache_models.is_empty() || branch_model.is_some() || pipeline_model.is_some() {
         let state_outcome = match solve_function_with_state_products(
             cfg,
@@ -509,6 +647,8 @@ fn solve_function(
             branch_model.as_ref(),
             &pipeline_stalls,
             pipeline_model,
+            None,
+            None,
         ) {
             Ok(outcome) => outcome,
             Err(IpetError::Unknown(reason)) if reason == "ipet-model-too-large" => None,
@@ -722,6 +862,7 @@ fn solve_function(
             blocks,
         },
         partial,
+        prediction_exit_costs: BTreeMap::new(),
     };
     apply_pipeline_fallback(&mut outcome, program);
     Ok(outcome)
@@ -1678,6 +1819,7 @@ fn solve_function_with_automata(
             blocks,
         },
         partial,
+        prediction_exit_costs: BTreeMap::new(),
     })
 }
 
@@ -2864,6 +3006,7 @@ fn solve_function_with_cross_function_automata(
             blocks,
         },
         partial,
+        prediction_exit_costs: BTreeMap::new(),
     })
 }
 
@@ -2979,6 +3122,128 @@ impl BranchIpetModel {
     }
 }
 
+/// Branch cost and possible predictor exit states for one callee invocation.
+#[derive(Clone, Debug)]
+struct BranchEffect {
+    exits: BTreeMap<PredictorState, f64>,
+}
+
+const MAX_BRANCH_EFFECTS: usize = 4_096;
+const MAX_BRANCH_EXIT_STATES: usize = 256;
+
+/// Interprocedural predictor-state summaries.
+///
+/// Each summary is computed lazily for a concrete entry predictor state. It
+/// runs the callee's branch-only IPET model (zero base costs) and recursively
+/// applies callee summaries at nested call sites. Each possible exit state
+/// keeps the maximum branch cost of the callee paths that reach it.
+struct BranchInterprocModel {
+    program: ProgramCfg,
+    facts: FlowFacts,
+    profile: BranchPredictionProfile,
+    index_by_id: BTreeMap<FunctionId, usize>,
+    cache: RefCell<BTreeMap<(FunctionId, PredictorState), Option<BranchEffect>>>,
+    visiting: RefCell<BTreeSet<FunctionId>>,
+    effects: Cell<usize>,
+}
+
+impl BranchInterprocModel {
+    fn new(program: &ProgramCfg, facts: &FlowFacts, profile: &BranchPredictionProfile) -> Self {
+        let index_by_id = program
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(index, function)| (function.id.clone(), index))
+            .collect();
+        Self {
+            program: program.clone(),
+            facts: facts.clone(),
+            profile: profile.clone(),
+            index_by_id,
+            cache: RefCell::new(BTreeMap::new()),
+            visiting: RefCell::new(BTreeSet::new()),
+            effects: Cell::new(0),
+        }
+    }
+
+    fn effect(&self, function: &FunctionId, state: &PredictorState) -> Option<BranchEffect> {
+        let key = (function.clone(), state.clone());
+        if let Some(cached) = self.cache.borrow().get(&key) {
+            return cached.clone();
+        }
+        if self.effects.get() >= MAX_BRANCH_EFFECTS
+            || !self.visiting.borrow_mut().insert(function.clone())
+        {
+            return None;
+        }
+        let effect = self.compute_effect(function, state);
+        self.visiting.borrow_mut().remove(function);
+        if effect.is_some() {
+            self.effects.set(self.effects.get().saturating_add(1));
+        }
+        self.cache.borrow_mut().insert(key, effect.clone());
+        effect
+    }
+
+    fn compute_effect(
+        &self,
+        function_id: &FunctionId,
+        state: &PredictorState,
+    ) -> Option<BranchEffect> {
+        let index = *self.index_by_id.get(function_id)?;
+        let function = self.program.functions.get(index)?;
+        let entry = function.cfg.entry?;
+        let analysis = crate::cfg_graph::analyze(&function.cfg);
+        let reachable_nodes: BTreeSet<NodeIndex> = function
+            .cfg
+            .blocks_by_address
+            .values()
+            .copied()
+            .filter(|node| analysis.reachable.contains(&function.cfg.graph[*node].id))
+            .collect();
+        if reachable_nodes.is_empty() {
+            return None;
+        }
+        let loops = build_loops(
+            &function.cfg,
+            entry,
+            &analysis,
+            &self.facts,
+            FactScope::Insensitive,
+        )
+        .ok()?;
+        let branch =
+            build_branch_ipet_model(Some(&self.profile), &function.cfg, &reachable_nodes, true)?;
+        let mut branch_cfg = function.cfg.clone();
+        for block in branch_cfg.graph.node_weights_mut() {
+            block.cycles = Some(CostRange::exact(0.0));
+        }
+        let outcome = solve_function_with_state_products(
+            &branch_cfg,
+            entry,
+            &reachable_nodes,
+            &BTreeMap::new(),
+            &self.facts,
+            &function.id,
+            FactScope::Insensitive,
+            &loops,
+            &CacheIpetModels::default(),
+            Some(&branch),
+            &BTreeMap::new(),
+            None,
+            Some(self),
+            Some(state),
+        )
+        .ok()??;
+        if outcome.partial || outcome.prediction_exit_costs.is_empty() {
+            return None;
+        }
+        Some(BranchEffect {
+            exits: outcome.prediction_exit_costs,
+        })
+    }
+}
+
 fn branch_fallback_model(profile: Option<&BranchPredictionProfile>) -> Option<String> {
     profile.map(|_| "block-bounds".to_owned())
 }
@@ -2987,6 +3252,7 @@ fn build_branch_ipet_model(
     profile: Option<&BranchPredictionProfile>,
     cfg: &FunctionCfg,
     reachable_nodes: &BTreeSet<NodeIndex>,
+    allow_empty: bool,
 ) -> Option<BranchIpetModel> {
     let profile = profile?;
     let mut has_branch = false;
@@ -2999,7 +3265,7 @@ fn build_branch_ipet_model(
             }
         }
     }
-    has_branch.then(|| BranchIpetModel {
+    (has_branch || allow_empty).then(|| BranchIpetModel {
         predictor: PredictorModel::from_profile(profile),
     })
 }
@@ -3652,6 +3918,7 @@ fn branch_edge_transition(
     (cost, next)
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_state_product_graph(
     cfg: &FunctionCfg,
     entry: NodeIndex,
@@ -3660,12 +3927,18 @@ fn build_state_product_graph(
     models: &CacheIpetModels,
     branch: Option<&BranchIpetModel>,
     pipeline_model: Option<&PipelineFunctionModel>,
+    branch_interproc: Option<&BranchInterprocModel>,
+    entry_prediction: Option<&PredictorState>,
 ) -> Option<(Vec<StateProductNode>, Vec<StateProductEdge>)> {
     let start_key = StateProductKey {
         node: entry,
         instruction: models.instruction.map(|model| model.geometry.cold()),
         data: models.data.map(|model| model.geometry.cold()),
-        prediction: branch.map(|_| PredictorState::default()),
+        prediction: branch.map(|_| {
+            entry_prediction
+                .cloned()
+                .unwrap_or_else(PredictorState::default)
+        }),
         pipeline: pipeline_model.map(|model| model.entry_state().clone()),
     };
     let mut index_by_key: BTreeMap<StateProductKey, usize> = BTreeMap::new();
@@ -3694,62 +3967,114 @@ fn build_state_product_graph(
                 continue;
             }
             let reset = edge.weight().kind == crate::cfg::CfgEdgeKind::CallReturn;
-            let (branch_cost, prediction) =
-                if let (Some(branch), Some(state)) = (branch, key.prediction.as_ref()) {
-                    branch_edge_transition(cfg, key.node, state, branch, edge.weight().kind)
+            let transitions: Vec<(PredictorState, f64)> = if let (Some(branch), Some(state)) =
+                (branch, key.prediction.as_ref())
+            {
+                if reset && let Some(interproc) = branch_interproc {
+                    interproc_call_effect(cfg, key.node, state, interproc)?
                 } else {
-                    (0.0, PredictorState::default())
-                };
-            let next_key = StateProductKey {
-                node: target,
-                instruction: if reset {
-                    models.instruction.map(|model| model.geometry.cold())
-                } else {
-                    exit_instruction.clone()
-                },
-                data: if reset {
-                    models.data.map(|model| model.geometry.cold())
-                } else {
-                    exit_data.clone()
-                },
-                prediction: branch.map(|_| prediction.clone()),
-                pipeline: match pipeline_model {
-                    Some(model) if reset => Some(model.entry_state().clone()),
-                    Some(_) => Some(exit_pipeline.clone()?),
-                    None => None,
-                },
-            };
-            let to = if let Some(&index) = index_by_key.get(&next_key) {
-                index
+                    let (cost, prediction) =
+                        branch_edge_transition(cfg, key.node, state, branch, edge.weight().kind);
+                    vec![(prediction, cost)]
+                }
             } else {
-                if nodes.len() >= MAX_AUTOMATON_NODES {
+                vec![(PredictorState::default(), 0.0)]
+            };
+            for (prediction, branch_cost) in transitions {
+                let next_key = StateProductKey {
+                    node: target,
+                    instruction: if reset {
+                        models.instruction.map(|model| model.geometry.cold())
+                    } else {
+                        exit_instruction.clone()
+                    },
+                    data: if reset {
+                        models.data.map(|model| model.geometry.cold())
+                    } else {
+                        exit_data.clone()
+                    },
+                    prediction: branch.map(|_| prediction),
+                    pipeline: match pipeline_model {
+                        Some(model) if reset => Some(model.entry_state().clone()),
+                        Some(_) => Some(exit_pipeline.clone()?),
+                        None => None,
+                    },
+                };
+                let to = if let Some(&index) = index_by_key.get(&next_key) {
+                    index
+                } else {
+                    if nodes.len() >= MAX_AUTOMATON_NODES {
+                        return None;
+                    }
+                    let index = nodes.len();
+                    index_by_key.insert(next_key.clone(), index);
+                    nodes.push(state_product_node(
+                        cfg,
+                        next_key,
+                        call_cycles,
+                        models,
+                        branch,
+                        pipeline_model,
+                    )?);
+                    queue.push_back(index);
+                    index
+                };
+                if edges.len() >= MAX_AUTOMATON_EDGES {
                     return None;
                 }
-                let index = nodes.len();
-                index_by_key.insert(next_key.clone(), index);
-                nodes.push(state_product_node(
-                    cfg,
-                    next_key,
-                    call_cycles,
-                    models,
-                    branch,
-                    pipeline_model,
-                )?);
-                queue.push_back(index);
-                index
-            };
-            if edges.len() >= MAX_AUTOMATON_EDGES {
-                return None;
+                edges.push(StateProductEdge {
+                    from,
+                    to,
+                    original: edge.id(),
+                    branch_cost,
+                });
             }
-            edges.push(StateProductEdge {
-                from,
-                to,
-                original: edge.id(),
-                branch_cost,
-            });
         }
     }
     Some((nodes, edges))
+}
+
+/// Conservatively combines the branch effects of every call in a block.
+///
+/// A block with several calls applies them in address order. Each possible
+/// callee exit state keeps the branch cost of the callee path that reaches it.
+fn interproc_call_effect(
+    cfg: &FunctionCfg,
+    node: NodeIndex,
+    state: &PredictorState,
+    interproc: &BranchInterprocModel,
+) -> Option<Vec<(PredictorState, f64)>> {
+    let block = &cfg.graph[node];
+    let mut states = vec![(state.clone(), 0.0_f64)];
+    let mut saw_call = false;
+    for call in &block.calls {
+        if call.null_target {
+            continue;
+        }
+        saw_call = true;
+        if call.unresolved || call.heuristic || !call.candidates.is_empty() {
+            return None;
+        }
+        let target = call.target_function.as_ref()?;
+        let mut next: BTreeMap<PredictorState, f64> = BTreeMap::new();
+        for (state, accumulated) in &states {
+            let effect = interproc.effect(target, state)?;
+            for (exit, cost) in effect.exits {
+                let total = accumulated + cost;
+                next.entry(exit)
+                    .and_modify(|current| *current = current.max(total))
+                    .or_insert(total);
+            }
+        }
+        if next.is_empty() {
+            return None;
+        }
+        states = next.into_iter().collect();
+    }
+    if !saw_call {
+        return Some(states);
+    }
+    Some(states)
 }
 
 #[allow(
@@ -3772,6 +4097,8 @@ fn solve_function_with_state_products(
     branch: Option<&BranchIpetModel>,
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
     pipeline_model: Option<&PipelineFunctionModel>,
+    branch_interproc: Option<&BranchInterprocModel>,
+    entry_prediction: Option<&PredictorState>,
 ) -> Result<Option<IpetOutcome>, IpetError> {
     let Some((product_nodes, product_edges)) = build_state_product_graph(
         cfg,
@@ -3781,6 +4108,8 @@ fn solve_function_with_state_products(
         models,
         branch,
         pipeline_model,
+        branch_interproc,
+        entry_prediction,
     ) else {
         return Ok(None);
     };
@@ -3794,6 +4123,17 @@ fn solve_function_with_state_products(
                 .any(|edge| reachable_nodes.contains(&edge.target()))
         })
         .collect();
+    let mut exit_nodes_by_prediction: BTreeMap<PredictorState, Vec<usize>> = BTreeMap::new();
+    for (index, node) in product_nodes.iter().enumerate() {
+        if let Some(prediction) = &node.key.prediction
+            && !blocks_with_outgoing.contains(&node.key.node)
+        {
+            exit_nodes_by_prediction
+                .entry(prediction.clone())
+                .or_default()
+                .push(index);
+        }
+    }
     let nonexit_headers: BTreeSet<NodeIndex> = loops
         .iter()
         .filter(|loop_| !loop_.has_exit)
@@ -4031,6 +4371,9 @@ fn solve_function_with_state_products(
         }
     }
 
+    let exit_solve = branch_interproc.is_some() && entry_prediction.is_some();
+    let exit_vars = exit_solve.then(|| vars.clone());
+    let exit_constraints = exit_solve.then(|| constraints.clone());
     let problem = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = problem
         .with_all(constraints)
@@ -4046,6 +4389,50 @@ fn solve_function_with_state_products(
         SolutionStatus::TimeLimit => "time-limit",
         SolutionStatus::GapLimit => "gap-limit",
     };
+    let mut prediction_exit_costs = BTreeMap::new();
+    if let (Some(exit_vars), Some(exit_constraints)) = (exit_vars, exit_constraints) {
+        if exit_nodes_by_prediction.len() > MAX_BRANCH_EXIT_STATES {
+            return Err(IpetError::Unknown("ipet-model-too-large".to_owned()));
+        }
+        for prediction in exit_nodes_by_prediction.keys() {
+            let mut constraints = exit_constraints.clone();
+            for (other, other_nodes) in &exit_nodes_by_prediction {
+                if other == prediction {
+                    continue;
+                }
+                for index in other_nodes {
+                    constraints.push(constraint::eq(
+                        Expression::from(node_variables[*index]),
+                        0.0,
+                    ));
+                }
+            }
+            let solution = match exit_vars
+                .clone()
+                .maximise(objective.clone())
+                .using(good_lp::microlp)
+                .with_all(constraints)
+                .solve()
+            {
+                Ok(solution) => solution,
+                Err(good_lp::ResolutionError::Infeasible) => continue,
+                Err(good_lp::ResolutionError::Unbounded) => {
+                    return Err(IpetError::Unbounded("ipet-unbounded".to_owned()));
+                }
+                Err(error) => {
+                    return Err(IpetError::Unknown(format!("ipet-solver: {error}")));
+                }
+            };
+            if !matches!(solution.status(), SolutionStatus::Optimal) {
+                return Err(IpetError::Unknown("ipet-branch-effect-timeout".to_owned()));
+            }
+            let cost = solution.eval(&objective);
+            if !cost.is_finite() || cost < 0.0 {
+                return Err(IpetError::Unknown("ipet-objective-not-finite".to_owned()));
+            }
+            prediction_exit_costs.insert(prediction.clone(), cost);
+        }
+    }
     let mut partial = status != "optimal" || loops.iter().any(|loop_| !loop_.has_exit);
     let mut counts: BTreeMap<NodeIndex, u64> = BTreeMap::new();
     for (index, node) in product_nodes.iter().enumerate() {
@@ -4095,10 +4482,18 @@ fn solve_function_with_state_products(
             cache_conflicts: None,
             cache_ccg: None,
             pipeline_model: pipeline_model.map(|_| "state-product".to_owned()),
-            branch_model: branch.map(|_| "state-product".to_owned()),
+            branch_model: branch.map(|_| {
+                if branch_interproc.is_some() {
+                    "interprocedural-state-product"
+                } else {
+                    "state-product"
+                }
+                .to_owned()
+            }),
             blocks,
         },
         partial,
+        prediction_exit_costs,
     }))
 }
 
@@ -5911,6 +6306,67 @@ auto_loop_bounds = false
         assert_eq!(state_ipet.objective, 11.0);
         assert_eq!(state_ipet.branch_model.as_deref(), Some("state-product"));
         assert_eq!(state_ipet.cache_model, None);
+    }
+
+    #[test]
+    fn interprocedural_branch_state_models_callee_warmup() {
+        let board = branch_board(16);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let mut facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let caller = FunctionCfg::build(
+            vec![
+                block(0x1000, CfgTerminator::Fallthrough, 1.0),
+                call_block(0x1002, 1.0, 0x2000),
+                block(0x1004, CfgTerminator::Fallthrough, 1.0),
+                call_block(0x1006, 1.0, 0x2000),
+                block(0x1008, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x1000, 0x1002, CfgEdgeKind::Fallthrough),
+                edge(0x1002, 0x1004, CfgEdgeKind::CallReturn),
+                edge(0x1004, 0x1006, CfgEdgeKind::Fallthrough),
+                edge(0x1006, 0x1008, CfgEdgeKind::CallReturn),
+            ],
+            Some(0x1000),
+        );
+        let mut program = branching_callee_program(caller);
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <conditional>
+    <condition address="0x2002"/>
+    <case cond="0" executed="false"/>
+  </conditional>
+</flowfacts>
+"#,
+            "force-taken.ffx",
+        )
+        .expect("branch fact");
+        facts
+            .apply_document(document, &program)
+            .expect("apply branch fact");
+        let _ = crate::branch_prediction::analyze_program(&mut program, prediction);
+        let mut baseline = program.clone();
+        let _ = super::analyze_program_impl(&mut baseline, &facts, Some(prediction), None);
+        let baseline_ipet = baseline.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("baseline IPET");
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("interprocedural IPET");
+        assert_eq!(
+            ipet.branch_model.as_deref(),
+            Some("interprocedural-state-product")
+        );
+        let json = serde_json::to_value(ipet).expect("IPET JSON");
+        assert_eq!(json["branch_model"], "interprocedural-state-product");
+        assert!(ipet.objective < baseline_ipet.objective);
+        assert!(ipet.objective > 0.0);
     }
 
     #[test]

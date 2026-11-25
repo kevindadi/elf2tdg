@@ -245,7 +245,7 @@ pub(crate) fn analyze_program(
         branches_analyzed: 0,
         branches_fallback: 0,
         caveats: vec![
-            "Each function starts with the configured predictor state; inter-function branch history is not modeled."
+            "Each function starts with the configured predictor state for its standalone block ranges. IPET can propagate predictor state through direct calls when the per-function branch-cost and exit-state summaries are available."
                 .to_owned(),
             "Only conditional branches with one taken edge and one fallthrough edge are modeled; indirect/table target prediction, returns, branch-target buffers and global history are not modeled."
                 .to_owned(),

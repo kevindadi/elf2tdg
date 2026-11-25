@@ -260,7 +260,7 @@ pub(crate) fn analyze_program_with_facts(
     }
     if program.branch_prediction.is_some() {
         info.caveats.push(
-            "Branch-prediction state correlation is applied only by the IPET backend; longest-path uses per-block misprediction bounds."
+            "Branch-prediction state correlation is applied only by the IPET backend; longest-path uses per-block misprediction bounds. IPET can carry predictor state through direct calls for the bimodal model when its summaries are available."
                 .to_owned(),
         );
     }
