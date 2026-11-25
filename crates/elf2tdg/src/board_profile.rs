@@ -786,6 +786,27 @@ pub(crate) enum BranchPredictionState {
     StronglyTaken,
 }
 
+/// Predictor history assumed before a branch site first executes.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum FirstExecutionHistory {
+    /// Start from the configured initial two-bit counter.
+    #[default]
+    Initial,
+    /// Treat the first-execution counter as unknown; IPET considers all four
+    /// possible two-bit values and charges the worst modeled outcome.
+    Unknown,
+}
+
+impl FirstExecutionHistory {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 impl BranchPredictionState {
     pub(crate) const fn counter(self) -> u8 {
         match self {
@@ -813,6 +834,8 @@ pub(crate) struct BranchPredictionProfile {
     mispredict_penalty: u32,
     #[serde(default)]
     initial_state: BranchPredictionState,
+    #[serde(default)]
+    first_execution: FirstExecutionHistory,
     #[serde(default = "default_max_branch_states")]
     max_states: usize,
 }
@@ -836,6 +859,14 @@ impl BranchPredictionProfile {
 
     pub(crate) fn initial_counter(&self) -> u8 {
         self.initial_state.counter()
+    }
+
+    pub(crate) fn first_execution(&self) -> FirstExecutionHistory {
+        self.first_execution
+    }
+
+    pub(crate) fn first_execution_name(&self) -> &'static str {
+        self.first_execution.name()
     }
 
     pub(crate) fn max_states(&self) -> usize {

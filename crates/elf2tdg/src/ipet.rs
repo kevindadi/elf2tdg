@@ -3894,28 +3894,37 @@ fn branch_edge_transition(
     state: &PredictorState,
     model: &BranchIpetModel,
     kind: crate::cfg::CfgEdgeKind,
-) -> (f64, PredictorState) {
+) -> Vec<(PredictorState, f64)> {
     let Some(branch) = conditional_branch(cfg, node) else {
-        return (0.0, state.clone());
+        return vec![(state.clone(), 0.0)];
     };
     let actual = match kind {
         crate::cfg::CfgEdgeKind::Branch => crate::cfg::CfgBranchDirection::Taken,
         crate::cfg::CfgEdgeKind::Fallthrough => crate::cfg::CfgBranchDirection::NotTaken,
         crate::cfg::CfgEdgeKind::Jump | crate::cfg::CfgEdgeKind::CallReturn => {
-            return (0.0, state.clone());
+            return vec![(state.clone(), 0.0)];
         }
     };
-    let predicted = model
-        .predictor
-        .predict(branch.site, branch.taken_is_backward, state);
-    let cost = if predicted == actual {
-        0.0
-    } else {
-        model.penalty()
-    };
-    let mut next = state.clone();
-    model.predictor.update(&mut next, branch.site, actual);
-    (cost, next)
+    let mut transitions: BTreeMap<PredictorState, f64> = BTreeMap::new();
+    for counter in model.predictor.possible_counters(state, branch.site) {
+        let predicted =
+            model
+                .predictor
+                .predict_with_counter(branch.site, branch.taken_is_backward, counter);
+        let cost = if predicted == actual {
+            0.0
+        } else {
+            model.penalty()
+        };
+        let next = model
+            .predictor
+            .next_state_for_counter(state, branch.site, counter, actual);
+        transitions
+            .entry(next)
+            .and_modify(|current| *current = current.max(cost))
+            .or_insert(cost);
+    }
+    transitions.into_iter().collect()
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -3967,19 +3976,16 @@ fn build_state_product_graph(
                 continue;
             }
             let reset = edge.weight().kind == crate::cfg::CfgEdgeKind::CallReturn;
-            let transitions: Vec<(PredictorState, f64)> = if let (Some(branch), Some(state)) =
-                (branch, key.prediction.as_ref())
-            {
-                if reset && let Some(interproc) = branch_interproc {
-                    interproc_call_effect(cfg, key.node, state, interproc)?
+            let transitions: Vec<(PredictorState, f64)> =
+                if let (Some(branch), Some(state)) = (branch, key.prediction.as_ref()) {
+                    if reset && let Some(interproc) = branch_interproc {
+                        interproc_call_effect(cfg, key.node, state, interproc)?
+                    } else {
+                        branch_edge_transition(cfg, key.node, state, branch, edge.weight().kind)
+                    }
                 } else {
-                    let (cost, prediction) =
-                        branch_edge_transition(cfg, key.node, state, branch, edge.weight().kind);
-                    vec![(prediction, cost)]
-                }
-            } else {
-                vec![(PredictorState::default(), 0.0)]
-            };
+                    vec![(PredictorState::default(), 0.0)]
+                };
             for (prediction, branch_cost) in transitions {
                 let next_key = StateProductKey {
                     node: target,
@@ -6280,6 +6286,32 @@ auto_loop_bounds = false
         .expect("valid branch profile")
     }
 
+    fn unknown_first_branch_board(max_states: usize) -> BoardProfile {
+        BoardProfile::parse_toml(&format!(
+            r#"
+schema_version = 2
+id = "board:ipet-unknown-first-test"
+arch = "thumb"
+cpu = "cortex-m4"
+
+[clocks.core]
+hz = 1_000_000
+
+[branch_prediction]
+model = "bimodal"
+mispredict_penalty = 3
+initial_state = "weakly-not-taken"
+first_execution = "unknown"
+max_states = {max_states}
+
+[wcet]
+default_loop_bound = 4
+auto_loop_bounds = false
+"#
+        ))
+        .expect("valid unknown-first branch profile")
+    }
+
     #[test]
     fn branch_state_product_models_loop_warmup() {
         let board = branch_board(16);
@@ -6306,6 +6338,24 @@ auto_loop_bounds = false
         assert_eq!(state_ipet.objective, 11.0);
         assert_eq!(state_ipet.branch_model.as_deref(), Some("state-product"));
         assert_eq!(state_ipet.cache_model, None);
+    }
+
+    #[test]
+    fn branch_state_product_models_unknown_first_execution() {
+        let board = unknown_first_branch_board(16);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut program = branch_loop_program();
+        let info = crate::branch_prediction::analyze_program(&mut program, prediction);
+        assert_eq!(info.first_execution.as_deref(), Some("unknown"));
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("unknown-first IPET");
+        assert_eq!(ipet.branch_model.as_deref(), Some("state-product"));
+        assert!(ipet.objective > 11.0);
     }
 
     #[test]
@@ -6366,6 +6416,58 @@ auto_loop_bounds = false
         let json = serde_json::to_value(ipet).expect("IPET JSON");
         assert_eq!(json["branch_model"], "interprocedural-state-product");
         assert!(ipet.objective < baseline_ipet.objective);
+        assert!(ipet.objective > 0.0);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn interprocedural_branch_state_tracks_unknown_first_execution() {
+        let board = unknown_first_branch_board(16);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let mut facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let caller = FunctionCfg::build(
+            vec![
+                block(0x1000, CfgTerminator::Fallthrough, 1.0),
+                call_block(0x1002, 1.0, 0x2000),
+                block(0x1004, CfgTerminator::Fallthrough, 1.0),
+                call_block(0x1006, 1.0, 0x2000),
+                block(0x1008, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x1000, 0x1002, CfgEdgeKind::Fallthrough),
+                edge(0x1002, 0x1004, CfgEdgeKind::CallReturn),
+                edge(0x1004, 0x1006, CfgEdgeKind::Fallthrough),
+                edge(0x1006, 0x1008, CfgEdgeKind::CallReturn),
+            ],
+            Some(0x1000),
+        );
+        let mut program = branching_callee_program(caller);
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <conditional>
+    <condition address="0x2002"/>
+    <case cond="0" executed="false"/>
+  </conditional>
+</flowfacts>
+"#,
+            "force-taken.ffx",
+        )
+        .expect("branch fact");
+        facts
+            .apply_document(document, &program)
+            .expect("apply branch fact");
+        let _ = crate::branch_prediction::analyze_program(&mut program, prediction);
+        let _ = analyze_program_with_branch_prediction(&mut program, &facts, Some(prediction));
+        let ipet = program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.ipet.as_ref())
+            .expect("unknown-first interprocedural IPET");
+        assert_eq!(
+            ipet.branch_model.as_deref(),
+            Some("interprocedural-state-product")
+        );
         assert!(ipet.objective > 0.0);
     }
 

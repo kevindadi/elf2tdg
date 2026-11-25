@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.29";
+pub const CFG_SCHEMA_VERSION: &str = "2.30";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -972,6 +972,10 @@ pub struct CfgBranchPredictionInfo {
     /// Initial two-bit counter state for the `bimodal` model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_state: Option<String>,
+    /// First-execution history policy (`initial` or `unknown`), when it is
+    /// not the default `initial` policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_execution: Option<String>,
     /// Per-block predictor-state limit.
     pub max_states: usize,
     /// Functions with complete prediction analysis.

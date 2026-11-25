@@ -391,6 +391,9 @@ fn render_branch_prediction(
     if let Some(initial) = &prediction.initial_state {
         kv_indent(out, "initial state", initial);
     }
+    if let Some(first_execution) = &prediction.first_execution {
+        kv_indent(out, "first execution", first_execution);
+    }
     kv_indent(
         out,
         "coverage",

@@ -18,7 +18,7 @@ use petgraph::visit::EdgeRef;
 
 use elf2tdg_schema::{Addr, CostRange};
 
-use crate::board_profile::{BranchPredictionModel, BranchPredictionProfile};
+use crate::board_profile::{BranchPredictionModel, BranchPredictionProfile, FirstExecutionHistory};
 use crate::cfg::{
     CfgBlockBranchPrediction, CfgBranchDirection, CfgBranchOutcome, CfgBranchPredictionInfo,
     CfgBranchPredictionOutcome, CfgEdgeKind, CfgTerminator, FunctionCfg, ProgramCfg,
@@ -28,6 +28,7 @@ pub(crate) struct PredictorModel {
     model: BranchPredictionModel,
     mispredict_penalty: u32,
     initial_state: u8,
+    first_execution_unknown: bool,
     max_states: usize,
 }
 
@@ -37,15 +38,18 @@ impl PredictorModel {
             model: profile.model(),
             mispredict_penalty: profile.mispredict_penalty(),
             initial_state: profile.initial_counter(),
+            first_execution_unknown: profile.model() == BranchPredictionModel::Bimodal
+                && profile.first_execution()
+                    == crate::board_profile::FirstExecutionHistory::Unknown,
             max_states: profile.max_states(),
         }
     }
 
-    pub(crate) fn predict(
+    fn predict_counter(
         &self,
-        site: u64,
+        _site: u64,
         taken_is_backward: bool,
-        state: &PredictorState,
+        counter: u8,
     ) -> CfgBranchDirection {
         match self.model {
             BranchPredictionModel::StaticNotTaken => CfgBranchDirection::NotTaken,
@@ -58,7 +62,7 @@ impl PredictorModel {
                 }
             }
             BranchPredictionModel::Bimodal => {
-                if state.counter(site, self.initial_state) >= 2 {
+                if counter >= 2 {
                     CfgBranchDirection::Taken
                 } else {
                     CfgBranchDirection::NotTaken
@@ -67,16 +71,47 @@ impl PredictorModel {
         }
     }
 
-    pub(crate) fn update(&self, state: &mut PredictorState, site: u64, actual: CfgBranchDirection) {
-        if self.model != BranchPredictionModel::Bimodal {
-            return;
+    /// Counters that must be considered at `site` for this state.
+    ///
+    /// A known site has one value. An unexecuted site under the unknown
+    /// first-execution policy has all four two-bit values.
+    pub(crate) fn possible_counters(&self, state: &PredictorState, site: u64) -> Vec<u8> {
+        if self.first_execution_unknown
+            && self.model == BranchPredictionModel::Bimodal
+            && !state.seen(site)
+        {
+            (0..=3).collect()
+        } else {
+            vec![state.counter(site, self.initial_state)]
         }
-        let current = state.counter(site, self.initial_state);
+    }
+
+    pub(crate) fn predict_with_counter(
+        &self,
+        site: u64,
+        taken_is_backward: bool,
+        counter: u8,
+    ) -> CfgBranchDirection {
+        self.predict_counter(site, taken_is_backward, counter)
+    }
+
+    pub(crate) fn next_state_for_counter(
+        &self,
+        state: &PredictorState,
+        site: u64,
+        current: u8,
+        actual: CfgBranchDirection,
+    ) -> PredictorState {
+        if self.model != BranchPredictionModel::Bimodal {
+            return state.clone();
+        }
         let next = match actual {
             CfgBranchDirection::Taken => current.saturating_add(1).min(3),
             CfgBranchDirection::NotTaken => current.saturating_sub(1),
         };
-        state.set(site, next, self.initial_state);
+        let mut state = state.clone();
+        state.set(site, next, self.initial_state, self.first_execution_unknown);
+        state
     }
 
     pub(crate) fn mispredict_penalty(&self) -> u32 {
@@ -87,6 +122,7 @@ impl PredictorModel {
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PredictorState {
     counters: BTreeMap<u64, u8>,
+    seen: BTreeSet<u64>,
 }
 
 impl PredictorState {
@@ -94,11 +130,18 @@ impl PredictorState {
         self.counters.get(&site).copied().unwrap_or(initial)
     }
 
-    fn set(&mut self, site: u64, value: u8, initial: u8) {
+    fn seen(&self, site: u64) -> bool {
+        self.seen.contains(&site)
+    }
+
+    fn set(&mut self, site: u64, value: u8, initial: u8, mark_seen: bool) {
         if value == initial {
             self.counters.remove(&site);
         } else {
             self.counters.insert(site, value);
+        }
+        if mark_seen {
+            self.seen.insert(site);
         }
     }
 }
@@ -157,25 +200,33 @@ fn evaluate_branch(
     branch: ConditionalBranch,
     state: &PredictorState,
     model: &PredictorModel,
-) -> Evaluation {
-    let predicted = model.predict(branch.site, branch.taken_is_backward, state);
-    let mut outcomes = Vec::with_capacity(2);
-    let mut next_states = Vec::with_capacity(2);
-    for (target, actual) in [
-        (branch.taken, CfgBranchDirection::Taken),
-        (branch.fallthrough, CfgBranchDirection::NotTaken),
-    ] {
-        let mispredict = u32::from(predicted != actual);
-        outcomes.push(OutcomeEvaluation { mispredict });
-        let mut next = state.clone();
-        model.update(&mut next, branch.site, actual);
-        next_states.push((target, next));
-    }
-    Evaluation {
-        predicted,
-        outcomes,
-        next_states,
-    }
+) -> Vec<Evaluation> {
+    model
+        .possible_counters(state, branch.site)
+        .into_iter()
+        .map(|counter| {
+            let predicted =
+                model.predict_with_counter(branch.site, branch.taken_is_backward, counter);
+            let mut outcomes = Vec::with_capacity(2);
+            let mut next_states = Vec::with_capacity(2);
+            for (target, actual) in [
+                (branch.taken, CfgBranchDirection::Taken),
+                (branch.fallthrough, CfgBranchDirection::NotTaken),
+            ] {
+                let mispredict = u32::from(predicted != actual);
+                outcomes.push(OutcomeEvaluation { mispredict });
+                next_states.push((
+                    target,
+                    model.next_state_for_counter(state, branch.site, counter, actual),
+                ));
+            }
+            Evaluation {
+                predicted,
+                outcomes,
+                next_states,
+            }
+        })
+        .collect()
 }
 
 struct OutcomeRange {
@@ -239,13 +290,16 @@ pub(crate) fn analyze_program(
         mispredict_penalty: profile.mispredict_penalty(),
         initial_state: (profile.model() == BranchPredictionModel::Bimodal)
             .then(|| profile.initial_state_name().to_owned()),
+        first_execution: (profile.model() == BranchPredictionModel::Bimodal
+            && profile.first_execution() == FirstExecutionHistory::Unknown)
+            .then(|| profile.first_execution_name().to_owned()),
         max_states: profile.max_states(),
         functions_analyzed: 0,
         functions_fallback: 0,
         branches_analyzed: 0,
         branches_fallback: 0,
         caveats: vec![
-            "Each function starts with the configured predictor state for its standalone block ranges. IPET can propagate predictor state through direct calls when the per-function branch-cost and exit-state summaries are available."
+            "Each function starts with the configured predictor state for its standalone block ranges unless first_execution = \"unknown\" is selected; in that mode every branch site is first evaluated against all four possible two-bit counters and the worst modeled outcome is kept. IPET can propagate predictor state through direct calls when the per-function branch-cost and exit-state summaries are available."
                 .to_owned(),
             "Only conditional branches with one taken edge and one fallthrough edge are modeled; indirect/table target prediction, returns, branch-target buffers and global history are not modeled."
                 .to_owned(),
@@ -315,13 +369,18 @@ fn analyze_function(cfg: &mut FunctionCfg, model: &PredictorModel) -> FunctionRe
             continue;
         }
         if let Some(branch) = branches.get(&node).copied() {
-            let evaluation = evaluate_branch(branch, &state, model);
-            for (target, next) in &evaluation.next_states {
-                if !push_state(*target, next.clone(), &mut entry_states, &mut queue, model) {
-                    return fallback_function(cfg, &branches, model);
+            let branch_evaluations = evaluate_branch(branch, &state, model);
+            for evaluation in &branch_evaluations {
+                for (target, next) in &evaluation.next_states {
+                    if !push_state(*target, next.clone(), &mut entry_states, &mut queue, model) {
+                        return fallback_function(cfg, &branches, model);
+                    }
                 }
             }
-            evaluations.entry(node).or_default().push(evaluation);
+            evaluations
+                .entry(node)
+                .or_default()
+                .extend(branch_evaluations);
         } else {
             for edge in cfg.graph.edges_directed(node, Direction::Outgoing) {
                 if !push_state(
@@ -657,6 +716,12 @@ hz = 1_000_000
         )
     }
 
+    fn unknown_first_profile(model: &str, initial: &str) -> String {
+        format!(
+            "{BASE}\n[branch_prediction]\nmodel = \"{model}\"\nmispredict_penalty = 3\ninitial_state = \"{initial}\"\nfirst_execution = \"unknown\"\nmax_states = 16\n"
+        )
+    }
+
     #[test]
     fn btfn_predicts_backward_taken_branches() {
         let mut cfg = branch_cfg(0x0ff0, 0x1002);
@@ -742,6 +807,29 @@ hz = 1_000_000
             crate::cfg::CfgBranchPredictionOutcome::NotTaken
         );
         assert_eq!(fallthrough.mispredicts_max, 0);
+    }
+
+    #[test]
+    fn bimodal_unknown_first_execution_considers_all_counters() {
+        let mut cfg = branch_cfg(0x1004, 0x1002);
+        let result = analyze_function(
+            &mut cfg,
+            &model(&unknown_first_profile("bimodal", "weakly-not-taken")),
+        );
+        assert!(!result.fallback);
+        let block = &cfg.graph[cfg.entry.expect("entry")];
+        let prediction = block.branch_prediction.as_ref().expect("prediction");
+        assert!(prediction.entry_states >= 4);
+        assert_eq!(prediction.mispredicts_min, 0);
+        assert_eq!(prediction.mispredicts_max, 1);
+        for outcome in &prediction.outcomes {
+            assert_eq!(
+                outcome.predicted,
+                crate::cfg::CfgBranchPredictionOutcome::Mixed
+            );
+            assert_eq!(outcome.mispredicts_min, 0);
+            assert_eq!(outcome.mispredicts_max, 1);
+        }
     }
 
     #[test]
