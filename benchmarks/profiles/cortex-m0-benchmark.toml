@@ -1,0 +1,39 @@
+# Benchmark-only Cortex-M0 profile.
+#
+# This profile is intentionally conservative and deterministic: it has no
+# caches, pipeline profile, branch predictor or multicore budget. It exists to
+# compare longest-path and IPET on the local ELF corpus. Replace every value
+# with target-board measurements before drawing hardware conclusions.
+schema_version = 2
+id = "benchmark:cortex-m0"
+name = "Cortex-M0 benchmark profile"
+arch = "thumb"
+cpu = "cortex-m0"
+confidence = "low"
+caveats = [
+  "Benchmark-only profile; timing values are not verified board measurements.",
+]
+
+[clocks.core]
+hz = 48_000_000
+confidence = "low"
+
+[[memory]]
+name = "flash"
+start = 0x0800_0000
+size = 0x0004_0000
+kind = "flash"
+executable = true
+fetch_wait_states = 0
+fetch_width_bytes = 4
+
+[[memory]]
+name = "sram"
+start = 0x2000_0000
+size = 0x0001_0000
+kind = "ram"
+
+[wcet]
+default_loop_bound = 4
+bound_nonterminating_loops = true
+auto_loop_bounds = true

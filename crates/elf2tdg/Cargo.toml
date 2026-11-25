@@ -1,6 +1,7 @@
 [package]
 name = "elf2tdg"
 description = "CFG-first static analysis for embedded ELF images"
+default-run = "elf2tdg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +11,10 @@ repository.workspace = true
 [[bin]]
 name = "elf2tdg"
 path = "src/main.rs"
+
+[[bin]]
+name = "elf2tdg-bench"
+path = "src/bin/elf2tdg-bench.rs"
 
 [dependencies]
 anyhow = "1"

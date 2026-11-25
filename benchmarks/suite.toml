@@ -1,0 +1,26 @@
+# Local OTAWA-parity benchmark corpus.
+#
+# Paths are resolved relative to this file. Each case runs the listed
+# analyses with the same ELF/profile configuration. Add an optional
+# [case.reference] block to compare one backend against externally produced
+# cycles (for example OTAWA) without changing the analysis itself.
+schema_version = 1
+description = "Local embedded ELF regression and path-analysis precision suite"
+
+[[case]]
+id = "cortex-m0-isr"
+elf = "../examples/cortex-m0-isr/artifacts/cortex-m0-isr.elf"
+profile = "profiles/cortex-m0-benchmark.toml"
+analyses = ["longest-path", "ipet"]
+
+[[case]]
+id = "cortex-m0-fixture"
+elf = "../tests/fixtures/cortex_m0/firmware.elf"
+profile = "profiles/cortex-m0-benchmark.toml"
+analyses = ["longest-path", "ipet"]
+
+[[case]]
+id = "rust-concurrency-full-stack"
+elf = "../examples/rust-concurrency/artifacts/rust-concurrency-analysis.elf"
+profile = "../examples/profiles/cortex-m4-full-stack.toml"
+analyses = ["longest-path", "ipet"]
