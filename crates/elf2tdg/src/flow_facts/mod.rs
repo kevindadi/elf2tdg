@@ -1609,7 +1609,9 @@ fn resolve_cross_function_conflict(
             record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
             return Ok(record);
         }
-        DeclaredLoopOutcome::Selected(scope) | DeclaredLoopOutcome::SpecificMixed(scope) => {
+        DeclaredLoopOutcome::Selected(scope)
+        | DeclaredLoopOutcome::SpecificMixed(scope)
+        | DeclaredLoopOutcome::AllMixed(scope) => {
             if fact.iteration.is_iteration()
                 && pattern.iter().any(|slot| {
                     matches!(slot, CrossFunctionSlot::Caller(InfeasibleElement::Edge { source, target, .. })
@@ -1810,9 +1812,9 @@ fn resolve_ordered_conflict(
             }
             None
         }
-        DeclaredLoopOutcome::Selected(scope) | DeclaredLoopOutcome::SpecificMixed(scope) => {
-            Some(scope)
-        }
+        DeclaredLoopOutcome::Selected(scope)
+        | DeclaredLoopOutcome::SpecificMixed(scope)
+        | DeclaredLoopOutcome::AllMixed(scope) => Some(scope),
         DeclaredLoopOutcome::Ignore(reason) => {
             record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
             return Ok(record);
@@ -2308,6 +2310,9 @@ enum DeclaredLoopOutcome {
     /// A specific iteration keeps its selected loop but some ordered events
     /// lie outside that loop.
     SpecificMixed(DeclaredLoopScope),
+    /// An all-iteration scope keeps its selected loop while outside events
+    /// participate in each iteration's ordered tail.
+    AllMixed(DeclaredLoopScope),
     Ignore(String),
 }
 
@@ -2422,8 +2427,16 @@ fn declared_loop_scope(
             let touches = elements
                 .iter()
                 .any(|element| element_touches_loop(element, &scope.blocks));
-            if matches!(fact.iteration, IterationContext::Specific(_)) && touches {
-                return Ok(DeclaredLoopOutcome::SpecificMixed(scope));
+            if touches {
+                match fact.iteration {
+                    IterationContext::Specific(_) => {
+                        return Ok(DeclaredLoopOutcome::SpecificMixed(scope));
+                    }
+                    IterationContext::All => {
+                        return Ok(DeclaredLoopOutcome::AllMixed(scope));
+                    }
+                    IterationContext::None => {}
+                }
             }
             return Ok(DeclaredLoopOutcome::Ignore(
                 "iteration-scoped conflict has an element outside the loop".to_owned(),

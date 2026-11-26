@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric or last iteration keeps the selected loop. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -2376,7 +2376,8 @@ fn ordered_automaton_possible(
 struct AutomatonRuntime {
     pattern: Vec<InfeasibleElement>,
     reset: OrderedReset,
-    specific_iteration: Option<SpecificIteration>,
+    iteration_guard: Option<SpecificIteration>,
+    all_mixed: bool,
     loop_blocks: Option<BTreeSet<BlockId>>,
     backedges: BTreeSet<(BlockId, BlockId)>,
     loop_header: Option<BlockId>,
@@ -2400,7 +2401,7 @@ impl AutomatonRuntime {
     }
 
     fn initial_iteration(&self, entry_block: &BlockId) -> u32 {
-        if self.specific_iteration.is_none() {
+        if self.iteration_guard.is_none() {
             return 0;
         }
         u32::from(
@@ -2462,7 +2463,8 @@ fn automaton_runtimes(
             OrderedReset::Function => Ok(AutomatonRuntime {
                 pattern: automaton.pattern.clone(),
                 reset: OrderedReset::Function,
-                specific_iteration: None,
+                iteration_guard: None,
+                all_mixed: false,
                 loop_blocks: None,
                 backedges: BTreeSet::new(),
                 loop_header: None,
@@ -2492,7 +2494,7 @@ fn automaton_runtimes(
                 };
                 let blocks: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
                 let header_has_exit = loop_header_has_exit(cfg, header, &blocks);
-                let specific_iteration = match &automaton.reset {
+                let raw_specific = match &automaton.reset {
                     OrderedReset::LoopSpecific { iteration, .. } => Some(*iteration),
                     _ => None,
                 };
@@ -2503,12 +2505,19 @@ fn automaton_runtimes(
                     .collect();
                 let has_inside = slot_outside.iter().any(|outside| !outside);
                 let has_outside = slot_outside.iter().any(|outside| *outside);
-                let mixed = specific_iteration.is_some() && has_inside && has_outside;
+                let iteration_scope = matches!(
+                    automaton.reset,
+                    OrderedReset::LoopIteration { .. } | OrderedReset::LoopSpecific { .. }
+                );
+                let mixed = iteration_scope && has_inside && has_outside;
+                let all_mixed = mixed && raw_specific.is_none();
+                let iteration_guard = raw_specific.or(all_mixed.then_some(SpecificIteration::Last));
                 let outside_prefix = slot_outside.iter().take_while(|outside| **outside).count();
                 Ok(AutomatonRuntime {
                     pattern: automaton.pattern.clone(),
                     reset: automaton.reset.clone(),
-                    specific_iteration,
+                    iteration_guard,
+                    all_mixed,
                     loop_blocks: Some(blocks),
                     backedges,
                     loop_header: Some(header.clone()),
@@ -2546,7 +2555,10 @@ impl AutomatonProgress {
 }
 
 fn pattern_completed_progress(runtime: &AutomatonRuntime, state: &mut AutomatonProgress) -> bool {
-    if matches!(runtime.specific_iteration, Some(SpecificIteration::Last)) {
+    if runtime.all_mixed {
+        return false;
+    }
+    if matches!(runtime.iteration_guard, Some(SpecificIteration::Last)) {
         if runtime.mixed && state.iteration == 0 {
             return false;
         }
@@ -2568,7 +2580,7 @@ fn automaton_slot_allowed(
     if runtime.mixed && runtime.slot_outside.get(slot).copied().unwrap_or(false) {
         return true;
     }
-    iteration_active(runtime.specific_iteration, state.iteration)
+    iteration_active(runtime.iteration_guard, state.iteration)
 }
 
 fn advance_automaton_pattern(
@@ -2634,7 +2646,7 @@ fn advance_progress(
     for (index, runtime) in runtimes.iter().enumerate() {
         let mut state = progress[index];
         let mut active = true;
-        if let Some(specific) = runtime.specific_iteration {
+        if let Some(specific) = runtime.iteration_guard {
             let old_iteration = state.iteration;
             let step = advance_specific_iteration(
                 specific,
@@ -3393,7 +3405,8 @@ struct CrossAutomatonModel {
     slots: Vec<CrossFunctionSlot>,
     groups: Vec<CrossGroupModel>,
     reset: OrderedReset,
-    specific_iteration: Option<SpecificIteration>,
+    iteration_guard: Option<SpecificIteration>,
+    all_mixed: bool,
     loop_blocks: Option<BTreeSet<BlockId>>,
     backedges: BTreeSet<(BlockId, BlockId)>,
     /// The reset loop header.
@@ -3572,11 +3585,11 @@ impl CrossAutomatonModel {
         if self.mixed && self.slot_outside.get(slot).copied().unwrap_or(false) {
             return true;
         }
-        iteration_active(self.specific_iteration, state.iteration)
+        iteration_active(self.iteration_guard, state.iteration)
     }
 
     fn initial_iteration(&self, entry_block: &BlockId) -> u32 {
-        if self.specific_iteration.is_none() {
+        if self.iteration_guard.is_none() {
             return 0;
         }
         u32::from(
@@ -3592,7 +3605,7 @@ impl CrossAutomatonModel {
         source: &BlockId,
         target: &BlockId,
     ) -> Option<CrossIterationStep> {
-        let Some(specific) = self.specific_iteration else {
+        let Some(specific) = self.iteration_guard else {
             if self.reset_on(source, target) {
                 return Some(CrossIterationStep {
                     state: CrossState::unscoped(0, 0),
@@ -4117,15 +4130,23 @@ fn cross_automaton_models(
                         &groups,
                         constraint,
                         blocks,
-                        constraint.specific_iteration.is_some(),
+                        matches!(
+                            constraint.reset,
+                            OrderedReset::LoopIteration { .. } | OrderedReset::LoopSpecific { .. }
+                        ),
                     )
                 },
             );
+            let all_mixed = mixed && constraint.specific_iteration.is_none();
+            let iteration_guard = constraint
+                .specific_iteration
+                .or(all_mixed.then_some(SpecificIteration::Last));
             Ok(CrossAutomatonModel {
                 slots,
                 groups,
                 reset: constraint.reset.clone(),
-                specific_iteration: constraint.specific_iteration,
+                iteration_guard,
+                all_mixed,
                 loop_blocks,
                 backedges,
                 loop_header,
@@ -4167,7 +4188,10 @@ fn slot_matches_callee_block(slot: &CrossFunctionSlot, block: &BlockId) -> bool 
 }
 
 fn pattern_completed(automaton: &CrossAutomatonModel, state: CrossState) -> Option<CrossState> {
-    if matches!(automaton.specific_iteration, Some(SpecificIteration::Last)) {
+    if automaton.all_mixed {
+        return None;
+    }
+    if matches!(automaton.iteration_guard, Some(SpecificIteration::Last)) {
         if automaton.mixed && state.iteration == 0 {
             return None;
         }
@@ -10159,7 +10183,7 @@ max_states = 16
             } if header.as_str() == "bb:0xf006"
         ));
 
-        let (_, applied_facts) = analyze(
+        let (all, applied_facts) = analyze(
             r#"
     <loop address="0xf002">
       <loop address="0xf006">
@@ -10173,14 +10197,17 @@ max_states = 16
     </loop>
 "#,
         );
-        let conflict = &applied_facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
         assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("element outside the loop"))
+            all < baseline,
+            "nested all-iteration mixed ordering must prune the loop: {all} < {baseline}"
         );
+        assert!(applied_facts.infeasible_paths()[0].applied);
+        assert!(matches!(
+            applied_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::LoopIteration { ref header }
+            } if header.as_str() == "bb:0xf006"
+        ));
     }
 
     #[test]
@@ -10260,7 +10287,7 @@ max_states = 16
         ));
         assert_eq!(facts.info().conflicts[0].scope.as_deref(), Some("function"));
 
-        let (_, ignored_facts) = analyze_with(
+        let (all, all_facts) = analyze_with(
             &program,
             r#"
 <flowfacts>
@@ -10277,14 +10304,20 @@ max_states = 16
 </flowfacts>
 "#,
         );
-        let conflict = &ignored_facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
         assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("element outside the loop"))
+            all < baseline,
+            "all-iteration mixed ordering must prune the loop: {all} < {baseline}"
         );
+        assert!(matches!(
+            all_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::LoopIteration { ref header }
+            } if header.as_str() == "bb:0x2002"
+        ));
+        assert!(matches!(
+            all_facts.infeasible_paths()[0].scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0x2002"
+        ));
     }
 
     #[test]
@@ -10339,6 +10372,7 @@ max_states = 16
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn specific_iteration_mixed_loop_ordered_conflicts_use_the_selected_iteration() {
         let program = loop_program();
         let baseline = analyze_baseline(&program);
@@ -10436,8 +10470,17 @@ max_states = 16
 </flowfacts>
 "#,
         );
-        assert_eq!(all, baseline);
-        assert!(!all_facts.infeasible_paths()[0].applied);
+        assert!(
+            all < baseline,
+            "all-iteration mixed ordering must prune the loop: {all} < {baseline}"
+        );
+        assert!(all_facts.infeasible_paths()[0].applied);
+        assert!(matches!(
+            all_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::LoopIteration { ref header }
+            } if header.as_str() == "bb:0x2002"
+        ));
     }
 
     #[test]
@@ -10541,6 +10584,66 @@ max_states = 16
         assert!(
             before < baseline,
             "outside-before cross progress must survive loop entry: {before} < {baseline}"
+        );
+    }
+
+    #[test]
+    fn all_iteration_mixed_loop_cross_function_conflict_uses_the_iteration_scope() {
+        let program = loop_cross_partition_program();
+        let baseline = analyze_baseline_for(&program, 0xc000);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="*">
+        <conflict ordered="yes">
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+          <block address="0xc01c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "all-mixed-cross.ffx",
+        )
+        .expect("all-iteration mixed cross conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply all-iteration mixed cross conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(
+            cross.reset,
+            OrderedReset::LoopIteration {
+                header: BlockId::new("bb:0xc010")
+            }
+        );
+        assert_eq!(cross.specific_iteration, None);
+        assert_eq!(facts.info().conflicts[0].iteration, None);
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0xc010"
+        ));
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let constrained = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite caller cycles");
+        assert!(
+            constrained < baseline,
+            "all-iteration mixed cross ordering must prune the loop: \
+             {constrained} < {baseline}"
         );
     }
 
