@@ -67,9 +67,12 @@ elf2tdg firmware.elf --board-profile board.toml \
 It builds a per-function integer program with flow conservation, natural-loop
 bounds and callee summaries, solves it with `microlp`, and records the positive
 block execution counts. State-free functions with statically modeled call
-blocks, but without non-loop flow facts or infeasible-path constraints, first
-summarize branch-entry SESE regions bottom-up; fixed per-call-block callee costs
-are included in both local and final models. Each function version is analyzed
+blocks first summarize branch-entry SESE regions bottom-up; fixed
+per-call-block callee costs are included in both local and final models.
+Supported branch/call facts and unordered aggregate infeasible-path constraints
+are enforced by the final model, and regions that touch any referenced block
+stay monolithic. Ordered, cross-function and automaton constraints keep the
+function monolithic. Each function version is analyzed
 in its caller-frame context, so call-site-specific FFX facts produce separate
 partitioned versions and call costs. Each region is replaced by an exact
 per-entry cost block and block counts are expanded into the original CFG.
@@ -147,11 +150,13 @@ from summed local estimates.
 ## Current limits
 
 - IPET CFG partitioning covers branch-entry SESE regions in functions with
-  statically modeled calls and without non-loop flow facts or infeasible-path
-  constraints. Recovered call sites without a containing block do not block
-  partitioning, but remain function-level, are not assigned to regions and
-  keep the function `partial`. State-free regions use exact per-entry
-  summaries and homogeneous scaling. With cache/pipeline/branch/BTB/RAS state products,
+  statically modeled calls. Supported branch/call facts and unordered aggregate
+  infeasible-path constraints are enforced by the final model; any region
+  touching a referenced block stays monolithic. Ordered, cross-function and
+  automaton constraints keep the function monolithic. Recovered call sites
+  without a containing block do not block partitioning, but remain
+  function-level, are not assigned to regions and keep the function `partial`.
+  State-free regions use exact per-entry summaries and homogeneous scaling. With cache/pipeline/branch/BTB/RAS state products,
   a laminar family of regions without loop headers/latches or loop-header
   exits is summarized innermost first per entry and exit product state; nested
   costs and block counts are folded into enclosing summaries. The final IPET

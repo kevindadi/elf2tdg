@@ -226,6 +226,11 @@ Semantics and limits:
   effect.
 - Non-loop facts are enforced by IPET only. `longest-path` records them but is
   left as a conservative overestimate and emits a caveat.
+- IPET may still partition a function containing supported branch/call facts or
+  unordered aggregate infeasible-path constraints. Regions that touch a fact-
+  referenced block stay monolithic, and the final parent model enforces the
+  fact. Ordered, cross-function and automaton constraints keep the whole
+  function monolithic.
 - F4 non-loop directives are not implemented; unknown F4 directives are
   reported and ignored. Use FFX for branch/call facts.
 

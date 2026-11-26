@@ -68,10 +68,13 @@ Implemented:
   - loop-bounded per-function and per-root WCET estimates, from either a CFG
     longest-path backend or an IPET/ILP backend solved with pure-Rust `microlp`;
   - IPET SESE CFG partitioning: functions with statically modeled call blocks
-    and without non-loop flow facts or infeasible-path constraints use
-    bottom-up exact per-entry region summaries, including function-entry
+    use bottom-up exact per-entry region summaries, including function-entry
     regions, with per-call-block callee costs and block counts preserved in the
-    final CFG. When cache/pipeline/branch/BTB/RAS state products are active,
+    final CFG. Supported branch/call facts and unordered aggregate
+    infeasible-path constraints remain enforced by the parent model; regions
+    touching referenced blocks stay monolithic, as do ordered, cross-function
+    and automaton constraints. When cache/pipeline/branch/BTB/RAS state
+    products are active,
     a laminar family of regions without loop headers/latches or loop-header
     exits is summarized innermost first per entry/exit product state, with
     nested costs and block counts folded into enclosing summaries; this keeps

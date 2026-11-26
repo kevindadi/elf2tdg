@@ -133,8 +133,11 @@ profiles. They are not evidence that a real board matches the timing values.
 - Recovered call sites without a containing block no longer disable either
   partition model. They stay function-level, are not assigned to a region, and
   keep the result partial; fixed call-block summaries are allowed.
-- Functions with non-loop flow facts, infeasible-path constraints or
-  unresolved control-flow gaps intentionally stay monolithic.
+- Supported branch/call facts and unordered aggregate infeasible-path
+  constraints no longer disable partitioning, but regions that touch a
+  referenced block stay monolithic and the final model enforces the fact.
+  Ordered, cross-function and automaton constraints, or unresolved
+  control-flow gaps, intentionally stay monolithic.
 - `partial`, `unbounded` and `unknown` function counts are more important than
   a single objective value. A benchmark with any partial/unbounded root is not
   a safe WCET result.
