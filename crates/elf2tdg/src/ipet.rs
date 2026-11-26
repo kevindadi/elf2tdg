@@ -1006,6 +1006,98 @@ struct PartitionRegion {
     blocks: BTreeSet<NodeIndex>,
 }
 
+fn partition_facts_supported(
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+) -> bool {
+    facts.infeasible_paths().iter().all(|conflict| {
+        if !conflict.applied
+            || conflict.function.as_ref() != Some(function_id)
+            || !scope.matches(&conflict.context)
+        {
+            return true;
+        }
+        !conflict.ordered
+            && conflict.cross_function.is_none()
+            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
+            && !matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
+    })
+}
+
+/// Blocks referenced by supported non-loop flow facts for one function version.
+///
+/// A region may be summarized only when none of its blocks or boundary edges
+/// participate in a non-loop fact. Facts then remain enforceable in the final
+/// model instead of disappearing with the region nodes. An edge is covered by
+/// recording both endpoint blocks.
+fn non_loop_fact_blocks(
+    cfg: &FunctionCfg,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+) -> BTreeSet<BlockId> {
+    let node_by_id: BTreeMap<BlockId, NodeIndex> = cfg
+        .blocks_by_address
+        .values()
+        .map(|node| (cfg.graph[*node].id.clone(), *node))
+        .collect();
+    let mut blocks = BTreeSet::new();
+    for branch in facts
+        .branches()
+        .iter()
+        .filter(|branch| &branch.function == function_id && scope.matches(&branch.context))
+    {
+        blocks.insert(branch.block.clone());
+        if branch.outcome == BranchOutcome::Both {
+            continue;
+        }
+        let Some(&node) = node_by_id.get(&branch.block) else {
+            continue;
+        };
+        let kind = if branch.outcome == BranchOutcome::Taken {
+            crate::cfg::CfgEdgeKind::Branch
+        } else {
+            crate::cfg::CfgEdgeKind::Fallthrough
+        };
+        if let Some(edge) = cfg
+            .graph
+            .edges_directed(node, petgraph::Direction::Outgoing)
+            .find(|edge| edge.weight().site == branch.site && edge.weight().kind == kind)
+        {
+            blocks.insert(cfg.graph[edge.target()].id.clone());
+        }
+    }
+    for call in facts
+        .calls()
+        .iter()
+        .filter(|call| &call.function == function_id && scope.matches(&call.context))
+    {
+        blocks.insert(call.block.clone());
+    }
+    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
+        conflict.applied
+            && conflict.function.as_ref() == Some(function_id)
+            && scope.matches(&conflict.context)
+    }) {
+        for element in &conflict.elements {
+            match element {
+                InfeasibleElement::Block { block } => {
+                    blocks.insert(block.clone());
+                }
+                InfeasibleElement::Edge { source, target, .. } => {
+                    blocks.insert(source.clone());
+                    blocks.insert(target.clone());
+                }
+            }
+        }
+        if let Some(InfeasibleScope::Loop { header }) = &conflict.scope {
+            blocks.insert(header.clone());
+        }
+    }
+    blocks
+}
+
 #[allow(clippy::too_many_arguments)]
 fn partition_eligible(
     program: &ProgramCfg,
@@ -1030,21 +1122,7 @@ fn partition_eligible(
     {
         return false;
     }
-    if facts
-        .branches()
-        .iter()
-        .any(|branch| &branch.function == function_id && scope.matches(&branch.context))
-        || facts
-            .calls()
-            .iter()
-            .any(|call| &call.function == function_id && scope.matches(&call.context))
-        || facts.infeasible_paths().iter().any(|conflict| {
-            conflict.function.as_ref() == Some(function_id) && scope.matches(&conflict.context)
-        })
-    {
-        return false;
-    }
-    true
+    partition_facts_supported(facts, function_id, scope)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1082,14 +1160,19 @@ fn try_solve_partitioned(
     let mut partial = false;
     let mut counter = 0_usize;
     let mut scan_steps = 0_usize;
+    let fact_blocks = non_loop_fact_blocks(cfg, facts, function_id, scope);
     while regions < MAX_PARTITION_REGIONS {
         let Some(function_entry) = working.entry else {
             break;
         };
         let working_analysis = working.analyze_graph();
-        let Some(region) =
-            select_partition_region(&working, &working_analysis, function_entry, &mut scan_steps)
-        else {
+        let Some(region) = select_partition_region(
+            &working,
+            &working_analysis,
+            function_entry,
+            &fact_blocks,
+            &mut scan_steps,
+        ) else {
             break;
         };
         let local = solve_partition_region(
@@ -1147,7 +1230,7 @@ fn try_solve_partitioned(
         .collect();
     let mut caveats = vec![
         "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
-        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models and without non-loop flow facts or infeasible-path constraints; otherwise the monolithic IPET model is used.".to_owned(),
+        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models. Supported branch/call facts and unordered aggregate infeasible-path constraints are enforced by the final model; regions that touch any referenced block are left monolithic. Ordered, cross-function and automaton constraints keep the function monolithic.".to_owned(),
     ];
     if let Some(caveat) = call_site_partition_caveat(scope) {
         caveats.push(caveat);
@@ -1185,6 +1268,7 @@ fn select_partition_region(
     cfg: &FunctionCfg,
     analysis: &crate::cfg_graph::CfgGraphAnalysis,
     function_entry: NodeIndex,
+    fact_blocks: &BTreeSet<BlockId>,
     scan_steps: &mut usize,
 ) -> Option<PartitionRegion> {
     let node_by_id = partition_nodes_by_id(cfg);
@@ -1196,6 +1280,7 @@ fn select_partition_region(
             &node_by_id,
             entry,
             function_entry,
+            fact_blocks,
             scan_steps,
         ) {
             candidates.push(region);
@@ -1238,6 +1323,7 @@ fn partition_region_for_entry(
     node_by_id: &BTreeMap<BlockId, NodeIndex>,
     entry: NodeIndex,
     function_entry: NodeIndex,
+    fact_blocks: &BTreeSet<BlockId>,
     scan_steps: &mut usize,
 ) -> Option<PartitionRegion> {
     *scan_steps = scan_steps.saturating_add(1);
@@ -1292,6 +1378,12 @@ fn partition_region_for_entry(
     if !valid_partition_region(cfg, analysis, &blocks, entry, exit, function_entry) {
         return None;
     }
+    if blocks
+        .iter()
+        .any(|node| fact_blocks.contains(&cfg.graph[*node].id))
+    {
+        return None;
+    }
     Some(PartitionRegion {
         entry,
         exit,
@@ -1303,6 +1395,7 @@ fn collect_state_partition_candidates(
     cfg: &FunctionCfg,
     analysis: &crate::cfg_graph::CfgGraphAnalysis,
     function_entry: NodeIndex,
+    fact_blocks: &BTreeSet<BlockId>,
     scan_steps: &mut usize,
 ) -> Vec<PartitionRegion> {
     let node_by_id = partition_nodes_by_id(cfg);
@@ -1314,6 +1407,7 @@ fn collect_state_partition_candidates(
             &node_by_id,
             entry,
             function_entry,
+            fact_blocks,
             scan_steps,
         ) && state_partition_region_allowed(cfg, analysis, &region)
         {
@@ -1600,7 +1694,7 @@ fn solve_simple_ipet(
     entry: NodeIndex,
     call_cycles: &BTreeMap<BlockId, f64>,
     facts: &FlowFacts,
-    _function_id: &FunctionId,
+    function_id: &FunctionId,
     scope: FactScope<'_>,
 ) -> Result<SimpleIpetResult, IpetError> {
     let analysis = cfg.analyze_graph();
@@ -1673,10 +1767,27 @@ fn solve_simple_ipet(
         let call_cycles = call_cycles.get(&block.id).copied().unwrap_or(0.0);
         objective += *variable * (cycles.max + call_cycles);
     }
-    let constraints = constraints(cfg, entry, &loops, &block_vars, &edge_vars, &loop_exit_vars);
+    let mut model_constraints =
+        constraints(cfg, entry, &loops, &block_vars, &edge_vars, &loop_exit_vars);
+    model_constraints.extend(non_loop_constraints(
+        cfg,
+        &block_vars,
+        &edge_vars,
+        facts,
+        function_id,
+        scope,
+    ));
+    model_constraints.extend(infeasible_path_constraints(
+        cfg,
+        &block_vars,
+        &edge_vars,
+        facts,
+        function_id,
+        scope,
+    ));
     let model = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = model
-        .with_all(constraints)
+        .with_all(model_constraints)
         .solve()
         .map_err(|error| match error {
             good_lp::ResolutionError::Unbounded => {
@@ -5080,17 +5191,7 @@ fn state_partition_eligible(
     if cfg.graph.node_count() > MAX_PARTITION_BLOCKS || analysis.blocked_by_unresolved {
         return false;
     }
-    !facts
-        .branches()
-        .iter()
-        .any(|branch| &branch.function == function_id && scope.matches(&branch.context))
-        && !facts
-            .calls()
-            .iter()
-            .any(|call| &call.function == function_id && scope.matches(&call.context))
-        && !facts.infeasible_paths().iter().any(|conflict| {
-            conflict.function.as_ref() == Some(function_id) && scope.matches(&conflict.context)
-        })
+    partition_facts_supported(facts, function_id, scope)
 }
 
 struct StateProductView {
@@ -5181,14 +5282,20 @@ fn partition_state_product_graph(
     cfg: &FunctionCfg,
     analysis: &crate::cfg_graph::CfgGraphAnalysis,
     function_entry: NodeIndex,
+    fact_blocks: &BTreeSet<BlockId>,
     nodes: &[StateProductNode],
     edges: &[StateProductEdge],
     pipeline_model: Option<&PipelineFunctionModel>,
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
 ) -> Option<StateProductPartition> {
     let mut scan_steps = 0_usize;
-    let candidates =
-        collect_state_partition_candidates(cfg, analysis, function_entry, &mut scan_steps);
+    let candidates = collect_state_partition_candidates(
+        cfg,
+        analysis,
+        function_entry,
+        fact_blocks,
+        &mut scan_steps,
+    );
     if candidates.is_empty() {
         return None;
     }
@@ -5640,11 +5747,13 @@ fn solve_function_with_state_products(
     let mut partitioning = None;
     if allow_partition {
         let analysis = cfg.analyze_graph();
+        let fact_blocks = non_loop_fact_blocks(cfg, facts, function_id, scope);
         if state_partition_eligible(cfg, &analysis, facts, function_id, scope)
             && let Some(partition) = partition_state_product_graph(
                 cfg,
                 &analysis,
                 entry,
+                &fact_blocks,
                 &product_nodes,
                 &product_edges,
                 pipeline_model,
@@ -5654,7 +5763,7 @@ fn solve_function_with_state_products(
             let mut caveats = vec![
                 "State-product SESE regions are summarized by the worst local path from each entry cache/prediction/pipeline/BTB/RAS state to each exit state; entry and exit states remain explicit in the final product graph. Nested regions are summarized innermost first, and their costs and block counts are folded into enclosing summaries.".to_owned(),
                 "A region entry state that can reach several exit states may use those exits more freely in the final IPET than in a concrete execution. This over-approximates the monolithic state-product model, so the result remains a safe upper bound but can be larger.".to_owned(),
-                "Regions containing loop headers or latches, or ending at a loop header, are left monolithic. Functions with non-loop flow facts, infeasible-path constraints or unresolved control flow are not partitioned; block counts inside a summarized region describe one worst-cost local path per entry/exit state and are diagnostic.".to_owned(),
+                "Regions containing loop headers or latches, or ending at a loop header, are left monolithic. Supported branch/call facts and unordered aggregate infeasible-path constraints are applied by the final product model; a region that touches any referenced block is left monolithic. Ordered, cross-function and automaton constraints, or unresolved control flow, disable state-aware partitioning. Block counts inside a summarized region describe one worst-cost local path per entry/exit state and are diagnostic.".to_owned(),
             ];
             if let Some(caveat) = call_site_partition_caveat(scope) {
                 caveats.push(caveat);
@@ -6369,6 +6478,34 @@ auto_loop_bounds = false
         )])
     }
 
+    fn fact_partition_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x6000,
+            FunctionCfg::build(
+                vec![
+                    block(0x6000, CfgTerminator::Branch, 1.0),
+                    block(0x6002, CfgTerminator::Branch, 1.0),
+                    block(0x6004, CfgTerminator::Fallthrough, 10.0),
+                    block(0x6006, CfgTerminator::Fallthrough, 1.0),
+                    block(0x6008, CfgTerminator::Fallthrough, 1.0),
+                    block(0x600a, CfgTerminator::Return, 1.0),
+                    block(0x600b, CfgTerminator::Fallthrough, 50.0),
+                ],
+                vec![
+                    edge(0x6000, 0x6002, CfgEdgeKind::Branch),
+                    edge(0x6000, 0x600b, CfgEdgeKind::Fallthrough),
+                    edge(0x6002, 0x6004, CfgEdgeKind::Branch),
+                    edge(0x6002, 0x6006, CfgEdgeKind::Fallthrough),
+                    edge(0x6004, 0x6008, CfgEdgeKind::Fallthrough),
+                    edge(0x6006, 0x6008, CfgEdgeKind::Fallthrough),
+                    edge(0x6008, 0x600a, CfgEdgeKind::Fallthrough),
+                    edge(0x600b, 0x600a, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x6000),
+            ),
+        )])
+    }
+
     fn nested_partition_diamond_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x6000,
@@ -6509,6 +6646,15 @@ auto_loop_bounds = false
         board: &BoardProfile,
         allow_partition: bool,
     ) -> CfgIpetSolution {
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        state_partition_solution_with_facts(program, &facts, allow_partition)
+    }
+
+    fn state_partition_solution_with_facts(
+        program: &ProgramCfg,
+        facts: &FlowFacts,
+        allow_partition: bool,
+    ) -> CfgIpetSolution {
         let function = &program.functions[0];
         let entry = function.cfg.entry.expect("entry");
         let analysis = crate::cfg_graph::analyze(&function.cfg);
@@ -6519,12 +6665,11 @@ auto_loop_bounds = false
             .copied()
             .filter(|node| analysis.reachable.contains(&function.cfg.graph[*node].id))
             .collect();
-        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
         let loops = build_loops(
             &function.cfg,
             entry,
             &analysis,
-            &facts,
+            facts,
             FactScope::Insensitive,
         )
         .expect("loops");
@@ -6535,7 +6680,7 @@ auto_loop_bounds = false
             entry,
             &reachable,
             &BTreeMap::new(),
-            &facts,
+            facts,
             &function.id,
             FactScope::Insensitive,
             &loops,
@@ -7201,7 +7346,7 @@ max_states = 16
     }
 
     #[test]
-    fn non_loop_facts_disable_partitioning() {
+    fn branch_fact_inside_region_keeps_region_monolithic() {
         let program = partition_diamond_program();
         let mut facts = facts();
         let document = FlowFactDocument::parse_text(
@@ -7222,6 +7367,92 @@ max_states = 16
             .expect("apply branch fact");
         let solution = partitioned_solution(&program, &facts);
         assert!(solution.partitioning.is_none());
+    }
+
+    #[test]
+    fn branch_fact_outside_region_is_enforced_by_partition_parent() {
+        let program = fact_partition_program();
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conditional address="0x6000">
+      <case cond="0" executed="false"/>
+    </conditional>
+  </function>
+</flowfacts>
+"#,
+            "outside-region-branch.ffx",
+        )
+        .expect("branch fact");
+        facts
+            .apply_document(document, &program)
+            .expect("apply branch fact");
+
+        let baseline = simple_partition_objective(&program, &facts);
+        assert_eq!(baseline, 14.0);
+        let solution = partitioned_solution(&program, &facts);
+        assert_eq!(solution.objective, baseline);
+        let partitioning = solution
+            .partitioning
+            .as_ref()
+            .expect("fact-free inner region is partitioned");
+        assert_eq!(partitioning.model, "sese-branch-regions");
+        assert_eq!(partitioning.regions, 1);
+    }
+
+    #[test]
+    fn state_partition_enforces_branch_fact_outside_region() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 64
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 16
+",
+        );
+        let mut program = fact_partition_program();
+        prepare_cache_program(&mut program, &board);
+        let mut facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conditional address="0x6000">
+      <case cond="0" executed="false"/>
+    </conditional>
+  </function>
+</flowfacts>
+"#,
+            "outside-region-branch.ffx",
+        )
+        .expect("branch fact");
+        facts
+            .apply_document(document, &program)
+            .expect("apply branch fact");
+
+        let no_fact = state_partition_solution(&program, &board, false);
+        let monolithic = state_partition_solution_with_facts(&program, &facts, false);
+        let partitioned = state_partition_solution_with_facts(&program, &facts, true);
+        assert!(
+            monolithic.objective < no_fact.objective,
+            "the branch fact must remove the expensive fallthrough path"
+        );
+        assert!(
+            partitioned.objective + 1e-6 >= monolithic.objective,
+            "state partition {} must not undercut fact-enforcing monolithic {}",
+            partitioned.objective,
+            monolithic.objective
+        );
+        let partitioning = partitioned
+            .partitioning
+            .as_ref()
+            .expect("fact-free state region is partitioned");
+        assert_eq!(partitioning.model, "sese-state-product-regions");
+        assert!(partitioning.regions >= 1);
     }
 
     #[test]
