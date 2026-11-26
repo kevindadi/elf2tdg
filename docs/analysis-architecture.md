@@ -51,7 +51,7 @@ Rust `dylib` interface.
 | Level | Capability | Status |
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
-| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain and call-site analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one direct call group), per-function IPET, pure-Rust `microlp`; richer FFX constructs and conflict scalability are next |
+| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain and call-site analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one or more direct call groups), per-function IPET, pure-Rust `microlp`; richer FFX constructs and conflict scalability are next |
 | P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, a full instruction-cache CCG flow model, per-line first-miss and aggregate conflict bounds for fallback, concrete branch-predictor state products with per-edge misprediction costs, optional unknown first-execution history, global-history, gshare, local-history, configurable two-level pattern tables, a global/local tournament predictor, set-associative BTB miss models and bounded return-address stacks, interprocedural branch summaries that carry predictor state and branch costs through direct calls, and multiple-issue Cortex-M4 plus generic/bounded AArch64/RISC-V resource/dependency pipeline models with full inter-block state tables in the IPET state product with first-order edge stalls as fallback; other tournament component pairs are next |
 | P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | first version implemented in P1: FFX `address`/`site` frames distinguish call sites and select per-site callee/partition versions; bounded recursion and SMT infeasible paths are planned |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
@@ -192,11 +192,12 @@ from summed local estimates.
   constraint. Other ordered conflicts use a product IPET with a progress
   automaton: function scope spans an invocation, loop scope resets on entry,
   and iteration scope resets on entry/backedge. Cross-function ordered
-  conflicts with one direct `<call>` group inline the selected callee; group
-  elements must match within one invocation, and the callee summary remains the
-  cost bound. The product is capped; cap overflow makes the function `unknown`.
-  Specific-iteration, multi-group, nested-group and ambiguous-call-site
-  conflicts are ignored with warnings. `longest-path` records but does not
+  conflicts with one or more direct `<call>` groups inline the selected callees;
+  each group's elements must match within one invocation, the callee summary
+  remains the cost bound, and a multi-group automaton preserves group order.
+  The product is capped; cap overflow makes the function `unknown`.
+  Specific-iteration, nested-group and ambiguous-call-site conflicts are
+  ignored with warnings. `longest-path` records but does not
   enforce conflicts. Conditional call sites remain unsupported for call-count
   facts.
 - Cache analysis is per-function with cold entry and call-return invalidation.

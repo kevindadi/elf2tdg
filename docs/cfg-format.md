@@ -362,10 +362,10 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.43`.
+`cfg_schema_version` is `2.44`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.43 adds per-frame call-site addresses to contextual
-flow-fact metadata. Version 2.42 adds IPET `partitioning` metadata for SESE
+functions. Version 2.44 adds `calls` listing every group of a multi-group
+cross-function conflict; `call` remains the first group. Version 2.43 adds per-frame call-site addresses to contextual flow-fact metadata. Version 2.42 adds IPET `partitioning` metadata for SESE
 region summaries. Version 2.41 adds store-to-load forwarding metadata
 (`board_profile_pipeline_store_forwarding`, latency and entry count). Version
 2.40 adds data-forwarding metadata
@@ -443,7 +443,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.43",
+  "cfg_schema_version": "2.44",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -729,7 +729,8 @@ supported branch/call facts and infeasible-path constraints in the final parent
 model; a region that touches a referenced block stays monolithic. The exact
 `sese-branch-regions` model also supports ordered automata, including
 cross-function conflicts: regions avoid every automaton element, loop-reset
-block, cross-function call boundary and caller-side pattern element; the final
+block, all cross-function call-group boundaries and caller-side pattern
+elements; the final
 automaton or cross-function product enforces the order. `sese-state-product-regions`
 keeps ordered and cross-function automata monolithic. Unresolved control-flow
 gaps disable partitioning. `sese-state-product-regions`
@@ -1103,11 +1104,13 @@ asserts that the CFG validates.
   sequences add no constraint. Cross-iteration ordered conflicts use a product
   IPET with a sequence-progress automaton: function scope spans the whole
   invocation, loop scope resets on entry, and iteration scope resets on entry
-  and each backedge. Cross-function ordered conflicts with one direct `<call>`
-  group use a product that inlines the selected callee; callee elements must
-  match within one invocation, and the callee summary remains the cost bound.
+  and each backedge. Cross-function ordered conflicts with one or more direct
+  `<call>` groups use a product that inlines each selected callee; each group's
+  callee elements must match within one invocation, the callee summary remains
+  the cost bound, and a multi-group automaton preserves group order. The
+  `calls` array records every group, with `call` retaining the first group.
   The product is capped; exceeding the cap makes the function `unknown`.
-  Specific-iteration, multi-group, nested-group, ambiguous-call-site and
+  Specific-iteration, nested-group, repeated-call-site, ambiguous-call-site and
   duplicate-edge conflicts are ignored with warnings.
   When LRU instruction/data-cache profiles are active, the IPET backend builds
   a per-function product with the concrete cache states, replaces the per-block

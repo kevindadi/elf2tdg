@@ -348,10 +348,11 @@ order. Other ordered conflicts use a product IPET with a sequence-progress
 automaton: function scope spans the invocation, loop scope resets on entry and
 iteration scope resets per iteration. Structurally impossible sequences add no
 constraint; the product is capped and exceeding it makes the function
-`unknown`. Cross-function ordered conflicts with one direct `<call>` group
-inline the selected callee in the product; callee elements must match within one
-invocation, and the callee summary remains the cost bound. Specific-iteration,
-multi-group, nested-group and ambiguous-call-site forms are recorded but
+`unknown`. Cross-function ordered conflicts with one or more direct `<call>`
+groups inline the selected callees in the product; each group's callee elements
+must match within one invocation, and the callee summary remains the cost bound.
+A multi-group automaton preserves the declared caller/callee group order.
+Specific-iteration, nested-group and ambiguous-call-site forms are recorded but
 ignored. Context enumeration has bounded depth and counts; exceeding a limit
 falls back to a conservative context-insensitive model and marks affected
 results `partial`.

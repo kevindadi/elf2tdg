@@ -289,16 +289,34 @@ appear in one execution sub-trace:
     </function>
     ```
 
+    A multi-group form keeps the declared order across calls:
+
+    ```xml
+    <conflict ordered="yes">
+      <block address="0x0800_0138"/>
+      <call name="delay" address="0x0800_0140">
+        <block address="0x0800_00d8"/>
+      </call>
+      <call name="monitor" address="0x0800_0160">
+        <block address="0x0800_01a0"/>
+      </call>
+    </conflict>
+    ```
+
     Top-level elements must resolve in the declaring function; group elements
-    must resolve in the callee. The group is selected by the callee's function
-    name; call-address, offset or source/line attributes are not accepted on a
-    conflict call group. The group is one sequence item and must match in a
-    **single invocation** of the selected call. If the call site is in a
-    loop, callee progress resets on every invocation, while caller-side progress
-    persists across the function invocation. The call must be a unique,
+    must resolve in the callee. Each group is selected by the callee's function
+    name; an optional `address` or `site` attribute selects the call
+    instruction when the caller has multiple sites. Offset and source/line
+    attributes are not accepted on a conflict call group. Each group is one
+    sequence item and must match in a **single invocation** of the selected
+    call. A conflict may contain multiple groups; they are ordered exactly as
+    declared, so caller elements and callee groups interleave in the flattened
+    pattern. Duplicate call sites are rejected. If a call site is in a loop,
+    callee progress resets on every invocation, while caller-side progress
+    persists across the function invocation. Each call must be a unique,
     unconditional, directly resolved call site of the declaring function, in a
     reachable block with exactly one call-return edge. The enforcing product
-    IPET inlines the callee at that call site. Callee blocks carry no direct
+    IPET inlines each callee at its call site. Callee blocks carry no direct
     cost: the caller call block keeps the callee summary cost, so this prunes
     caller-side paths and call executions but does not re-derive the callee's
     internal worst-case cost. The same state/transition caps apply, and cap
@@ -308,8 +326,8 @@ appear in one execution sub-trace:
   If the sequence is structurally impossible, the fact is vacuously satisfied:
   no constraint or automaton is needed and the record explains why. Ordered
   conflicts that repeat an element, name a backedge element in an iteration
-  scope, contain more than one call group, nest a call inside a call group, or
-  select an ambiguous call site are ignored conservatively.
+  scope, nest a call inside a call group, repeat a call site, or select an
+  ambiguous call site are ignored conservatively.
 - Caller contexts follow the same rules as other FFX facts. Loop contexts are
   accepted for same-function conflicts: a `<loop ...>` may omit its bound and
   acts as a context only; a missing bound produces a warning and falls back to
@@ -360,8 +378,8 @@ no call site produces a warning and has no effect. Conflict element-level resolu
 failures and unsupported conflict shapes are also non-fatal: the conflict is
 recorded as ignored and the analysis remains conservative. This includes a
 cross-function group with no unique unconditional call site, no unique
-call-return edge, more than one group, a nested call group, or a merged
-unordered form. An unresolvable conflict enclosing function name or
+call-return edge, a repeated call site, too many groups, a nested call group,
+or a merged unordered form. An unresolvable conflict enclosing function name or
 loop-context target is fatal, consistent with the other flow-fact targets.
 
 Ambiguity is not silently resolved because a wrong flow fact is a soundness
