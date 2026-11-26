@@ -718,11 +718,20 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 .map(|mode| format!(", mode {mode}"))
                 .unwrap_or_default();
             let context = context_suffix(&conflict.context, conflict.context_sites.as_deref());
-            let call = conflict
-                .call
-                .as_ref()
-                .map(|call| format!(", call {} @ {}", call.callee, call.site))
-                .unwrap_or_default();
+            let call = if conflict.calls.len() > 1 {
+                let groups: Vec<String> = conflict
+                    .calls
+                    .iter()
+                    .map(|call| format!("{}@{}", call.callee, call.site))
+                    .collect();
+                format!(", calls {}", groups.join(" -> "))
+            } else {
+                conflict
+                    .call
+                    .as_ref()
+                    .map(|call| format!(", call {} @ {}", call.callee, call.site))
+                    .unwrap_or_default()
+            };
             let reason = conflict
                 .reason
                 .as_ref()

@@ -493,19 +493,25 @@ fn parse_conflict_call(
         ));
         return Ok(None);
     };
-    if ["address", "offset", "source", "line"]
+    if ["offset", "source", "line"]
         .iter()
         .any(|attribute_name| attribute(&node, attribute_name).is_some())
     {
         warnings.push(format!(
-            "{origin}: <call> inside <conflict> is selected by name only; conflict ignored"
+            "{origin}: <call> inside <conflict> supports only address/site selection; conflict ignored"
         ));
         return Ok(None);
     }
+    let site = attribute(&node, "site")
+        .or_else(|| attribute(&node, "address"))
+        .map(parse_number)
+        .transpose()?;
     // Resolve relative locations against the callee while parsing this group.
     state.functions.push(name.to_owned());
+    state.sites.push(site);
     let result = parse_conflict_call_elements(node, state, origin, warnings);
     state.functions.pop();
+    state.sites.pop();
     let Some(elements) = result? else {
         return Ok(None);
     };
@@ -517,6 +523,7 @@ fn parse_conflict_call(
     }
     Ok(Some(ConflictElementFact::Call {
         name: name.to_owned(),
+        site,
         elements,
     }))
 }
@@ -894,7 +901,7 @@ mod non_loop_tests {
         let conflict = &document.conflicts[0];
         assert!(conflict.ordered);
         assert_eq!(conflict.elements.len(), 2);
-        let ConflictElementFact::Call { name, elements } = &conflict.elements[1] else {
+        let ConflictElementFact::Call { name, elements, .. } = &conflict.elements[1] else {
             panic!("call group");
         };
         assert_eq!(name, "helper");

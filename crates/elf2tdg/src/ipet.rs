@@ -1113,9 +1113,11 @@ fn non_loop_fact_blocks(
             insert_infeasible_element_blocks(element, &mut blocks);
         }
         if let Some(cross) = &conflict.cross_function {
-            blocks.insert(cross.call_block.clone());
-            blocks.insert(cross.continuation.clone());
-            insert_infeasible_element_blocks(&cross.call_return, &mut blocks);
+            for group in &cross.groups {
+                blocks.insert(group.call_block.clone());
+                blocks.insert(group.continuation.clone());
+                insert_infeasible_element_blocks(&group.call_return, &mut blocks);
+            }
             for slot in &cross.pattern {
                 if let CrossFunctionSlot::Caller(element) = slot {
                     insert_infeasible_element_blocks(element, &mut blocks);
@@ -1355,7 +1357,7 @@ fn try_solve_partitioned(
         .collect();
     let mut caveats = vec![
         "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
-        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models. Supported branch/call facts and infeasible-path constraints are enforced by the final model; ordered automata with loop resets also keep their reset loop monolithic, and cross-function constraints keep the call boundary and caller-side pattern blocks monolithic. Regions that touch any referenced block are left monolithic.".to_owned(),
+        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models. Supported branch/call facts and infeasible-path constraints are enforced by the final model; ordered automata with loop resets also keep their reset loop monolithic, and cross-function constraints keep all call-group boundaries and caller-side pattern blocks monolithic. Regions that touch any referenced block are left monolithic.".to_owned(),
     ];
     if let Some(caveat) = call_site_partition_caveat(scope) {
         caveats.push(caveat);
@@ -2951,7 +2953,8 @@ struct ModelGraph {
     caller_edge_models: BTreeMap<EdgeIndex, Vec<usize>>,
     callee_edge_models: Vec<BTreeMap<EdgeIndex, Vec<usize>>>,
     enter_edges: Vec<usize>,
-    constraint_specs: Vec<usize>,
+    /// One spec id per `<call>` group, in pattern order.
+    constraint_groups: Vec<Vec<usize>>,
     outgoing: Vec<Vec<usize>>,
 }
 
@@ -2961,11 +2964,15 @@ struct CrossState {
     sub: usize,
 }
 
-struct CrossAutomatonModel {
+struct CrossGroupModel {
     call: usize,
+    start: usize,
+    len: usize,
+}
+
+struct CrossAutomatonModel {
     slots: Vec<CrossFunctionSlot>,
-    group_start: usize,
-    group_len: usize,
+    groups: Vec<CrossGroupModel>,
 }
 
 fn caller_node_by_block(cfg: &FunctionCfg, block: &BlockId) -> Option<NodeIndex> {
@@ -2978,9 +2985,9 @@ fn caller_node_by_block(cfg: &FunctionCfg, block: &BlockId) -> Option<NodeIndex>
 fn inline_call_return(
     cfg: &FunctionCfg,
     caller_block: NodeIndex,
-    constraint: &CrossFunctionConstraint,
+    call_return: &InfeasibleElement,
 ) -> Result<(EdgeIndex, NodeIndex), IpetError> {
-    let InfeasibleElement::Edge { target, site, .. } = &constraint.call_return else {
+    let InfeasibleElement::Edge { target, site, .. } = call_return else {
         return Err(IpetError::Unknown("cross-function-call-return".to_owned()));
     };
     let mut candidates = cfg
@@ -3020,71 +3027,82 @@ fn build_cross_model(
 ) -> Result<ModelGraph, IpetError> {
     let mut specs: Vec<InlineCallSpec> = Vec::new();
     let mut spec_by_key: BTreeMap<(NodeIndex, EdgeIndex, FunctionId), usize> = BTreeMap::new();
-    let mut constraint_specs = Vec::with_capacity(cross.len());
+    let mut constraint_groups: Vec<Vec<usize>> = Vec::with_capacity(cross.len());
     for constraint in cross {
-        let caller_block = caller_node_by_block(cfg, &constraint.call_block)
-            .ok_or_else(|| IpetError::Unknown("cross-function-call-block-missing".to_owned()))?;
-        let callee_index = program
-            .functions
-            .iter()
-            .position(|function| function.id == constraint.callee)
-            .ok_or_else(|| IpetError::Unknown("cross-function-callee-missing".to_owned()))?;
-        let callee = &program.functions[callee_index];
-        let callee_entry = callee
-            .cfg
-            .entry
-            .ok_or_else(|| IpetError::Unknown("cross-function-callee-entry".to_owned()))?;
-        let analysis = crate::cfg_graph::analyze(&callee.cfg);
-        let reachable_ids: BTreeSet<BlockId> = analysis.reachable.iter().cloned().collect();
-        let callee_reachable: BTreeSet<NodeIndex> = callee
-            .cfg
-            .blocks_by_address
-            .values()
-            .copied()
-            .filter(|node| reachable_ids.contains(&callee.cfg.graph[*node].id))
-            .collect();
-        if callee_reachable.is_empty() {
+        let mut group_specs = Vec::with_capacity(constraint.groups.len());
+        for group in &constraint.groups {
+            let caller_block = caller_node_by_block(cfg, &group.call_block).ok_or_else(|| {
+                IpetError::Unknown("cross-function-call-block-missing".to_owned())
+            })?;
+            let callee_index = program
+                .functions
+                .iter()
+                .position(|function| function.id == group.callee)
+                .ok_or_else(|| IpetError::Unknown("cross-function-callee-missing".to_owned()))?;
+            let callee = &program.functions[callee_index];
+            let callee_entry = callee
+                .cfg
+                .entry
+                .ok_or_else(|| IpetError::Unknown("cross-function-callee-entry".to_owned()))?;
+            let analysis = crate::cfg_graph::analyze(&callee.cfg);
+            let reachable_ids: BTreeSet<BlockId> = analysis.reachable.iter().cloned().collect();
+            let callee_reachable: BTreeSet<NodeIndex> = callee
+                .cfg
+                .blocks_by_address
+                .values()
+                .copied()
+                .filter(|node| reachable_ids.contains(&callee.cfg.graph[*node].id))
+                .collect();
+            if callee_reachable.is_empty() {
+                return Err(IpetError::Unknown(
+                    "cross-function-callee-unreachable".to_owned(),
+                ));
+            }
+            let callee_chain = match scope {
+                FactScope::Context(context) => {
+                    Some(callee_context(function_id, context, Some(group.call_site)))
+                }
+                FactScope::Insensitive => None,
+            };
+            let callee_scope = callee_chain
+                .as_ref()
+                .map_or(FactScope::Insensitive, |chain| FactScope::Context(chain));
+            let callee_loops =
+                build_loops(&callee.cfg, callee_entry, &analysis, facts, callee_scope).map_err(
+                    |error| match error {
+                        IpetError::Unbounded(reason) | IpetError::Unknown(reason) => {
+                            IpetError::Unknown(format!("cross-function-callee-{reason}"))
+                        }
+                    },
+                )?;
+            let (call_return_edge, continuation) =
+                inline_call_return(cfg, caller_block, &group.call_return)?;
+            let key = (caller_block, call_return_edge, callee.id.clone());
+            let spec_id = if let Some(&id) = spec_by_key.get(&key) {
+                id
+            } else {
+                let id = specs.len();
+                specs.push(InlineCallSpec {
+                    id,
+                    caller_block,
+                    continuation,
+                    call_return_edge,
+                    callee_index,
+                    callee_entry,
+                    callee_reachable,
+                    callee_loops,
+                });
+                spec_by_key.insert(key, id);
+                id
+            };
+            group_specs.push(spec_id);
+        }
+        if group_specs.is_empty() {
             return Err(IpetError::Unknown(
-                "cross-function-callee-unreachable".to_owned(),
+                "cross-function-groups-missing".to_owned(),
             ));
         }
-        let callee_chain = match scope {
-            FactScope::Context(context) => Some(callee_context(
-                function_id,
-                context,
-                Some(constraint.call_site),
-            )),
-            FactScope::Insensitive => None,
-        };
-        let callee_scope = callee_chain
-            .as_ref()
-            .map_or(FactScope::Insensitive, |chain| FactScope::Context(chain));
-        let callee_loops = build_loops(&callee.cfg, callee_entry, &analysis, facts, callee_scope)
-            .map_err(|error| match error {
-            IpetError::Unbounded(reason) | IpetError::Unknown(reason) => {
-                IpetError::Unknown(format!("cross-function-callee-{reason}"))
-            }
-        })?;
-        let (call_return_edge, continuation) = inline_call_return(cfg, caller_block, constraint)?;
-        let key = (caller_block, call_return_edge, callee.id.clone());
-        let spec_id = if let Some(&id) = spec_by_key.get(&key) {
-            id
-        } else {
-            let id = specs.len();
-            specs.push(InlineCallSpec {
-                id,
-                caller_block,
-                continuation,
-                call_return_edge,
-                callee_index,
-                callee_entry,
-                callee_reachable,
-                callee_loops,
-            });
-            spec_by_key.insert(key, id);
-            id
-        };
-        constraint_specs.push(spec_id);
+        constraint_groups.push(group_specs);
     }
 
     let mut nodes = Vec::new();
@@ -3253,7 +3271,7 @@ fn build_cross_model(
         caller_edge_models,
         callee_edge_models,
         enter_edges,
-        constraint_specs,
+        constraint_groups,
         outgoing,
     })
 }
@@ -3262,40 +3280,53 @@ fn cross_automaton_models(
     model: &ModelGraph,
     cross: &[&CrossFunctionConstraint],
 ) -> Result<Vec<CrossAutomatonModel>, IpetError> {
-    if model.constraint_specs.len() != cross.len() {
+    if model.constraint_groups.len() != cross.len() {
         return Err(IpetError::Unknown("cross-function-model".to_owned()));
     }
     cross
         .iter()
-        .zip(&model.constraint_specs)
-        .map(|(constraint, &call)| {
+        .zip(&model.constraint_groups)
+        .map(|(constraint, specs)| {
+            if specs.len() != constraint.groups.len() {
+                return Err(IpetError::Unknown("cross-function-groups".to_owned()));
+            }
             let slots = constraint.pattern.clone();
-            let group_start = slots
-                .iter()
-                .position(|slot| matches!(slot, CrossFunctionSlot::Callee(_)))
-                .ok_or_else(|| IpetError::Unknown("cross-function-pattern".to_owned()))?;
-            let group_len = slots
-                .iter()
-                .filter(|slot| matches!(slot, CrossFunctionSlot::Callee(_)))
-                .count();
-            if group_len == 0
-                || slots[group_start..group_start + group_len]
-                    .iter()
-                    .any(|slot| matches!(slot, CrossFunctionSlot::Caller(_)))
-                || slots[group_start + group_len..]
-                    .iter()
-                    .any(|slot| matches!(slot, CrossFunctionSlot::Callee(_)))
-            {
+            let mut groups = Vec::with_capacity(constraint.groups.len());
+            let mut covered = BTreeSet::new();
+            let mut previous_end = 0_usize;
+            for (group, &call) in constraint.groups.iter().zip(specs) {
+                let start = group.slot_start;
+                let len = group.slot_len;
+                let end = start.saturating_add(len);
+                if len == 0
+                    || end > slots.len()
+                    || start < previous_end
+                    || slots[start..end]
+                        .iter()
+                        .any(|slot| matches!(slot, CrossFunctionSlot::Caller(_)))
+                {
+                    return Err(IpetError::Unknown(
+                        "cross-function-pattern-order".to_owned(),
+                    ));
+                }
+                for index in start..end {
+                    if !covered.insert(index) {
+                        return Err(IpetError::Unknown(
+                            "cross-function-pattern-order".to_owned(),
+                        ));
+                    }
+                }
+                groups.push(CrossGroupModel { call, start, len });
+                previous_end = end;
+            }
+            if slots.iter().enumerate().any(|(index, slot)| {
+                matches!(slot, CrossFunctionSlot::Callee(_)) && !covered.contains(&index)
+            }) {
                 return Err(IpetError::Unknown(
                     "cross-function-pattern-order".to_owned(),
                 ));
             }
-            Ok(CrossAutomatonModel {
-                call,
-                slots,
-                group_start,
-                group_len,
-            })
+            Ok(CrossAutomatonModel { slots, groups })
         })
         .collect()
 }
@@ -3376,6 +3407,18 @@ fn initial_cross_state(
     Some(CrossState { slot: 0, sub: 0 })
 }
 
+fn cross_group_for_call(
+    automaton: &CrossAutomatonModel,
+    call: Option<usize>,
+    slot: usize,
+) -> Option<&CrossGroupModel> {
+    let call = call?;
+    automaton
+        .groups
+        .iter()
+        .find(|group| group.call == call && group.start == slot)
+}
+
 fn advance_cross_state(
     model: &ModelGraph,
     program: &ProgramCfg,
@@ -3393,16 +3436,14 @@ fn advance_cross_state(
             Some(CrossState { slot, sub: 0 })
         }
         ModelEdgeKind::EnterCall => {
-            if edge.call != Some(automaton.call) {
+            let Some(group) = cross_group_for_call(automaton, edge.call, state.slot) else {
                 return Some(state);
-            }
+            };
             let mut sub = 0;
-            if state.slot == automaton.group_start
-                && slot_matches_callee_block(
-                    &automaton.slots[automaton.group_start],
-                    &model.nodes[edge.target].block,
-                )
-            {
+            if slot_matches_callee_block(
+                &automaton.slots[group.start],
+                &model.nodes[edge.target].block,
+            ) {
                 sub = 1;
             }
             Some(CrossState {
@@ -3411,24 +3452,20 @@ fn advance_cross_state(
             })
         }
         ModelEdgeKind::CalleeEdge => {
-            if edge.call != Some(automaton.call) || state.slot != automaton.group_start {
+            let Some(group) = cross_group_for_call(automaton, edge.call, state.slot) else {
                 return Some(state);
-            }
-            let spec = &model.specs[automaton.call];
+            };
+            let spec = &model.specs[group.call];
             let callee = &program.functions[spec.callee_index];
             let element = callee_edge_element(&callee.cfg, edge.original);
             let target = &model.nodes[edge.target].block;
             let mut sub = state.sub;
-            if sub < automaton.group_len {
-                if slot_matches_callee_edge(&automaton.slots[automaton.group_start + sub], &element)
-                {
+            if sub < group.len {
+                if slot_matches_callee_edge(&automaton.slots[group.start + sub], &element) {
                     sub += 1;
                 }
-                if sub < automaton.group_len
-                    && slot_matches_callee_block(
-                        &automaton.slots[automaton.group_start + sub],
-                        target,
-                    )
+                if sub < group.len
+                    && slot_matches_callee_block(&automaton.slots[group.start + sub], target)
                 {
                     sub += 1;
                 }
@@ -3439,25 +3476,20 @@ fn advance_cross_state(
             })
         }
         ModelEdgeKind::ReturnCall => {
-            let same_call = edge.call == Some(automaton.call);
             let mut slot = state.slot;
-            let mut sub = state.sub;
-            if slot == automaton.group_start {
-                if same_call && sub == automaton.group_len {
-                    slot = automaton.group_start + automaton.group_len;
-                    if slot == automaton.slots.len() {
-                        return None;
-                    }
+            if let Some(group) = cross_group_for_call(automaton, edge.call, state.slot)
+                && state.sub == group.len
+            {
+                slot = group.start + group.len;
+                if slot == automaton.slots.len() {
+                    return None;
                 }
-                sub = 0;
-            } else {
-                sub = 0;
             }
             let element = caller_edge_element(cfg, edge.original);
             let target = &model.nodes[edge.target].block;
             let slot =
                 advance_caller_pattern(&automaton.slots, slot, Some(&element), Some(target))?;
-            Some(CrossState { slot, sub })
+            Some(CrossState { slot, sub: 0 })
         }
     }
 }
@@ -6715,6 +6747,57 @@ auto_loop_bounds = false
         ])
     }
 
+    fn multi_group_cross_program() -> ProgramCfg {
+        let caller_cfg = FunctionCfg::build(
+            vec![
+                block(0xa000, CfgTerminator::Fallthrough, 1.0),
+                block(0xa002, CfgTerminator::Branch, 1.0),
+                block(0xa004, CfgTerminator::Branch, 1.0),
+                block(0xa006, CfgTerminator::Fallthrough, 1.0),
+                block(0xa008, CfgTerminator::Fallthrough, 1.0),
+                block(0xa00a, CfgTerminator::Fallthrough, 1.0),
+                block(0xa010, CfgTerminator::Fallthrough, 50.0),
+                call_block(0xa012, 1.0, 0xb000),
+                block(0xa014, CfgTerminator::Fallthrough, 1.0),
+                call_block(0xa016, 1.0, 0xb000),
+                block(0xa018, CfgTerminator::Fallthrough, 1.0),
+                block(0xa01c, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0xa000, 0xa002, CfgEdgeKind::Fallthrough),
+                edge(0xa002, 0xa004, CfgEdgeKind::Branch),
+                edge(0xa002, 0xa010, CfgEdgeKind::Fallthrough),
+                edge(0xa004, 0xa006, CfgEdgeKind::Branch),
+                edge(0xa004, 0xa008, CfgEdgeKind::Fallthrough),
+                edge(0xa006, 0xa00a, CfgEdgeKind::Fallthrough),
+                edge(0xa008, 0xa00a, CfgEdgeKind::Fallthrough),
+                edge(0xa00a, 0xa01c, CfgEdgeKind::Fallthrough),
+                edge(0xa010, 0xa012, CfgEdgeKind::Fallthrough),
+                edge(0xa012, 0xa014, CfgEdgeKind::CallReturn),
+                edge(0xa014, 0xa016, CfgEdgeKind::Fallthrough),
+                edge(0xa016, 0xa018, CfgEdgeKind::CallReturn),
+                edge(0xa018, 0xa01c, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0xa000),
+        );
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0xb000, CfgTerminator::Fallthrough, 1.0),
+                block(0xb002, CfgTerminator::Fallthrough, 1.0),
+                block(0xb004, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0xb000, 0xb002, CfgEdgeKind::Fallthrough),
+                edge(0xb002, 0xb004, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0xb000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0xa000, "main", caller_cfg),
+            named_function(0xb000, "helper", helper_cfg),
+        ])
+    }
+
     fn nested_partition_diamond_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x6000,
@@ -7777,6 +7860,74 @@ max_states = 16
     }
 
     #[test]
+    fn multi_group_cross_function_fact_allows_region_partitioning() {
+        let program = multi_group_cross_program();
+        let baseline = analyze_baseline(&program);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0xa010"/>
+      <call name="helper" address="0xa012">
+        <block address="0xb002"/>
+      </call>
+      <block address="0xa014"/>
+      <call name="helper" address="0xa016">
+        <block address="0xb004"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "multi-group-cross.ffx",
+        )
+        .expect("multi-group cross-function conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply multi-group conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossFunctionAutomaton
+        );
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(cross.groups.len(), 2);
+        assert_eq!(cross.groups[0].slot_start, 1);
+        assert_eq!(cross.groups[1].slot_start, 3);
+        let info = facts.info();
+        assert_eq!(info.conflicts[0].calls.len(), 2);
+        assert_eq!(
+            info.conflicts[0].call.as_ref().expect("first call").site,
+            Addr::new(0xa012)
+        );
+        assert_eq!(info.conflicts[0].calls[1].site, Addr::new(0xa016));
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let caller = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xa000)
+            .and_then(|function| function.wcet.as_ref())
+            .expect("caller WCET");
+        let constrained = caller.cycles.expect("finite cycles");
+        assert!(
+            constrained < baseline,
+            "multi-group cross-function automaton must reduce the objective: {constrained} < {baseline}"
+        );
+        let solution = caller.ipet.as_ref().expect("IPET solution");
+        let partitioning = solution
+            .partitioning
+            .as_ref()
+            .expect("fact-free diamond region uses multi-group cross partition");
+        assert_eq!(partitioning.model, "sese-branch-regions");
+        assert!(partitioning.regions >= 1);
+    }
+
+    #[test]
     fn recovered_calls_stay_partial_with_exact_partitioning() {
         let mut program = partition_diamond_program();
         program.functions[0]
@@ -8517,7 +8668,7 @@ max_states = 16
             &model.edges[return_edge],
         )
         .expect("return");
-        assert_eq!(state.slot, automaton.group_start);
+        assert_eq!(state.slot, automaton.groups[0].start);
         assert_eq!(state.sub, 0);
         state = super::advance_cross_state(
             &model,
@@ -8641,7 +8792,7 @@ max_states = 16
             conflict
                 .reason
                 .as_deref()
-                .is_some_and(|reason| reason.contains("exactly one <call> group"))
+                .is_some_and(|reason| reason.contains("repeats call site"))
         );
     }
 
