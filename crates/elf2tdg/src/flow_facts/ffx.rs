@@ -15,8 +15,12 @@
 //!
 //! `<call name="...">` nesting is retained as a caller context. The context is
 //! normalized to F4 order: immediate caller first, excluding the function that
-//! contains the fact. Context-sensitive loop facts are applied by the WCET
-//! backends; contextual branch/call facts are enforced by IPET.
+//! contains the fact. An optional `address` or `site` attribute on `<call>`
+//! identifies the call instruction, allowing the same caller/callee pair to
+//! have multiple context versions. Without an address, a unique call edge is
+//! used; an ambiguous edge is rejected with a warning. Context-sensitive loop
+//! facts are applied by the WCET backends; contextual branch/call facts are
+//! enforced by IPET.
 
 use roxmltree::{Document, Node};
 
@@ -46,6 +50,7 @@ pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String
             warnings: Vec::new(),
         },
         functions: Vec::new(),
+        sites: Vec::new(),
         loops: Vec::new(),
     };
     process_children(root, &mut state, origin)?;
@@ -57,6 +62,9 @@ struct State {
     /// Enclosing function names from the outermost `<function>` scope to the
     /// current function. A nested `<call name="...">` adds its callee name.
     functions: Vec<String>,
+    /// Optional call-site address for each enclosing `<call>` scope. The
+    /// entries parallel `functions`; `<function>` scopes use `None`.
+    sites: Vec<Option<u64>>,
     /// Enclosing `<loop>` contexts, outermost first.
     loops: Vec<LoopTarget>,
 }
@@ -74,13 +82,31 @@ impl State {
         context
     }
 
-    fn push_function(&mut self, name: &str) -> bool {
+    /// Call-site addresses matching [`State::context`].
+    ///
+    /// The context excludes the current function. Frame `i` therefore uses
+    /// the address of the call that entered frame `i + 1`; reversing the
+    /// slice from index 1 keeps immediate callers first.
+    fn context_sites(&self) -> Vec<Option<u64>> {
+        let mut sites = self.sites.iter().skip(1).copied().collect::<Vec<_>>();
+        sites.reverse();
+        sites
+    }
+
+    fn push_function(&mut self, name: &str, site: Option<u64>) -> bool {
         if self.functions.last().is_some_and(|last| last == name) {
             return false;
         }
         self.functions.push(name.to_owned());
+        self.sites.push(site);
         true
     }
+}
+
+fn context_site(node: &Node<'_, '_>) -> Option<u64> {
+    attribute(node, "site")
+        .or_else(|| attribute(node, "address"))
+        .and_then(|value| parse_number(value).ok())
 }
 
 fn process_children(node: Node<'_, '_>, state: &mut State, origin: &str) -> Result<(), String> {
@@ -89,10 +115,11 @@ fn process_children(node: Node<'_, '_>, state: &mut State, origin: &str) -> Resu
             "function" => {
                 let name = attribute(&child, "name")
                     .ok_or_else(|| format!("{origin}: <function> lacks a name"))?;
-                let pushed = state.push_function(name);
+                let pushed = state.push_function(name, None);
                 process_children(child, state, origin)?;
                 if pushed {
                     state.functions.pop();
+                    state.sites.pop();
                 }
             }
             "call" => {
@@ -102,10 +129,11 @@ fn process_children(node: Node<'_, '_>, state: &mut State, origin: &str) -> Resu
                     state.document.calls.push(fact);
                     state.document.warnings.extend(warnings);
                 }
-                let pushed = state.push_function(name);
+                let pushed = state.push_function(name, context_site(&child));
                 process_children(child, state, origin)?;
                 if pushed {
                     state.functions.pop();
+                    state.sites.pop();
                 }
             }
             "loop" => {
@@ -248,6 +276,7 @@ fn parse_call(
             scope: state.current_function(),
             max,
             context: state.context(),
+            context_sites: state.context_sites(),
             context_kind: ContextKind::FfxCall,
         },
         warnings,
@@ -288,6 +317,7 @@ fn parse_conditional(node: &Node<'_, '_>, state: &mut State, origin: &str) -> Re
             outcome: BranchOutcome::Both,
             max: 0,
             context: state.context(),
+            context_sites: state.context_sites(),
             context_kind: ContextKind::FfxCall,
         });
     }
@@ -337,6 +367,7 @@ fn parse_conditional(node: &Node<'_, '_>, state: &mut State, origin: &str) -> Re
                 outcome,
                 max,
                 context: state.context(),
+                context_sites: state.context_sites(),
                 context_kind: ContextKind::FfxCall,
             });
             location = Some(case_location);
@@ -360,6 +391,7 @@ fn parse_conflict(
                 ordered: default_ordered,
                 scope: None,
                 context: state.context(),
+                context_sites: state.context_sites(),
                 context_kind: ContextKind::FfxCall,
                 loop_context: state.loops.last().cloned(),
                 all_iterations: iteration_context,
@@ -368,6 +400,7 @@ fn parse_conflict(
         )));
     };
     let context = state.context();
+    let context_sites = state.context_sites();
     let loop_context = state.loops.last().cloned();
     let ordered = attribute(node, "ordered")
         .map(parse_bool)
@@ -394,6 +427,7 @@ fn parse_conflict(
             ordered,
             scope: Some(scope),
             context,
+            context_sites,
             context_kind: ContextKind::FfxCall,
             loop_context,
             all_iterations: iteration_context,
@@ -621,6 +655,7 @@ fn parse_loop(
             target: target.clone(),
             max,
             context: state.context(),
+            context_sites: state.context_sites(),
             context_kind: ContextKind::FfxCall,
         }),
         target,

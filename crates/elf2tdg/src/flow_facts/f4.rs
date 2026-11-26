@@ -121,11 +121,13 @@ fn parse_loop(tokens: &[Token]) -> Result<(LoopFact, Vec<String>), String> {
     if max == 0 {
         return Err("loop max bound must be positive".to_owned());
     }
+    let context_sites = vec![None; context.len()];
     Ok((
         LoopFact {
             target,
             max,
             context,
+            context_sites,
             context_kind: ContextKind::Function,
         },
         warnings,

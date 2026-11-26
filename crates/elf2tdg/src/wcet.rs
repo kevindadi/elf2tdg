@@ -22,7 +22,7 @@ use crate::cfg::{
     FunctionCfg, ProgramCfg,
 };
 use crate::cfg_graph::CfgGraphAnalysis;
-use crate::flow_facts::{FactScope, FlowFacts};
+use crate::flow_facts::{ContextFrame, FactScope, FlowFacts};
 
 const MODEL_NAME: &str = "cfg-longest-path";
 
@@ -34,7 +34,7 @@ const MAX_CONTEXTS_PER_FUNCTION: usize = 64;
 const MAX_CONTEXTS_TOTAL: usize = 4096;
 
 /// Caller chain in F4 order: immediate caller first.
-pub(crate) type CallContext = Vec<FunctionId>;
+pub(crate) type CallContext = Vec<ContextFrame>;
 
 /// Function versions needed by a context-sensitive analysis.
 #[derive(Clone, Debug, Default)]
@@ -109,7 +109,9 @@ pub(crate) fn analyze_program_with_facts(
     }
 
     let context_requested = facts.has_contextual_loops();
-    let context_plan = context_requested.then(|| plan_contexts(program, &recursive_functions));
+    let site_sensitive = facts.has_call_site_contexts();
+    let context_plan = context_requested
+        .then(|| plan_contexts_with_sites(program, &recursive_functions, site_sensitive));
     let use_contexts = context_plan.as_ref().is_some_and(|plan| !plan.overflowed);
     let fallback_partial = context_requested && !use_contexts;
     let mut summaries: Vec<Option<CfgFunctionWcet>> = vec![None; program.functions.len()];
@@ -150,11 +152,13 @@ pub(crate) fn analyze_program_with_facts(
                 let resolver = VersionSummaries {
                     versions: &versions,
                     recursive: &recursive_summaries,
-                    callee_context: callee_context(&function.id, context),
+                    caller: &function.id,
+                    caller_context: context,
+                    site_sensitive,
                 };
                 let summary = analyze_function(
                     function,
-                    |target| resolver.summary(target),
+                    |target, site| resolver.summary(target, site),
                     facts,
                     FactScope::Context(context),
                     profile.max_states(),
@@ -169,7 +173,7 @@ pub(crate) fn analyze_program_with_facts(
         } else {
             summaries[index] = Some(analyze_function(
                 function,
-                |target| {
+                |target, _site| {
                     index_by_id
                         .get(target)
                         .and_then(|index| summaries.get(*index))
@@ -336,21 +340,69 @@ fn collect_call_targets(call: &CfgCallSite, targets: &mut BTreeSet<FunctionId>) 
     }
 }
 
+fn function_call_edges(cfg: &FunctionCfg) -> BTreeSet<(FunctionId, u64)> {
+    let analysis = crate::cfg_graph::analyze(cfg);
+    let reachable: BTreeSet<BlockId> = analysis.reachable.into_iter().collect();
+    let mut edges = BTreeSet::new();
+    for node in cfg.blocks_by_address.values() {
+        let block = &cfg.graph[*node];
+        if !reachable.contains(&block.id) {
+            continue;
+        }
+        for call in &block.calls {
+            let mut targets = BTreeSet::new();
+            collect_call_targets(call, &mut targets);
+            for target in targets {
+                edges.insert((target, call.site));
+            }
+        }
+    }
+    edges
+}
+
 /// Builds the caller-context versions needed for context-sensitive flow facts.
 ///
 /// Root functions start with an empty caller chain. Every resolved call adds
 /// the caller to the chain. Non-root-reachable functions are also analyzed
 /// standalone so per-function results remain available. Recursive functions are
 /// skipped because existing analysis reports recursive SCCs as unbounded.
+#[cfg(test)]
 pub(crate) fn plan_contexts(program: &ProgramCfg, recursive: &BTreeSet<FunctionId>) -> ContextPlan {
+    plan_contexts_with_sites(program, recursive, false)
+}
+
+/// Builds context versions, optionally distinguishing individual call sites.
+///
+/// Function-level F4 contexts keep one version per caller chain. When a
+/// site-specific FFX context is present, each resolved call edge contributes a
+/// call-site frame, so two calls from the same caller can select different
+/// callee versions.
+pub(crate) fn plan_contexts_with_sites(
+    program: &ProgramCfg,
+    recursive: &BTreeSet<FunctionId>,
+    site_sensitive: bool,
+) -> ContextPlan {
     let mut known = BTreeSet::new();
-    let mut adjacency: BTreeMap<FunctionId, BTreeSet<FunctionId>> = BTreeMap::new();
+    let mut adjacency: BTreeMap<FunctionId, Vec<(FunctionId, Option<u64>)>> = BTreeMap::new();
     for function in &program.functions {
         if function.cfg.blocks_by_address.is_empty() {
             continue;
         }
         known.insert(function.id.clone());
-        adjacency.insert(function.id.clone(), function_call_targets(&function.cfg));
+        let mut callees: Vec<(FunctionId, Option<u64>)> = if site_sensitive {
+            function_call_edges(&function.cfg)
+                .into_iter()
+                .map(|(callee, site)| (callee, Some(site)))
+                .collect()
+        } else {
+            function_call_targets(&function.cfg)
+                .into_iter()
+                .map(|callee| (callee, None))
+                .collect()
+        };
+        callees.sort();
+        callees.dedup();
+        adjacency.insert(function.id.clone(), callees);
     }
     let mut reachable = BTreeSet::new();
     let mut queue: VecDeque<FunctionId> = VecDeque::new();
@@ -361,7 +413,7 @@ pub(crate) fn plan_contexts(program: &ProgramCfg, recursive: &BTreeSet<FunctionI
     }
     while let Some(function) = queue.pop_front() {
         if let Some(callees) = adjacency.get(&function) {
-            for callee in callees {
+            for (callee, _) in callees {
                 if known.contains(callee) && reachable.insert(callee.clone()) {
                     queue.push_back(callee.clone());
                 }
@@ -426,7 +478,7 @@ pub(crate) fn plan_contexts(program: &ProgramCfg, recursive: &BTreeSet<FunctionI
 
 fn expand_contexts(
     known: &BTreeSet<FunctionId>,
-    adjacency: &BTreeMap<FunctionId, BTreeSet<FunctionId>>,
+    adjacency: &BTreeMap<FunctionId, Vec<(FunctionId, Option<u64>)>>,
     recursive: &BTreeSet<FunctionId>,
     versions: &mut BTreeMap<FunctionId, BTreeSet<CallContext>>,
     pending: &mut VecDeque<(FunctionId, CallContext)>,
@@ -435,12 +487,15 @@ fn expand_contexts(
         let Some(callees) = adjacency.get(&function) else {
             continue;
         };
-        for callee in callees {
+        for (callee, site) in callees {
             if !known.contains(callee) || recursive.contains(callee) {
                 continue;
             }
             let mut callee_context = Vec::with_capacity(context.len().saturating_add(1));
-            callee_context.push(function.clone());
+            callee_context.push(ContextFrame {
+                function: function.clone(),
+                site: *site,
+            });
             callee_context.extend(context.iter().cloned());
             if callee_context.len() > MAX_CONTEXT_DEPTH {
                 return false;
@@ -482,23 +537,37 @@ fn add_context_version(
         .insert(context))
 }
 
-pub(crate) fn callee_context(caller: &FunctionId, caller_context: &[FunctionId]) -> CallContext {
+pub(crate) fn callee_context(
+    caller: &FunctionId,
+    caller_context: &[ContextFrame],
+    site: Option<u64>,
+) -> CallContext {
     let mut context = Vec::with_capacity(caller_context.len().saturating_add(1));
-    context.push(caller.clone());
-    context.extend(caller_context.iter().cloned());
+    context.push(ContextFrame {
+        function: caller.clone(),
+        site,
+    });
+    context.extend_from_slice(caller_context);
     context
 }
 
 pub(crate) struct VersionSummaries<'a> {
     pub(crate) versions: &'a BTreeMap<(FunctionId, CallContext), CfgFunctionWcet>,
     pub(crate) recursive: &'a BTreeMap<FunctionId, CfgFunctionWcet>,
-    pub(crate) callee_context: CallContext,
+    pub(crate) caller: &'a FunctionId,
+    pub(crate) caller_context: &'a [ContextFrame],
+    pub(crate) site_sensitive: bool,
 }
 
 impl VersionSummaries<'_> {
-    pub(crate) fn summary(&self, target: &FunctionId) -> Option<&CfgFunctionWcet> {
+    pub(crate) fn summary(&self, target: &FunctionId, site: u64) -> Option<&CfgFunctionWcet> {
+        let context = callee_context(
+            self.caller,
+            self.caller_context,
+            self.site_sensitive.then_some(site),
+        );
         self.versions
-            .get(&(target.clone(), self.callee_context.clone()))
+            .get(&(target.clone(), context))
             .or_else(|| self.recursive.get(target))
     }
 }
@@ -575,7 +644,7 @@ fn analyze_function<'a, F>(
     frequency_hz: Option<u64>,
 ) -> CfgFunctionWcet
 where
-    F: FnMut(&FunctionId) -> Option<&'a CfgFunctionWcet>,
+    F: FnMut(&FunctionId, u64) -> Option<&'a CfgFunctionWcet>,
 {
     let Some(entry) = function.cfg.entry else {
         return unknown_summary("no-entry", 0, 0);
@@ -865,7 +934,7 @@ pub(crate) fn build_call_info_with<'a, F>(
     mut summary_for: F,
 ) -> Result<CallInfo, String>
 where
-    F: FnMut(&FunctionId) -> Option<&'a CfgFunctionWcet>,
+    F: FnMut(&FunctionId, u64) -> Option<&'a CfgFunctionWcet>,
 {
     let mut block_cycles = BTreeMap::new();
     let mut partial = !cfg.recovered_calls.is_empty();
@@ -885,7 +954,7 @@ where
             let mut call_total = 0.0_f64;
             for target in targets {
                 local_count += 1;
-                let Some(summary) = summary_for(&target) else {
+                let Some(summary) = summary_for(&target, call.site) else {
                     missing = true;
                     continue;
                 };
@@ -1009,14 +1078,25 @@ pub(crate) fn root_results(
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{aggregate_context_summaries, analyze_program, plan_contexts};
+    use super::{
+        aggregate_context_summaries, analyze_program, plan_contexts, plan_contexts_with_sites,
+    };
     use crate::board_profile::{BoardProfile, WcetProfile};
     use crate::cfg::{
         CfgBlockDraft, CfgCallSite, CfgEdgeDraft, CfgEdgeKind, CfgFunction, CfgFunctionWcet,
         CfgInstruction, CfgRoot, CfgRootKind, CfgTerminator, CfgWcetStatus, FunctionCfg,
         ProgramCfg,
     };
+    use crate::flow_facts::ContextFrame;
     use elf2tdg_schema::{Confidence, CostRange, FunctionId, FunctionKind, Language};
+
+    fn frame(id: &str) -> ContextFrame {
+        ContextFrame::function(FunctionId::new(id))
+    }
+
+    fn call_frame(id: &str, site: u64) -> ContextFrame {
+        ContextFrame::call(FunctionId::new(id), site)
+    }
 
     fn wcet_profile(extra: &str) -> WcetProfile {
         let text = format!(
@@ -1301,10 +1381,60 @@ max_states = 1000
             plan.versions
                 .get(&FunctionId::new("fn:0x3000"))
                 .is_some_and(|contexts| {
-                    contexts.contains(&vec![FunctionId::new("fn:0x2800")])
-                        && !contexts.contains(&Vec::new())
+                    contexts.contains(&vec![frame("fn:0x2800")]) && !contexts.contains(&Vec::new())
                 })
         );
+    }
+
+    #[test]
+    fn site_sensitive_context_plan_separates_call_sites() {
+        let leaf = function(
+            0x3000,
+            FunctionCfg::build(
+                vec![block(0x3000, CfgTerminator::Return, 20.0, Vec::new())],
+                Vec::new(),
+                Some(0x3000),
+            ),
+        );
+        let main = function(
+            0x2800,
+            FunctionCfg::build(
+                vec![block(
+                    0x2800,
+                    CfgTerminator::Return,
+                    1.0,
+                    vec![call(&leaf, 0x2800), call(&leaf, 0x2804)],
+                )],
+                Vec::new(),
+                Some(0x2800),
+            ),
+        );
+        let mut program = ProgramCfg::new(vec![main, leaf]);
+        program.roots.push(CfgRoot {
+            function: FunctionId::new("fn:0x2800"),
+            kind: CfgRootKind::Startup,
+            name: None,
+            vector: None,
+            irq: None,
+            confidence: Confidence::High,
+        });
+
+        let site_plan = plan_contexts_with_sites(&program, &BTreeSet::new(), true);
+        assert!(!site_plan.overflowed);
+        let leaf_contexts = site_plan
+            .versions
+            .get(&FunctionId::new("fn:0x3000"))
+            .expect("leaf versions");
+        assert!(leaf_contexts.contains(&vec![call_frame("fn:0x2800", 0x2800)]));
+        assert!(leaf_contexts.contains(&vec![call_frame("fn:0x2800", 0x2804)]));
+
+        let function_plan = plan_contexts(&program, &BTreeSet::new());
+        let leaf_contexts = function_plan
+            .versions
+            .get(&FunctionId::new("fn:0x3000"))
+            .expect("leaf versions");
+        assert!(leaf_contexts.contains(&vec![frame("fn:0x2800")]));
+        assert!(!leaf_contexts.contains(&vec![call_frame("fn:0x2800", 0x2800)]));
     }
 
     #[test]

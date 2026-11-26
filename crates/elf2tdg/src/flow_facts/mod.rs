@@ -5,7 +5,10 @@
 //! document first and resolved against the recovered `ProgramCfg`, so a fact
 //! can name a loop by address, by function + offset, or by source file/line.
 //! F4 `in ...` chains and FFX `<call>` nesting become resolved caller contexts;
-//! the WCET backends analyze a function version per caller chain.
+//! the WCET backends analyze a function version per caller chain. F4 frames are
+//! function-level. FFX frames can carry the call instruction address, either
+//! explicitly or from a unique caller-to-callee edge, so two calls from the
+//! same caller may select different callee versions.
 
 mod f4;
 mod ffx;
@@ -31,13 +34,49 @@ struct LoopBound {
     source: String,
 }
 
+/// One frame in a resolved caller chain.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ContextFrame {
+    pub(crate) function: FunctionId,
+    /// Call instruction that entered the next callee. `None` for a
+    /// function-level context such as F4 `in ...`.
+    pub(crate) site: Option<u64>,
+}
+
+impl ContextFrame {
+    #[cfg(test)]
+    pub(crate) fn function(function: FunctionId) -> Self {
+        Self {
+            function,
+            site: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn call(function: FunctionId, site: u64) -> Self {
+        Self {
+            function,
+            site: Some(site),
+        }
+    }
+
+    fn matches(&self, analyzed: &Self) -> bool {
+        self.function == analyzed.function
+            && self.site.is_none_or(|site| Some(site) == analyzed.site)
+    }
+
+    fn site_specificity(&self) -> usize {
+        usize::from(self.site.is_some())
+    }
+}
+
 /// A loop bound restricted to a caller context.
 #[derive(Clone, Debug)]
 struct ContextualLoopBound {
     header: u64,
     bound: u32,
     /// Resolved caller chain, immediate caller first.
-    context: Vec<FunctionId>,
+    context: Vec<ContextFrame>,
     /// Declared caller names for reports.
     context_names: Vec<String>,
     source: String,
@@ -48,8 +87,10 @@ struct ContextualLoopBound {
 pub(crate) enum ContextKind {
     /// F4 `in ...`: the fact applies to every call from that caller function.
     Function,
-    /// FFX nested `<call>`: OTAWA scopes the fact to a call instruction. The
-    /// current analysis can honor this only when the call edge is unambiguous.
+    /// FFX nested `<call>`: OTAWA scopes the fact to a call instruction.
+    /// An explicit `address`/`site` selects the site; otherwise a unique
+    /// caller-to-callee edge is used. Multiple sites without an address are
+    /// rejected with a warning.
     FfxCall,
 }
 
@@ -83,7 +124,7 @@ pub(crate) struct BranchConstraint {
     pub(crate) outcome: BranchOutcome,
     pub(crate) max_count: u32,
     /// Resolved caller chain, immediate caller first.
-    pub(crate) context: Vec<FunctionId>,
+    pub(crate) context: Vec<ContextFrame>,
     pub(crate) context_names: Vec<String>,
     pub(crate) source: String,
 }
@@ -96,28 +137,34 @@ pub(crate) struct CallConstraint {
     pub(crate) site: u64,
     pub(crate) max_count: u32,
     /// Resolved caller chain, immediate caller first.
-    pub(crate) context: Vec<FunctionId>,
+    pub(crate) context: Vec<ContextFrame>,
     pub(crate) context_names: Vec<String>,
     pub(crate) source: String,
 }
 
 type CallSiteRef = (FunctionId, BlockId, u64);
-type ResolvedContext = (Vec<FunctionId>, Vec<String>);
+type ResolvedContext = (Vec<ContextFrame>, Vec<String>);
 
 /// Selects how contextual facts are matched during one analysis.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum FactScope<'a> {
     /// One caller chain, immediate caller first.
-    Context(&'a [FunctionId]),
+    Context(&'a [ContextFrame]),
     /// Context-insensitive fallback; only context-free facts apply.
     Insensitive,
 }
 
 impl FactScope<'_> {
     /// Whether a fact declared for `fact_context` applies in this scope.
-    pub(crate) fn matches(self, fact_context: &[FunctionId]) -> bool {
+    pub(crate) fn matches(self, fact_context: &[ContextFrame]) -> bool {
         match self {
-            Self::Context(context) => context.starts_with(fact_context),
+            Self::Context(context) => {
+                fact_context.len() <= context.len()
+                    && fact_context
+                        .iter()
+                        .zip(context.iter())
+                        .all(|(fact, analyzed)| fact.matches(analyzed))
+            }
             Self::Insensitive => fact_context.is_empty(),
         }
     }
@@ -135,6 +182,15 @@ pub(crate) struct FlowFacts {
     calls: Vec<CallConstraint>,
     infeasible_paths: Vec<InfeasiblePathConstraint>,
     warnings: Vec<String>,
+}
+
+fn context_sites_info(context: &[ContextFrame]) -> Option<Vec<Option<Addr>>> {
+    context.iter().any(|frame| frame.site.is_some()).then(|| {
+        context
+            .iter()
+            .map(|frame| frame.site.map(Addr::new))
+            .collect()
+    })
 }
 
 fn conflict_element_info(
@@ -236,18 +292,25 @@ impl FlowFacts {
     /// The most specific matching caller chain wins. Within that specificity,
     /// conflicting facts keep the larger bound. A global fact is the fallback
     /// when no contextual fact matches, followed by the default bound.
-    pub(crate) fn bound_for_context(&self, header: u64, context: &[FunctionId]) -> Option<u32> {
+    pub(crate) fn bound_for_context(&self, header: u64, context: &[ContextFrame]) -> Option<u32> {
         let mut best_length = 0;
+        let mut best_specificity = 0;
         let mut best: Option<u32> = None;
         for entry in &self.contextual_loops {
-            if entry.header != header || !context.starts_with(&entry.context) {
+            if entry.header != header || !FactScope::Context(context).matches(&entry.context) {
                 continue;
             }
             let length = entry.context.len();
-            if best.is_none() || length > best_length {
+            let specificity: usize = entry
+                .context
+                .iter()
+                .map(ContextFrame::site_specificity)
+                .sum();
+            if best.is_none() || (length, specificity) > (best_length, best_specificity) {
                 best_length = length;
+                best_specificity = specificity;
                 best = Some(entry.bound);
-            } else if length == best_length {
+            } else if (length, specificity) == (best_length, best_specificity) {
                 best = Some(best.map_or(entry.bound, |bound| bound.max(entry.bound)));
             }
         }
@@ -258,20 +321,6 @@ impl FlowFacts {
             .get(&header)
             .map(|entry| entry.bound)
             .or(self.default_loop_bound)
-    }
-
-    /// Resolved contextual loop bounds with provenance.
-    pub(crate) fn contextual_loops(
-        &self,
-    ) -> impl Iterator<Item = (u64, u32, &[String], &str)> + '_ {
-        self.contextual_loops.iter().map(|entry| {
-            (
-                entry.header,
-                entry.bound,
-                entry.context_names.as_slice(),
-                entry.source.as_str(),
-            )
-        })
     }
 
     /// Whether any loop bound is restricted to a caller context.
@@ -291,6 +340,24 @@ impl FlowFacts {
                 .infeasible_paths
                 .iter()
                 .any(|conflict| conflict.applied && !conflict.context.is_empty())
+    }
+
+    /// Whether any contextual fact identifies a concrete call site.
+    pub(crate) fn has_call_site_contexts(&self) -> bool {
+        let site_specific =
+            |context: &[ContextFrame]| context.iter().any(|frame| frame.site.is_some());
+        self.contextual_loops
+            .iter()
+            .any(|entry| site_specific(&entry.context))
+            || self
+                .branches
+                .iter()
+                .any(|branch| site_specific(&branch.context))
+            || self.calls.iter().any(|call| site_specific(&call.context))
+            || self
+                .infeasible_paths
+                .iter()
+                .any(|conflict| conflict.applied && site_specific(&conflict.context))
     }
 
     /// Resolved loop bounds keyed by header address, with provenance.
@@ -339,18 +406,17 @@ impl FlowFacts {
                 header: Addr::new(header),
                 bound,
                 context: Vec::new(),
+                context_sites: None,
                 source: source.to_owned(),
             })
             .collect();
-        loops.extend(
-            self.contextual_loops()
-                .map(|(header, bound, context, source)| CfgLoopBoundInfo {
-                    header: Addr::new(header),
-                    bound,
-                    context: context.to_vec(),
-                    source: source.to_owned(),
-                }),
-        );
+        loops.extend(self.contextual_loops.iter().map(|entry| CfgLoopBoundInfo {
+            header: Addr::new(entry.header),
+            bound: entry.bound,
+            context: entry.context_names.clone(),
+            context_sites: context_sites_info(&entry.context),
+            source: entry.source.clone(),
+        }));
         CfgFlowFactsInfo {
             source: self.source().to_owned(),
             default_loop_bound: self.default_loop_bound,
@@ -365,6 +431,7 @@ impl FlowFacts {
                     outcome: branch.outcome.name().to_owned(),
                     max_count: branch.max_count,
                     context: branch.context_names.clone(),
+                    context_sites: context_sites_info(&branch.context),
                     source: branch.source.clone(),
                 })
                 .collect(),
@@ -376,6 +443,7 @@ impl FlowFacts {
                     site: Addr::new(call.site),
                     max_count: call.max_count,
                     context: call.context_names.clone(),
+                    context_sites: context_sites_info(&call.context),
                     source: call.source.clone(),
                 })
                 .collect(),
@@ -438,6 +506,7 @@ impl FlowFacts {
                                 continuation: cross.continuation.clone(),
                             }),
                         context: conflict.context_names.clone(),
+                        context_sites: context_sites_info(&conflict.context),
                         elements,
                         source: conflict.source.clone(),
                     }
@@ -499,6 +568,7 @@ impl FlowFacts {
             let Some((context, context_names)) = resolve_context(
                 program,
                 &fact.context,
+                &fact.context_sites,
                 fact.context_kind,
                 &function.id,
                 &document.origin,
@@ -564,6 +634,7 @@ impl FlowFacts {
             let Some((context, context_names)) = resolve_context(
                 program,
                 &fact.context,
+                &fact.context_sites,
                 fact.context_kind,
                 &function,
                 &document.origin,
@@ -602,6 +673,7 @@ impl FlowFacts {
                 let Some((context, context_names)) = resolve_context(
                     program,
                     &fact.context,
+                    &fact.context_sites,
                     fact.context_kind,
                     &function,
                     &document.origin,
@@ -805,6 +877,7 @@ pub(crate) struct LoopFact {
     target: LoopTarget,
     max: u32,
     context: Vec<String>,
+    context_sites: Vec<Option<u64>>,
     context_kind: ContextKind,
 }
 
@@ -828,6 +901,7 @@ pub(crate) struct BranchFact {
     outcome: BranchOutcome,
     max: u32,
     context: Vec<String>,
+    context_sites: Vec<Option<u64>>,
     context_kind: ContextKind,
 }
 
@@ -838,6 +912,7 @@ pub(crate) struct ConflictFact {
     ordered: bool,
     scope: Option<String>,
     context: Vec<String>,
+    context_sites: Vec<Option<u64>>,
     context_kind: ContextKind,
     /// Innermost enclosing `<loop>` context, when present.
     loop_context: Option<LoopTarget>,
@@ -915,7 +990,7 @@ pub(crate) struct InfeasiblePathConstraint {
     pub(crate) function: Option<FunctionId>,
     pub(crate) elements: Vec<InfeasibleElement>,
     pub(crate) ordered: bool,
-    pub(crate) context: Vec<FunctionId>,
+    pub(crate) context: Vec<ContextFrame>,
     pub(crate) context_names: Vec<String>,
     pub(crate) source: String,
     pub(crate) scope: Option<InfeasibleScope>,
@@ -961,6 +1036,7 @@ pub(crate) struct CallFact {
     scope: Option<String>,
     max: u32,
     context: Vec<String>,
+    context_sites: Vec<Option<u64>>,
     context_kind: ContextKind,
 }
 
@@ -987,6 +1063,7 @@ pub(crate) enum CallTarget {
 fn resolve_context(
     program: &ProgramCfg,
     names: &[String],
+    sites: &[Option<u64>],
     kind: ContextKind,
     target: &FunctionId,
     origin: &str,
@@ -999,19 +1076,41 @@ fn resolve_context(
     for name in names {
         functions.push(resolve_context_function(program, name, origin)?.id.clone());
     }
+    let mut context = Vec::with_capacity(functions.len());
     let mut callee = target.clone();
-    for caller in &functions {
-        let sites = call_sites_between(program, caller, &callee);
-        if kind == ContextKind::FfxCall && sites.len() > 1 {
-            warnings.push(format!(
-                "{origin}: FFX caller context [{}] is ambiguous because {:?} calls {:?} from multiple sites; fact ignored",
-                names.join(" / "),
-                function_name(program, caller),
-                function_name(program, &callee)
-            ));
-            return Ok(None);
-        }
-        if sites.is_empty() {
+    for (index, caller) in functions.iter().enumerate() {
+        let call_sites = call_sites_between(program, caller, &callee);
+        let explicit_site = sites.get(index).copied().flatten();
+        let site = match kind {
+            ContextKind::Function => None,
+            ContextKind::FfxCall => {
+                if let Some(site) = explicit_site {
+                    if !call_sites.contains(&site) {
+                        warnings.push(format!(
+                            "{origin}: FFX caller context [{}] selects call site 0x{site:x}, but {:?} does not call {:?} there; fact ignored",
+                            names.join(" / "),
+                            function_name(program, caller),
+                            function_name(program, &callee)
+                        ));
+                        return Ok(None);
+                    }
+                    Some(site)
+                } else if call_sites.len() == 1 {
+                    call_sites.first().copied()
+                } else if call_sites.len() > 1 {
+                    warnings.push(format!(
+                        "{origin}: FFX caller context [{}] is ambiguous because {:?} calls {:?} from multiple sites; add a call address or fact ignored",
+                        names.join(" / "),
+                        function_name(program, caller),
+                        function_name(program, &callee)
+                    ));
+                    return Ok(None);
+                } else {
+                    None
+                }
+            }
+        };
+        if call_sites.is_empty() {
             warnings.push(format!(
                 "{origin}: caller context [{}] has no {:?} -> {:?} call site; fact has no effect",
                 names.join(" / "),
@@ -1019,9 +1118,13 @@ fn resolve_context(
                 function_name(program, &callee)
             ));
         }
+        context.push(ContextFrame {
+            function: caller.clone(),
+            site,
+        });
         callee = caller.clone();
     }
-    Ok(Some((functions, names.to_vec())))
+    Ok(Some((context, names.to_vec())))
 }
 
 fn call_sites_between(
@@ -1109,6 +1212,7 @@ fn resolve_conflict(
     let Some((context, context_names)) = resolve_context(
         program,
         &fact.context,
+        &fact.context_sites,
         fact.context_kind,
         &function.id,
         origin,
@@ -2496,8 +2600,9 @@ fn file_matches(expected: &str, actual: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextKind, ContextualLoopBound, FactScope, FlowFacts, InfeasibleEnforcement,
-        InfeasiblePathConstraint, LoopBound, block_at, checked_call_site, resolve_context,
+        ContextFrame, ContextKind, ContextualLoopBound, FactScope, FlowFacts,
+        InfeasibleEnforcement, InfeasiblePathConstraint, LoopBound, block_at, checked_call_site,
+        resolve_context,
     };
     use crate::board_profile::BoardProfile;
     use crate::cfg::{
@@ -2505,7 +2610,7 @@ mod tests {
         FunctionCfg, ProgramCfg,
     };
     use crate::loop_bounds::InferredLoopBound;
-    use elf2tdg_schema::{FunctionId, FunctionKind, Language};
+    use elf2tdg_schema::{Addr, FunctionId, FunctionKind, Language};
 
     fn profile(text: &str) -> BoardProfile {
         BoardProfile::parse_toml(text).expect("valid profile")
@@ -2705,6 +2810,15 @@ bound = 10
         FunctionId::new(id)
     }
 
+    fn frame(id: &str) -> ContextFrame {
+        ContextFrame::function(caller(id))
+    }
+
+    #[allow(dead_code)]
+    fn call_frame(id: &str, site: u64) -> ContextFrame {
+        ContextFrame::call(caller(id), site)
+    }
+
     #[test]
     fn contextual_bounds_use_the_most_specific_call_chain() {
         let mut facts = FlowFacts {
@@ -2726,28 +2840,60 @@ bound = 10
             facts.contextual_loops.push(ContextualLoopBound {
                 header: 0x100,
                 bound,
-                context: context.iter().map(|name| caller(name)).collect(),
+                context: context.iter().map(|name| frame(name)).collect(),
                 context_names: context.iter().map(ToString::to_string).collect(),
                 source: "facts.ffx".to_owned(),
             });
         }
+        assert_eq!(facts.bound_for_context(0x100, &[frame("fn:main")]), Some(2));
         assert_eq!(
-            facts.bound_for_context(0x100, &[caller("fn:main")]),
-            Some(2)
-        );
-        assert_eq!(
-            facts.bound_for_context(0x100, &[caller("fn:main"), caller("fn:reset")]),
+            facts.bound_for_context(0x100, &[frame("fn:main"), frame("fn:reset")]),
             Some(3)
         );
         assert_eq!(
-            facts.bound_for_context(0x100, &[caller("fn:sensor")]),
+            facts.bound_for_context(0x100, &[frame("fn:sensor")]),
             Some(8)
         );
         assert_eq!(
-            facts.bound_for_context(0x100, &[caller("fn:other")]),
+            facts.bound_for_context(0x100, &[frame("fn:other")]),
             Some(6)
         );
         assert_eq!(facts.bound_for(0x100), Some(8));
+    }
+
+    #[test]
+    fn call_site_contexts_are_more_specific_than_function_contexts() {
+        let mut facts = FlowFacts::default();
+        facts.contextual_loops.push(ContextualLoopBound {
+            header: 0x100,
+            bound: 2,
+            context: vec![frame("fn:main")],
+            context_names: vec!["main".to_owned()],
+            source: "function.ff".to_owned(),
+        });
+        facts.contextual_loops.push(ContextualLoopBound {
+            header: 0x100,
+            bound: 5,
+            context: vec![call_frame("fn:main", 0x1000)],
+            context_names: vec!["main".to_owned()],
+            source: "call.ffx".to_owned(),
+        });
+        assert_eq!(facts.bound_for_context(0x100, &[frame("fn:main")]), Some(2));
+        assert_eq!(
+            facts.bound_for_context(0x100, &[call_frame("fn:main", 0x1000)]),
+            Some(5)
+        );
+        assert_eq!(
+            facts.bound_for_context(0x100, &[call_frame("fn:main", 0x1004)]),
+            Some(2)
+        );
+        let info = facts.info();
+        let site_loop = info
+            .loops
+            .iter()
+            .find(|entry| entry.source == "call.ffx")
+            .expect("site-specific loop");
+        assert_eq!(site_loop.context_sites, Some(vec![Some(Addr::new(0x1000))]));
     }
 
     #[test]
@@ -2756,19 +2902,17 @@ bound = 10
         facts.contextual_loops.push(ContextualLoopBound {
             header: 0x100,
             bound: 2,
-            context: vec![caller("fn:main")],
+            context: vec![frame("fn:main")],
             context_names: vec!["main".to_owned()],
             source: "facts.ffx".to_owned(),
         });
-        assert_eq!(
-            facts.bound_for_context(0x100, &[caller("fn:main")]),
-            Some(2)
-        );
-        assert_eq!(facts.bound_for_context(0x100, &[caller("fn:other")]), None);
+        assert_eq!(facts.bound_for_context(0x100, &[frame("fn:main")]), Some(2));
+        assert_eq!(facts.bound_for_context(0x100, &[frame("fn:other")]), None);
         assert_eq!(facts.bound_for(0x100), None);
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn ambiguous_ffx_contexts_are_ignored() {
         let target = FunctionId::new("fn:0x2000");
         let call = |site| CfgCallSite {
@@ -2835,6 +2979,7 @@ bound = 10
         let resolved = resolve_context(
             &program,
             &names,
+            &[],
             ContextKind::FfxCall,
             &target,
             "test.ffx",
@@ -2846,6 +2991,7 @@ bound = 10
         let resolved = resolve_context(
             &program,
             &names,
+            &[],
             ContextKind::Function,
             &target,
             "test.ff",
@@ -2853,6 +2999,32 @@ bound = 10
         )
         .expect("resolve");
         assert!(resolved.is_some());
+
+        let resolved = resolve_context(
+            &program,
+            &names,
+            &[Some(0x1002)],
+            ContextKind::FfxCall,
+            &target,
+            "test.ffx",
+            &mut warnings,
+        )
+        .expect("resolve")
+        .expect("resolved call site");
+        assert_eq!(resolved.0, vec![call_frame("fn:0x1000", 0x1002)]);
+
+        let resolved = resolve_context(
+            &program,
+            &names,
+            &[Some(0x9999)],
+            ContextKind::FfxCall,
+            &target,
+            "test.ffx",
+            &mut warnings,
+        )
+        .expect("resolve");
+        assert!(resolved.is_none());
+        assert!(warnings.iter().any(|warning| warning.contains("0x9999")));
     }
 
     #[test]
@@ -2863,7 +3035,7 @@ bound = 10
             function: Some(caller("fn:target")),
             elements: Vec::new(),
             ordered: false,
-            context: vec![caller("fn:main")],
+            context: vec![frame("fn:main")],
             context_names: vec!["main".to_owned()],
             source: "conflict.ffx".to_owned(),
             scope: None,
@@ -2877,11 +3049,17 @@ bound = 10
 
     #[test]
     fn fact_scope_matches_prefixes_and_insensitive_scopes() {
-        let context = [caller("fn:main")];
-        assert!(FactScope::Context(&context).matches(&[caller("fn:main")]));
-        assert!(!FactScope::Context(&context).matches(&[caller("fn:sensor")]));
+        let context = [frame("fn:main")];
+        assert!(FactScope::Context(&context).matches(&[frame("fn:main")]));
+        assert!(!FactScope::Context(&context).matches(&[frame("fn:sensor")]));
         assert!(FactScope::Context(&context).matches(&[]));
         assert!(FactScope::Insensitive.matches(&[]));
-        assert!(!FactScope::Insensitive.matches(&[caller("fn:main")]));
+        assert!(!FactScope::Insensitive.matches(&[frame("fn:main")]));
+
+        let call_context = [call_frame("fn:main", 0x1000)];
+        assert!(FactScope::Context(&call_context).matches(&[call_frame("fn:main", 0x1000)]));
+        assert!(!FactScope::Context(&call_context).matches(&[call_frame("fn:main", 0x1004)]));
+        assert!(FactScope::Context(&call_context).matches(&[frame("fn:main")]));
+        assert!(!FactScope::Context(&context).matches(&[call_frame("fn:main", 0x1000)]));
     }
 }

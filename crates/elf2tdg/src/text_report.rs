@@ -630,12 +630,21 @@ fn render_wcet(out: &mut String, program: &ProgramCfg) {
     out.push('\n');
 }
 
-fn context_suffix(context: &[String]) -> String {
+fn context_suffix(context: &[String], sites: Option<&[Option<Addr>]>) -> String {
     if context.is_empty() {
-        String::new()
-    } else {
-        format!(" [context: {}]", context.join(" / "))
+        return String::new();
     }
+    let frames: Vec<String> = context
+        .iter()
+        .enumerate()
+        .map(
+            |(index, name)| match sites.and_then(|sites| sites.get(index)).copied().flatten() {
+                Some(site) => format!("{name}@{site}"),
+                None => name.clone(),
+            },
+        )
+        .collect();
+    format!(" [context: {}]", frames.join(" / "))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -664,7 +673,7 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
             ),
         );
         for loop_ in &facts.loops {
-            let context = context_suffix(&loop_.context);
+            let context = context_suffix(&loop_.context, loop_.context_sites.as_deref());
             kv_indent(
                 out,
                 "loop bound",
@@ -675,7 +684,7 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
             );
         }
         for branch in &facts.branches {
-            let context = context_suffix(&branch.context);
+            let context = context_suffix(&branch.context, branch.context_sites.as_deref());
             kv_indent(
                 out,
                 "branch fact",
@@ -686,7 +695,7 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
             );
         }
         for call in &facts.calls {
-            let context = context_suffix(&call.context);
+            let context = context_suffix(&call.context, call.context_sites.as_deref());
             kv_indent(
                 out,
                 "call fact",
@@ -708,7 +717,7 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 .as_deref()
                 .map(|mode| format!(", mode {mode}"))
                 .unwrap_or_default();
-            let context = context_suffix(&conflict.context);
+            let context = context_suffix(&conflict.context, conflict.context_sites.as_deref());
             let call = conflict
                 .call
                 .as_ref()
@@ -1752,8 +1761,23 @@ fn kv_indent(out: &mut String, key: &str, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_cost, format_number, heading};
-    use elf2tdg_schema::CostRange;
+    use super::{context_suffix, format_cost, format_number, heading};
+    use elf2tdg_schema::{Addr, CostRange};
+
+    #[test]
+    fn context_suffix_shows_call_site_addresses() {
+        assert_eq!(
+            context_suffix(
+                &["main".to_owned(), "startup".to_owned()],
+                Some(&[Some(Addr::new(0x1000)), None]),
+            ),
+            " [context: main@0x1000 / startup]"
+        );
+        assert_eq!(
+            context_suffix(&["main".to_owned()], None),
+            " [context: main]"
+        );
+    }
 
     #[test]
     fn cost_ranges_are_rendered_compactly() {

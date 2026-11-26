@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.42";
+pub const CFG_SCHEMA_VERSION: &str = "2.43";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1430,6 +1430,10 @@ pub struct CfgInfeasiblePathInfo {
     /// Caller context (immediate caller first), when contextual.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<String>,
+    /// Call-site address per context frame, aligned with `context`; omitted
+    /// when every frame is function-level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_sites: Option<Vec<Option<Addr>>>,
     /// Conflict elements in declaration order.
     pub elements: Vec<CfgInfeasibleElementInfo>,
     /// Source of the conflict.
@@ -1482,6 +1486,10 @@ pub struct CfgBranchFactInfo {
     /// Caller context (immediate caller first), when contextual.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<String>,
+    /// Call-site address per context frame, aligned with `context`; omitted
+    /// when every frame is function-level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_sites: Option<Vec<Option<Addr>>>,
     /// Source of the fact.
     pub source: String,
 }
@@ -1498,6 +1506,10 @@ pub struct CfgCallFactInfo {
     /// Caller context (immediate caller first), when contextual.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<String>,
+    /// Call-site address per context frame, aligned with `context`; omitted
+    /// when every frame is function-level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_sites: Option<Vec<Option<Addr>>>,
     /// Source of the fact.
     pub source: String,
 }
@@ -1512,6 +1524,10 @@ pub struct CfgLoopBoundInfo {
     /// Caller context (immediate caller first), when contextual.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<String>,
+    /// Call-site address per context frame, aligned with `context`; omitted
+    /// when every frame is function-level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_sites: Option<Vec<Option<Addr>>>,
     /// Source of the bound (board profile, F4/FFX file, inference or a merge).
     pub source: String,
 }

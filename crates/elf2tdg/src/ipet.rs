@@ -48,8 +48,8 @@ use crate::ras::RasState;
 use crate::timing::{PipelineFunctionModel, PipelineState};
 use crate::wcet::{
     CallContext, VersionSummaries, aggregate_context_summaries, build_call_info_with,
-    callee_context, frequency_hz, function_call_targets, plan_contexts, root_results, time_ns,
-    unbounded_summary, unknown_summary,
+    callee_context, frequency_hz, function_call_targets, plan_contexts_with_sites, root_results,
+    time_ns, unbounded_summary, unknown_summary,
 };
 
 pub(crate) const MODEL_NAME: &str = "cfg-ipet";
@@ -195,7 +195,9 @@ fn analyze_program_impl(
     }
 
     let context_requested = facts.has_contextual_facts();
-    let context_plan = context_requested.then(|| plan_contexts(program, &recursive_functions));
+    let site_sensitive = facts.has_call_site_contexts();
+    let context_plan = context_requested
+        .then(|| plan_contexts_with_sites(program, &recursive_functions, site_sensitive));
     let use_contexts = context_plan.as_ref().is_some_and(|plan| !plan.overflowed);
     let fallback_partial = context_requested && !use_contexts;
     let mut summaries: Vec<Option<CfgFunctionWcet>> = vec![None; program.functions.len()];
@@ -236,12 +238,14 @@ fn analyze_program_impl(
                 let resolver = VersionSummaries {
                     versions: &versions,
                     recursive: &recursive_summaries,
-                    callee_context: callee_context(&function.id, context),
+                    caller: &function.id,
+                    caller_context: context,
+                    site_sensitive,
                 };
                 let summary = analyze_function(
                     program,
                     function,
-                    |target| resolver.summary(target),
+                    |target, site| resolver.summary(target, site),
                     facts,
                     FactScope::Context(context),
                     frequency_hz,
@@ -258,7 +262,7 @@ fn analyze_program_impl(
             summaries[index] = Some(analyze_function(
                 program,
                 function,
-                |target| {
+                |target, _site| {
                     index_by_id
                         .get(target)
                         .and_then(|index| summaries.get(*index))
@@ -417,7 +421,7 @@ fn analyze_function<'a, F>(
     interproc: Option<&InterprocContext>,
 ) -> CfgFunctionWcet
 where
-    F: FnMut(&FunctionId) -> Option<&'a CfgFunctionWcet>,
+    F: FnMut(&FunctionId, u64) -> Option<&'a CfgFunctionWcet>,
 {
     let Some(entry) = function.cfg.entry else {
         return unknown_summary("no-entry", 0, 0);
@@ -439,7 +443,7 @@ where
         Err(reason) => return unbounded_summary(&reason, 0, 0),
     };
     let base_call_cycles = interproc.and_then(|context| {
-        build_call_info_with(&function.cfg, &reachable_nodes, |target| {
+        build_call_info_with(&function.cfg, &reachable_nodes, |target, _site| {
             context.base.get(target)
         })
         .ok()
@@ -967,6 +971,19 @@ fn recovered_call_partition_caveat(cfg: &FunctionCfg) -> Option<String> {
         )
     })
 }
+
+fn call_site_partition_caveat(scope: FactScope<'_>) -> Option<String> {
+    let FactScope::Context(context) = scope else {
+        return None;
+    };
+    context
+        .iter()
+        .any(|frame| frame.site.is_some())
+        .then(|| {
+            "This partition summary belongs to one call-site-sensitive function version; call-site-specific loop/fact bounds and callee costs are selected by the caller frame chain."
+                .to_owned()
+        })
+}
 const MAX_STATE_PARTITION_EXIT_STATES: usize = 256;
 const MAX_STATE_PARTITION_LOCAL_NODES: usize = 20_000;
 
@@ -1132,6 +1149,9 @@ fn try_solve_partitioned(
         "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
         "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models and without non-loop flow facts or infeasible-path constraints; otherwise the monolithic IPET model is used.".to_owned(),
     ];
+    if let Some(caveat) = call_site_partition_caveat(scope) {
+        caveats.push(caveat);
+    }
     if let Some(caveat) = recovered_call_partition_caveat(cfg) {
         caveats.push(caveat);
     }
@@ -2762,15 +2782,6 @@ fn build_cross_model(
     scope: FactScope<'_>,
     cross: &[&CrossFunctionConstraint],
 ) -> Result<ModelGraph, IpetError> {
-    let callee_chain = match scope {
-        FactScope::Context(context) => Some(callee_context(function_id, context)),
-        FactScope::Insensitive => None,
-    };
-    let callee_scope = match &callee_chain {
-        Some(chain) => FactScope::Context(chain),
-        None => FactScope::Insensitive,
-    };
-
     let mut specs: Vec<InlineCallSpec> = Vec::new();
     let mut spec_by_key: BTreeMap<(NodeIndex, EdgeIndex, FunctionId), usize> = BTreeMap::new();
     let mut constraint_specs = Vec::with_capacity(cross.len());
@@ -2801,6 +2812,17 @@ fn build_cross_model(
                 "cross-function-callee-unreachable".to_owned(),
             ));
         }
+        let callee_chain = match scope {
+            FactScope::Context(context) => Some(callee_context(
+                function_id,
+                context,
+                Some(constraint.call_site),
+            )),
+            FactScope::Insensitive => None,
+        };
+        let callee_scope = callee_chain
+            .as_ref()
+            .map_or(FactScope::Insensitive, |chain| FactScope::Context(chain));
         let callee_loops = build_loops(&callee.cfg, callee_entry, &analysis, facts, callee_scope)
             .map_err(|error| match error {
             IpetError::Unbounded(reason) | IpetError::Unknown(reason) => {
@@ -5634,6 +5656,9 @@ fn solve_function_with_state_products(
                 "A region entry state that can reach several exit states may use those exits more freely in the final IPET than in a concrete execution. This over-approximates the monolithic state-product model, so the result remains a safe upper bound but can be larger.".to_owned(),
                 "Regions containing loop headers or latches, or ending at a loop header, are left monolithic. Functions with non-loop flow facts, infeasible-path constraints or unresolved control flow are not partitioned; block counts inside a summarized region describe one worst-cost local path per entry/exit state and are diagnostic.".to_owned(),
             ];
+            if let Some(caveat) = call_site_partition_caveat(scope) {
+                caveats.push(caveat);
+            }
             if let Some(caveat) = recovered_call_partition_caveat(cfg) {
                 caveats.push(caveat);
             }
@@ -7272,6 +7297,97 @@ max_states = 16
                 .caveats
                 .iter()
                 .any(|caveat| caveat.contains("recovered call site"))
+        );
+    }
+
+    #[test]
+    fn call_site_sensitive_partition_uses_per_site_loop_bounds() {
+        let mut root_function = function(
+            0x1000,
+            FunctionCfg::build(
+                vec![
+                    call_block(0x1000, 1.0, 0x4000),
+                    call_block(0x1002, 1.0, 0x4000),
+                    block(0x1004, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x1000, 0x1002, CfgEdgeKind::CallReturn),
+                    edge(0x1002, 0x1004, CfgEdgeKind::CallReturn),
+                ],
+                Some(0x1000),
+            ),
+        );
+        root_function.primary_name = "caller".to_owned();
+        root_function.demangled_name = None;
+        let mut helper_function = function(
+            0x4000,
+            FunctionCfg::build(
+                vec![
+                    block(0x4000, CfgTerminator::Branch, 1.0),
+                    block(0x4002, CfgTerminator::Jump, 10.0),
+                    block(0x4004, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x4000, 0x4002, CfgEdgeKind::Branch),
+                    edge(0x4000, 0x4004, CfgEdgeKind::Fallthrough),
+                    edge(0x4002, 0x4000, CfgEdgeKind::Jump),
+                ],
+                Some(0x4000),
+            ),
+        );
+        helper_function.primary_name = "helper".to_owned();
+        helper_function.demangled_name = None;
+
+        let program = ProgramCfg::new(vec![root_function, helper_function]);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="caller">
+    <call name="helper" address="0x1000">
+      <loop address="0x4000" maxcount="2"/>
+    </call>
+    <call name="helper" address="0x1002">
+      <loop address="0x4000" maxcount="5"/>
+    </call>
+  </function>
+</flowfacts>
+"#,
+            "call-site.ffx",
+        )
+        .expect("call-site flow facts");
+        facts
+            .apply_document(document, &program)
+            .expect("apply call-site facts");
+        assert!(facts.has_call_site_contexts());
+
+        let mut program = program;
+        let _ = analyze_program(&mut program, &facts);
+        let root_wcet = program
+            .functions
+            .iter()
+            .find(|function| function.address == 0x1000)
+            .and_then(|function| function.wcet.as_ref())
+            .expect("caller WCET");
+        let helper_wcet = program
+            .functions
+            .iter()
+            .find(|function| function.address == 0x4000)
+            .and_then(|function| function.wcet.as_ref())
+            .expect("callee WCET");
+        assert_eq!(root_wcet.cycles, Some(62.0));
+        assert_eq!(helper_wcet.cycles, Some(46.0));
+        let partitioning = helper_wcet
+            .ipet
+            .as_ref()
+            .and_then(|ipet| ipet.partitioning.as_ref())
+            .expect("call-site-sensitive callee partition");
+        assert_eq!(partitioning.model, "sese-branch-regions");
+        assert!(
+            partitioning
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("call-site-sensitive"))
         );
     }
 
