@@ -130,9 +130,11 @@ profiles. They are not evidence that a real board matches the timing values.
   state-product IPET. Compare it against the same build without partitioning,
   not against the state-free baseline. Regions containing loop headers or
   latches, or ending at a loop header, stay monolithic.
+- Recovered call sites without a containing block no longer disable either
+  partition model. They stay function-level, are not assigned to a region, and
+  keep the result partial; fixed call-block summaries are allowed.
 - Functions with non-loop flow facts, infeasible-path constraints or
-  recovered-call gaps intentionally stay monolithic; fixed call-block
-  summaries are allowed.
+  unresolved control-flow gaps intentionally stay monolithic.
 - `partial`, `unbounded` and `unknown` function counts are more important than
   a single objective value. A benchmark with any partial/unbounded root is not
   a safe WCET result.

@@ -93,8 +93,8 @@ use monolithic IPET. The remaining P1 work is:
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
    `elf2tdg-bench` now provides a reproducible local suite with cycle results,
    model/fallback summaries and external-reference slots; OTAWA reference
-   population, larger public benchmark sets, richer partition shapes and
-   partitioning across recovered calls remain.
+   population, larger public benchmark sets and richer partition shapes
+   remain.
 4. Making IPET the default only after the bounded-results contract is validated.
 
 The irreducible-cycle guard is deliberate: if removing all natural-loop
@@ -146,8 +146,10 @@ from summed local estimates.
 
 - IPET CFG partitioning covers branch-entry SESE regions in functions with
   statically modeled calls and without non-loop flow facts or infeasible-path
-  constraints. State-free regions use exact per-entry summaries and
-  homogeneous scaling. With cache/pipeline/branch/BTB/RAS state products,
+  constraints. Recovered call sites without a containing block do not block
+  partitioning, but remain function-level, are not assigned to regions and
+  keep the function `partial`. State-free regions use exact per-entry
+  summaries and homogeneous scaling. With cache/pipeline/branch/BTB/RAS state products,
   a laminar family of regions without loop headers/latches or loop-header
   exits is summarized innermost first per entry and exit product state; nested
   costs and block counts are folded into enclosing summaries. The final IPET

@@ -718,7 +718,10 @@ model: branch-entry SESE regions are solved bottom-up with an entry count of
 one, replaced by a per-entry cost block, and expanded when the parent assigns
 executions to that block. A summarized region whose entry is the function
 entry becomes the new function entry. Fixed per-call-block callee costs are
-included in local region models and the final model. `sese-state-product-regions`
+included in local region models and the final model. Recovered call sites
+without a containing basic block do not block either partition model; they
+stay function-level, are not assigned to a region, and keep the result
+`partial` with their count in `unresolved_calls`. `sese-state-product-regions`
 is used when a cache, pipeline, branch-prediction, BTB or RAS state product is
 active. It selects a laminar (nested or disjoint) family of branch-entry
 regions that contain no loop header or latch and do not end at a loop header.
@@ -731,8 +734,8 @@ entry state that can reach several exit states may use those exits more freely
 in the final IPET than in a concrete execution; the result is therefore a safe
 upper bound but can exceed the monolithic state-product objective. Regions
 containing loop headers or latches, or ending at a loop header, remain
-monolithic; functions with non-loop flow facts, infeasible-path constraints,
-unresolved control flow or recovered-call gaps are not partitioned.
+monolithic; functions with non-loop flow facts, infeasible-path constraints or
+unresolved control-flow gaps are not partitioned.
 Block execution counts in `ipet.blocks` are expanded back to original block
 IDs; counts inside a state-summarized region describe one worst-cost local path
 per entry/exit state and are diagnostic. Partitioning is capped at 4096 blocks,

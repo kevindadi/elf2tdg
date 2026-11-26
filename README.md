@@ -76,7 +76,8 @@ Implemented:
     exits is summarized innermost first per entry/exit product state, with
     nested costs and block counts folded into enclosing summaries; this keeps
     state explicit and is a safe upper bound that may exceed monolithic
-    state-product IPET;
+    state-product IPET. Recovered call sites without a containing block remain
+    function-level and partial but do not disable partitioning;
   - conservative automatic loop-bound inference for canonical counted loops
     (`auto_loop_bounds`, enabled by default);
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add
