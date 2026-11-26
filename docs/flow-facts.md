@@ -60,6 +60,24 @@ The same fact in F4 form is:
 loop 0x080000d8 2 in "main";
 ```
 
+When `main` calls `delay` from more than one site, FFX can select the exact
+call instruction with an `address` (or `site`) attribute:
+
+```xml
+<function name="main">
+  <call name="delay" address="0x0800_0140">
+    <loop address="0x0800_00d8" maxcount="2"/>
+  </call>
+  <call name="delay" address="0x0800_0160">
+    <loop address="0x0800_00d8" maxcount="5"/>
+  </call>
+</function>
+```
+
+The two call sites become separate `delay` versions. Without an address, a
+unique `main` -> `delay` call edge is used automatically; an ambiguous edge is
+ignored with a warning instead of applying one bound to every site.
+
 Context-sensitive loop bounds are analyzed per caller chain by both backends.
 IPET also applies contextual branch/call facts. Function-level WCET is the
 maximum over all analyzed contexts, while a root result uses the root's own
@@ -81,16 +99,27 @@ model: contextual loop bounds are merged conservatively, contextual branch/call
 facts are not applied, and finite results computed in that fallback are marked
 `partial` (so `--require-safe` rejects them).
 
-Context identity is the **caller function chain**, not the individual call-site
-address. Two calls from the same caller to the same callee share one callee
-version, so an F4 fact applies to both. F4 is function-level by design. FFX
-nested `<call>` contexts are call-site scoped in OTAWA; this analyzer honors
-them only when every caller-to-callee edge on the chain has exactly one call
-site. If a caller has multiple such sites, the FFX context fact is ignored with
-a warning rather than broadened unsafely. Nesting call addresses are not
-currently used to disambiguate those sites. A fact whose caller chain matches
-no analyzed execution has no effect. Recursive call-graph SCCs remain
-`unbounded`, so contexts are not expanded through them.
+Context identity is a chain of **caller frames**. Each frame has a caller
+function and an optional call-site address:
+
+- F4 `in ...` frames are function-level (`site = null`). A F4 fact applies to
+  every call from that caller, so two calls from the same caller share the
+  frame and the fact applies to both.
+- FFX nested `<call>` frames are call-site scoped. The address comes from the
+  `<call address="...">`/`site="..."` attribute, or from the unique
+  caller-to-callee edge when no address is declared. If a caller has multiple
+  matching sites and no address, the fact is ignored with a warning rather
+  than broadened unsafely.
+
+A F4 function-level frame matches any site-specific analyzed frame for the same
+caller. A call-site-specific fact is more specific than a function-level fact
+with the same chain length and wins for that site. Conflicting facts at the
+same specificity keep the larger loop bound or tighter non-loop count. A fact
+whose caller chain matches no analyzed execution has no effect. Recursive
+call-graph SCCs remain `unbounded`, so contexts are not expanded through them.
+Function-level WCET is the maximum over analyzed contexts; call-site-specific
+facts therefore affect callee summaries and the enclosing caller's call costs,
+including partitioned IPET results.
 
 ## F4 `.ff`
 
@@ -315,10 +344,11 @@ An imported fact that cannot be resolved is a fatal configuration error:
 - a callee-wide call fact declares a scope that does not contain its call site;
 - a cross-function conflict call group names a function that does not resolve.
 
-An FFX caller context that names an ambiguous multi-site edge is not a fatal
-error: the fact is ignored with a warning because its call-site scope cannot be
-represented safely at function granularity. A context edge with no call site
-produces a warning and has no effect. Conflict element-level resolution
+An FFX caller context that names an ambiguous multi-site edge without an
+address is not a fatal error: the fact is ignored with a warning. Adding an
+explicit `<call address="...">` resolves it. An address that is not a
+caller-to-callee call site is also ignored with a warning. A context edge with
+no call site produces a warning and has no effect. Conflict element-level resolution
 failures and unsupported conflict shapes are also non-fatal: the conflict is
 recorded as ignored and the analysis remains conservative. This includes a
 cross-function group with no unique unconditional call site, no unique

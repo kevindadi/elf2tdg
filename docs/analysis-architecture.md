@@ -51,9 +51,9 @@ Rust `dylib` interface.
 | Level | Capability | Status |
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
-| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one direct call group), per-function IPET, pure-Rust `microlp`; call-site-sensitive contexts, richer FFX constructs and conflict scalability are next |
+| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain and call-site analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one direct call group), per-function IPET, pure-Rust `microlp`; richer FFX constructs and conflict scalability are next |
 | P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, a full instruction-cache CCG flow model, per-line first-miss and aggregate conflict bounds for fallback, concrete branch-predictor state products with per-edge misprediction costs, optional unknown first-execution history, global-history, gshare, local-history, configurable two-level pattern tables, a global/local tournament predictor, set-associative BTB miss models and bounded return-address stacks, interprocedural branch summaries that carry predictor state and branch costs through direct calls, and multiple-issue Cortex-M4 plus generic/bounded AArch64/RISC-V resource/dependency pipeline models with full inter-block state tables in the IPET state product with first-order edge stalls as fallback; other tournament component pairs are next |
-| P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | planned; caller-function context summaries are implemented in P1 |
+| P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | first version implemented in P1: FFX `address`/`site` frames distinguish call sites and select per-site callee/partition versions; bounded recursion and SMT infeasible paths are planned |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
 | P5 | Probabilistic/measurement-based or ML-assisted modes | out of scope until P1-P4 are sound |
 
@@ -69,8 +69,10 @@ bounds and callee summaries, solves it with `microlp`, and records the positive
 block execution counts. State-free functions with statically modeled call
 blocks, but without non-loop flow facts or infeasible-path constraints, first
 summarize branch-entry SESE regions bottom-up; fixed per-call-block callee costs
-are included in both local and final models. Each region is replaced by an
-exact per-entry cost block and block counts are expanded into the original CFG.
+are included in both local and final models. Each function version is analyzed
+in its caller-frame context, so call-site-specific FFX facts produce separate
+partitioned versions and call costs. Each region is replaced by an exact
+per-entry cost block and block counts are expanded into the original CFG.
 A region whose entry is the function entry replaces it with a new entry block.
 When cache, pipeline, branch-prediction, BTB or RAS state products are active,
 the same partitioner selects a laminar (nested or disjoint) family of
@@ -159,13 +161,14 @@ from summed local estimates.
   budget, plus 128 entry states, 256 exit states and 20,000 local product
   nodes per state-aware region. Other functions or regions use monolithic
   IPET, and block counts inside a state-summarized region are diagnostic.
-- Context-sensitive flow facts use caller-chain function versions: F4 `in ...`
-  chains and FFX `<call>` nesting select per-context loop bounds and, in IPET,
-  per-context branch/call constraints. Context identity is the caller function,
-  not the individual call site. An FFX context whose caller-to-callee edge has
-  multiple call sites is ignored with a warning rather than broadened.
-  Function-level WCET is the maximum over analyzed contexts. Context
-  enumeration is bounded; overflow falls back to a conservative
+- Context-sensitive flow facts use caller-frame versions. F4 `in ...` frames
+  are function-level and apply to every call from that caller. FFX `<call>`
+  frames are call-site scoped: an explicit `address`/`site` selects the call
+  instruction, otherwise a unique caller-to-callee edge is used. Multiple
+  sites without an address are ignored with a warning. Call-site-specific
+  versions feed callee summaries and partitioned IPET costs independently per
+  call site; function-level WCET is the maximum over analyzed contexts.
+  Context enumeration is bounded; overflow falls back to a conservative
   context-insensitive model and marks results `partial`.
 - IPET enforces unordered infeasible-path conflicts when all elements share one
   function and are outside natural loops (`sum <= n-1` per invocation) or touch

@@ -103,7 +103,8 @@ The `wcet` section reports the selected backend:
   The cache model section also lists each first-miss loop and its line
   addresses. The flow-facts section
   lists each explicit loop bound with its source (board profile or F4/FFX file)
-  and any caller context; contextual branch/call facts use the same
+  and any caller context; call-site-specific FFX frames print as
+  `caller@0x...`, and contextual branch/call facts use the same
   `[context: ...]` suffix. Infeasible-path conflict records show whether the
   constraint was applied, its aggregate/automaton enforcement mode, scope, and
   any reason it was ignored. Cross-function records also print the selected

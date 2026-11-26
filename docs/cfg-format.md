@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.42`.
+`cfg_schema_version` is `2.43`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.42 adds IPET `partitioning` metadata for SESE region
-summaries. Version 2.41 adds store-to-load forwarding metadata
+functions. Version 2.43 adds per-frame call-site addresses to contextual
+flow-fact metadata. Version 2.42 adds IPET `partitioning` metadata for SESE
+region summaries. Version 2.41 adds store-to-load forwarding metadata
 (`board_profile_pipeline_store_forwarding`, latency and entry count). Version
 2.40 adds data-forwarding metadata
 (`board_profile_pipeline_forwarding`, default latency and override count).
@@ -442,7 +443,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.42",
+  "cfg_schema_version": "2.43",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -718,7 +719,9 @@ model: branch-entry SESE regions are solved bottom-up with an entry count of
 one, replaced by a per-entry cost block, and expanded when the parent assigns
 executions to that block. A summarized region whose entry is the function
 entry becomes the new function entry. Fixed per-call-block callee costs are
-included in local region models and the final model. Recovered call sites
+included in local region models and the final model. A function version
+analyzed for a call-site-sensitive FFX context has its own partition summary;
+the caveats identify that summary as per-call-site. Recovered call sites
 without a containing basic block do not block either partition model; they
 stay function-level, are not assigned to a region, and keep the result
 `partial` with their count in `unresolved_calls`. `sese-state-product-regions`
@@ -747,7 +750,10 @@ conservatively inferred counted-loop bounds; each loop bound carries a
 `source` such as `board-profile [wcet]`, an imported file, or
 `inferred counted loop`. Resolved non-loop FFX facts appear as
 `wcet.flow_facts.branches` (`function`, `site`, `outcome`, `max_count`) and
-`wcet.flow_facts.calls` (`function`, `site`, `max_count`). The IPET backend
+`wcet.flow_facts.calls` (`function`, `site`, `max_count`). Contextual entries
+also carry `context_sites` when at least one caller frame selects a call
+instruction; the array is aligned with `context`, with `null` for a
+function-level frame. The IPET backend
 enforces branch edges and call blocks; the longest-path backend records but does
 not enforce non-loop facts and remains a conservative overestimate. Irreducible
 cycles that are not covered by natural loop bounds are reported as `unbounded`

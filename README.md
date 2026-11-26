@@ -82,8 +82,10 @@ Implemented:
     (`auto_loop_bounds`, enabled by default);
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add
     or override loop bounds by address, function + offset, or source line;
-  - context-sensitive loop and non-loop facts: F4 `in ...` chains and FFX
-    `<call>` nesting select per-caller-chain function versions;
+  - context-sensitive loop and non-loop facts: F4 `in ...` chains select
+    function-level caller versions, while FFX `<call address="...">` nesting
+    selects call-site-specific versions that feed callee summaries and
+    partitioned IPET costs independently per site;
   - FFX non-loop facts: conditional branch outcomes (`<conditional>/<case>`)
     and call counts (`<call numcall=...>` / `executed=false`), enforced by IPET;
   - FFX infeasible-path conflicts (`<conflict>` over edges/blocks) and OTAWA
