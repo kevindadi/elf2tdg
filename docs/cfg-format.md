@@ -729,8 +729,8 @@ supported branch/call facts and infeasible-path constraints in the final parent
 model; a region that touches a referenced block stays monolithic. The exact
 `sese-branch-regions` model also supports ordered automata, including
 cross-function conflicts: regions avoid every automaton element, loop-reset
-block, all cross-function call-group boundaries and caller-side pattern
-elements; the final
+block (including loop-scoped cross-function resets), all cross-function
+call-group boundaries and caller-side pattern elements; the final
 automaton or cross-function product enforces the order. `sese-state-product-regions`
 keeps ordered and cross-function automata monolithic. Unresolved control-flow
 gaps disable partitioning. `sese-state-product-regions`
@@ -1107,7 +1107,11 @@ asserts that the CFG validates.
   and each backedge. Cross-function ordered conflicts with one or more direct
   `<call>` groups use a product that inlines each selected callee; each group's
   callee elements must match within one invocation, the callee summary remains
-  the cost bound, and a multi-group automaton preserves group order. The
+  the cost bound, and a multi-group automaton preserves group order. A
+  loop-scoped cross-function conflict uses `scope: "loop"` with `loop_header`;
+  its caller-side elements and call boundaries must stay in the declaring
+  function's loop, and progress resets on loop entry or, for iteration scope,
+  every backedge. The
   `calls` array records every group, with `call` retaining the first group.
   The product is capped; exceeding the cap makes the function `unknown`.
   Specific-iteration, nested-group, repeated-call-site, ambiguous-call-site and

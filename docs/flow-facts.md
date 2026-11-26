@@ -230,10 +230,11 @@ Semantics and limits:
   infeasible-path constraints. Regions that touch a fact-referenced block stay
   monolithic, and the final parent model enforces the fact. Exact state-free
   partitioning also supports ordered automata, including cross-function
-  conflicts: automaton reset-loop blocks, call boundaries and caller-side
-  pattern elements stay monolithic, and the final automaton or cross-function
-  product enforces the order. State-product partitioning keeps ordered and
-  cross-function automata monolithic.
+  conflicts: automaton reset-loop blocks (also for loop-scoped cross-function
+  resets), all call-group boundaries and caller-side pattern elements stay
+  monolithic, and the final automaton or cross-function product enforces the
+  order. State-product partitioning keeps ordered and cross-function automata
+  monolithic.
 - F4 non-loop directives are not implemented; unknown F4 directives are
   reported and ignored. Use FFX for branch/call facts.
 
@@ -274,8 +275,8 @@ appear in one execution sub-trace:
     models cross-iteration ordering exactly without unrolling loop iterations.
     The product is capped (100,000 states / 200,000 transitions); exceeding the
     cap makes the function `unknown` rather than returning an unsound bound.
-  - **Cross-function product.** An ordered conflict may contain one direct
-    `<call name="...">` group:
+  - **Cross-function product.** An ordered conflict may contain one or more
+    direct `<call name="...">` groups:
 
     ```xml
     <function name="main">
@@ -309,38 +310,47 @@ appear in one execution sub-trace:
     instruction when the caller has multiple sites. Offset and source/line
     attributes are not accepted on a conflict call group. Each group is one
     sequence item and must match in a **single invocation** of the selected
-    call. A conflict may contain multiple groups; they are ordered exactly as
-    declared, so caller elements and callee groups interleave in the flattened
-    pattern. Duplicate call sites are rejected. If a call site is in a loop,
-    callee progress resets on every invocation, while caller-side progress
-    persists across the function invocation. Each call must be a unique,
-    unconditional, directly resolved call site of the declaring function, in a
-    reachable block with exactly one call-return edge. The enforcing product
-    IPET inlines each callee at its call site. Callee blocks carry no direct
-    cost: the caller call block keeps the callee summary cost, so this prunes
-    caller-side paths and call executions but does not re-derive the callee's
-    internal worst-case cost. The same state/transition caps apply, and cap
-    overflow makes the function `unknown`. A callee whose inlined CFG or loop
-    bounds cannot be built also makes the caller `unknown` rather than silently
-    dropping the constraint.
+    call; group progress never spans invocations. A conflict may contain
+    multiple groups; they are ordered exactly as declared, so caller elements
+    and callee groups interleave in the flattened pattern. Duplicate call sites
+    are rejected. Each call must be a unique, unconditional, directly resolved
+    call site of the declaring function, in a reachable block with exactly one
+    call-return edge. The enforcing product IPET inlines each callee at its
+    call site. Callee blocks carry no direct cost: the caller call block keeps
+    the callee summary cost, so this prunes caller-side paths and call
+    executions but does not re-derive the callee's internal worst-case cost.
+    The same state/transition caps apply, and cap overflow makes the function
+    `unknown`. A callee whose inlined CFG or loop bounds cannot be built also
+    makes the caller `unknown` rather than silently dropping the constraint.
+
+    A cross-function conflict may be enclosed in a `<loop>` of the declaring
+    function. Every caller-side pattern element and every group's call block,
+    continuation and call-return endpoints must be inside that natural loop;
+    otherwise the conflict is ignored. `<loop>` scope resets sequence progress
+    when control enters the loop and spans all its iterations.
+    `<iteration number="*">` also resets on every loop backedge, so a sequence
+    cannot span iterations; a pattern naming a loop-backedge edge in that scope
+    is ignored.
   If the sequence is structurally impossible, the fact is vacuously satisfied:
   no constraint or automaton is needed and the record explains why. Ordered
   conflicts that repeat an element, name a backedge element in an iteration
   scope, nest a call inside a call group, repeat a call site, or select an
   ambiguous call site are ignored conservatively.
 - Caller contexts follow the same rules as other FFX facts. Loop contexts are
-  accepted for same-function conflicts: a `<loop ...>` may omit its bound and
-  acts as a context only; a missing bound produces a warning and falls back to
-  the profile/default or inference. `<iteration number="*">` conflicts are
-  supported. Conflicts for a specific iteration number are ignored with
-  warnings. A cross-function conflict with an enclosing `<loop>` or
-  `<iteration>` context is ignored because per-iteration call-group reset
-  semantics are not implemented. Unordered conflicts spanning nested loops are
+  accepted for same-function conflicts and ordered cross-function conflicts: a
+  `<loop ...>` may omit its bound and acts as a context only; a missing bound
+  produces a warning and falls back to the profile/default or inference.
+  `<iteration number="*">` conflicts are supported and reset ordered progress
+  on loop entry and every backedge. Conflicts for a specific iteration number
+  are ignored with warnings. Unordered conflicts spanning nested loops are
   ignored; ordered conflicts use the automaton product.
 - For same-function conflicts, all elements must resolve inside one function.
-  For a conflict declared inside a `<loop>` or `<iteration>` context, every
-  edge endpoint and block must be inside that loop; entry/exit edges are
-  rejected with a warning. Two structural forms are enforced by IPET:
+  For any conflict declared inside a `<loop>` or `<iteration>` context, every
+  element and edge endpoint in the declaring function must be inside that loop;
+  entry/exit edges are rejected with a warning. Cross-function groups
+  additionally require their call block, continuation and call-return endpoints
+  inside the same declaring-function loop. Callee-side group elements are
+  resolved in the callee CFG. Two structural forms are enforced by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:

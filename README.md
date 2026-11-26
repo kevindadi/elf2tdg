@@ -73,9 +73,10 @@ Implemented:
     final CFG. Supported branch/call facts and infeasible-path constraints stay
     enforced by the parent model, and regions touching referenced blocks stay
     monolithic. Ordered automata, including cross-function conflicts, are also
-    supported by the exact partitioner, with automaton reset-loop blocks, call
-    boundaries and caller-side pattern elements kept monolithic and the
-    automaton or cross-function product run on the reduced CFG. State-product
+    supported by the exact partitioner, with automaton reset-loop blocks,
+    loop-scoped cross-function resets, call boundaries and caller-side pattern
+    elements kept monolithic, and the automaton or cross-function product run
+    on the reduced CFG. State-product
     ordered and cross-function automata stay monolithic. When
     cache/pipeline/branch/BTB/RAS state products are active,
     a laminar family of regions without loop headers/latches or loop-header
@@ -98,7 +99,10 @@ Implemented:
     `<not-all seq="true">`; IPET enforces unordered constraints, structurally
     forced ordered conflicts, cross-iteration ordered sequences through a
     product sequence-progress automaton, and cross-function ordered sequences
-    with one direct `<call>` group by inlining the selected callee.
+    with one or more direct `<call>` groups by inlining the selected callees.
+    Cross-function sequences may be loop-scoped; caller elements and call
+    boundaries must stay in the declaring function's loop, and progress resets
+    on loop entry or, for iteration scope, every backedge.
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
   [docs/flow-facts.md](docs/flow-facts.md).
@@ -351,7 +355,10 @@ constraint; the product is capped and exceeding it makes the function
 `unknown`. Cross-function ordered conflicts with one or more direct `<call>`
 groups inline the selected callees in the product; each group's callee elements
 must match within one invocation, and the callee summary remains the cost bound.
-A multi-group automaton preserves the declared caller/callee group order.
+A conflict may be loop-scoped: caller-side pattern elements and call boundaries
+must stay inside the declaring function's loop, and progress resets on loop
+entry or, for iteration scope, every backedge. A multi-group automaton
+preserves the declared caller/callee group order.
 Specific-iteration, nested-group and ambiguous-call-site forms are recorded but
 ignored. Context enumeration has bounded depth and counts; exceeding a limit
 falls back to a conservative context-insensitive model and marks affected

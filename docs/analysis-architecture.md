@@ -51,7 +51,7 @@ Rust `dylib` interface.
 | Level | Capability | Status |
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
-| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain and call-site analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one or more direct call groups), per-function IPET, pure-Rust `microlp`; richer FFX constructs and conflict scalability are next |
+| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain and call-site analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (cross-iteration and cross-function use product automata; cross-function inlines one or more direct call groups and supports loop-scoped sequences with entry or per-iteration backedge reset), per-function IPET, pure-Rust `microlp`; richer FFX constructs and conflict scalability are next |
 | P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, a full instruction-cache CCG flow model, per-line first-miss and aggregate conflict bounds for fallback, concrete branch-predictor state products with per-edge misprediction costs, optional unknown first-execution history, global-history, gshare, local-history, configurable two-level pattern tables, a global/local tournament predictor, set-associative BTB miss models and bounded return-address stacks, interprocedural branch summaries that carry predictor state and branch costs through direct calls, and multiple-issue Cortex-M4 plus generic/bounded AArch64/RISC-V resource/dependency pipeline models with full inter-block state tables in the IPET state product with first-order edge stalls as fallback; other tournament component pairs are next |
 | P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | first version implemented in P1: FFX `address`/`site` frames distinguish call sites and select per-site callee/partition versions; bounded recursion and SMT infeasible paths are planned |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
@@ -72,10 +72,11 @@ per-call-block callee costs are included in both local and final models.
 Supported branch/call facts and infeasible-path constraints are enforced by the
 final model, and regions that touch any referenced block stay monolithic.
 Ordered automata, including cross-function conflicts, are supported by the
-exact partitioner: loop-reset blocks, cross-function call boundaries and
-caller-side pattern elements stay monolithic, and the final automaton or
-cross-function product enforces the order. State-product partitioning keeps
-ordered and cross-function automata monolithic. Each function version is
+exact partitioner: loop-reset blocks (including loop-scoped cross-function
+resets), cross-function call boundaries and caller-side pattern elements stay
+monolithic, and the final automaton or cross-function product enforces the
+order. State-product partitioning keeps ordered and cross-function automata
+monolithic. Each function version is
 analyzed
 in its caller-frame context, so call-site-specific FFX facts produce separate
 partitioned versions and call costs. Each region is replaced by an exact
@@ -95,9 +96,8 @@ at 4096 blocks, 512 regions and a bounded scan-work budget; state summaries
 additionally cap entry/exit states and local product nodes. Unsupported shapes
 use monolithic IPET. The remaining P1 work is:
 
-1. Additional FFX constructs, richer cross-function conflict forms (multiple
-   groups, loop-scoped groups, call-address selection) and inference beyond
-   canonical counted loops.
+1. Additional FFX constructs, specific-iteration and nested cross-function
+   group forms, and inference beyond canonical counted loops.
 2. A convenience API for programmatic flow facts beyond files and `[wcet]`.
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
    `elf2tdg-bench` now provides a reproducible local suite with cycle results,
@@ -157,9 +157,10 @@ from summed local estimates.
   statically modeled calls. Supported branch/call facts and infeasible-path
   constraints are enforced by the final model; any region touching a referenced
   block stays monolithic. Exact state-free partitioning supports ordered and
-  cross-function automata, keeping automaton reset-loop blocks, call boundaries
-  and caller-side pattern elements monolithic and running the automaton or
-  cross-function product after summarization. State-product partitioning keeps
+  cross-function automata, keeping automaton reset-loop blocks (including
+  loop-scoped cross-function resets), call boundaries and caller-side pattern
+  elements monolithic, and running the automaton or cross-function product
+  after summarization. State-product partitioning keeps
   ordered and cross-function automata monolithic.
   Recovered call sites without a containing block do not block partitioning,
   but remain function-level, are not assigned to regions and keep the function
@@ -195,6 +196,9 @@ from summed local estimates.
   conflicts with one or more direct `<call>` groups inline the selected callees;
   each group's elements must match within one invocation, the callee summary
   remains the cost bound, and a multi-group automaton preserves group order.
+  A loop-scoped cross-function conflict keeps its caller-side elements and call
+  boundaries inside the declaring function's natural loop and resets its
+  sequence on loop entry, or on every backedge for iteration scope.
   The product is capped; cap overflow makes the function `unknown`.
   Specific-iteration, nested-group and ambiguous-call-site conflicts are
   ignored with warnings. `longest-path` records but does not
