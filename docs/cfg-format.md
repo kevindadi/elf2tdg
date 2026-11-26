@@ -725,9 +725,12 @@ the caveats identify that summary as per-call-site. Recovered call sites
 without a containing basic block do not block either partition model; they
 stay function-level, are not assigned to a region, and keep the result
 `partial` with their count in `unresolved_calls`. Both partition models enforce
-supported branch/call facts and unordered aggregate infeasible-path constraints
-in the final parent model; a region that touches a referenced block stays
-monolithic. Ordered, cross-function and automaton constraints, or unresolved
+supported branch/call facts and infeasible-path constraints in the final parent
+model; a region that touches a referenced block stays monolithic. The exact
+`sese-branch-regions` model also supports non-cross-function ordered automata:
+regions avoid every automaton element and loop-reset block, and the final
+automaton product enforces the order. `sese-state-product-regions` keeps
+ordered automata monolithic. Cross-function constraints, or unresolved
 control-flow gaps, disable partitioning. `sese-state-product-regions`
 is used when a cache, pipeline, branch-prediction, BTB or RAS state product is
 active. It selects a laminar (nested or disjoint) family of branch-entry

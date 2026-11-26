@@ -227,10 +227,12 @@ Semantics and limits:
 - Non-loop facts are enforced by IPET only. `longest-path` records them but is
   left as a conservative overestimate and emits a caveat.
 - IPET may still partition a function containing supported branch/call facts or
-  unordered aggregate infeasible-path constraints. Regions that touch a fact-
-  referenced block stay monolithic, and the final parent model enforces the
-  fact. Ordered, cross-function and automaton constraints keep the whole
-  function monolithic.
+  infeasible-path constraints. Regions that touch a fact-referenced block stay
+  monolithic, and the final parent model enforces the fact. Exact state-free
+  partitioning also supports non-cross-function ordered automata: automaton
+  reset-loop blocks stay monolithic, and the final automaton product enforces
+  the order. State-product partitioning keeps ordered automata monolithic;
+  cross-function constraints keep the whole function monolithic.
 - F4 non-loop directives are not implemented; unknown F4 directives are
   reported and ignored. Use FFX for branch/call facts.
 

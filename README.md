@@ -70,11 +70,13 @@ Implemented:
   - IPET SESE CFG partitioning: functions with statically modeled call blocks
     use bottom-up exact per-entry region summaries, including function-entry
     regions, with per-call-block callee costs and block counts preserved in the
-    final CFG. Supported branch/call facts and unordered aggregate
-    infeasible-path constraints remain enforced by the parent model; regions
-    touching referenced blocks stay monolithic, as do ordered, cross-function
-    and automaton constraints. When cache/pipeline/branch/BTB/RAS state
-    products are active,
+    final CFG. Supported branch/call facts and infeasible-path constraints stay
+    enforced by the parent model, and regions touching referenced blocks stay
+    monolithic. Non-cross-function ordered automata are also supported by the
+    exact partitioner, with automaton reset-loop blocks kept monolithic and the
+    automaton product run on the reduced CFG. Cross-function constraints and
+    state-product ordered automata stay monolithic. When
+    cache/pipeline/branch/BTB/RAS state products are active,
     a laminar family of regions without loop headers/latches or loop-header
     exits is summarized innermost first per entry/exit product state, with
     nested costs and block counts folded into enclosing summaries; this keeps
