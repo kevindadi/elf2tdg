@@ -958,6 +958,15 @@ fn apply_ras_fallback(outcome: &mut IpetOutcome, program: &ProgramCfg, has_ras: 
 const PARTITION_MODEL: &str = "sese-branch-regions";
 const STATE_PARTITION_MODEL: &str = "sese-state-product-regions";
 const MAX_STATE_PARTITION_ENTRY_STATES: usize = 128;
+
+fn recovered_call_partition_caveat(cfg: &FunctionCfg) -> Option<String> {
+    (!cfg.recovered_calls.is_empty()).then(|| {
+        format!(
+            "{} recovered call site(s) have no containing basic block. They stay function-level, are not assigned to a region, and keep the result partial.",
+            cfg.recovered_calls.len()
+        )
+    })
+}
 const MAX_STATE_PARTITION_EXIT_STATES: usize = 256;
 const MAX_STATE_PARTITION_LOCAL_NODES: usize = 20_000;
 
@@ -993,7 +1002,6 @@ fn partition_eligible(
 ) -> bool {
     if cfg.graph.node_count() > MAX_PARTITION_BLOCKS
         || analysis.blocked_by_unresolved
-        || !cfg.recovered_calls.is_empty()
         || branch_prediction.is_some()
         || pipeline_model.is_some()
         || program.cache.is_some()
@@ -1120,14 +1128,18 @@ fn try_solve_partitioned(
         .into_iter()
         .map(|(block, executions)| CfgIpetBlockCount { block, executions })
         .collect();
+    let mut caveats = vec![
+        "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
+        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models and without non-loop flow facts or infeasible-path constraints; otherwise the monolithic IPET model is used.".to_owned(),
+    ];
+    if let Some(caveat) = recovered_call_partition_caveat(cfg) {
+        caveats.push(caveat);
+    }
     let partitioning = CfgIpetPartitioningInfo {
         model: PARTITION_MODEL.to_owned(),
         regions,
         summarized_blocks,
-        caveats: vec![
-            "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
-            "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models and without non-loop flow facts or infeasible-path constraints; otherwise the monolithic IPET model is used.".to_owned(),
-        ],
+        caveats,
     };
     Some(IpetOutcome {
         solution: CfgIpetSolution {
@@ -5043,10 +5055,7 @@ fn state_partition_eligible(
     function_id: &FunctionId,
     scope: FactScope<'_>,
 ) -> bool {
-    if cfg.graph.node_count() > MAX_PARTITION_BLOCKS
-        || analysis.blocked_by_unresolved
-        || !cfg.recovered_calls.is_empty()
-    {
+    if cfg.graph.node_count() > MAX_PARTITION_BLOCKS || analysis.blocked_by_unresolved {
         return false;
     }
     !facts
@@ -5620,15 +5629,19 @@ fn solve_function_with_state_products(
                 pipeline_stalls,
             )
         {
+            let mut caveats = vec![
+                "State-product SESE regions are summarized by the worst local path from each entry cache/prediction/pipeline/BTB/RAS state to each exit state; entry and exit states remain explicit in the final product graph. Nested regions are summarized innermost first, and their costs and block counts are folded into enclosing summaries.".to_owned(),
+                "A region entry state that can reach several exit states may use those exits more freely in the final IPET than in a concrete execution. This over-approximates the monolithic state-product model, so the result remains a safe upper bound but can be larger.".to_owned(),
+                "Regions containing loop headers or latches, or ending at a loop header, are left monolithic. Functions with non-loop flow facts, infeasible-path constraints or unresolved control flow are not partitioned; block counts inside a summarized region describe one worst-cost local path per entry/exit state and are diagnostic.".to_owned(),
+            ];
+            if let Some(caveat) = recovered_call_partition_caveat(cfg) {
+                caveats.push(caveat);
+            }
             partitioning = Some(CfgIpetPartitioningInfo {
                 model: STATE_PARTITION_MODEL.to_owned(),
                 regions: partition.regions,
                 summarized_blocks: partition.summarized_blocks,
-                caveats: vec![
-                    "State-product SESE regions are summarized by the worst local path from each entry cache/prediction/pipeline/BTB/RAS state to each exit state; entry and exit states remain explicit in the final product graph. Nested regions are summarized innermost first, and their costs and block counts are folded into enclosing summaries.".to_owned(),
-                    "A region entry state that can reach several exit states may use those exits more freely in the final IPET than in a concrete execution. This over-approximates the monolithic state-product model, so the result remains a safe upper bound but can be larger.".to_owned(),
-                    "Regions containing loop headers or latches, or ending at a loop header, are left monolithic. Functions with non-loop flow facts, infeasible-path constraints, unresolved control flow or recovered calls are not partitioned; block counts inside a summarized region describe one worst-cost local path per entry/exit state and are diagnostic.".to_owned(),
-                ],
+                caveats,
             });
             product_nodes = partition.nodes;
             product_edges = partition.edges;
@@ -6658,6 +6671,22 @@ auto_loop_bounds = false
         }
     }
 
+    fn recovered_call_site(site: u64) -> CfgCallSite {
+        CfgCallSite {
+            site,
+            target: None,
+            target_function: None,
+            direct: false,
+            tail: false,
+            conditional: false,
+            heuristic: true,
+            unresolved: true,
+            null_target: false,
+            noreturn: false,
+            candidates: Vec::new(),
+        }
+    }
+
     fn call_block(address: u64, cycles: f64, target: u64) -> CfgBlockDraft {
         let mut instruction = instruction(address, CfgTerminator::Call, cycles);
         instruction.is_call = true;
@@ -7168,6 +7197,82 @@ max_states = 16
             .expect("apply branch fact");
         let solution = partitioned_solution(&program, &facts);
         assert!(solution.partitioning.is_none());
+    }
+
+    #[test]
+    fn recovered_calls_stay_partial_with_exact_partitioning() {
+        let mut program = partition_diamond_program();
+        program.functions[0]
+            .cfg
+            .recovered_calls
+            .push(recovered_call_site(0x5fff));
+        let facts = facts();
+        let baseline = simple_partition_objective(&program, &facts);
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let wcet = analyzed.functions[0].wcet.as_ref().expect("function WCET");
+        assert_eq!(wcet.status, CfgWcetStatus::Partial);
+        assert_eq!(wcet.unresolved_calls, 1);
+        let solution = wcet.ipet.clone().expect("partitioned IPET solution");
+        let partitioning = solution
+            .partitioning
+            .as_ref()
+            .expect("exact partitioning despite recovered call");
+        assert_eq!(partitioning.model, "sese-branch-regions");
+        assert_eq!(solution.objective, baseline);
+        assert!(
+            partitioning
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("recovered call site"))
+        );
+    }
+
+    #[test]
+    fn recovered_calls_stay_partial_with_state_partitioning() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 64
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 16
+",
+        );
+        let mut program = cache_partition_diamond_program();
+        prepare_cache_program(&mut program, &board);
+        program.functions[0]
+            .cfg
+            .recovered_calls
+            .push(recovered_call_site(0x1fff));
+
+        let monolithic = state_partition_solution(&program, &board, false);
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let wcet = analyzed.functions[0].wcet.as_ref().expect("function WCET");
+        assert_eq!(wcet.status, CfgWcetStatus::Partial);
+        assert_eq!(wcet.unresolved_calls, 1);
+        let solution = wcet.ipet.clone().expect("partitioned IPET solution");
+        let partitioning = solution
+            .partitioning
+            .as_ref()
+            .expect("state partitioning despite recovered call");
+        assert_eq!(partitioning.model, "sese-state-product-regions");
+        assert!(
+            solution.objective + 1e-6 >= monolithic.objective,
+            "state partition {} must not undercut monolithic {}",
+            solution.objective,
+            monolithic.objective
+        );
+        assert!(
+            partitioning
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("recovered call site"))
+        );
     }
 
     #[test]
