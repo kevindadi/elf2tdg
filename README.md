@@ -72,10 +72,11 @@ Implemented:
     regions, with per-call-block callee costs and block counts preserved in the
     final CFG. Supported branch/call facts and infeasible-path constraints stay
     enforced by the parent model, and regions touching referenced blocks stay
-    monolithic. Non-cross-function ordered automata are also supported by the
-    exact partitioner, with automaton reset-loop blocks kept monolithic and the
-    automaton product run on the reduced CFG. Cross-function constraints and
-    state-product ordered automata stay monolithic. When
+    monolithic. Ordered automata, including cross-function conflicts, are also
+    supported by the exact partitioner, with automaton reset-loop blocks, call
+    boundaries and caller-side pattern elements kept monolithic and the
+    automaton or cross-function product run on the reduced CFG. State-product
+    ordered and cross-function automata stay monolithic. When
     cache/pipeline/branch/BTB/RAS state products are active,
     a laminar family of regions without loop headers/latches or loop-header
     exits is summarized innermost first per entry/exit product state, with

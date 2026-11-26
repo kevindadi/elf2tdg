@@ -229,10 +229,11 @@ Semantics and limits:
 - IPET may still partition a function containing supported branch/call facts or
   infeasible-path constraints. Regions that touch a fact-referenced block stay
   monolithic, and the final parent model enforces the fact. Exact state-free
-  partitioning also supports non-cross-function ordered automata: automaton
-  reset-loop blocks stay monolithic, and the final automaton product enforces
-  the order. State-product partitioning keeps ordered automata monolithic;
-  cross-function constraints keep the whole function monolithic.
+  partitioning also supports ordered automata, including cross-function
+  conflicts: automaton reset-loop blocks, call boundaries and caller-side
+  pattern elements stay monolithic, and the final automaton or cross-function
+  product enforces the order. State-product partitioning keeps ordered and
+  cross-function automata monolithic.
 - F4 non-loop directives are not implemented; unknown F4 directives are
   reported and ignored. Use FFX for branch/call facts.
 

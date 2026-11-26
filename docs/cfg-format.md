@@ -727,11 +727,12 @@ stay function-level, are not assigned to a region, and keep the result
 `partial` with their count in `unresolved_calls`. Both partition models enforce
 supported branch/call facts and infeasible-path constraints in the final parent
 model; a region that touches a referenced block stays monolithic. The exact
-`sese-branch-regions` model also supports non-cross-function ordered automata:
-regions avoid every automaton element and loop-reset block, and the final
-automaton product enforces the order. `sese-state-product-regions` keeps
-ordered automata monolithic. Cross-function constraints, or unresolved
-control-flow gaps, disable partitioning. `sese-state-product-regions`
+`sese-branch-regions` model also supports ordered automata, including
+cross-function conflicts: regions avoid every automaton element, loop-reset
+block, cross-function call boundary and caller-side pattern element; the final
+automaton or cross-function product enforces the order. `sese-state-product-regions`
+keeps ordered and cross-function automata monolithic. Unresolved control-flow
+gaps disable partitioning. `sese-state-product-regions`
 is used when a cache, pipeline, branch-prediction, BTB or RAS state product is
 active. It selects a laminar (nested or disjoint) family of branch-entry
 regions that contain no loop header or latch and do not end at a loop header.

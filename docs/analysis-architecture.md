@@ -71,10 +71,11 @@ blocks first summarize branch-entry SESE regions bottom-up; fixed
 per-call-block callee costs are included in both local and final models.
 Supported branch/call facts and infeasible-path constraints are enforced by the
 final model, and regions that touch any referenced block stay monolithic.
-Non-cross-function ordered automata are supported by the exact partitioner:
-loop-reset blocks also stay monolithic, and the final automaton product
-enforces the order. Cross-function constraints remain monolithic. State-product
-partitioning keeps ordered automata monolithic. Each function version is
+Ordered automata, including cross-function conflicts, are supported by the
+exact partitioner: loop-reset blocks, cross-function call boundaries and
+caller-side pattern elements stay monolithic, and the final automaton or
+cross-function product enforces the order. State-product partitioning keeps
+ordered and cross-function automata monolithic. Each function version is
 analyzed
 in its caller-frame context, so call-site-specific FFX facts produce separate
 partitioned versions and call costs. Each region is replaced by an exact
@@ -155,10 +156,11 @@ from summed local estimates.
 - IPET CFG partitioning covers branch-entry SESE regions in functions with
   statically modeled calls. Supported branch/call facts and infeasible-path
   constraints are enforced by the final model; any region touching a referenced
-  block stays monolithic. Exact state-free partitioning supports ordered
-  automata, keeping automaton reset-loop blocks monolithic and running the
-  automaton product after summarization. State-product partitioning keeps
-  ordered automata monolithic; cross-function constraints remain monolithic.
+  block stays monolithic. Exact state-free partitioning supports ordered and
+  cross-function automata, keeping automaton reset-loop blocks, call boundaries
+  and caller-side pattern elements monolithic and running the automaton or
+  cross-function product after summarization. State-product partitioning keeps
+  ordered and cross-function automata monolithic.
   Recovered call sites without a containing block do not block partitioning,
   but remain function-level, are not assigned to regions and keep the function
   `partial`. State-free regions use exact per-entry summaries and homogeneous

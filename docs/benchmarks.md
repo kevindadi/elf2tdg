@@ -136,10 +136,11 @@ profiles. They are not evidence that a real board matches the timing values.
 - Supported branch/call facts and infeasible-path constraints no longer disable
   partitioning, but regions that touch a referenced block stay monolithic and
   the final model enforces the fact. Exact state-free partitioning also accepts
-  non-cross-function ordered automata, keeping automaton reset loops monolithic
-  and running the automaton product on the reduced CFG. State-product
-  partitioning and cross-function constraints stay monolithic for ordered
-  automata; unresolved control-flow gaps stay monolithic.
+  ordered automata, including cross-function conflicts, keeping automaton reset
+  loops, call boundaries and caller-side pattern elements monolithic and running
+  the automaton or cross-function product on the reduced CFG. State-product
+  partitioning stays monolithic for ordered and cross-function automata;
+  unresolved control-flow gaps stay monolithic.
 - `partial`, `unbounded` and `unknown` function counts are more important than
   a single objective value. A benchmark with any partial/unbounded root is not
   a safe WCET result.
