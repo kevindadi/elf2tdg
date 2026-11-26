@@ -1112,7 +1112,11 @@ asserts that the CFG validates.
   loop-scoped cross-function conflict uses `scope: "loop"` with `loop_header`;
   its caller-side elements and call boundaries must stay in the declaring
   function's loop, and progress resets on loop entry or, for iteration scope,
-  every backedge. A numeric `<iteration number="N">` cross-function conflict
+  every backedge. Ordered conflicts may use nested `<loop>` contexts: the
+  innermost declared loop containing every caller event is selected, lifting to
+  an enclosing declared loop when events span child loops, and an iteration
+  context pins its declaring loop. A numeric `<iteration number="N">`
+  cross-function conflict
   additionally records `iteration: N` and checks only the selected 1-based
   iteration; `iteration: -1` is the last iteration. Numeric iteration scopes
   apply to same-function and cross-function ordered conflicts. The `calls`

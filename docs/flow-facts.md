@@ -176,7 +176,8 @@ Supported shape:
 - `maxcount`/`max` is the per-entry bound. If only `totalcount`/`total` is
   present, it is used as the bound with a warning.
 - Unknown elements are ignored with warnings; malformed XML is fatal.
-- Nested `<loop>` elements are imported as separate facts.
+- Nested `<loop>` elements are imported as separate facts and also form a
+  scope hierarchy for ordered conflicts.
 
 ## Non-loop FFX facts
 
@@ -360,22 +361,30 @@ appear in one execution sub-trace:
   ordered same-function and cross-function conflicts; numbers outside the
   supported range are ignored with warnings. Unordered conflicts spanning
   nested loops are ignored; ordered conflicts use the automaton product.
+- Ordered conflicts may use nested `<loop>` contexts. Without an `<iteration>`
+  context, the innermost declared loop that contains every event is selected,
+  so events may span child loops; an event outside that loop lifts the scope to
+  an enclosing declared loop. An `<iteration>` context pins the selected loop
+  to the loop where it was declared. For cross-function conflicts, caller
+  elements and every group's call block, continuation and call-return endpoints
+  participate in this selection; callee-side elements stay in the callee CFG.
 - For same-function conflicts, all elements must resolve inside one function.
-  For any conflict declared inside a `<loop>` or `<iteration>` context, every
-  element and edge endpoint in the declaring function must be inside that loop;
+  For an ordered conflict declared inside `<loop>` contexts, every element and
+  edge endpoint in the declaring function must be inside the selected loop;
   entry/exit edges are rejected with a warning. Cross-function groups
   additionally require their call block, continuation and call-return endpoints
-  inside the same declaring-function loop. Callee-side group elements are
-  resolved in the callee CFG. Two structural forms are enforced by IPET:
+  inside the same selected loop. Two structural forms are enforced by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
     `sum(executions) <= (n - 1) * loop_header_executions`. This is a
     conservative per-iteration relaxation and also covers whole-loop conflicts.
-- Mixed loop/non-loop sets, nested-loop elements and unsupported cross-function
-  shapes are ignored with warnings. Unordered cross-function conflicts are not
-  supported. Unsupported or unresolvable conflicts only lose precision and
-  never tighten the bound incorrectly.
+    Ordered nested scopes use the automaton product instead of this aggregate
+    reduction.
+- Mixed loop/non-loop sets, unordered nested-loop elements and unsupported
+  cross-function shapes are ignored with warnings. Unordered cross-function
+  conflicts are not supported. Unsupported or unresolvable conflicts only lose
+  precision and never tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model

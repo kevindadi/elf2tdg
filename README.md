@@ -102,7 +102,8 @@ Implemented:
     with one or more direct `<call>` groups by inlining the selected callees.
     Sequences may be loop-scoped; caller elements and call boundaries must stay
     in the declaring function's loop, and progress resets on loop entry or, for
-    iteration scope, every backedge. A numeric `<iteration number="N">` checks
+    iteration scope, every backedge. Nested loop contexts select the innermost
+    containing scope. A numeric `<iteration number="N">` checks
     one 1-based iteration, while `-1` selects the last iteration; this applies
     to same-function and cross-function ordered conflicts.
   Profiles are strictly validated, and timing metadata records the profile ID,
@@ -348,9 +349,12 @@ call facts are resolved into IPET edge/block constraints and applied only in
 matching caller contexts; longest-path records but does not enforce them.
 Unordered FFX infeasible-path conflicts are enforced by IPET when all elements
 share one function and are outside loops or within one non-nested loop. Ordered
-conflicts are reduced to the same constraints when CFG reachability (or
-per-iteration reachability with loop backedges removed) forces the declared
-order. Other ordered conflicts use a product IPET with a sequence-progress
+conflicts with nested `<loop>` contexts select the innermost declared loop
+containing every event, lifting to an enclosing declared loop when events span
+child loops; an `<iteration>` context pins its declaring loop. Ordered conflicts
+are reduced to the same constraints when CFG reachability (or per-iteration
+reachability with loop backedges removed) forces the declared order. Other
+ordered conflicts use a product IPET with a sequence-progress
 automaton: function scope spans the invocation, loop scope resets on entry and
 iteration scope resets per iteration. Structurally impossible sequences add no
 constraint; the product is capped and exceeding it makes the function
