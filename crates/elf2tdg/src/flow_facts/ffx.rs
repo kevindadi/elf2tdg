@@ -409,7 +409,12 @@ fn parse_conflict(
                 context_sites: state.context_sites(),
                 context_kind: ContextKind::FfxCall,
                 loop_context: state.loops.last().cloned(),
+                loop_contexts: state.loops.clone(),
                 iteration,
+                iteration_loop: iteration
+                    .is_iteration()
+                    .then(|| state.loops.last().cloned())
+                    .flatten(),
             },
             Vec::new(),
         )));
@@ -417,6 +422,11 @@ fn parse_conflict(
     let context = state.context();
     let context_sites = state.context_sites();
     let loop_context = state.loops.last().cloned();
+    let loop_contexts = state.loops.clone();
+    let iteration_loop = iteration
+        .is_iteration()
+        .then(|| loop_context.clone())
+        .flatten();
     let ordered = attribute(node, "ordered")
         .map(parse_bool)
         .transpose()
@@ -445,7 +455,9 @@ fn parse_conflict(
             context_sites,
             context_kind: ContextKind::FfxCall,
             loop_context,
+            loop_contexts,
             iteration,
+            iteration_loop,
         },
         warnings,
     )))
@@ -981,12 +993,50 @@ mod non_loop_tests {
             Some(LoopTarget::Address(0x1000))
         ));
         assert_eq!(document.conflicts[0].iteration, IterationContext::All);
+        assert_eq!(document.conflicts[0].loop_contexts.len(), 1);
+        assert!(matches!(
+            document.conflicts[0].iteration_loop,
+            Some(LoopTarget::Address(0x1000))
+        ));
         assert!(
             document
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("context only"))
         );
+    }
+
+    #[test]
+    fn parses_nested_loop_conflict_contexts() {
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x1000">
+      <loop address="0x1002">
+        <conflict ordered="yes">
+          <block address="0x1004"/>
+          <block address="0x1006"/>
+        </conflict>
+      </loop>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "nested-loop.ffx",
+        )
+        .expect("parse");
+        assert_eq!(document.conflicts.len(), 1);
+        assert_eq!(document.conflicts[0].loop_contexts.len(), 2);
+        assert!(matches!(
+            document.conflicts[0].loop_contexts.as_slice(),
+            [LoopTarget::Address(0x1000), LoopTarget::Address(0x1002)]
+        ));
+        assert!(matches!(
+            document.conflicts[0].loop_context,
+            Some(LoopTarget::Address(0x1002))
+        ));
+        assert!(document.conflicts[0].iteration_loop.is_none());
     }
 
     #[test]

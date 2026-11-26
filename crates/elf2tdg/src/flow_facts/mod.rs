@@ -956,8 +956,12 @@ pub(crate) struct ConflictFact {
     context_kind: ContextKind,
     /// Innermost enclosing `<loop>` context, when present.
     loop_context: Option<LoopTarget>,
+    /// All enclosing `<loop>` contexts, outermost first.
+    loop_contexts: Vec<LoopTarget>,
     /// Enclosing `<iteration>` context, when present.
     iteration: IterationContext,
+    /// Innermost loop active where the `<iteration>` was declared.
+    iteration_loop: Option<LoopTarget>,
 }
 
 /// Enclosing `<iteration>` context of a parsed conflict.
@@ -1575,89 +1579,63 @@ fn resolve_cross_function_conflict(
         }
     }
     record.elements = flatten_pattern(&pattern);
-    let loop_scope = if let Some(target) = &fact.loop_context {
-        let header_address = resolve_target(program, target, origin)?;
-        let context_function = function_for_block(program, header_address, origin)?;
-        if context_function.id != function.id {
-            record.reason = Some(format!(
-                "{origin}: cross-function conflict loop context belongs to another function; conflict ignored"
-            ));
-            return Ok(record);
-        }
-        let Some(&node) = function.cfg.blocks_by_address.get(&header_address) else {
-            record.reason = Some(format!(
-                "{origin}: cross-function conflict loop context is not a block in {:?}; conflict ignored",
-                function.primary_name
-            ));
-            return Ok(record);
-        };
-        let header = function.cfg.graph[node].id.clone();
-        let analysis = crate::cfg_graph::analyze(&function.cfg);
-        let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == header) else {
-            record.reason = Some(format!(
-                "{origin}: cross-function conflict loop context is not a natural loop; conflict ignored"
-            ));
-            return Ok(record);
-        };
-        let loop_blocks: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
-        let element_inside = |element: &InfeasibleElement| match element {
-            InfeasibleElement::Block { block } => loop_blocks.contains(block),
-            InfeasibleElement::Edge { source, target, .. } => {
-                loop_blocks.contains(source) && loop_blocks.contains(target)
+    let mut scope_elements: Vec<InfeasibleElement> = pattern
+        .iter()
+        .filter_map(|slot| match slot {
+            CrossFunctionSlot::Caller(element) => Some(element.clone()),
+            CrossFunctionSlot::Callee(_) => None,
+        })
+        .collect();
+    for group in &groups {
+        scope_elements.push(InfeasibleElement::Block {
+            block: group.call_block.clone(),
+        });
+        scope_elements.push(InfeasibleElement::Block {
+            block: group.continuation.clone(),
+        });
+        scope_elements.push(group.call_return.clone());
+    }
+    let loop_scope = match declared_loop_scope(program, function, fact, &scope_elements, origin)? {
+        DeclaredLoopOutcome::None => {
+            if fact.iteration.is_iteration() {
+                record.reason = Some(format!(
+                    "{origin}: iteration-scoped cross-function ordered conflict lacks a loop context; conflict ignored"
+                ));
+                return Ok(record);
             }
-        };
-        if pattern.iter().any(
-            |slot| matches!(slot, CrossFunctionSlot::Caller(element) if !element_inside(element)),
-        ) {
-            record.reason = Some(format!(
-                "{origin}: cross-function loop-scoped conflict has a caller element outside the loop; conflict ignored"
-            ));
+            None
+        }
+        DeclaredLoopOutcome::Ignore(reason) => {
+            record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
             return Ok(record);
         }
-        if groups.iter().any(|group| {
-            !loop_blocks.contains(&group.call_block)
-                || !loop_blocks.contains(&group.continuation)
-                || !element_inside(&group.call_return)
-        }) {
-            record.reason = Some(format!(
-                "{origin}: cross-function loop-scoped conflict has a call boundary outside the loop; conflict ignored"
-            ));
-            return Ok(record);
-        }
-        if fact.iteration.is_iteration() {
-            let backedges: BTreeSet<(BlockId, BlockId)> = loop_
-                .backedges
-                .iter()
-                .map(|edge| (edge.from.clone(), edge.to.clone()))
-                .collect();
-            if pattern.iter().any(|slot| {
-                matches!(slot, CrossFunctionSlot::Caller(InfeasibleElement::Edge { source, target, .. })
-                    if backedges.contains(&(source.clone(), target.clone())))
-            }) {
+        DeclaredLoopOutcome::Selected(scope) => {
+            if fact.iteration.is_iteration()
+                && pattern.iter().any(|slot| {
+                    matches!(slot, CrossFunctionSlot::Caller(InfeasibleElement::Edge { source, target, .. })
+                        if scope.backedges.contains(&(source.clone(), target.clone())))
+                })
+            {
                 record.reason = Some(format!(
                     "{origin}: iteration-scoped cross-function ordered conflict contains a loop-backedge element; conflict ignored"
                 ));
                 return Ok(record);
             }
+            let specific_iteration = match supported_specific_iteration(fact.iteration) {
+                Ok(iteration) => iteration,
+                Err(reason) => {
+                    record.reason = Some(format!(
+                        "{origin}: cross-function conflict {reason}; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+            };
+            Some((
+                scope.header,
+                fact.iteration.is_iteration(),
+                specific_iteration,
+            ))
         }
-        let specific_iteration = match supported_specific_iteration(fact.iteration) {
-            Ok(iteration) => iteration,
-            Err(reason) => {
-                record.reason = Some(format!(
-                    "{origin}: cross-function conflict {reason}; conflict ignored"
-                ));
-                return Ok(record);
-            }
-        };
-        Some((header, fact.iteration.is_iteration(), specific_iteration))
-    } else {
-        if fact.iteration.is_iteration() {
-            record.reason = Some(format!(
-                "{origin}: iteration-scoped cross-function ordered conflict lacks a loop context; conflict ignored"
-            ));
-            return Ok(record);
-        }
-        None
     };
     let reset = match &loop_scope {
         Some((header, true, _)) => OrderedReset::LoopIteration {
@@ -1816,52 +1794,33 @@ fn resolve_ordered_conflict(
             return Ok(record);
         }
     };
-    let declared_loop = if let Some(target) = &fact.loop_context {
-        let header_address = resolve_target(program, target, origin)?;
-        let context_function = function_for_block(program, header_address, origin)?;
-        if context_function.id != function.id {
-            record.reason = Some(format!(
-                "{origin}: conflict loop context belongs to another function; conflict ignored"
-            ));
-            return Ok(record);
-        }
-        let Some(&node) = function.cfg.blocks_by_address.get(&header_address) else {
-            record.reason = Some(format!(
-                "{origin}: conflict loop context is not a block in {:?}; conflict ignored",
-                function.primary_name
-            ));
-            return Ok(record);
-        };
-        let header = function.cfg.graph[node].id.clone();
-        let analysis = crate::cfg_graph::analyze(&function.cfg);
-        let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == header) else {
-            record.reason = Some(format!(
-                "{origin}: conflict loop context is not a natural loop; conflict ignored"
-            ));
-            return Ok(record);
-        };
-        let loop_blocks: BTreeSet<&BlockId> = loop_.blocks.iter().collect();
-        let outside = record.elements.iter().any(|element| match element {
-            InfeasibleElement::Edge { source, target, .. } => {
-                !loop_blocks.contains(source) || !loop_blocks.contains(target)
+    let selected_loop = match declared_loop_scope(
+        program,
+        function,
+        fact,
+        &record.elements,
+        origin,
+    )? {
+        DeclaredLoopOutcome::None => {
+            if fact.iteration.is_iteration() {
+                record.reason = Some(format!(
+                    "{origin}: iteration-scoped ordered conflict lacks a loop context; conflict ignored"
+                ));
+                return Ok(record);
             }
-            InfeasibleElement::Block { block } => !loop_blocks.contains(block),
-        });
-        if outside {
-            record.reason = Some(format!(
-                "{origin}: loop-scoped ordered conflict has an element outside the loop; conflict ignored"
-            ));
+            None
+        }
+        DeclaredLoopOutcome::Selected(scope) => Some(scope),
+        DeclaredLoopOutcome::Ignore(reason) => {
+            record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
             return Ok(record);
         }
+    };
+    let declared_loop = if let Some(scope) = &selected_loop {
         if fact.iteration.is_iteration() {
-            let backedges: BTreeSet<(BlockId, BlockId)> = loop_
-                .backedges
-                .iter()
-                .map(|edge| (edge.from.clone(), edge.to.clone()))
-                .collect();
             if record.elements.iter().any(|element| match element {
                 InfeasibleElement::Edge { source, target, .. } => {
-                    backedges.contains(&(source.clone(), target.clone()))
+                    scope.backedges.contains(&(source.clone(), target.clone()))
                 }
                 InfeasibleElement::Block { .. } => false,
             }) {
@@ -1872,30 +1831,24 @@ fn resolve_ordered_conflict(
             }
             match specific_iteration {
                 Some(iteration) => Some(OrderedReset::LoopSpecific {
-                    header: header.clone(),
+                    header: scope.header.clone(),
                     iteration,
                 }),
                 None if fact.iteration == IterationContext::All => {
                     Some(OrderedReset::LoopIteration {
-                        header: header.clone(),
+                        header: scope.header.clone(),
                     })
                 }
                 None => Some(OrderedReset::LoopEntry {
-                    header: header.clone(),
+                    header: scope.header.clone(),
                 }),
             }
         } else {
             Some(OrderedReset::LoopEntry {
-                header: header.clone(),
+                header: scope.header.clone(),
             })
         }
     } else {
-        if fact.iteration.is_iteration() {
-            record.reason = Some(format!(
-                "{origin}: iteration-scoped ordered conflict lacks a loop context; conflict ignored"
-            ));
-            return Ok(record);
-        }
         None
     };
 
@@ -2335,6 +2288,133 @@ fn conflict_scope(
     Ok(InfeasibleScope::Loop {
         header: analysis.loops[index].header.clone(),
     })
+}
+
+#[derive(Clone, Debug)]
+struct DeclaredLoopScope {
+    header: BlockId,
+    blocks: BTreeSet<BlockId>,
+    backedges: BTreeSet<(BlockId, BlockId)>,
+}
+
+enum DeclaredLoopOutcome {
+    None,
+    Selected(DeclaredLoopScope),
+    Ignore(String),
+}
+
+struct ResolvedLoopContext {
+    address: u64,
+    scope: DeclaredLoopScope,
+}
+
+fn element_within_loop(element: &InfeasibleElement, blocks: &BTreeSet<BlockId>) -> bool {
+    match element {
+        InfeasibleElement::Block { block } => blocks.contains(block),
+        InfeasibleElement::Edge { source, target, .. } => {
+            blocks.contains(source) && blocks.contains(target)
+        }
+    }
+}
+
+/// Select the declaring loop or loop hierarchy that contains every conflict
+/// event. With nested `<loop>` contexts, the innermost context that contains
+/// all elements wins; an `<iteration>` context pins the selected loop to the
+/// loop where the iteration was declared.
+fn declared_loop_scope(
+    program: &ProgramCfg,
+    function: &CfgFunction,
+    fact: &ConflictFact,
+    elements: &[InfeasibleElement],
+    origin: &str,
+) -> Result<DeclaredLoopOutcome, String> {
+    let contexts: Vec<LoopTarget> = if fact.loop_contexts.is_empty() {
+        fact.loop_context.iter().cloned().collect()
+    } else {
+        fact.loop_contexts.clone()
+    };
+    if contexts.is_empty() {
+        return Ok(DeclaredLoopOutcome::None);
+    }
+    let analysis = crate::cfg_graph::analyze(&function.cfg);
+    let mut resolved = Vec::with_capacity(contexts.len());
+    for target in contexts {
+        let address = resolve_target(program, &target, origin)?;
+        let context_function = function_for_block(program, address, origin)?;
+        if context_function.id != function.id {
+            return Ok(DeclaredLoopOutcome::Ignore(
+                "conflict loop context belongs to another function".to_owned(),
+            ));
+        }
+        let Some(&node) = function.cfg.blocks_by_address.get(&address) else {
+            return Ok(DeclaredLoopOutcome::Ignore(format!(
+                "conflict loop context is not a block in {:?}",
+                function.primary_name
+            )));
+        };
+        let header = function.cfg.graph[node].id.clone();
+        let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == header) else {
+            return Ok(DeclaredLoopOutcome::Ignore(
+                "conflict loop context is not a natural loop".to_owned(),
+            ));
+        };
+        resolved.push(ResolvedLoopContext {
+            address,
+            scope: DeclaredLoopScope {
+                header,
+                blocks: loop_.blocks.iter().cloned().collect(),
+                backedges: loop_
+                    .backedges
+                    .iter()
+                    .map(|edge| (edge.from.clone(), edge.to.clone()))
+                    .collect(),
+            },
+        });
+    }
+    for pair in resolved.windows(2) {
+        if !pair[1].scope.blocks.is_subset(&pair[0].scope.blocks) {
+            return Ok(DeclaredLoopOutcome::Ignore(
+                "declared loop contexts are not nested".to_owned(),
+            ));
+        }
+    }
+    let contains_all = |scope: &DeclaredLoopScope| {
+        elements
+            .iter()
+            .all(|element| element_within_loop(element, &scope.blocks))
+    };
+    if fact.iteration.is_iteration() {
+        let iteration_target = fact.iteration_loop.as_ref().or(fact.loop_context.as_ref());
+        let Some(target) = iteration_target else {
+            return Ok(DeclaredLoopOutcome::Ignore(
+                "iteration-scoped conflict lacks an enclosing loop".to_owned(),
+            ));
+        };
+        let address = resolve_target(program, target, origin)?;
+        let Some(scope) = resolved
+            .iter()
+            .find(|context| context.address == address)
+            .map(|context| context.scope.clone())
+        else {
+            return Ok(DeclaredLoopOutcome::Ignore(
+                "iteration context is not an enclosing conflict loop".to_owned(),
+            ));
+        };
+        if !contains_all(&scope) {
+            return Ok(DeclaredLoopOutcome::Ignore(
+                "iteration-scoped conflict has an element outside the loop".to_owned(),
+            ));
+        }
+        return Ok(DeclaredLoopOutcome::Selected(scope));
+    }
+    for context in resolved.iter().rev() {
+        if contains_all(&context.scope) {
+            return Ok(DeclaredLoopOutcome::Selected(context.scope.clone()));
+        }
+    }
+    Ok(DeclaredLoopOutcome::Ignore(
+        "conflict has an element outside the declared loop contexts".to_owned(),
+    ))
 }
 
 fn resolve_context_function<'a>(

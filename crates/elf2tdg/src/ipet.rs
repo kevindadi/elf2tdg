@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -7644,6 +7644,81 @@ auto_loop_bounds = false
         ])
     }
 
+    fn analyze_nested_program(program: &ProgramCfg, conflict: &str) -> (f64, FlowFacts) {
+        let text = format!(
+            r#"
+<flowfacts>
+  <function name="main">
+    {conflict}
+  </function>
+</flowfacts>
+"#
+        );
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(&text, "nested-loop.ffx")
+            .expect("parse nested loop conflict");
+        facts
+            .apply_document(document, program)
+            .expect("apply nested loop conflict");
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let cycles = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xf000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite caller cycles");
+        (cycles, facts)
+    }
+
+    fn nested_loop_ordered_program() -> ProgramCfg {
+        let caller_cfg = FunctionCfg::build(
+            vec![
+                block(0xf000, CfgTerminator::Fallthrough, 1.0),
+                block(0xf002, CfgTerminator::Branch, 1.0),
+                block(0xf004, CfgTerminator::Fallthrough, 10.0),
+                block(0xf006, CfgTerminator::Branch, 1.0),
+                call_block(0xf008, 1.0, 0x9000),
+                block(0xf00a, CfgTerminator::Branch, 1.0),
+                block(0xf00c, CfgTerminator::Fallthrough, 1.0),
+                block(0xf020, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0xf000, 0xf002, CfgEdgeKind::Fallthrough),
+                edge(0xf002, 0xf004, CfgEdgeKind::Branch),
+                edge(0xf002, 0xf020, CfgEdgeKind::Fallthrough),
+                edge(0xf004, 0xf006, CfgEdgeKind::Fallthrough),
+                edge(0xf006, 0xf008, CfgEdgeKind::Branch),
+                edge(0xf006, 0xf00a, CfgEdgeKind::Fallthrough),
+                edge(0xf008, 0xf00c, CfgEdgeKind::CallReturn),
+                edge(0xf00c, 0xf006, CfgEdgeKind::Branch),
+                edge(0xf00a, 0xf002, CfgEdgeKind::Branch),
+                edge(0xf00a, 0xf020, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0xf000),
+        );
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x9000, CfgTerminator::Branch, 1.0),
+                block(0x9002, CfgTerminator::Fallthrough, 50.0),
+                block(0x9004, CfgTerminator::Fallthrough, 1.0),
+                block(0x9006, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x9000, 0x9002, CfgEdgeKind::Branch),
+                edge(0x9000, 0x9004, CfgEdgeKind::Fallthrough),
+                edge(0x9002, 0x9006, CfgEdgeKind::Fallthrough),
+                edge(0x9004, 0x9006, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x9000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0xf000, "main", caller_cfg),
+            named_function(0x9000, "helper", helper_cfg),
+        ])
+    }
+
     fn nested_partition_diamond_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x6000,
@@ -9055,7 +9130,7 @@ max_states = 16
             conflict
                 .reason
                 .as_deref()
-                .is_some_and(|reason| reason.contains("caller element outside the loop"))
+                .is_some_and(|reason| reason.contains("element outside the declared loop contexts"))
         );
 
         let (cycles, facts) = analyze_with(
@@ -9781,6 +9856,186 @@ max_states = 16
                 conflict.reason
             );
         }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn nested_loop_ordered_conflicts_select_the_containing_scope() {
+        let program = nested_loop_ordered_program();
+        let analyze = |conflict: &str| -> (f64, FlowFacts) {
+            let text = format!(
+                r#"
+<flowfacts>
+  <function name="main">
+    {conflict}
+  </function>
+</flowfacts>
+"#
+            );
+            let mut facts = facts();
+            let document = FlowFactDocument::parse_text(&text, "nested-loop.ffx")
+                .expect("parse nested loop conflict");
+            facts
+                .apply_document(document, &program)
+                .expect("apply nested loop conflict");
+            let mut analyzed = program.clone();
+            let _ = analyze_program(&mut analyzed, &facts);
+            let cycles = analyzed
+                .functions
+                .iter()
+                .find(|function| function.address == 0xf000)
+                .and_then(|function| function.wcet.as_ref())
+                .and_then(|wcet| wcet.cycles)
+                .expect("finite caller cycles");
+            (cycles, facts)
+        };
+        let (baseline, _) = analyze("");
+
+        let (outer, outer_facts) = analyze(
+            r#"
+    <loop address="0xf002">
+      <loop address="0xf006">
+        <conflict ordered="yes">
+          <block address="0xf004"/>
+          <block address="0xf008"/>
+        </conflict>
+      </loop>
+    </loop>
+"#,
+        );
+        assert!(
+            outer < baseline,
+            "elements spanning the inner loop lift to the outer scope: {outer} < {baseline}"
+        );
+        let conflict = &outer_facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::LoopEntry { ref header }
+            } if header.as_str() == "bb:0xf002"
+        ));
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0xf002"
+        ));
+
+        let (inner, inner_facts) = analyze(
+            r#"
+    <loop address="0xf002">
+      <loop address="0xf006">
+        <conflict ordered="yes">
+          <block address="0xf008"/>
+          <block address="0xf00c"/>
+        </conflict>
+      </loop>
+    </loop>
+"#,
+        );
+        assert!(
+            inner < baseline,
+            "inner-only elements use the innermost scope: {inner} < {baseline}"
+        );
+        assert!(matches!(
+            inner_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::LoopEntry { ref header }
+            } if header.as_str() == "bb:0xf006"
+        ));
+
+        let (specific, specific_facts) = analyze(
+            r#"
+    <loop address="0xf002">
+      <loop address="0xf006">
+        <iteration number="1">
+          <conflict ordered="yes">
+            <block address="0xf008"/>
+            <block address="0xf00c"/>
+          </conflict>
+        </iteration>
+      </loop>
+    </loop>
+"#,
+        );
+        assert!(
+            specific < baseline,
+            "inner iteration context selects the inner scope: {specific} < {baseline}"
+        );
+        assert!(matches!(
+            specific_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::LoopSpecific {
+                    ref header,
+                    iteration: SpecificIteration::Number(1)
+                }
+            } if header.as_str() == "bb:0xf006"
+        ));
+
+        let (_, applied_facts) = analyze(
+            r#"
+    <loop address="0xf002">
+      <loop address="0xf006">
+        <iteration number="*">
+          <conflict ordered="yes">
+            <block address="0xf004"/>
+            <block address="0xf008"/>
+          </conflict>
+        </iteration>
+      </loop>
+    </loop>
+"#,
+        );
+        let conflict = &applied_facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("element outside the loop"))
+        );
+    }
+
+    #[test]
+    fn nested_loop_cross_function_conflict_selects_the_containing_scope() {
+        let program = nested_loop_ordered_program();
+        let (baseline, _) = analyze_nested_program(&program, "");
+        let (constrained, facts) = analyze_nested_program(
+            &program,
+            r#"
+    <loop address="0xf002">
+      <loop address="0xf006">
+        <conflict ordered="yes">
+          <block address="0xf004"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </loop>
+    </loop>
+"#,
+        );
+        assert!(
+            constrained < baseline,
+            "nested cross-function conflict must use the outer scope: \
+             {constrained} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossFunctionAutomaton
+        );
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(
+            cross.reset,
+            OrderedReset::LoopEntry {
+                header: BlockId::new("bb:0xf002")
+            }
+        );
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0xf002"
+        ));
     }
 
     #[test]
