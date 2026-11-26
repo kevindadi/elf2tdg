@@ -1010,6 +1010,7 @@ fn partition_facts_supported(
     facts: &FlowFacts,
     function_id: &FunctionId,
     scope: FactScope<'_>,
+    allow_ordered_automata: bool,
 ) -> bool {
     facts.infeasible_paths().iter().all(|conflict| {
         if !conflict.applied
@@ -1018,9 +1019,13 @@ fn partition_facts_supported(
         {
             return true;
         }
-        !conflict.ordered
+        let supported = match conflict.enforcement {
+            InfeasibleEnforcement::Aggregate => true,
+            InfeasibleEnforcement::Automaton { .. } => allow_ordered_automata && conflict.ordered,
+            InfeasibleEnforcement::CrossFunctionAutomaton => false,
+        };
+        supported
             && conflict.cross_function.is_none()
-            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
             && !matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
     })
 }
@@ -1042,6 +1047,7 @@ fn non_loop_fact_blocks(
         .values()
         .map(|node| (cfg.graph[*node].id.clone(), *node))
         .collect();
+    let mut loop_analysis = None;
     let mut blocks = BTreeSet::new();
     for branch in facts
         .branches()
@@ -1094,6 +1100,21 @@ fn non_loop_fact_blocks(
         if let Some(InfeasibleScope::Loop { header }) = &conflict.scope {
             blocks.insert(header.clone());
         }
+        if let InfeasibleEnforcement::Automaton {
+            reset: OrderedReset::LoopEntry { header } | OrderedReset::LoopIteration { header },
+        } = &conflict.enforcement
+            && let Some(loop_) = loop_analysis
+                .get_or_insert_with(|| cfg.analyze_graph())
+                .loops
+                .iter()
+                .find(|loop_| loop_.header == *header)
+        {
+            blocks.extend(loop_.blocks.iter().cloned());
+            for backedge in &loop_.backedges {
+                blocks.insert(backedge.from.clone());
+                blocks.insert(backedge.to.clone());
+            }
+        }
     }
     blocks
 }
@@ -1122,7 +1143,7 @@ fn partition_eligible(
     {
         return false;
     }
-    partition_facts_supported(facts, function_id, scope)
+    partition_facts_supported(facts, function_id, scope, true)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1206,17 +1227,74 @@ fn try_solve_partitioned(
         return None;
     }
     let final_entry = working.entry?;
-    let final_result = solve_simple_ipet(
-        &working,
-        final_entry,
-        &call_cycles_by_id,
-        facts,
-        function_id,
-        scope,
-    )
-    .ok()?;
-    partial |= final_result.partial;
-    let counts = expand_partition_counts(&final_result.block_counts, &summaries);
+    let automata = ordered_automata(facts, function_id, scope);
+    let (final_status, final_objective, final_counts, final_partial) = if automata.is_empty() {
+        let result = solve_simple_ipet(
+            &working,
+            final_entry,
+            &call_cycles_by_id,
+            facts,
+            function_id,
+            scope,
+        )
+        .ok()?;
+        (
+            result.status,
+            result.objective,
+            result.block_counts,
+            result.partial,
+        )
+    } else {
+        let final_analysis = working.analyze_graph();
+        let final_reachable: BTreeSet<NodeIndex> = working
+            .blocks_by_address
+            .values()
+            .copied()
+            .filter(|node| final_analysis.reachable.contains(&working.graph[*node].id))
+            .collect();
+        if final_reachable.is_empty() {
+            return None;
+        }
+        let final_loops = build_loops(&working, final_entry, &final_analysis, facts, scope).ok()?;
+        let final_call_cycles: BTreeMap<NodeIndex, f64> = working
+            .blocks_by_address
+            .values()
+            .filter_map(|node| {
+                call_cycles_by_id
+                    .get(&working.graph[*node].id)
+                    .map(|cycles| (*node, *cycles))
+            })
+            .collect();
+        let outcome = solve_function_with_automata(
+            &working,
+            final_entry,
+            &final_reachable,
+            &final_call_cycles,
+            facts,
+            function_id,
+            scope,
+            &final_loops,
+            &automata,
+            &BTreeMap::new(),
+            &CachePersistenceModels::default(),
+            None,
+        )
+        .ok()?;
+        let block_counts = outcome
+            .solution
+            .blocks
+            .iter()
+            .map(|block| (block.block.clone(), block.executions))
+            .collect();
+        (
+            outcome.solution.status,
+            outcome.solution.objective,
+            block_counts,
+            outcome.partial,
+        )
+    };
+    partial |= final_partial;
+    let counts = expand_partition_counts(&final_counts, &summaries);
     let mut address_by_id: BTreeMap<BlockId, u64> = BTreeMap::new();
     for (address, node) in &cfg.blocks_by_address {
         address_by_id.insert(cfg.graph[*node].id.clone(), *address);
@@ -1230,7 +1308,7 @@ fn try_solve_partitioned(
         .collect();
     let mut caveats = vec![
         "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
-        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models. Supported branch/call facts and unordered aggregate infeasible-path constraints are enforced by the final model; regions that touch any referenced block are left monolithic. Ordered, cross-function and automaton constraints keep the function monolithic.".to_owned(),
+        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models. Supported branch/call facts and infeasible-path constraints are enforced by the final model; ordered automata with loop resets also keep their reset loop monolithic. Regions that touch any referenced block are left monolithic, and cross-function constraints keep the function monolithic.".to_owned(),
     ];
     if let Some(caveat) = call_site_partition_caveat(scope) {
         caveats.push(caveat);
@@ -1247,8 +1325,8 @@ fn try_solve_partitioned(
     Some(IpetOutcome {
         solution: CfgIpetSolution {
             solver: SOLVER_NAME.to_owned(),
-            status: final_result.status,
-            objective: final_result.objective,
+            status: final_status,
+            objective: final_objective,
             partitioning: Some(partitioning),
             cache_model: None,
             cache_conflicts: None,
@@ -5191,7 +5269,7 @@ fn state_partition_eligible(
     if cfg.graph.node_count() > MAX_PARTITION_BLOCKS || analysis.blocked_by_unresolved {
         return false;
     }
-    partition_facts_supported(facts, function_id, scope)
+    partition_facts_supported(facts, function_id, scope, false)
 }
 
 struct StateProductView {
@@ -6506,6 +6584,43 @@ auto_loop_bounds = false
         )])
     }
 
+    fn ordered_fact_partition_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x7000,
+            FunctionCfg::build(
+                vec![
+                    block(0x7000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x7002, CfgTerminator::Branch, 1.0),
+                    block(0x7004, CfgTerminator::Branch, 1.0),
+                    block(0x7006, CfgTerminator::Fallthrough, 10.0),
+                    block(0x7008, CfgTerminator::Fallthrough, 1.0),
+                    block(0x700a, CfgTerminator::Fallthrough, 1.0),
+                    block(0x7010, CfgTerminator::Branch, 1.0),
+                    block(0x7012, CfgTerminator::Fallthrough, 10.0),
+                    block(0x7014, CfgTerminator::Fallthrough, 1.0),
+                    block(0x7016, CfgTerminator::Fallthrough, 1.0),
+                    block(0x701c, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x7000, 0x7002, CfgEdgeKind::Fallthrough),
+                    edge(0x7002, 0x7004, CfgEdgeKind::Branch),
+                    edge(0x7002, 0x7010, CfgEdgeKind::Fallthrough),
+                    edge(0x7004, 0x7006, CfgEdgeKind::Branch),
+                    edge(0x7004, 0x7008, CfgEdgeKind::Fallthrough),
+                    edge(0x7006, 0x700a, CfgEdgeKind::Fallthrough),
+                    edge(0x7008, 0x700a, CfgEdgeKind::Fallthrough),
+                    edge(0x700a, 0x701c, CfgEdgeKind::Fallthrough),
+                    edge(0x7010, 0x7012, CfgEdgeKind::Branch),
+                    edge(0x7010, 0x7016, CfgEdgeKind::Fallthrough),
+                    edge(0x7012, 0x7014, CfgEdgeKind::Fallthrough),
+                    edge(0x7014, 0x7010, CfgEdgeKind::Branch),
+                    edge(0x7016, 0x701c, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x7000),
+            ),
+        )])
+    }
+
     fn nested_partition_diamond_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x6000,
@@ -7453,6 +7568,59 @@ max_states = 16
             .expect("fact-free state region is partitioned");
         assert_eq!(partitioning.model, "sese-state-product-regions");
         assert!(partitioning.regions >= 1);
+    }
+
+    #[test]
+    fn ordered_automaton_fact_allows_fact_free_region_partitioning() {
+        let program = ordered_fact_partition_program();
+        let baseline = analyze_baseline(&program);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x7012"/>
+      <block address="0x7014"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "ordered-partition.ffx",
+        )
+        .expect("ordered conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply ordered conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::Function
+            }
+        ));
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let wcet = analyzed.functions[0].wcet.as_ref().expect("function WCET");
+        let constrained = wcet.cycles.expect("finite cycles");
+        assert!(
+            constrained < baseline,
+            "ordered automaton must reduce the objective: {constrained} < {baseline}"
+        );
+        let solution = wcet.ipet.as_ref().expect("IPET solution");
+        let partitioning = solution
+            .partitioning
+            .as_ref()
+            .expect("fact-free diamond region uses ordered partition");
+        assert_eq!(partitioning.model, "sese-branch-regions");
+        assert!(partitioning.regions >= 1);
+        assert!(
+            partitioning
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("ordered automata"))
+        );
     }
 
     #[test]
