@@ -123,12 +123,13 @@ profiles. They are not evidence that a real board matches the timing values.
   mismatch as a partitioning regression.
 - `partition:sese-state-product-regions` means IPET summarized eligible
   branch-entry regions on an active cache/pipeline/branch/BTB/RAS state
-  product. The summary preserves entry and exit states and is a safe upper
-  bound, but an entry state that reaches several exit states may be relaxed,
-  so it can exceed monolithic state-product IPET. Compare it against the
-  same build without partitioning, not against the state-free baseline.
-  Regions containing loop headers or latches, or ending at a loop header,
-  stay monolithic.
+  product. Nested regions are summarized innermost first, with costs and block
+  counts folded into the enclosing summary. The summary preserves entry and
+  exit states and is a safe upper bound, but an entry state that reaches
+  several exit states may be relaxed, so it can exceed monolithic
+  state-product IPET. Compare it against the same build without partitioning,
+  not against the state-free baseline. Regions containing loop headers or
+  latches, or ending at a loop header, stay monolithic.
 - Functions with non-loop flow facts, infeasible-path constraints or
   recovered-call gaps intentionally stay monolithic; fixed call-block
   summaries are allowed.

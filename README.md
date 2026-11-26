@@ -72,9 +72,11 @@ Implemented:
     bottom-up exact per-entry region summaries, including function-entry
     regions, with per-call-block callee costs and block counts preserved in the
     final CFG. When cache/pipeline/branch/BTB/RAS state products are active,
-    eligible regions without loop headers/latches or loop-header exits are
-    summarized per entry/exit product state; this keeps state explicit and is
-    a safe upper bound that may exceed monolithic state-product IPET;
+    a laminar family of regions without loop headers/latches or loop-header
+    exits is summarized innermost first per entry/exit product state, with
+    nested costs and block counts folded into enclosing summaries; this keeps
+    state explicit and is a safe upper bound that may exceed monolithic
+    state-product IPET;
   - conservative automatic loop-bound inference for canonical counted loops
     (`auto_loop_bounds`, enabled by default);
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add

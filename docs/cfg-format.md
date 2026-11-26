@@ -720,17 +720,19 @@ executions to that block. A summarized region whose entry is the function
 entry becomes the new function entry. Fixed per-call-block callee costs are
 included in local region models and the final model. `sese-state-product-regions`
 is used when a cache, pipeline, branch-prediction, BTB or RAS state product is
-active. It selects non-overlapping branch-entry regions that contain no loop
-header or latch and do not end at a loop header, summarizes every reachable
-entry product state by its worst-cost local path to each reachable exit product
-state, preserves the entry and exit states in the final product graph, and
-replaces the interior product nodes with state-to-state summary edges. A region entry state that can
-reach several exit states may use those exits more freely in the final IPET
-than in a concrete execution; the result is therefore a safe upper bound but
-can exceed the monolithic state-product objective. Regions containing loop
-headers or latches, or ending at a loop header, remain monolithic; functions
-with non-loop flow facts, infeasible-path constraints, unresolved control flow
-or recovered-call gaps are not partitioned.
+active. It selects a laminar (nested or disjoint) family of branch-entry
+regions that contain no loop header or latch and do not end at a loop header.
+Regions are summarized innermost first: every reachable entry product state
+gets its worst-cost local path to each reachable exit product state, the entry
+and exit states are preserved in the final product graph, and the interior
+product nodes are replaced with state-to-state summary edges. Costs and block
+counts of a nested region are folded into its enclosing summary. A region
+entry state that can reach several exit states may use those exits more freely
+in the final IPET than in a concrete execution; the result is therefore a safe
+upper bound but can exceed the monolithic state-product objective. Regions
+containing loop headers or latches, or ending at a loop header, remain
+monolithic; functions with non-loop flow facts, infeasible-path constraints,
+unresolved control flow or recovered-call gaps are not partitioned.
 Block execution counts in `ipet.blocks` are expanded back to original block
 IDs; counts inside a state-summarized region describe one worst-cost local path
 per entry/exit state and are diagnostic. Partitioning is capped at 4096 blocks,

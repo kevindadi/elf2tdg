@@ -73,17 +73,18 @@ are included in both local and final models. Each region is replaced by an
 exact per-entry cost block and block counts are expanded into the original CFG.
 A region whose entry is the function entry replaces it with a new entry block.
 When cache, pipeline, branch-prediction, BTB or RAS state products are active,
-the same partitioner selects non-overlapping branch-entry regions that contain
-no loop header or latch and do not end at a loop header. It summarizes each
-reachable entry product state by its worst-cost local path to each reachable
-exit product state and replaces the interior product nodes with state-preserving
-summary edges. A single entry
-state that reaches several exit states is relaxed to use each exit
-independently, so the state-aware path is a safe upper bound but can exceed the
-monolithic state-product objective. The first partitioner is capped at 4096
-blocks, 512 regions and a bounded scan-work budget; state summaries additionally
-cap entry/exit states and local product nodes. Unsupported shapes use
-monolithic IPET. The remaining P1 work is:
+the same partitioner selects a laminar (nested or disjoint) family of
+branch-entry regions that contain no loop header or latch and do not end at a
+loop header. It summarizes regions innermost first: each reachable entry
+product state gets its worst-cost local path to each reachable exit product
+state, the interior product nodes are replaced with state-preserving summary
+edges, and nested costs and block counts are folded into enclosing summaries.
+A single entry state that reaches several exit states is relaxed to use each
+exit independently, so the state-aware path is a safe upper bound but can
+exceed the monolithic state-product objective. The first partitioner is capped
+at 4096 blocks, 512 regions and a bounded scan-work budget; state summaries
+additionally cap entry/exit states and local product nodes. Unsupported shapes
+use monolithic IPET. The remaining P1 work is:
 
 1. Additional FFX constructs, richer cross-function conflict forms (multiple
    groups, loop-scoped groups, call-address selection) and inference beyond
@@ -92,8 +93,8 @@ monolithic IPET. The remaining P1 work is:
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
    `elf2tdg-bench` now provides a reproducible local suite with cycle results,
    model/fallback summaries and external-reference slots; OTAWA reference
-   population, larger public benchmark sets, richer partition shapes, nested
-   state-aware regions and partitioning across recovered calls remain.
+   population, larger public benchmark sets, richer partition shapes and
+   partitioning across recovered calls remain.
 4. Making IPET the default only after the bounded-results contract is validated.
 
 The irreducible-cycle guard is deliberate: if removing all natural-loop
@@ -147,14 +148,15 @@ from summed local estimates.
   statically modeled calls and without non-loop flow facts or infeasible-path
   constraints. State-free regions use exact per-entry summaries and
   homogeneous scaling. With cache/pipeline/branch/BTB/RAS state products,
-  regions that contain no loop header or latch and do not end at a loop header
-  are summarized per entry and exit product state; the final IPET may combine
-  exit states more freely than a concrete execution, so this mode is a safe
-  upper bound but not an exact match for monolithic state-product IPET. It is capped at 4096 blocks, 512
-  regions and a bounded scan-work budget, plus 128 entry states, 256 exit
-  states and 20,000 local product nodes per state-aware region. Other
-  functions or regions use monolithic IPET, and block counts inside a
-  state-summarized region are diagnostic.
+  a laminar family of regions without loop headers/latches or loop-header
+  exits is summarized innermost first per entry and exit product state; nested
+  costs and block counts are folded into enclosing summaries. The final IPET
+  may combine exit states more freely than a concrete execution, so this mode
+  is a safe upper bound but not an exact match for monolithic state-product
+  IPET. It is capped at 4096 blocks, 512 regions and a bounded scan-work
+  budget, plus 128 entry states, 256 exit states and 20,000 local product
+  nodes per state-aware region. Other functions or regions use monolithic
+  IPET, and block counts inside a state-summarized region are diagnostic.
 - Context-sensitive flow facts use caller-chain function versions: F4 `in ...`
   chains and FFX `<call>` nesting select per-context loop bounds and, in IPET,
   per-context branch/call constraints. Context identity is the caller function,
