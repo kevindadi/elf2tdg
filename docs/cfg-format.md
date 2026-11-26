@@ -365,7 +365,7 @@ missing metadata falls back to the existing bounded heuristics.
 `cfg_schema_version` is `2.45`.
 Every document contains image metadata, diagnostics, and the selected
 functions. Version 2.45 adds the specific loop `iteration` field to
-cross-function conflict records. Version 2.44 adds `calls` listing every group
+infeasible-path conflict records. Version 2.44 adds `calls` listing every group
 of a multi-group cross-function conflict; `call` remains the first group. Version 2.43 adds per-frame call-site addresses to contextual flow-fact metadata. Version 2.42 adds IPET `partitioning` metadata for SESE
 region summaries. Version 2.41 adds store-to-load forwarding metadata
 (`board_profile_pipeline_store_forwarding`, latency and entry count). Version
@@ -1114,11 +1114,12 @@ asserts that the CFG validates.
   function's loop, and progress resets on loop entry or, for iteration scope,
   every backedge. A numeric `<iteration number="N">` cross-function conflict
   additionally records `iteration: N` and checks only the selected 1-based
-  iteration; `iteration: -1` is the last iteration. Same-function numeric
-  iteration conflicts are not applied. The `calls` array records every group,
-  with `call` retaining the first group. Product states that cannot reach a
-  function exit are pruned so dead circulations cannot inflate the objective.
-  The product is capped; exceeding the cap makes the function `unknown`.
+  iteration; `iteration: -1` is the last iteration. Numeric iteration scopes
+  apply to same-function and cross-function ordered conflicts. The `calls`
+  array records every group, with `call` retaining the first group. Product
+  states that cannot reach a function exit are pruned so dead circulations
+  cannot inflate the objective. The product is capped; exceeding the cap makes
+  the function `unknown`.
   Nested-group, repeated-call-site, ambiguous-call-site and duplicate-edge
   conflicts are ignored with warnings; numeric iterations above 256 are also
   ignored conservatively.

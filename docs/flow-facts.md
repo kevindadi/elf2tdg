@@ -220,7 +220,8 @@ Semantics and limits:
 - Numeric branch counts (`maxcount`/`totalcount` on a case) are not supported
   yet; only `executed=false` is applied, with a warning for the numeric form.
   Iteration- and scenario-specific branch/call elements are ignored entirely;
-  numeric iterations are supported only for ordered cross-function conflicts.
+  numeric iterations are supported for ordered same-function and
+  cross-function conflicts.
 - Context-specific branch/call facts are applied only in matching caller
   contexts by IPET. A fact whose caller chain matches no analyzed context has no
   effect.
@@ -231,7 +232,7 @@ Semantics and limits:
   monolithic, and the final parent model enforces the fact. Exact state-free
   partitioning also supports ordered automata, including cross-function
   conflicts: automaton reset-loop blocks (also for loop-scoped and
-  specific-iteration cross-function resets), all call-group boundaries and
+  specific-iteration resets), all call-group boundaries and
   caller-side pattern elements stay monolithic, and the final automaton or
   cross-function product enforces the order. State-product partitioning keeps
   ordered and cross-function automata monolithic.
@@ -267,7 +268,8 @@ appear in one execution sub-trace:
     elements must use that order, so the unordered `sum <= n - 1` constraint
     applies exactly. `<iteration number="*">` conflicts use the per-iteration
     CFG with loop backedges removed and, when the order is forced, the loop
-    aggregate constraint.
+    aggregate constraint. Numeric `<iteration number="N">` conflicts skip
+    structural reduction and use the automaton product.
   - **Automaton product.** Other ordered conflicts use a product IPET with a
     sequence-progress automaton. Function scope tracks progress over the whole
     invocation, loop scope resets on entry and spans all iterations, and
@@ -338,9 +340,10 @@ appear in one execution sub-trace:
     loop exits after that iteration. A backedge defers the decision: entering
     another loop body clears the completed marker, while exiting at the loop
     header rejects the path. A numeric iteration above the configured
-    per-entry loop bound is exactly vacuous. Same-function conflicts at a
-    numeric iteration remain unsupported. At most 256 is accepted; larger
-    numbers are ignored conservatively.
+    per-entry loop bound is exactly vacuous. At most 256 is accepted; larger
+    numbers are ignored conservatively. The same numeric and last-iteration
+    semantics apply to same-function ordered conflicts, including the loop
+    containment and backedge-element restrictions.
     Product states that cannot reach a function exit are pruned, so a sequence
     cannot be hidden in a dead circulation that never completes the loop.
   If the sequence is structurally impossible, the fact is vacuously satisfied:
@@ -354,10 +357,9 @@ appear in one execution sub-trace:
   produces a warning and falls back to the profile/default or inference.
   `<iteration number="*">` conflicts are supported and reset ordered progress
   on loop entry and every backedge. Numeric iterations are supported for
-  ordered cross-function conflicts; same-function numeric iterations, or
-  cross-function numbers outside the supported range, are ignored with
-  warnings. Unordered conflicts spanning nested loops are ignored; ordered
-  conflicts use the automaton product.
+  ordered same-function and cross-function conflicts; numbers outside the
+  supported range are ignored with warnings. Unordered conflicts spanning
+  nested loops are ignored; ordered conflicts use the automaton product.
 - For same-function conflicts, all elements must resolve inside one function.
   For any conflict declared inside a `<loop>` or `<iteration>` context, every
   element and edge endpoint in the declaring function must be inside that loop;

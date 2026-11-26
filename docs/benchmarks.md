@@ -137,7 +137,7 @@ profiles. They are not evidence that a real board matches the timing values.
   partitioning, but regions that touch a referenced block stay monolithic and
   the final model enforces the fact. Exact state-free partitioning also accepts
   ordered automata, including cross-function conflicts, keeping automaton reset
-  loops (also loop-scoped and specific-iteration cross-function resets), all
+  loops (also loop-scoped and specific-iteration resets), all
   call-group boundaries and caller-side pattern elements monolithic, and
   running the automaton or cross-function product on the reduced CFG. State-product
   partitioning stays monolithic for ordered and cross-function automata;
