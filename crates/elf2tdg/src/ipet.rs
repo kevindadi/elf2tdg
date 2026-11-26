@@ -1011,6 +1011,7 @@ fn partition_facts_supported(
     function_id: &FunctionId,
     scope: FactScope<'_>,
     allow_ordered_automata: bool,
+    allow_cross_function: bool,
 ) -> bool {
     facts.infeasible_paths().iter().all(|conflict| {
         if !conflict.applied
@@ -1019,15 +1020,37 @@ fn partition_facts_supported(
         {
             return true;
         }
-        let supported = match conflict.enforcement {
-            InfeasibleEnforcement::Aggregate => true,
-            InfeasibleEnforcement::Automaton { .. } => allow_ordered_automata && conflict.ordered,
-            InfeasibleEnforcement::CrossFunctionAutomaton => false,
-        };
-        supported
-            && conflict.cross_function.is_none()
-            && !matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
+        match conflict.enforcement {
+            InfeasibleEnforcement::Aggregate => {
+                conflict.cross_function.is_none()
+                    && !matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
+            }
+            InfeasibleEnforcement::Automaton { .. } => {
+                allow_ordered_automata
+                    && conflict.ordered
+                    && conflict.cross_function.is_none()
+                    && !matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
+            }
+            InfeasibleEnforcement::CrossFunctionAutomaton => {
+                allow_cross_function
+                    && conflict.ordered
+                    && conflict.cross_function.is_some()
+                    && matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
+            }
+        }
     })
+}
+
+fn insert_infeasible_element_blocks(element: &InfeasibleElement, blocks: &mut BTreeSet<BlockId>) {
+    match element {
+        InfeasibleElement::Block { block } => {
+            blocks.insert(block.clone());
+        }
+        InfeasibleElement::Edge { source, target, .. } => {
+            blocks.insert(source.clone());
+            blocks.insert(target.clone());
+        }
+    }
 }
 
 /// Blocks referenced by supported non-loop flow facts for one function version.
@@ -1087,13 +1110,15 @@ fn non_loop_fact_blocks(
             && scope.matches(&conflict.context)
     }) {
         for element in &conflict.elements {
-            match element {
-                InfeasibleElement::Block { block } => {
-                    blocks.insert(block.clone());
-                }
-                InfeasibleElement::Edge { source, target, .. } => {
-                    blocks.insert(source.clone());
-                    blocks.insert(target.clone());
+            insert_infeasible_element_blocks(element, &mut blocks);
+        }
+        if let Some(cross) = &conflict.cross_function {
+            blocks.insert(cross.call_block.clone());
+            blocks.insert(cross.continuation.clone());
+            insert_infeasible_element_blocks(&cross.call_return, &mut blocks);
+            for slot in &cross.pattern {
+                if let CrossFunctionSlot::Caller(element) = slot {
+                    insert_infeasible_element_blocks(element, &mut blocks);
                 }
             }
         }
@@ -1143,7 +1168,7 @@ fn partition_eligible(
     {
         return false;
     }
-    partition_facts_supported(facts, function_id, scope, true)
+    partition_facts_supported(facts, function_id, scope, true, true)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1228,7 +1253,10 @@ fn try_solve_partitioned(
     }
     let final_entry = working.entry?;
     let automata = ordered_automata(facts, function_id, scope);
-    let (final_status, final_objective, final_counts, final_partial) = if automata.is_empty() {
+    let cross = cross_function_constraints(facts, function_id, scope);
+    let (final_status, final_objective, final_counts, final_partial) = if automata.is_empty()
+        && cross.is_empty()
+    {
         let result = solve_simple_ipet(
             &working,
             final_entry,
@@ -1265,20 +1293,39 @@ fn try_solve_partitioned(
                     .map(|cycles| (*node, *cycles))
             })
             .collect();
-        let outcome = solve_function_with_automata(
-            &working,
-            final_entry,
-            &final_reachable,
-            &final_call_cycles,
-            facts,
-            function_id,
-            scope,
-            &final_loops,
-            &automata,
-            &BTreeMap::new(),
-            &CachePersistenceModels::default(),
-            None,
-        )
+        let outcome = if cross.is_empty() {
+            solve_function_with_automata(
+                &working,
+                final_entry,
+                &final_reachable,
+                &final_call_cycles,
+                facts,
+                function_id,
+                scope,
+                &final_loops,
+                &automata,
+                &BTreeMap::new(),
+                &CachePersistenceModels::default(),
+                None,
+            )
+        } else {
+            solve_function_with_cross_function_automata(
+                program,
+                &working,
+                final_entry,
+                &final_reachable,
+                &final_call_cycles,
+                facts,
+                function_id,
+                scope,
+                &final_loops,
+                &automata,
+                &cross,
+                &BTreeMap::new(),
+                &CachePersistenceModels::default(),
+                None,
+            )
+        }
         .ok()?;
         let block_counts = outcome
             .solution
@@ -1308,7 +1355,7 @@ fn try_solve_partitioned(
         .collect();
     let mut caveats = vec![
         "Branch-entry SESE regions are solved locally with an entry count of one, replaced bottom-up by a per-entry cost block, and expanded when the parent model assigns executions to that block. Block execution counts are reconstructed from the per-entry region solutions.".to_owned(),
-        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models. Supported branch/call facts and infeasible-path constraints are enforced by the final model; ordered automata with loop resets also keep their reset loop monolithic. Regions that touch any referenced block are left monolithic, and cross-function constraints keep the function monolithic.".to_owned(),
+        "Partitioning is used only for functions without instruction/data-cache, pipeline, branch-prediction, BTB or RAS state models. Supported branch/call facts and infeasible-path constraints are enforced by the final model; ordered automata with loop resets also keep their reset loop monolithic, and cross-function constraints keep the call boundary and caller-side pattern blocks monolithic. Regions that touch any referenced block are left monolithic.".to_owned(),
     ];
     if let Some(caveat) = call_site_partition_caveat(scope) {
         caveats.push(caveat);
@@ -5269,7 +5316,7 @@ fn state_partition_eligible(
     if cfg.graph.node_count() > MAX_PARTITION_BLOCKS || analysis.blocked_by_unresolved {
         return false;
     }
-    partition_facts_supported(facts, function_id, scope, false)
+    partition_facts_supported(facts, function_id, scope, false, false)
 }
 
 struct StateProductView {
@@ -6621,6 +6668,53 @@ auto_loop_bounds = false
         )])
     }
 
+    fn cross_partition_program() -> ProgramCfg {
+        let caller_cfg = FunctionCfg::build(
+            vec![
+                block(0x8000, CfgTerminator::Fallthrough, 1.0),
+                block(0x8002, CfgTerminator::Branch, 1.0),
+                block(0x8004, CfgTerminator::Branch, 1.0),
+                block(0x8006, CfgTerminator::Fallthrough, 1.0),
+                block(0x8008, CfgTerminator::Fallthrough, 1.0),
+                block(0x800a, CfgTerminator::Fallthrough, 1.0),
+                block(0x8010, CfgTerminator::Fallthrough, 50.0),
+                call_block(0x8012, 1.0, 0x9000),
+                block(0x8014, CfgTerminator::Fallthrough, 1.0),
+                block(0x801c, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x8000, 0x8002, CfgEdgeKind::Fallthrough),
+                edge(0x8002, 0x8004, CfgEdgeKind::Branch),
+                edge(0x8002, 0x8010, CfgEdgeKind::Fallthrough),
+                edge(0x8004, 0x8006, CfgEdgeKind::Branch),
+                edge(0x8004, 0x8008, CfgEdgeKind::Fallthrough),
+                edge(0x8006, 0x800a, CfgEdgeKind::Fallthrough),
+                edge(0x8008, 0x800a, CfgEdgeKind::Fallthrough),
+                edge(0x800a, 0x801c, CfgEdgeKind::Fallthrough),
+                edge(0x8010, 0x8012, CfgEdgeKind::Fallthrough),
+                edge(0x8012, 0x8014, CfgEdgeKind::CallReturn),
+                edge(0x8014, 0x801c, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x8000),
+        );
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x9000, CfgTerminator::Fallthrough, 1.0),
+                block(0x9002, CfgTerminator::Fallthrough, 1.0),
+                block(0x9004, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x9000, 0x9002, CfgEdgeKind::Fallthrough),
+                edge(0x9002, 0x9004, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x9000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0x8000, "main", caller_cfg),
+            named_function(0x9000, "helper", helper_cfg),
+        ])
+    }
+
     fn nested_partition_diamond_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x6000,
@@ -7620,6 +7714,65 @@ max_states = 16
                 .caveats
                 .iter()
                 .any(|caveat| caveat.contains("ordered automata"))
+        );
+    }
+
+    #[test]
+    fn cross_function_ordered_fact_allows_fact_free_region_partitioning() {
+        let program = cross_partition_program();
+        let baseline = analyze_baseline(&program);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x8010"/>
+      <call name="helper">
+        <block address="0x9002"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "cross-partition.ffx",
+        )
+        .expect("cross-function conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply cross-function conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossFunctionAutomaton
+        );
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let caller = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0x8000)
+            .and_then(|function| function.wcet.as_ref())
+            .expect("caller WCET");
+        let constrained = caller.cycles.expect("finite cycles");
+        assert!(
+            constrained < baseline,
+            "cross-function automaton must reduce the objective: {constrained} < {baseline}"
+        );
+        let solution = caller.ipet.as_ref().expect("IPET solution");
+        let partitioning = solution
+            .partitioning
+            .as_ref()
+            .expect("fact-free diamond region uses cross-function partition");
+        assert_eq!(partitioning.model, "sese-branch-regions");
+        assert!(partitioning.regions >= 1);
+        assert!(
+            partitioning
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("cross-function"))
         );
     }
 
