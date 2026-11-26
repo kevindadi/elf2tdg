@@ -1609,7 +1609,7 @@ fn resolve_cross_function_conflict(
             record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
             return Ok(record);
         }
-        DeclaredLoopOutcome::Selected(scope) => {
+        DeclaredLoopOutcome::Selected(scope) | DeclaredLoopOutcome::SpecificMixed(scope) => {
             if fact.iteration.is_iteration()
                 && pattern.iter().any(|slot| {
                     matches!(slot, CrossFunctionSlot::Caller(InfeasibleElement::Edge { source, target, .. })
@@ -1810,7 +1810,9 @@ fn resolve_ordered_conflict(
             }
             None
         }
-        DeclaredLoopOutcome::Selected(scope) => Some(scope),
+        DeclaredLoopOutcome::Selected(scope) | DeclaredLoopOutcome::SpecificMixed(scope) => {
+            Some(scope)
+        }
         DeclaredLoopOutcome::Ignore(reason) => {
             record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
             return Ok(record);
@@ -2303,6 +2305,9 @@ enum DeclaredLoopOutcome {
     /// Ordered events straddle the declared loop boundary, so the conflict is
     /// enforced over the whole function invocation instead of a sub-trace.
     Mixed,
+    /// A specific iteration keeps its selected loop but some ordered events
+    /// lie outside that loop.
+    SpecificMixed(DeclaredLoopScope),
     Ignore(String),
 }
 
@@ -2333,6 +2338,7 @@ fn element_touches_loop(element: &InfeasibleElement, blocks: &BTreeSet<BlockId>)
 /// event. With nested `<loop>` contexts, the innermost context that contains
 /// all elements wins; an `<iteration>` context pins the selected loop to the
 /// loop where the iteration was declared.
+#[allow(clippy::too_many_lines)]
 fn declared_loop_scope(
     program: &ProgramCfg,
     function: &CfgFunction,
@@ -2413,6 +2419,12 @@ fn declared_loop_scope(
             ));
         };
         if !contains_all(&scope) {
+            let touches = elements
+                .iter()
+                .any(|element| element_touches_loop(element, &scope.blocks));
+            if matches!(fact.iteration, IterationContext::Specific(_)) && touches {
+                return Ok(DeclaredLoopOutcome::SpecificMixed(scope));
+            }
             return Ok(DeclaredLoopOutcome::Ignore(
                 "iteration-scoped conflict has an element outside the loop".to_owned(),
             ));

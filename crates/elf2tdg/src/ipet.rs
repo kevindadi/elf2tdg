@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events, and mixed loop/non-loop ordering uses function scope. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric or last iteration keeps the selected loop. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -2381,6 +2381,11 @@ struct AutomatonRuntime {
     backedges: BTreeSet<(BlockId, BlockId)>,
     loop_header: Option<BlockId>,
     header_has_exit: bool,
+    /// A specific-iteration conflict with events on both sides of its loop.
+    mixed: bool,
+    slot_outside: Vec<bool>,
+    /// Number of leading pattern slots outside the reset loop.
+    outside_prefix: usize,
 }
 
 impl AutomatonRuntime {
@@ -2426,6 +2431,15 @@ fn sequence_resets(
     }
 }
 
+fn element_within_blocks(element: &InfeasibleElement, blocks: &BTreeSet<BlockId>) -> bool {
+    match element {
+        InfeasibleElement::Block { block } => blocks.contains(block),
+        InfeasibleElement::Edge { source, target, .. } => {
+            blocks.contains(source) && blocks.contains(target)
+        }
+    }
+}
+
 fn loop_header_has_exit(cfg: &FunctionCfg, header: &BlockId, blocks: &BTreeSet<BlockId>) -> bool {
     cfg.blocks_by_address
         .values()
@@ -2453,6 +2467,9 @@ fn automaton_runtimes(
                 backedges: BTreeSet::new(),
                 loop_header: None,
                 header_has_exit: false,
+                mixed: false,
+                slot_outside: Vec::new(),
+                outside_prefix: 0,
             }),
             OrderedReset::LoopEntry { header }
             | OrderedReset::LoopIteration { header }
@@ -2479,6 +2496,15 @@ fn automaton_runtimes(
                     OrderedReset::LoopSpecific { iteration, .. } => Some(*iteration),
                     _ => None,
                 };
+                let slot_outside: Vec<bool> = automaton
+                    .pattern
+                    .iter()
+                    .map(|element| !element_within_blocks(element, &blocks))
+                    .collect();
+                let has_inside = slot_outside.iter().any(|outside| !outside);
+                let has_outside = slot_outside.iter().any(|outside| *outside);
+                let mixed = specific_iteration.is_some() && has_inside && has_outside;
+                let outside_prefix = slot_outside.iter().take_while(|outside| **outside).count();
                 Ok(AutomatonRuntime {
                     pattern: automaton.pattern.clone(),
                     reset: automaton.reset.clone(),
@@ -2487,6 +2513,9 @@ fn automaton_runtimes(
                     backedges,
                     loop_header: Some(header.clone()),
                     header_has_exit,
+                    mixed,
+                    slot_outside,
+                    outside_prefix,
                 })
             }
         })
@@ -2499,6 +2528,9 @@ struct AutomatonProgress {
     iteration: u32,
     pending: bool,
     last_pending: bool,
+    /// Slot of the most recently completed iteration for mixed last-iteration
+    /// matching; `usize::MAX` when no candidate is pending.
+    candidate_slot: usize,
 }
 
 impl AutomatonProgress {
@@ -2508,17 +2540,35 @@ impl AutomatonProgress {
             iteration,
             pending: false,
             last_pending: false,
+            candidate_slot: usize::MAX,
         }
     }
 }
 
 fn pattern_completed_progress(runtime: &AutomatonRuntime, state: &mut AutomatonProgress) -> bool {
     if matches!(runtime.specific_iteration, Some(SpecificIteration::Last)) {
+        if runtime.mixed && state.iteration == 0 {
+            return false;
+        }
         state.pending = true;
         true
     } else {
         false
     }
+}
+
+fn automaton_slot_allowed(
+    runtime: &AutomatonRuntime,
+    state: AutomatonProgress,
+    slot: usize,
+) -> bool {
+    if state.pending {
+        return false;
+    }
+    if runtime.mixed && runtime.slot_outside.get(slot).copied().unwrap_or(false) {
+        return true;
+    }
+    iteration_active(runtime.specific_iteration, state.iteration)
 }
 
 fn advance_automaton_pattern(
@@ -2527,13 +2577,17 @@ fn advance_automaton_pattern(
     edge_element: &InfeasibleElement,
     block: &InfeasibleElement,
 ) -> bool {
-    if runtime.pattern.get(state.slot) == Some(edge_element) {
+    if runtime.pattern.get(state.slot) == Some(edge_element)
+        && automaton_slot_allowed(runtime, *state, state.slot)
+    {
         state.slot += 1;
         if state.slot >= runtime.pattern.len() {
             return pattern_completed_progress(runtime, state);
         }
     }
-    if runtime.pattern.get(state.slot) == Some(block) {
+    if runtime.pattern.get(state.slot) == Some(block)
+        && automaton_slot_allowed(runtime, *state, state.slot)
+    {
         state.slot += 1;
         if state.slot >= runtime.pattern.len() {
             return pattern_completed_progress(runtime, state);
@@ -2553,9 +2607,7 @@ fn initial_progress(
     for runtime in runtimes {
         let iteration = runtime.initial_iteration(entry_block);
         let mut state = AutomatonProgress::scoped(0, iteration);
-        if iteration_active(runtime.specific_iteration, iteration)
-            && runtime.pattern.first() == Some(&block)
-        {
+        if runtime.pattern.first() == Some(&block) && automaton_slot_allowed(runtime, state, 0) {
             state.slot = 1;
             if state.slot >= runtime.pattern.len()
                 && !pattern_completed_progress(runtime, &mut state)
@@ -2581,7 +2633,9 @@ fn advance_progress(
     let mut next = Vec::with_capacity(runtimes.len());
     for (index, runtime) in runtimes.iter().enumerate() {
         let mut state = progress[index];
-        let active = if let Some(specific) = runtime.specific_iteration {
+        let mut active = true;
+        if let Some(specific) = runtime.specific_iteration {
+            let old_iteration = state.iteration;
             let step = advance_specific_iteration(
                 specific,
                 runtime.loop_blocks.as_ref(),
@@ -2594,19 +2648,61 @@ fn advance_progress(
                 source,
                 target,
             )?;
-            if step.resets() {
-                state.slot = 0;
+            if runtime.mixed {
+                match specific {
+                    SpecificIteration::Number(target_iteration) => {
+                        if matches!(step.action, IterationAction::Boundary)
+                            && old_iteration < target_iteration
+                        {
+                            state.slot = runtime.outside_prefix;
+                        }
+                    }
+                    SpecificIteration::Last => match step.action {
+                        IterationAction::Boundary if old_iteration == 0 => {
+                            state.slot = runtime.outside_prefix;
+                            state.candidate_slot = usize::MAX;
+                        }
+                        IterationAction::Boundary => {
+                            state.candidate_slot =
+                                if !state.pending && state.slot > runtime.outside_prefix {
+                                    state.slot
+                                } else {
+                                    usize::MAX
+                                };
+                            state.slot = runtime.outside_prefix;
+                        }
+                        IterationAction::Exit => {
+                            if state.candidate_slot != usize::MAX {
+                                state.slot = state.candidate_slot;
+                            }
+                            state.candidate_slot = usize::MAX;
+                        }
+                        IterationAction::None => {
+                            if state.candidate_slot != usize::MAX
+                                && runtime.loop_header.as_ref() == Some(source)
+                                && runtime
+                                    .loop_blocks
+                                    .as_ref()
+                                    .is_some_and(|blocks| blocks.contains(target))
+                            {
+                                state.candidate_slot = usize::MAX;
+                            }
+                        }
+                    },
+                }
+                active = true;
+            } else {
+                if step.resets() {
+                    state.slot = 0;
+                }
+                active = step.active(specific);
             }
             state.iteration = step.iteration;
             state.pending = step.pending;
             state.last_pending = step.last_pending;
-            step.active(specific)
-        } else {
-            if runtime.reset_on(source, target) {
-                state.slot = 0;
-            }
-            true
-        };
+        } else if runtime.reset_on(source, target) {
+            state.slot = 0;
+        }
         if active && !advance_automaton_pattern(runtime, &mut state, edge_element, &block) {
             return None;
         }
@@ -3242,6 +3338,9 @@ struct CrossState {
     /// the loop header can exit. Exiting at the header rejects the path; a
     /// following body entry clears the flag because the loop continues.
     last_pending: bool,
+    /// Slot of the most recently completed mixed-iteration prefix;
+    /// `usize::MAX` when no candidate is pending.
+    candidate_slot: usize,
 }
 
 impl CrossState {
@@ -3252,6 +3351,7 @@ impl CrossState {
             iteration: 0,
             pending: false,
             last_pending: false,
+            candidate_slot: usize::MAX,
         }
     }
 
@@ -3262,6 +3362,7 @@ impl CrossState {
             iteration,
             pending: false,
             last_pending: false,
+            candidate_slot: usize::MAX,
         }
     }
 
@@ -3299,6 +3400,11 @@ struct CrossAutomatonModel {
     loop_header: Option<BlockId>,
     /// The reset loop header has an outgoing edge that leaves the loop.
     header_has_exit: bool,
+    /// A specific-iteration conflict with slots on both sides of the loop.
+    mixed: bool,
+    slot_outside: Vec<bool>,
+    /// Number of leading pattern slots outside the reset loop.
+    outside_prefix: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3459,8 +3565,14 @@ impl CrossAutomatonModel {
         )
     }
 
-    fn matching_active(&self, state: CrossState) -> bool {
-        !state.pending && iteration_active(self.specific_iteration, state.iteration)
+    fn slot_allowed(&self, state: CrossState, slot: usize) -> bool {
+        if state.pending {
+            return false;
+        }
+        if self.mixed && self.slot_outside.get(slot).copied().unwrap_or(false) {
+            return true;
+        }
+        iteration_active(self.specific_iteration, state.iteration)
     }
 
     fn initial_iteration(&self, entry_block: &BlockId) -> u32 {
@@ -3507,7 +3619,58 @@ impl CrossAutomatonModel {
             target,
         )?;
         let mut next = state;
-        if step.resets() {
+        if self.mixed {
+            match specific {
+                SpecificIteration::Number(target_iteration) => {
+                    if matches!(step.action, IterationAction::Boundary)
+                        && state.iteration < target_iteration
+                    {
+                        next.slot = self.outside_prefix;
+                    }
+                    if matches!(
+                        step.action,
+                        IterationAction::Boundary | IterationAction::Exit
+                    ) {
+                        next.sub = 0;
+                    }
+                }
+                SpecificIteration::Last => match step.action {
+                    IterationAction::Boundary if state.iteration == 0 => {
+                        next.slot = self.outside_prefix;
+                        next.sub = 0;
+                        next.candidate_slot = usize::MAX;
+                    }
+                    IterationAction::Boundary => {
+                        next.candidate_slot = if !state.pending && state.slot > self.outside_prefix
+                        {
+                            state.slot
+                        } else {
+                            usize::MAX
+                        };
+                        next.slot = self.outside_prefix;
+                        next.sub = 0;
+                    }
+                    IterationAction::Exit => {
+                        if next.candidate_slot != usize::MAX {
+                            next.slot = next.candidate_slot;
+                        }
+                        next.candidate_slot = usize::MAX;
+                        next.sub = 0;
+                    }
+                    IterationAction::None => {
+                        if next.candidate_slot != usize::MAX
+                            && self.loop_header.as_ref() == Some(source)
+                            && self
+                                .loop_blocks
+                                .as_ref()
+                                .is_some_and(|blocks| blocks.contains(target))
+                        {
+                            next.candidate_slot = usize::MAX;
+                        }
+                    }
+                },
+            }
+        } else if step.resets() {
             next.slot = 0;
             next.sub = 0;
         }
@@ -3823,6 +3986,38 @@ fn build_cross_model(
     })
 }
 
+fn cross_slot_classification(
+    slots: &[CrossFunctionSlot],
+    groups: &[CrossGroupModel],
+    constraint: &CrossFunctionConstraint,
+    blocks: &BTreeSet<BlockId>,
+    specific: bool,
+) -> (bool, Vec<bool>, usize) {
+    let slot_outside: Vec<bool> = slots
+        .iter()
+        .enumerate()
+        .map(|(index, slot)| match slot {
+            CrossFunctionSlot::Caller(element) => !element_within_blocks(element, blocks),
+            CrossFunctionSlot::Callee(_) => groups
+                .iter()
+                .find(|group| index >= group.start && index < group.start + group.len)
+                .is_none_or(|group| {
+                    !blocks.contains(&constraint.groups[group.call].call_block)
+                        || !blocks.contains(&constraint.groups[group.call].continuation)
+                }),
+        })
+        .collect();
+    let has_inside = slot_outside.iter().any(|outside| !outside);
+    let has_outside = slot_outside.iter().any(|outside| *outside);
+    let outside_prefix = slot_outside.iter().take_while(|outside| **outside).count();
+    (
+        specific && has_inside && has_outside,
+        slot_outside,
+        outside_prefix,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
 fn cross_automaton_models(
     model: &ModelGraph,
     cfg: &FunctionCfg,
@@ -3907,10 +4102,25 @@ fn cross_automaton_models(
                 }
             };
             if constraint.specific_iteration.is_some()
-                && !matches!(constraint.reset, OrderedReset::LoopIteration { .. })
+                && !matches!(
+                    constraint.reset,
+                    OrderedReset::LoopIteration { .. } | OrderedReset::LoopSpecific { .. }
+                )
             {
                 return Err(IpetError::Unknown("specific-iteration-scope".to_owned()));
             }
+            let (mixed, slot_outside, outside_prefix) = loop_blocks.as_ref().map_or_else(
+                || (false, vec![false; slots.len()], 0),
+                |blocks| {
+                    cross_slot_classification(
+                        &slots,
+                        &groups,
+                        constraint,
+                        blocks,
+                        constraint.specific_iteration.is_some(),
+                    )
+                },
+            );
             Ok(CrossAutomatonModel {
                 slots,
                 groups,
@@ -3920,6 +4130,9 @@ fn cross_automaton_models(
                 backedges,
                 loop_header,
                 header_has_exit,
+                mixed,
+                slot_outside,
+                outside_prefix,
             })
         })
         .collect()
@@ -3941,37 +4154,6 @@ fn callee_edge_element(cfg: &FunctionCfg, edge: EdgeIndex) -> InfeasibleElement 
     caller_edge_element(cfg, edge)
 }
 
-fn advance_caller_pattern(
-    slots: &[CrossFunctionSlot],
-    mut slot: usize,
-    edge: Option<&InfeasibleElement>,
-    block: Option<&BlockId>,
-) -> Option<usize> {
-    if let Some(element) = edge
-        && slot < slots.len()
-        && matches!(&slots[slot], CrossFunctionSlot::Caller(candidate) if candidate == element)
-    {
-        slot += 1;
-        if slot == slots.len() {
-            return None;
-        }
-    }
-    if let Some(block) = block {
-        let element = InfeasibleElement::Block {
-            block: block.clone(),
-        };
-        if slot < slots.len()
-            && matches!(&slots[slot], CrossFunctionSlot::Caller(candidate) if candidate == &element)
-        {
-            slot += 1;
-            if slot == slots.len() {
-                return None;
-            }
-        }
-    }
-    Some(slot)
-}
-
 fn slot_matches_callee_edge(slot: &CrossFunctionSlot, edge: &InfeasibleElement) -> bool {
     matches!(slot, CrossFunctionSlot::Callee(candidate) if candidate == edge)
 }
@@ -3986,6 +4168,9 @@ fn slot_matches_callee_block(slot: &CrossFunctionSlot, block: &BlockId) -> bool 
 
 fn pattern_completed(automaton: &CrossAutomatonModel, state: CrossState) -> Option<CrossState> {
     if matches!(automaton.specific_iteration, Some(SpecificIteration::Last)) {
+        if automaton.mixed && state.iteration == 0 {
+            return None;
+        }
         Some(state.with_pending())
     } else {
         None
@@ -3998,10 +4183,29 @@ fn advance_cross_caller(
     edge: &InfeasibleElement,
     target: &BlockId,
 ) -> Option<CrossState> {
-    match advance_caller_pattern(&automaton.slots, state.slot, Some(edge), Some(target)) {
-        Some(slot) => Some(state.with_slot(slot)),
-        None => pattern_completed(automaton, state),
+    let mut slot = state.slot;
+    if slot < automaton.slots.len()
+        && automaton.slot_allowed(state, slot)
+        && matches!(&automaton.slots[slot], CrossFunctionSlot::Caller(candidate) if candidate == edge)
+    {
+        slot += 1;
+        if slot == automaton.slots.len() {
+            return pattern_completed(automaton, state);
+        }
     }
+    let block = InfeasibleElement::Block {
+        block: target.clone(),
+    };
+    if slot < automaton.slots.len()
+        && automaton.slot_allowed(state, slot)
+        && matches!(&automaton.slots[slot], CrossFunctionSlot::Caller(candidate) if candidate == &block)
+    {
+        slot += 1;
+        if slot == automaton.slots.len() {
+            return pattern_completed(automaton, state);
+        }
+    }
+    Some(state.with_slot(slot))
 }
 
 fn initial_cross_state(
@@ -4010,12 +4214,10 @@ fn initial_cross_state(
 ) -> Option<CrossState> {
     let iteration = automaton.initial_iteration(entry_block);
     let state = CrossState::scoped(0, 0, iteration);
-    if !iteration_active(automaton.specific_iteration, iteration) {
-        return Some(state);
-    }
     if let Some(CrossFunctionSlot::Caller(InfeasibleElement::Block { block })) =
         automaton.slots.first()
         && block == entry_block
+        && automaton.slot_allowed(state, 0)
     {
         let slot = 1;
         if slot == automaton.slots.len() {
@@ -4057,7 +4259,7 @@ fn advance_cross_state(
                 &cfg.graph[source].id,
                 &cfg.graph[target_node].id,
             )?;
-            if !step.active {
+            if !step.active && !automaton.mixed {
                 return Some(step.state);
             }
             let element = caller_edge_element(cfg, edge.original);
@@ -4065,12 +4267,12 @@ fn advance_cross_state(
             advance_cross_caller(automaton, step.state, &element, target)
         }
         ModelEdgeKind::EnterCall => {
-            if !automaton.matching_active(state) {
-                return Some(state);
-            }
             let Some(group) = cross_group_for_call(automaton, edge.call, state.slot) else {
                 return Some(state);
             };
+            if !automaton.slot_allowed(state, group.start) {
+                return Some(state);
+            }
             let mut sub = 0;
             if slot_matches_callee_block(
                 &automaton.slots[group.start],
@@ -4081,12 +4283,12 @@ fn advance_cross_state(
             Some(CrossState { sub, ..state })
         }
         ModelEdgeKind::CalleeEdge => {
-            if !automaton.matching_active(state) {
-                return Some(state);
-            }
             let Some(group) = cross_group_for_call(automaton, edge.call, state.slot) else {
                 return Some(state);
             };
+            if !automaton.slot_allowed(state, group.start) {
+                return Some(state);
+            }
             let spec = &model.specs[group.call];
             let callee = &program.functions[spec.callee_index];
             let element = callee_edge_element(&callee.cfg, edge.original);
@@ -4114,11 +4316,12 @@ fn advance_cross_state(
                 &cfg.graph[source].id,
                 &cfg.graph[target_node].id,
             )?;
-            if !step.active {
+            if !step.active && !automaton.mixed {
                 return Some(step.state);
             }
             let mut slot = step.state.slot;
             if !step.boundary
+                && automaton.slot_allowed(step.state, step.state.slot)
                 && let Some(group) = cross_group_for_call(automaton, edge.call, step.state.slot)
                 && step.state.sub == group.len
             {
@@ -10132,6 +10335,212 @@ max_states = 16
         assert!(
             constrained < baseline,
             "mixed cross-function order must be enforced: {constrained} < {baseline}"
+        );
+    }
+
+    #[test]
+    fn specific_iteration_mixed_loop_ordered_conflicts_use_the_selected_iteration() {
+        let program = loop_program();
+        let baseline = analyze_baseline(&program);
+        let analyze = |text: &str| -> (f64, FlowFacts) { analyze_with(&program, text) };
+
+        let (first, first_facts) = analyze(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="1">
+        <conflict ordered="yes">
+          <block address="0x2004"/>
+          <block address="0x200c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            first < baseline,
+            "mixed iteration 1 ordering must prune the loop path: {first} < {baseline}"
+        );
+        let conflict = &first_facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::LoopSpecific {
+                    ref header,
+                    iteration: SpecificIteration::Number(1)
+                }
+            } if header.as_str() == "bb:0x2002"
+        ));
+        assert_eq!(first_facts.info().conflicts[0].iteration, Some(1));
+
+        let (last, last_facts) = analyze(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="-1">
+        <conflict ordered="yes">
+          <block address="0x2004"/>
+          <block address="0x200c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            last < baseline,
+            "mixed last-iteration ordering must prune the loop path: {last} < {baseline}"
+        );
+        assert_eq!(last_facts.info().conflicts[0].iteration, Some(-1));
+
+        let (before, _) = analyze(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="1">
+        <conflict ordered="yes">
+          <block address="0x2000"/>
+          <block address="0x2004"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            before < baseline,
+            "outside-before progress must survive loop entry: {before} < {baseline}"
+        );
+
+        let (all, all_facts) = analyze(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="*">
+        <conflict ordered="yes">
+          <block address="0x2004"/>
+          <block address="0x200c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(all, baseline);
+        assert!(!all_facts.infeasible_paths()[0].applied);
+    }
+
+    #[test]
+    fn specific_iteration_mixed_loop_cross_function_conflict_uses_the_selected_iteration() {
+        let program = loop_cross_partition_program();
+        let baseline = analyze_baseline_for(&program, 0xc000);
+        let analyze = |number: &str| -> (f64, FlowFacts) {
+            let text = format!(
+                r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="{number}">
+        <conflict ordered="yes">
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+          <block address="0xc01c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#
+            );
+            let mut facts = facts();
+            let document = FlowFactDocument::parse_text(&text, "mixed-specific-cross.ffx")
+                .expect("parse mixed specific cross conflict");
+            facts
+                .apply_document(document, &program)
+                .expect("apply mixed specific cross conflict");
+            let mut analyzed = program.clone();
+            let _ = analyze_program(&mut analyzed, &facts);
+            let cycles = analyzed
+                .functions
+                .iter()
+                .find(|function| function.address == 0xc000)
+                .and_then(|function| function.wcet.as_ref())
+                .and_then(|wcet| wcet.cycles)
+                .expect("finite caller cycles");
+            (cycles, facts)
+        };
+
+        let (first, first_facts) = analyze("1");
+        assert!(
+            first < baseline,
+            "mixed specific cross ordering must prune the loop path: {first} < {baseline}"
+        );
+        let conflict = &first_facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(
+            cross.reset,
+            OrderedReset::LoopIteration {
+                header: BlockId::new("bb:0xc010")
+            }
+        );
+        assert_eq!(cross.specific_iteration, Some(SpecificIteration::Number(1)));
+        assert_eq!(first_facts.info().conflicts[0].iteration, Some(1));
+
+        let (last, last_facts) = analyze("-1");
+        assert!(
+            last < baseline,
+            "mixed last-iteration cross ordering must prune the loop: {last} < {baseline}"
+        );
+        assert_eq!(last_facts.info().conflicts[0].iteration, Some(-1));
+
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="1">
+        <conflict ordered="yes">
+          <block address="0xc000"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "mixed-specific-before.ffx",
+        )
+        .expect("parse mixed specific outside-before conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply mixed specific outside-before conflict");
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let before = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite caller cycles");
+        assert!(
+            before < baseline,
+            "outside-before cross progress must survive loop entry: {before} < {baseline}"
         );
     }
 
