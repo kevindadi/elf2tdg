@@ -512,14 +512,21 @@ impl FlowFacts {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let iteration = conflict
-                        .cross_function
-                        .as_ref()
-                        .and_then(|cross| cross.specific_iteration)
-                        .map(|iteration| match iteration {
-                            SpecificIteration::Number(number) => i64::from(number),
-                            SpecificIteration::Last => -1,
-                        });
+                    let iteration = match &conflict.enforcement {
+                        InfeasibleEnforcement::Automaton {
+                            reset: OrderedReset::LoopSpecific { iteration, .. },
+                        } => Some(*iteration),
+                        InfeasibleEnforcement::CrossFunctionAutomaton => conflict
+                            .cross_function
+                            .as_ref()
+                            .and_then(|cross| cross.specific_iteration),
+                        InfeasibleEnforcement::Automaton { .. }
+                        | InfeasibleEnforcement::Aggregate => None,
+                    }
+                    .map(|iteration| match iteration {
+                        SpecificIteration::Number(number) => i64::from(number),
+                        SpecificIteration::Last => -1,
+                    });
                     CfgInfeasiblePathInfo {
                         function: conflict.function.clone(),
                         ordered: conflict.ordered,
@@ -1046,6 +1053,33 @@ pub(crate) enum OrderedReset {
     LoopEntry { header: BlockId },
     /// Reset on loop entry and every backedge; the sequence is per iteration.
     LoopIteration { header: BlockId },
+    /// Reset per iteration but activate the sequence only in the selected
+    /// 1-based iteration or the last iteration.
+    LoopSpecific {
+        header: BlockId,
+        iteration: SpecificIteration,
+    },
+}
+
+/// Validate a numeric iteration context for an ordered conflict.
+fn supported_specific_iteration(
+    iteration: IterationContext,
+) -> Result<Option<SpecificIteration>, String> {
+    match iteration {
+        IterationContext::None | IterationContext::All => Ok(None),
+        IterationContext::Specific(-1) => Ok(Some(SpecificIteration::Last)),
+        IterationContext::Specific(value) if value >= 1 => match u32::try_from(value).ok() {
+            Some(number) if number <= MAX_SPECIFIC_ITERATION => {
+                Ok(Some(SpecificIteration::Number(number)))
+            }
+            _ => Err(format!(
+                "iteration {value} exceeds the analysis limit of {MAX_SPECIFIC_ITERATION}"
+            )),
+        },
+        IterationContext::Specific(value) => {
+            Err(format!("iteration number {value} is unsupported"))
+        }
+    }
 }
 
 /// One resolved infeasible-path conflict.
@@ -1319,9 +1353,9 @@ fn resolve_conflict(
     {
         return resolve_cross_function_conflict(program, function, fact, record, origin, warnings);
     }
-    if let IterationContext::Specific(number) = fact.iteration {
+    if matches!(fact.iteration, IterationContext::Specific(_)) && !fact.ordered {
         record.reason = Some(format!(
-            "{origin}: same-function conflict at specific iteration {number} is not supported; conflict ignored"
+            "{origin}: specific-iteration same-function conflicts are supported only with ordered=\"yes\"; conflict ignored"
         ));
         return Ok(record);
     }
@@ -1606,23 +1640,11 @@ fn resolve_cross_function_conflict(
                 return Ok(record);
             }
         }
-        let specific_iteration = match fact.iteration {
-            IterationContext::None | IterationContext::All => None,
-            IterationContext::Specific(-1) => Some(SpecificIteration::Last),
-            IterationContext::Specific(value) if value >= 1 => {
-                let number = u32::try_from(value).ok();
-                if let Some(number) = number.filter(|number| *number <= MAX_SPECIFIC_ITERATION) {
-                    Some(SpecificIteration::Number(number))
-                } else {
-                    record.reason = Some(format!(
-                        "{origin}: cross-function conflict iteration {value} exceeds the analysis limit of {MAX_SPECIFIC_ITERATION}; conflict ignored"
-                    ));
-                    return Ok(record);
-                }
-            }
-            IterationContext::Specific(value) => {
+        let specific_iteration = match supported_specific_iteration(fact.iteration) {
+            Ok(iteration) => iteration,
+            Err(reason) => {
                 record.reason = Some(format!(
-                    "{origin}: cross-function conflict iteration number {value} is unsupported; conflict ignored"
+                    "{origin}: cross-function conflict {reason}; conflict ignored"
                 ));
                 return Ok(record);
             }
@@ -1785,6 +1807,15 @@ fn resolve_ordered_conflict(
         ));
         return Ok(record);
     }
+    let specific_iteration = match supported_specific_iteration(fact.iteration) {
+        Ok(iteration) => iteration,
+        Err(reason) => {
+            record.reason = Some(format!(
+                "{origin}: specific-iteration ordered conflict {reason}; conflict ignored"
+            ));
+            return Ok(record);
+        }
+    };
     let declared_loop = if let Some(target) = &fact.loop_context {
         let header_address = resolve_target(program, target, origin)?;
         let context_function = function_for_block(program, header_address, origin)?;
@@ -1839,9 +1870,20 @@ fn resolve_ordered_conflict(
                 ));
                 return Ok(record);
             }
-            Some(OrderedReset::LoopIteration {
-                header: header.clone(),
-            })
+            match specific_iteration {
+                Some(iteration) => Some(OrderedReset::LoopSpecific {
+                    header: header.clone(),
+                    iteration,
+                }),
+                None if fact.iteration == IterationContext::All => {
+                    Some(OrderedReset::LoopIteration {
+                        header: header.clone(),
+                    })
+                }
+                None => Some(OrderedReset::LoopEntry {
+                    header: header.clone(),
+                }),
+            }
         } else {
             Some(OrderedReset::LoopEntry {
                 header: header.clone(),
@@ -1934,7 +1976,9 @@ impl OrderedReset {
     fn header(&self) -> &BlockId {
         match self {
             Self::Function => unreachable!("function reset has no loop header"),
-            Self::LoopEntry { header } | Self::LoopIteration { header } => header,
+            Self::LoopEntry { header }
+            | Self::LoopIteration { header }
+            | Self::LoopSpecific { header, .. } => header,
         }
     }
 }
