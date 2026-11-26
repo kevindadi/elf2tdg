@@ -186,7 +186,11 @@ from summed local estimates.
   context-insensitive model and marks results `partial`.
 - IPET enforces unordered infeasible-path conflicts when all elements share one
   function and are outside natural loops (`sum <= n-1` per invocation) or touch
-  one common non-nested loop (`sum <= (n-1) * loop iterations`). Ordered
+  one common non-nested loop (`sum <= (n-1) * loop iterations`). A same-function
+  conflict that mixes loop-touching and outside-loop elements without an
+  iteration context uses binary presence indicators at invocation scope, with
+  big-M bounds from the containing loop bounds and `sum(presence) <= n-1`, so a
+  repeated loop element is not mistaken for multiple present elements. Ordered
   conflicts reduce to the same constraints only when reachability forces the
   declared order: function-scope acyclic order, or per-iteration loop-body
   order with loop backedges removed. Structurally impossible sequences add no

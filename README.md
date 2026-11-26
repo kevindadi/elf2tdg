@@ -98,8 +98,10 @@ Implemented:
   - FFX infeasible-path conflicts (`<conflict>` over edges/blocks) and OTAWA
     `<not-all seq="true">`; IPET enforces unordered constraints, structurally
     forced ordered conflicts, cross-iteration ordered sequences through a
-    product sequence-progress automaton, and cross-function ordered sequences
-    with one or more direct `<call>` groups by inlining the selected callees.
+    product sequence-progress automaton, cross-function ordered sequences
+    with one or more direct `<call>` groups by inlining the selected callees,
+    and same-function unordered conflicts that mix loop and non-loop elements
+    through invocation-scope presence indicators.
     Sequences may be loop-scoped; caller elements and call boundaries must stay
     in the declaring function's loop, and progress resets on loop entry or, for
     iteration scope, every backedge. Nested loop contexts select the innermost
@@ -350,7 +352,12 @@ function-level results are the maximum over analyzed contexts. FFX branch and
 call facts are resolved into IPET edge/block constraints and applied only in
 matching caller contexts; longest-path records but does not enforce them.
 Unordered FFX infeasible-path conflicts are enforced by IPET when all elements
-share one function and are outside loops or within one non-nested loop. Ordered
+share one function and are outside loops or within one non-nested loop. A
+same-function unordered conflict that mixes loop and non-loop elements without
+an iteration context uses binary presence indicators at function-invocation
+scope; a repeated loop body still counts as one present element, and at most
+`n - 1` elements may be present. Iteration-scoped mixed unordered conflicts and
+unordered cross-function conflicts remain unsupported. Ordered
 conflicts with nested `<loop>` contexts select the innermost declared loop
 containing every event, lifting to an enclosing declared loop when events span
 child loops; an `<iteration>` context pins its declaring loop. An ordered

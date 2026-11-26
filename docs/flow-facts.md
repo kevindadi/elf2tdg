@@ -386,15 +386,27 @@ appear in one execution sub-trace:
   mixed conflict those boundaries may lie outside and participate in the
   selection. Mixed loop/non-loop ordering without an iteration context has no
   selected loop and uses function scope.
-  Two structural aggregate forms are enforced by IPET:
+  Three structural aggregate forms are enforced by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
     `sum(executions) <= (n - 1) * loop_header_executions`. This is a
     conservative per-iteration relaxation and also covers whole-loop conflicts.
     Ordered nested scopes use the automaton product instead of this aggregate
-    reduction.
-- Unordered mixed loop/non-loop sets, unordered nested-loop elements and
+    reduction;
+  - same-function unordered conflicts without an `<iteration>` context mix at
+    least one loop-touching element with one element outside every natural
+    loop: each element gets a binary presence indicator at function-invocation
+    scope. Big-M constraints link the indicator to the element's execution
+    count, so a repeated loop body still counts as one present element, and
+    `sum(presence) <= n - 1` forbids only an invocation in which every element
+    executes. The loop-touching elements may lie in nested or different
+    natural loops; presence is still an invocation-level set constraint. The
+    conservative big-M bound multiplies every containing loop bound by its
+    outside-entry edge count; a missing bound or a value above 1e15 skips the
+    constraint rather than guessing.
+- Unordered conflicts with `<iteration number="*">` or a numeric/last
+  iteration, all-loop nested-loop elements (no outside-loop element), and
   unsupported cross-function shapes are ignored with warnings. Unordered
   cross-function conflicts are not supported. Unsupported or unresolvable
   conflicts only lose precision and never tighten the bound incorrectly.
