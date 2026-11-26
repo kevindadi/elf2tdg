@@ -42,7 +42,7 @@ use crate::cfg::{
 };
 use crate::flow_facts::{
     BranchOutcome, CrossFunctionConstraint, CrossFunctionSlot, FactScope, FlowFacts,
-    InfeasibleElement, InfeasibleEnforcement, InfeasibleScope, OrderedReset,
+    InfeasibleElement, InfeasibleEnforcement, InfeasibleScope, OrderedReset, SpecificIteration,
 };
 use crate::ras::RasState;
 use crate::timing::{PipelineFunctionModel, PipelineState};
@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Specific-iteration, nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. A numeric cross-function iteration selects one 1-based iteration, and -1 selects the last iteration. The callee summary remains the cost bound. Same-function specific-iteration, nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -561,7 +561,10 @@ fn solve_function(
     }
     let loops = build_loops(cfg, entry, analysis, facts, scope)?;
     let automata = ordered_automata(facts, function_id, scope);
-    let cross = cross_function_constraints(facts, function_id, scope);
+    let cross: Vec<_> = cross_function_constraints(facts, function_id, scope)
+        .into_iter()
+        .filter(|cross| specific_iteration_possible(cfg, facts, scope, cross))
+        .collect();
     let pipeline_stalls = pipeline_edge_stalls(program, cfg);
     let cache_ccg = ccg::build(program, cfg, reachable_nodes)
         .filter(|model| model.variable_count() <= MAX_MODEL_VARIABLES / 2);
@@ -1264,7 +1267,10 @@ fn try_solve_partitioned(
     }
     let final_entry = working.entry?;
     let automata = ordered_automata(facts, function_id, scope);
-    let cross = cross_function_constraints(facts, function_id, scope);
+    let cross: Vec<_> = cross_function_constraints(facts, function_id, scope)
+        .into_iter()
+        .filter(|cross| specific_iteration_possible(cfg, facts, scope, cross))
+        .collect();
     let (final_status, final_objective, final_counts, final_partial) = if automata.is_empty()
         && cross.is_empty()
     {
@@ -2303,6 +2309,36 @@ fn cross_function_constraints<'a>(
         .collect()
 }
 
+/// A numeric iteration beyond the configured per-entry loop bound can never
+/// execute. Dropping the constraint is exact and avoids unrolling the
+/// iteration counter up to an unreachable target.
+fn specific_iteration_possible(
+    cfg: &FunctionCfg,
+    facts: &FlowFacts,
+    scope: FactScope<'_>,
+    cross: &CrossFunctionConstraint,
+) -> bool {
+    let Some(SpecificIteration::Number(iteration)) = cross.specific_iteration else {
+        return true;
+    };
+    let OrderedReset::LoopIteration { header } = &cross.reset else {
+        return true;
+    };
+    let Some(node) = cfg
+        .blocks_by_address
+        .values()
+        .find(|node| &cfg.graph[**node].id == header)
+    else {
+        return true;
+    };
+    let address = cfg.graph[*node].address;
+    let bound = match scope {
+        FactScope::Context(context) => facts.bound_for_context(address, context),
+        FactScope::Insensitive => facts.bound_for(address),
+    };
+    bound.is_none_or(|bound| iteration <= bound)
+}
+
 struct AutomatonRuntime {
     pattern: Vec<InfeasibleElement>,
     reset: OrderedReset,
@@ -2984,6 +3020,55 @@ struct ModelGraph {
 struct CrossState {
     slot: usize,
     sub: usize,
+    /// 1-based loop iteration while inside the reset loop; 0 outside. Unused
+    /// for constraints without a specific iteration.
+    iteration: u32,
+    /// The requested sequence completed in the current iteration of a
+    /// last-iteration constraint. A loop exit rejects the path; a following
+    /// body entry clears it because the completed iteration was not last.
+    pending: bool,
+    /// The iteration that just ended at a backedge completed the sequence and
+    /// the loop header can exit. Exiting at the header rejects the path; a
+    /// following body entry clears the flag because the loop continues.
+    last_pending: bool,
+}
+
+impl CrossState {
+    const fn unscoped(slot: usize, sub: usize) -> Self {
+        Self {
+            slot,
+            sub,
+            iteration: 0,
+            pending: false,
+            last_pending: false,
+        }
+    }
+
+    const fn scoped(slot: usize, sub: usize, iteration: u32) -> Self {
+        Self {
+            slot,
+            sub,
+            iteration,
+            pending: false,
+            last_pending: false,
+        }
+    }
+
+    const fn with_slot(self, slot: usize) -> Self {
+        Self {
+            slot,
+            sub: 0,
+            ..self
+        }
+    }
+
+    const fn with_pending(self) -> Self {
+        Self {
+            sub: 0,
+            pending: true,
+            ..self
+        }
+    }
 }
 
 struct CrossGroupModel {
@@ -2996,8 +3081,30 @@ struct CrossAutomatonModel {
     slots: Vec<CrossFunctionSlot>,
     groups: Vec<CrossGroupModel>,
     reset: OrderedReset,
+    specific_iteration: Option<SpecificIteration>,
     loop_blocks: Option<BTreeSet<BlockId>>,
     backedges: BTreeSet<(BlockId, BlockId)>,
+    /// The reset loop header.
+    loop_header: Option<BlockId>,
+    /// The reset loop header has an outgoing edge that leaves the loop.
+    header_has_exit: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoopTransition {
+    None,
+    Entry,
+    Backedge,
+    Exit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CrossIterationStep {
+    state: CrossState,
+    /// Pattern and group progress may advance in this state.
+    active: bool,
+    /// The edge entered or left the loop iteration boundary.
+    boundary: bool,
 }
 
 impl CrossAutomatonModel {
@@ -3009,6 +3116,131 @@ impl CrossAutomatonModel {
             source,
             target,
         )
+    }
+
+    fn loop_transition(&self, source: &BlockId, target: &BlockId) -> LoopTransition {
+        let Some(blocks) = &self.loop_blocks else {
+            return LoopTransition::None;
+        };
+        match (blocks.contains(source), blocks.contains(target)) {
+            (false, true) => LoopTransition::Entry,
+            (true, false) => LoopTransition::Exit,
+            (true, true) if self.backedges.contains(&(source.clone(), target.clone())) => {
+                LoopTransition::Backedge
+            }
+            _ => LoopTransition::None,
+        }
+    }
+
+    fn iteration_active(&self, iteration: u32) -> bool {
+        match self.specific_iteration {
+            None => true,
+            Some(SpecificIteration::Number(number)) => iteration == number,
+            Some(SpecificIteration::Last) => iteration > 0,
+        }
+    }
+
+    fn matching_active(&self, state: CrossState) -> bool {
+        !state.pending && self.iteration_active(state.iteration)
+    }
+
+    fn last_iteration_violated(&self, state: CrossState, source: &BlockId) -> bool {
+        if self.loop_header.as_ref() == Some(source) {
+            state.last_pending
+        } else {
+            state.pending
+        }
+    }
+
+    fn initial_iteration(&self, entry_block: &BlockId) -> u32 {
+        if self.specific_iteration.is_none() {
+            return 0;
+        }
+        u32::from(
+            self.loop_blocks
+                .as_ref()
+                .is_some_and(|blocks| blocks.contains(entry_block)),
+        )
+    }
+
+    fn advance_iteration(
+        &self,
+        state: CrossState,
+        source: &BlockId,
+        target: &BlockId,
+    ) -> Option<CrossIterationStep> {
+        let Some(specific) = self.specific_iteration else {
+            if self.reset_on(source, target) {
+                return Some(CrossIterationStep {
+                    state: CrossState::unscoped(0, 0),
+                    active: true,
+                    boundary: true,
+                });
+            }
+            return Some(CrossIterationStep {
+                state,
+                active: true,
+                boundary: false,
+            });
+        };
+        match self.loop_transition(source, target) {
+            LoopTransition::Entry => {
+                let state = CrossState::scoped(0, 0, 1);
+                Some(CrossIterationStep {
+                    state,
+                    active: self.iteration_active(1),
+                    boundary: true,
+                })
+            }
+            LoopTransition::Backedge => {
+                let iteration = match specific {
+                    SpecificIteration::Number(number) => state
+                        .iteration
+                        .saturating_add(1)
+                        .min(number.saturating_add(1)),
+                    SpecificIteration::Last => 1,
+                };
+                let mut next = CrossState::scoped(0, 0, iteration);
+                if matches!(specific, SpecificIteration::Last) {
+                    next.last_pending =
+                        (state.pending || state.last_pending) && self.header_has_exit;
+                }
+                let active = self.matching_active(next);
+                Some(CrossIterationStep {
+                    state: next,
+                    active,
+                    boundary: true,
+                })
+            }
+            LoopTransition::Exit => {
+                if self.last_iteration_violated(state, source) {
+                    None
+                } else {
+                    Some(CrossIterationStep {
+                        state: CrossState::unscoped(0, 0),
+                        active: false,
+                        boundary: false,
+                    })
+                }
+            }
+            LoopTransition::None => {
+                let mut next = state;
+                if next.last_pending
+                    && self.loop_header.as_ref() == Some(source)
+                    && self
+                        .loop_blocks
+                        .as_ref()
+                        .is_some_and(|blocks| blocks.contains(target))
+                {
+                    next.last_pending = false;
+                }
+                Some(CrossIterationStep {
+                    state: next,
+                    active: self.matching_active(next),
+                    boundary: false,
+                })
+            }
+        }
     }
 }
 
@@ -3365,8 +3597,8 @@ fn cross_automaton_models(
                     "cross-function-pattern-order".to_owned(),
                 ));
             }
-            let (loop_blocks, backedges) = match &constraint.reset {
-                OrderedReset::Function => (None, BTreeSet::new()),
+            let (loop_blocks, backedges, loop_header, header_has_exit) = match &constraint.reset {
+                OrderedReset::Function => (None, BTreeSet::new(), None, false),
                 OrderedReset::LoopEntry { header } | OrderedReset::LoopIteration { header } => {
                     let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == *header)
                     else {
@@ -3382,15 +3614,38 @@ fn cross_automaton_models(
                         } else {
                             BTreeSet::new()
                         };
-                    (Some(loop_.blocks.iter().cloned().collect()), backedges)
+                    let blocks: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
+                    let header_has_exit = cfg
+                        .blocks_by_address
+                        .values()
+                        .find(|node| cfg.graph[**node].id == *header)
+                        .is_some_and(|node| {
+                            cfg.graph
+                                .edges_directed(*node, petgraph::Direction::Outgoing)
+                                .any(|edge| !blocks.contains(&cfg.graph[edge.target()].id))
+                        });
+                    (
+                        Some(blocks),
+                        backedges,
+                        Some(header.clone()),
+                        header_has_exit,
+                    )
                 }
             };
+            if constraint.specific_iteration.is_some()
+                && !matches!(constraint.reset, OrderedReset::LoopIteration { .. })
+            {
+                return Err(IpetError::Unknown("specific-iteration-scope".to_owned()));
+            }
             Ok(CrossAutomatonModel {
                 slots,
                 groups,
                 reset: constraint.reset.clone(),
+                specific_iteration: constraint.specific_iteration,
                 loop_blocks,
                 backedges,
+                loop_header,
+                header_has_exit,
             })
         })
         .collect()
@@ -3455,21 +3710,46 @@ fn slot_matches_callee_block(slot: &CrossFunctionSlot, block: &BlockId) -> bool 
     )
 }
 
+fn pattern_completed(automaton: &CrossAutomatonModel, state: CrossState) -> Option<CrossState> {
+    if matches!(automaton.specific_iteration, Some(SpecificIteration::Last)) {
+        Some(state.with_pending())
+    } else {
+        None
+    }
+}
+
+fn advance_cross_caller(
+    automaton: &CrossAutomatonModel,
+    state: CrossState,
+    edge: &InfeasibleElement,
+    target: &BlockId,
+) -> Option<CrossState> {
+    match advance_caller_pattern(&automaton.slots, state.slot, Some(edge), Some(target)) {
+        Some(slot) => Some(state.with_slot(slot)),
+        None => pattern_completed(automaton, state),
+    }
+}
+
 fn initial_cross_state(
     automaton: &CrossAutomatonModel,
     entry_block: &BlockId,
 ) -> Option<CrossState> {
+    let iteration = automaton.initial_iteration(entry_block);
+    let state = CrossState::scoped(0, 0, iteration);
+    if !automaton.iteration_active(iteration) {
+        return Some(state);
+    }
     if let Some(CrossFunctionSlot::Caller(InfeasibleElement::Block { block })) =
         automaton.slots.first()
         && block == entry_block
     {
         let slot = 1;
         if slot == automaton.slots.len() {
-            return None;
+            return pattern_completed(automaton, state);
         }
-        return Some(CrossState { slot, sub: 0 });
+        return Some(state.with_slot(slot));
     }
-    Some(CrossState { slot: 0, sub: 0 })
+    Some(state)
 }
 
 fn cross_group_for_call(
@@ -3498,17 +3778,22 @@ fn advance_cross_state(
                 .graph
                 .edge_endpoints(edge.original)
                 .expect("model graph caller edge endpoint");
-            let mut state = state;
-            if automaton.reset_on(&cfg.graph[source].id, &cfg.graph[target_node].id) {
-                state = CrossState { slot: 0, sub: 0 };
+            let step = automaton.advance_iteration(
+                state,
+                &cfg.graph[source].id,
+                &cfg.graph[target_node].id,
+            )?;
+            if !step.active {
+                return Some(step.state);
             }
             let element = caller_edge_element(cfg, edge.original);
             let target = &model.nodes[edge.target].block;
-            let slot =
-                advance_caller_pattern(&automaton.slots, state.slot, Some(&element), Some(target))?;
-            Some(CrossState { slot, sub: 0 })
+            advance_cross_caller(automaton, step.state, &element, target)
         }
         ModelEdgeKind::EnterCall => {
+            if !automaton.matching_active(state) {
+                return Some(state);
+            }
             let Some(group) = cross_group_for_call(automaton, edge.call, state.slot) else {
                 return Some(state);
             };
@@ -3519,12 +3804,12 @@ fn advance_cross_state(
             ) {
                 sub = 1;
             }
-            Some(CrossState {
-                slot: state.slot,
-                sub,
-            })
+            Some(CrossState { sub, ..state })
         }
         ModelEdgeKind::CalleeEdge => {
+            if !automaton.matching_active(state) {
+                return Some(state);
+            }
             let Some(group) = cross_group_for_call(automaton, edge.call, state.slot) else {
                 return Some(state);
             };
@@ -3543,32 +3828,34 @@ fn advance_cross_state(
                     sub += 1;
                 }
             }
-            Some(CrossState {
-                slot: state.slot,
-                sub,
-            })
+            Some(CrossState { sub, ..state })
         }
         ModelEdgeKind::ReturnCall => {
             let (source, target_node) = cfg
                 .graph
                 .edge_endpoints(edge.original)
                 .expect("model graph caller edge endpoint");
-            let mut slot = state.slot;
-            if automaton.reset_on(&cfg.graph[source].id, &cfg.graph[target_node].id) {
-                slot = 0;
-            } else if let Some(group) = cross_group_for_call(automaton, edge.call, state.slot)
-                && state.sub == group.len
+            let step = automaton.advance_iteration(
+                state,
+                &cfg.graph[source].id,
+                &cfg.graph[target_node].id,
+            )?;
+            if !step.active {
+                return Some(step.state);
+            }
+            let mut slot = step.state.slot;
+            if !step.boundary
+                && let Some(group) = cross_group_for_call(automaton, edge.call, step.state.slot)
+                && step.state.sub == group.len
             {
                 slot = group.start + group.len;
                 if slot == automaton.slots.len() {
-                    return None;
+                    return pattern_completed(automaton, step.state);
                 }
             }
             let element = caller_edge_element(cfg, edge.original);
             let target = &model.nodes[edge.target].block;
-            let slot =
-                advance_caller_pattern(&automaton.slots, slot, Some(&element), Some(target))?;
-            Some(CrossState { slot, sub: 0 })
+            advance_cross_caller(automaton, step.state.with_slot(slot), &element, target)
         }
     }
 }
@@ -3691,6 +3978,63 @@ fn build_cross_product_graph(
     Ok((nodes, edges))
 }
 
+/// Remove product states that cannot reach a function exit. Flow conservation
+/// alone permits circulations in such dead states, which would count
+/// executions that no complete path can perform.
+fn prune_dead_cross_product_nodes(
+    model: &ModelGraph,
+    nonexit_headers: &BTreeSet<usize>,
+    nodes: Vec<CrossProductNode>,
+    edges: Vec<CrossProductEdge>,
+) -> Result<(Vec<CrossProductNode>, Vec<CrossProductEdge>), IpetError> {
+    let mut reverse = vec![Vec::new(); nodes.len()];
+    for edge in &edges {
+        reverse[edge.to].push(edge.from);
+    }
+    let mut live = vec![false; nodes.len()];
+    let mut queue = VecDeque::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if model.outgoing[node.model].is_empty() || nonexit_headers.contains(&node.model) {
+            live[index] = true;
+            queue.push_back(index);
+        }
+    }
+    while let Some(index) = queue.pop_front() {
+        for &source in &reverse[index] {
+            if !live[source] {
+                live[source] = true;
+                queue.push_back(source);
+            }
+        }
+    }
+    if !live[0] {
+        return Err(IpetError::Unknown("cross-function-no-exit".to_owned()));
+    }
+    let mut index_by_old = vec![usize::MAX; nodes.len()];
+    let mut pruned_nodes = Vec::new();
+    for (old, node) in nodes.into_iter().enumerate() {
+        if live[old] {
+            index_by_old[old] = pruned_nodes.len();
+            pruned_nodes.push(node);
+        }
+    }
+    let mut pruned_edges = Vec::new();
+    for edge in edges {
+        let (Some(&from), Some(&to)) = (index_by_old.get(edge.from), index_by_old.get(edge.to))
+        else {
+            continue;
+        };
+        if from != usize::MAX && to != usize::MAX {
+            pruned_edges.push(CrossProductEdge {
+                from,
+                to,
+                model_edge: edge.model_edge,
+            });
+        }
+    }
+    Ok((pruned_nodes, pruned_edges))
+}
+
 struct ModelLoop {
     header: usize,
     bound: u32,
@@ -3784,14 +4128,15 @@ fn solve_function_with_cross_function_automata(
     let runtimes = automaton_runtimes(cfg, automata)?;
     let cross_automata = cross_automaton_models(&model, cfg, cross)?;
     let model_loops = build_model_loops(&model, loops);
-    let (product_nodes, product_edges) =
-        build_cross_product_graph(&model, program, cfg, &runtimes, &cross_automata)?;
-
     let nonexit_headers: BTreeSet<usize> = loops
         .iter()
         .filter(|loop_| !loop_.has_exit)
         .filter_map(|loop_| model.caller_nodes.get(&loop_.header).copied())
         .collect();
+    let (product_nodes, product_edges) =
+        build_cross_product_graph(&model, program, cfg, &runtimes, &cross_automata)?;
+    let (product_nodes, product_edges) =
+        prune_dead_cross_product_nodes(&model, &nonexit_headers, product_nodes, product_edges)?;
     let mut vars = ProblemVariables::new();
     let node_variables: Vec<Variable> = product_nodes
         .iter()
@@ -6514,7 +6859,7 @@ mod tests {
     };
     use crate::flow_facts::{
         FactScope, FlowFactDocument, FlowFacts, InfeasibleEnforcement, InfeasibleScope,
-        OrderedReset,
+        OrderedReset, SpecificIteration,
     };
     use elf2tdg_schema::{Addr, BlockId, CostRange, FunctionId, FunctionKind, Language};
     use petgraph::stable_graph::NodeIndex;
@@ -6926,6 +7271,100 @@ auto_loop_bounds = false
         );
         ProgramCfg::new(vec![
             named_function(0xc000, "main", caller_cfg),
+            named_function(0x9000, "helper", helper_cfg),
+        ])
+    }
+
+    fn specific_iteration_cross_program() -> ProgramCfg {
+        let caller_cfg = FunctionCfg::build(
+            vec![
+                block(0xd000, CfgTerminator::Fallthrough, 1.0),
+                block(0xd002, CfgTerminator::Branch, 1.0),
+                block(0xd004, CfgTerminator::Branch, 1.0),
+                block(0xd006, CfgTerminator::Fallthrough, 1.0),
+                block(0xd008, CfgTerminator::Fallthrough, 1.0),
+                block(0xd00a, CfgTerminator::Fallthrough, 1.0),
+                block(0xd010, CfgTerminator::Fallthrough, 1.0),
+                call_block(0xd012, 1.0, 0x9000),
+                block(0xd014, CfgTerminator::Branch, 1.0),
+                block(0xd016, CfgTerminator::Fallthrough, 1.0),
+                block(0xd01c, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0xd000, 0xd002, CfgEdgeKind::Fallthrough),
+                edge(0xd002, 0xd004, CfgEdgeKind::Branch),
+                edge(0xd002, 0xd010, CfgEdgeKind::Fallthrough),
+                edge(0xd004, 0xd006, CfgEdgeKind::Branch),
+                edge(0xd004, 0xd008, CfgEdgeKind::Fallthrough),
+                edge(0xd006, 0xd00a, CfgEdgeKind::Fallthrough),
+                edge(0xd008, 0xd00a, CfgEdgeKind::Fallthrough),
+                edge(0xd00a, 0xd01c, CfgEdgeKind::Fallthrough),
+                edge(0xd010, 0xd012, CfgEdgeKind::Fallthrough),
+                edge(0xd012, 0xd014, CfgEdgeKind::CallReturn),
+                edge(0xd014, 0xd010, CfgEdgeKind::Branch),
+                edge(0xd014, 0xd016, CfgEdgeKind::Fallthrough),
+                edge(0xd016, 0xd01c, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0xd000),
+        );
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x9000, CfgTerminator::Branch, 1.0),
+                block(0x9002, CfgTerminator::Fallthrough, 50.0),
+                block(0x9004, CfgTerminator::Fallthrough, 1.0),
+                block(0x9006, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x9000, 0x9002, CfgEdgeKind::Branch),
+                edge(0x9000, 0x9004, CfgEdgeKind::Fallthrough),
+                edge(0x9002, 0x9006, CfgEdgeKind::Fallthrough),
+                edge(0x9004, 0x9006, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x9000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0xd000, "main", caller_cfg),
+            named_function(0x9000, "helper", helper_cfg),
+        ])
+    }
+
+    fn monolithic_top_tested_cross_program() -> ProgramCfg {
+        let caller_cfg = FunctionCfg::build(
+            vec![
+                block(0xe000, CfgTerminator::Fallthrough, 1.0),
+                block(0xe002, CfgTerminator::Branch, 1.0),
+                call_block(0xe004, 1.0, 0x9000),
+                block(0xe006, CfgTerminator::Fallthrough, 1.0),
+                block(0xe00a, CfgTerminator::Fallthrough, 1.0),
+                block(0xe00c, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0xe000, 0xe002, CfgEdgeKind::Fallthrough),
+                edge(0xe002, 0xe004, CfgEdgeKind::Branch),
+                edge(0xe002, 0xe00a, CfgEdgeKind::Fallthrough),
+                edge(0xe004, 0xe006, CfgEdgeKind::CallReturn),
+                edge(0xe006, 0xe002, CfgEdgeKind::Branch),
+                edge(0xe00a, 0xe00c, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0xe000),
+        );
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x9000, CfgTerminator::Branch, 1.0),
+                block(0x9002, CfgTerminator::Fallthrough, 50.0),
+                block(0x9004, CfgTerminator::Fallthrough, 1.0),
+                block(0x9006, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x9000, 0x9002, CfgEdgeKind::Branch),
+                edge(0x9000, 0x9004, CfgEdgeKind::Fallthrough),
+                edge(0x9002, 0x9006, CfgEdgeKind::Fallthrough),
+                edge(0x9004, 0x9006, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x9000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0xe000, "main", caller_cfg),
             named_function(0x9000, "helper", helper_cfg),
         ])
     }
@@ -8372,6 +8811,579 @@ max_states = 16
                 .as_deref()
                 .is_some_and(|reason| reason.contains("loop-backedge element"))
         );
+    }
+
+    #[test]
+    fn specific_iteration_cross_function_facts_select_the_target_iteration() {
+        let program = specific_iteration_cross_program();
+        let analyze = |iteration: Option<&str>| -> (f64, FlowFacts, Option<(String, u32)>) {
+            let conflict = iteration.map_or_else(String::new, |number| {
+                format!(
+                    r#"
+      <iteration number="{number}">
+        <conflict ordered="yes">
+          <block address="0xd010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+"#
+                )
+            });
+            let text = format!(
+                r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xd010" maxcount="1">{conflict}
+    </loop>
+  </function>
+</flowfacts>
+"#
+            );
+            let mut facts = facts();
+            let document = FlowFactDocument::parse_text(&text, "specific-iteration.ffx")
+                .expect("parse specific iteration conflict");
+            facts
+                .apply_document(document, &program)
+                .expect("apply specific iteration conflict");
+            let mut analyzed = program.clone();
+            let _ = analyze_program(&mut analyzed, &facts);
+            let caller = analyzed
+                .functions
+                .iter()
+                .find(|function| function.address == 0xd000)
+                .and_then(|function| function.wcet.as_ref())
+                .expect("caller WCET");
+            let cycles = caller.cycles.expect("finite caller cycles");
+            let partitioning = caller
+                .ipet
+                .as_ref()
+                .and_then(|ipet| ipet.partitioning.as_ref())
+                .map(|partitioning| (partitioning.model.clone(), partitioning.regions));
+            (cycles, facts, partitioning)
+        };
+
+        let (baseline, _, _) = analyze(None);
+        let (first, first_facts, first_partitioning) = analyze(Some("1"));
+        let (second, second_facts, _) = analyze(Some("2"));
+        let (last, last_facts, last_partitioning) = analyze(Some("-1"));
+        assert!(
+            first < baseline,
+            "iteration 1 must remove the expensive loop path: {first} < {baseline}"
+        );
+        assert_eq!(
+            second, baseline,
+            "iteration 2 must be vacuous when the loop bound is one"
+        );
+        assert!(
+            last < baseline,
+            "last iteration must remove the expensive loop path: {last} < {baseline}"
+        );
+        let (model, regions) = first_partitioning.expect("iteration 1 partition");
+        assert_eq!(model, "sese-branch-regions");
+        assert!(regions >= 1);
+        let (model, regions) = last_partitioning.expect("last-iteration partition");
+        assert_eq!(model, "sese-branch-regions");
+        assert!(regions >= 1);
+
+        let cross = first_facts.infeasible_paths()[0]
+            .cross_function
+            .as_ref()
+            .expect("first cross constraint");
+        assert_eq!(
+            cross.reset,
+            OrderedReset::LoopIteration {
+                header: BlockId::new("bb:0xd010")
+            }
+        );
+        assert_eq!(cross.specific_iteration, Some(SpecificIteration::Number(1)));
+        assert_eq!(first_facts.info().conflicts[0].iteration, Some(1));
+
+        let cross = second_facts.infeasible_paths()[0]
+            .cross_function
+            .as_ref()
+            .expect("second cross constraint");
+        assert_eq!(cross.specific_iteration, Some(SpecificIteration::Number(2)));
+        assert_eq!(second_facts.info().conflicts[0].iteration, Some(2));
+
+        let cross = last_facts.infeasible_paths()[0]
+            .cross_function
+            .as_ref()
+            .expect("last cross constraint");
+        assert_eq!(cross.specific_iteration, Some(SpecificIteration::Last));
+        assert_eq!(last_facts.info().conflicts[0].iteration, Some(-1));
+    }
+
+    fn cross_automaton_for(
+        program: ProgramCfg,
+        caller_address: u64,
+        header: &str,
+        block: &str,
+        callee_block: &str,
+        number: &str,
+    ) -> (
+        ProgramCfg,
+        FunctionCfg,
+        super::ModelGraph,
+        super::CrossAutomatonModel,
+    ) {
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            &format!(
+                r#"
+<flowfacts>
+  <function name="main">
+    <loop address="{header}" maxcount="4">
+      <iteration number="{number}">
+        <conflict ordered="yes">
+          <block address="{block}"/>
+          <call name="helper">
+            <block address="{callee_block}"/>
+          </call>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#
+            ),
+            "specific-iteration.ffx",
+        )
+        .expect("parse specific iteration conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply specific iteration conflict");
+        let caller = program
+            .functions
+            .iter()
+            .find(|function| function.address == caller_address)
+            .expect("caller");
+        let analysis = crate::cfg_graph::analyze(&caller.cfg);
+        let reachable: BTreeSet<_> = caller
+            .cfg
+            .blocks_by_address
+            .values()
+            .copied()
+            .filter(|node| analysis.reachable.contains(&caller.cfg.graph[*node].id))
+            .collect();
+        let scope = crate::flow_facts::FactScope::Insensitive;
+        let cross = super::cross_function_constraints(&facts, &caller.id, scope);
+        let model = super::build_cross_model(
+            &program,
+            &caller.cfg,
+            caller.cfg.entry.expect("entry"),
+            &reachable,
+            &BTreeMap::new(),
+            &facts,
+            &caller.id,
+            scope,
+            &cross,
+        )
+        .expect("cross model");
+        let automaton = super::cross_automaton_models(&model, &caller.cfg, &cross)
+            .expect("automata")
+            .remove(0);
+        let cfg = caller.cfg.clone();
+        (program, cfg, model, automaton)
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn specific_iteration_cross_automaton_tracks_iterations_and_last_exit() {
+        let build = |number: &str| {
+            cross_automaton_for(
+                specific_iteration_cross_program(),
+                0xd000,
+                "0xd010",
+                "0xd010",
+                "0x9000",
+                number,
+            )
+        };
+
+        let find_edge = |model: &super::ModelGraph,
+                         predicate: &dyn Fn(&super::ModelEdge) -> bool| {
+            model.edges.iter().position(predicate).expect("model edge")
+        };
+        let caller = |model: &super::ModelGraph, edge: &super::ModelEdge| -> (String, String) {
+            (
+                model.nodes[edge.source].block.to_string(),
+                model.nodes[edge.target].block.to_string(),
+            )
+        };
+
+        let (program, cfg, model, automaton) = build("2");
+        let entry = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xd002".to_owned(), "bb:0xd010".to_owned())
+        });
+        let backedge = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xd014".to_owned(), "bb:0xd010".to_owned())
+        });
+        let enter = find_edge(&model, &|edge| edge.kind == super::ModelEdgeKind::EnterCall);
+        let ret = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::ReturnCall
+        });
+        let mut state = super::initial_cross_state(&automaton, &model.nodes[model.entry].block)
+            .expect("initial state");
+        let advance = |state: super::CrossState, edge: usize| {
+            super::advance_cross_state(
+                &model,
+                &program,
+                &cfg,
+                &automaton,
+                state,
+                &model.edges[edge],
+            )
+        };
+        state = advance(state, entry).expect("entry");
+        assert_eq!(state.iteration, 1);
+        assert_eq!(state.slot, 0, "iteration 1 is not active for number 2");
+        state = advance(state, enter).expect("inactive enter");
+        state = advance(state, ret).expect("inactive return");
+        assert_eq!(state.sub, 0);
+        state = advance(state, backedge).expect("backedge to iteration 2");
+        assert_eq!(state.iteration, 2);
+        assert_eq!(state.slot, 1, "header starts the target iteration");
+        state = advance(state, enter).expect("enter target iteration");
+        assert_eq!(state.sub, 1);
+        assert!(
+            advance(state, ret).is_none(),
+            "the target iteration must reject the completed sequence"
+        );
+
+        let (program, cfg, model, automaton) = build("-1");
+        let entry = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xd002".to_owned(), "bb:0xd010".to_owned())
+        });
+        let backedge = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xd014".to_owned(), "bb:0xd010".to_owned())
+        });
+        let exit = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xd014".to_owned(), "bb:0xd016".to_owned())
+        });
+        let enter = find_edge(&model, &|edge| edge.kind == super::ModelEdgeKind::EnterCall);
+        let ret = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::ReturnCall
+        });
+        let mut state = super::initial_cross_state(&automaton, &model.nodes[model.entry].block)
+            .expect("initial state");
+        let advance = |state: super::CrossState, edge: usize| {
+            super::advance_cross_state(
+                &model,
+                &program,
+                &cfg,
+                &automaton,
+                state,
+                &model.edges[edge],
+            )
+        };
+        state = advance(state, entry).expect("entry");
+        state = advance(state, enter).expect("enter");
+        state = advance(state, ret).expect("return completes the sequence");
+        assert!(state.pending, "last iteration keeps a pending violation");
+        state = advance(state, backedge).expect("a backedge clears the pending violation");
+        assert!(!state.pending);
+        assert_eq!(state.slot, 1, "the next iteration starts at the header");
+        state = advance(state, enter).expect("enter last candidate iteration");
+        state = advance(state, ret).expect("return completes the sequence again");
+        assert!(state.pending);
+        assert!(
+            advance(state, exit).is_none(),
+            "exiting the loop in the violated iteration must reject the path"
+        );
+    }
+
+    #[test]
+    fn last_iteration_cross_function_fact_prunes_a_top_tested_loop() {
+        let program = loop_cross_partition_program();
+        let analyze = |iteration: Option<&str>| -> (f64, FlowFacts) {
+            let conflict = iteration.map_or_else(String::new, |number| {
+                format!(
+                    r#"
+      <iteration number="{number}">
+        <conflict ordered="yes">
+          <block address="0xc010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+"#
+                )
+            });
+            let text = format!(
+                r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">{conflict}
+    </loop>
+  </function>
+</flowfacts>
+"#
+            );
+            let mut facts = facts();
+            let document = FlowFactDocument::parse_text(&text, "last-iteration.ffx")
+                .expect("parse last iteration conflict");
+            facts
+                .apply_document(document, &program)
+                .expect("apply last iteration conflict");
+            let mut analyzed = program.clone();
+            let _ = analyze_program(&mut analyzed, &facts);
+            let cycles = analyzed
+                .functions
+                .iter()
+                .find(|function| function.address == 0xc000)
+                .and_then(|function| function.wcet.as_ref())
+                .and_then(|wcet| wcet.cycles)
+                .expect("finite caller cycles");
+            (cycles, facts)
+        };
+
+        let (baseline, _) = analyze(None);
+        let (constrained, facts) = analyze(Some("-1"));
+        assert!(
+            constrained < baseline,
+            "the final body iteration must lose its expensive call: \
+             {constrained} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(facts.info().conflicts[0].iteration, Some(-1));
+
+        let (above_bound, _) = analyze(Some("5"));
+        assert_eq!(
+            above_bound, baseline,
+            "an iteration beyond the configured loop bound is vacuous"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn last_iteration_cross_function_pending_survives_a_header_exit() {
+        let (program, cfg, model, automaton) = cross_automaton_for(
+            loop_cross_partition_program(),
+            0xc000,
+            "0xc010",
+            "0xc010",
+            "0x9000",
+            "-1",
+        );
+        let find_edge = |model: &super::ModelGraph,
+                         predicate: &dyn Fn(&super::ModelEdge) -> bool| {
+            model.edges.iter().position(predicate).expect("model edge")
+        };
+        let caller = |model: &super::ModelGraph, edge: &super::ModelEdge| -> (String, String) {
+            (
+                model.nodes[edge.source].block.to_string(),
+                model.nodes[edge.target].block.to_string(),
+            )
+        };
+        let entry = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xc002".to_owned(), "bb:0xc010".to_owned())
+        });
+        let body = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xc010".to_owned(), "bb:0xc012".to_owned())
+        });
+        let backedge = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xc014".to_owned(), "bb:0xc010".to_owned())
+        });
+        let exit = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::Caller
+                && caller(&model, edge) == ("bb:0xc010".to_owned(), "bb:0xc016".to_owned())
+        });
+        let enter = find_edge(&model, &|edge| edge.kind == super::ModelEdgeKind::EnterCall);
+        let ret = find_edge(&model, &|edge| {
+            edge.kind == super::ModelEdgeKind::ReturnCall
+        });
+        let advance = |state: super::CrossState, edge: usize| {
+            super::advance_cross_state(
+                &model,
+                &program,
+                &cfg,
+                &automaton,
+                state,
+                &model.edges[edge],
+            )
+        };
+        let completed =
+            |advance: &dyn Fn(super::CrossState, usize) -> Option<super::CrossState>| {
+                let mut state =
+                    super::initial_cross_state(&automaton, &model.nodes[model.entry].block)
+                        .expect("initial state");
+                for (edge, name) in [(entry, "entry"), (enter, "enter"), (ret, "return")] {
+                    state = advance(state, edge).expect(name);
+                }
+                state
+            };
+
+        let state = completed(&advance);
+        assert!(state.pending);
+        let state = advance(state, backedge).expect("header backedge");
+        assert!(
+            !state.pending && state.last_pending,
+            "the completed iteration must survive a backedge to a header that can exit"
+        );
+        assert_eq!(
+            state.slot, 1,
+            "the next header still starts a new candidate sequence"
+        );
+        assert!(
+            advance(state, exit).is_none(),
+            "exiting at the header must reject the last completed body"
+        );
+
+        let state = completed(&advance);
+        let state = advance(state, backedge).expect("header backedge");
+        let state = advance(state, body).expect("next body entry");
+        assert!(
+            !state.pending && !state.last_pending,
+            "entering another body clears the previous iteration's completion"
+        );
+        assert_eq!(state.slot, 1, "header progress carries into the new body");
+        let state = advance(state, enter).expect("enter a later iteration");
+        assert_eq!(state.sub, 1);
+        let state = advance(state, ret).expect("complete the later iteration");
+        assert!(state.pending);
+        let state = advance(state, backedge).expect("backedge after completion");
+        assert!(state.last_pending);
+        assert!(
+            advance(state, exit).is_none(),
+            "the later completed body is the last iteration"
+        );
+    }
+
+    #[test]
+    fn last_iteration_cross_function_fact_prunes_a_monolithic_top_tested_loop() {
+        let program = monolithic_top_tested_cross_program();
+        let analyze = |iteration: Option<&str>| -> (f64, FlowFacts) {
+            let conflict = iteration.map_or_else(String::new, |number| {
+                format!(
+                    r#"
+      <iteration number="{number}">
+        <conflict ordered="yes">
+          <block address="0xe002"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+"#
+                )
+            });
+            let text = format!(
+                r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xe002">{conflict}
+    </loop>
+  </function>
+</flowfacts>
+"#
+            );
+            let mut facts = facts();
+            let document = FlowFactDocument::parse_text(&text, "last.ffx").expect("parse");
+            facts.apply_document(document, &program).expect("apply");
+            let mut analyzed = program.clone();
+            let _ = analyze_program(&mut analyzed, &facts);
+            let cycles = analyzed
+                .functions
+                .iter()
+                .find(|function| function.address == 0xe000)
+                .and_then(|function| function.wcet.as_ref())
+                .and_then(|wcet| wcet.cycles)
+                .expect("finite caller cycles");
+            (cycles, facts)
+        };
+        let (baseline, _) = analyze(None);
+        let (last, facts) = analyze(Some("-1"));
+        assert!(
+            last < baseline,
+            "the last iteration must prune the monolithic loop: {last} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(facts.info().conflicts[0].iteration, Some(-1));
+    }
+
+    #[test]
+    fn specific_iteration_same_function_and_invalid_cross_facts_are_ignored() {
+        let program = loop_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, applied_facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="1">
+        <conflict ordered="yes">
+          <block address="0x2004"/>
+          <block address="0x2006"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(constrained, baseline);
+        let conflict = &applied_facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict.reason.as_deref().is_some_and(
+                |reason| reason.contains("same-function conflict at specific iteration")
+            )
+        );
+
+        let program = specific_iteration_cross_program();
+        for (number, expected) in [
+            ("0", "iteration number 0 is unsupported"),
+            ("257", "exceeds the analysis limit"),
+        ] {
+            let text = format!(
+                r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xd010">
+      <iteration number="{number}">
+        <conflict ordered="yes">
+          <block address="0xd010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#
+            );
+            let mut facts = facts();
+            let document =
+                FlowFactDocument::parse_text(&text, "invalid-iteration.ffx").expect("parse");
+            facts
+                .apply_document(document, &program)
+                .expect("apply invalid iteration");
+            let conflict = &facts.infeasible_paths()[0];
+            assert!(!conflict.applied);
+            assert!(
+                conflict
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains(expected)),
+                "unexpected reason: {:?}",
+                conflict.reason
+            );
+        }
     }
 
     #[test]

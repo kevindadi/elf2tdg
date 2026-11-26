@@ -29,6 +29,10 @@ use crate::loop_bounds::InferredLoopBound;
 use crate::rules::normalize_crate_hashes;
 
 const MAX_CROSS_FUNCTION_GROUPS: usize = 16;
+/// Largest numeric loop iteration accepted for a specific-iteration
+/// cross-function conflict. Larger numbers are conservatively ignored to keep
+/// the product automaton bounded; the omitted constraint only loses precision.
+const MAX_SPECIFIC_ITERATION: u32 = 256;
 
 #[derive(Clone, Debug)]
 struct LoopBound {
@@ -508,6 +512,14 @@ impl FlowFacts {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    let iteration = conflict
+                        .cross_function
+                        .as_ref()
+                        .and_then(|cross| cross.specific_iteration)
+                        .map(|iteration| match iteration {
+                            SpecificIteration::Number(number) => i64::from(number),
+                            SpecificIteration::Last => -1,
+                        });
                     CfgInfeasiblePathInfo {
                         function: conflict.function.clone(),
                         ordered: conflict.ordered,
@@ -523,6 +535,7 @@ impl FlowFacts {
                         reason: conflict.reason.clone(),
                         scope,
                         loop_header,
+                        iteration,
                         call: calls.first().cloned(),
                         calls,
                         context: conflict.context_names.clone(),
@@ -936,8 +949,35 @@ pub(crate) struct ConflictFact {
     context_kind: ContextKind,
     /// Innermost enclosing `<loop>` context, when present.
     loop_context: Option<LoopTarget>,
-    /// Whether the conflict was declared inside `<iteration number="*">`.
-    all_iterations: bool,
+    /// Enclosing `<iteration>` context, when present.
+    iteration: IterationContext,
+}
+
+/// Enclosing `<iteration>` context of a parsed conflict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IterationContext {
+    /// No `<iteration>` element.
+    None,
+    /// `<iteration number="*">`.
+    All,
+    /// `<iteration number="INT">`; positive numbers are 1-based, and `-1`
+    /// selects the last iteration.
+    Specific(i64),
+}
+
+impl IterationContext {
+    pub(crate) fn is_iteration(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// A supported specific-iteration selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpecificIteration {
+    /// A 1-based iteration number.
+    Number(u32),
+    /// The last iteration (`number="-1"`).
+    Last,
 }
 
 #[derive(Clone, Debug)]
@@ -1059,6 +1099,9 @@ pub(crate) struct CrossFunctionConstraint {
     /// spans all iterations of the loop, and `LoopIteration` resets on entry
     /// and every backedge.
     pub(crate) reset: OrderedReset,
+    /// Selected specific iteration, when the conflict is enclosed in a
+    /// numeric `<iteration>` context.
+    pub(crate) specific_iteration: Option<SpecificIteration>,
     /// Conflict elements in declaration order.
     pub(crate) pattern: Vec<CrossFunctionSlot>,
 }
@@ -1276,6 +1319,12 @@ fn resolve_conflict(
     {
         return resolve_cross_function_conflict(program, function, fact, record, origin, warnings);
     }
+    if let IterationContext::Specific(number) = fact.iteration {
+        record.reason = Some(format!(
+            "{origin}: same-function conflict at specific iteration {number} is not supported; conflict ignored"
+        ));
+        return Ok(record);
+    }
     let mut elements = Vec::new();
     for element in &fact.elements {
         let Some(resolved) = resolve_conflict_element(program, function, element, origin, warnings)
@@ -1316,7 +1365,7 @@ fn resolve_conflict(
                     return Ok(record);
                 }
             }
-            if fact.loop_context.is_some() || fact.all_iterations {
+            if fact.loop_context.is_some() || fact.iteration.is_iteration() {
                 let InfeasibleScope::Loop { header } = &scope else {
                     record.reason = Some(format!(
                         "{origin}: loop-scoped conflict has no matching loop; conflict ignored"
@@ -1541,7 +1590,7 @@ fn resolve_cross_function_conflict(
             ));
             return Ok(record);
         }
-        if fact.all_iterations {
+        if fact.iteration.is_iteration() {
             let backedges: BTreeSet<(BlockId, BlockId)> = loop_
                 .backedges
                 .iter()
@@ -1557,9 +1606,30 @@ fn resolve_cross_function_conflict(
                 return Ok(record);
             }
         }
-        Some((header, fact.all_iterations))
+        let specific_iteration = match fact.iteration {
+            IterationContext::None | IterationContext::All => None,
+            IterationContext::Specific(-1) => Some(SpecificIteration::Last),
+            IterationContext::Specific(value) if value >= 1 => {
+                let number = u32::try_from(value).ok();
+                if let Some(number) = number.filter(|number| *number <= MAX_SPECIFIC_ITERATION) {
+                    Some(SpecificIteration::Number(number))
+                } else {
+                    record.reason = Some(format!(
+                        "{origin}: cross-function conflict iteration {value} exceeds the analysis limit of {MAX_SPECIFIC_ITERATION}; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+            }
+            IterationContext::Specific(value) => {
+                record.reason = Some(format!(
+                    "{origin}: cross-function conflict iteration number {value} is unsupported; conflict ignored"
+                ));
+                return Ok(record);
+            }
+        };
+        Some((header, fact.iteration.is_iteration(), specific_iteration))
     } else {
-        if fact.all_iterations {
+        if fact.iteration.is_iteration() {
             record.reason = Some(format!(
                 "{origin}: iteration-scoped cross-function ordered conflict lacks a loop context; conflict ignored"
             ));
@@ -1568,10 +1638,10 @@ fn resolve_cross_function_conflict(
         None
     };
     let reset = match &loop_scope {
-        Some((header, true)) => OrderedReset::LoopIteration {
+        Some((header, true, _)) => OrderedReset::LoopIteration {
             header: header.clone(),
         },
-        Some((header, false)) => OrderedReset::LoopEntry {
+        Some((header, false, _)) => OrderedReset::LoopEntry {
             header: header.clone(),
         },
         None => OrderedReset::Function,
@@ -1583,6 +1653,7 @@ fn resolve_cross_function_conflict(
         ));
         return Ok(record);
     };
+    let specific_iteration = loop_scope.as_ref().and_then(|(_, _, specific)| *specific);
     let cross = CrossFunctionConstraint {
         caller: function.id.clone(),
         callee: first.callee.clone(),
@@ -1592,10 +1663,11 @@ fn resolve_cross_function_conflict(
         call_return: first.call_return.clone(),
         groups,
         reset,
+        specific_iteration,
         pattern: pattern.clone(),
     };
     record.scope = match &loop_scope {
-        Some((header, _)) => Some(InfeasibleScope::Loop {
+        Some((header, _, _)) => Some(InfeasibleScope::Loop {
             header: header.clone(),
         }),
         None => Some(InfeasibleScope::CrossFunction),
@@ -1750,7 +1822,7 @@ fn resolve_ordered_conflict(
             ));
             return Ok(record);
         }
-        if fact.all_iterations {
+        if fact.iteration.is_iteration() {
             let backedges: BTreeSet<(BlockId, BlockId)> = loop_
                 .backedges
                 .iter()
@@ -1776,7 +1848,7 @@ fn resolve_ordered_conflict(
             })
         }
     } else {
-        if fact.all_iterations {
+        if fact.iteration.is_iteration() {
             record.reason = Some(format!(
                 "{origin}: iteration-scoped ordered conflict lacks a loop context; conflict ignored"
             ));

@@ -26,7 +26,7 @@ use roxmltree::{Document, Node};
 
 use super::{
     BranchFact, BranchOutcome, CallFact, CallTarget, ConflictElementFact, ConflictFact,
-    ContextKind, FlowFactDocument, LocationTarget, LoopFact, LoopTarget,
+    ContextKind, FlowFactDocument, IterationContext, LocationTarget, LoopFact, LoopTarget,
 };
 
 pub(super) fn parse(text: &str, origin: &str) -> Result<FlowFactDocument, String> {
@@ -150,24 +150,39 @@ fn process_children(node: Node<'_, '_>, state: &mut State, origin: &str) -> Resu
                 parse_conditional(&child, state, origin)?;
             }
             "conflict" => {
-                if let Some((fact, warnings)) = parse_conflict(&child, state, origin, false, false)?
+                if let Some((fact, warnings)) =
+                    parse_conflict(&child, state, origin, false, IterationContext::None)?
                 {
                     state.document.conflicts.push(fact);
                     state.document.warnings.extend(warnings);
                 }
             }
             "not-all" => {
-                parse_not_all(&child, state, origin, false)?;
+                parse_not_all(&child, state, origin, IterationContext::None)?;
             }
             "iteration" => {
-                let all_iterations =
-                    attribute(&child, "number").is_some_and(|number| number.trim() == "*");
-                if all_iterations && !state.loops.is_empty() {
-                    process_iteration_children(&child, state, origin)?;
+                let Some(number) = attribute(&child, "number").map(str::trim) else {
+                    state.document.warnings.push(format!(
+                        "{origin}: <iteration> needs a number attribute; descendants ignored"
+                    ));
+                    continue;
+                };
+                let iteration = if number == "*" {
+                    IterationContext::All
+                } else if let Ok(value) = number.parse::<i64>() {
+                    IterationContext::Specific(value)
                 } else {
                     state.document.warnings.push(format!(
-                        "{origin}: iteration-specific FFX facts are ignored because the analysis is not iteration-sensitive"
+                        "{origin}: invalid <iteration number={number:?}>; descendants ignored"
                     ));
+                    continue;
+                };
+                if state.loops.is_empty() {
+                    state.document.warnings.push(format!(
+                        "{origin}: <iteration> requires an enclosing <loop>; descendants ignored"
+                    ));
+                } else {
+                    process_iteration_children(&child, state, origin, iteration)?;
                 }
             }
             other => {
@@ -184,7 +199,7 @@ fn parse_not_all(
     node: &Node<'_, '_>,
     state: &mut State,
     origin: &str,
-    iteration_context: bool,
+    iteration: IterationContext,
 ) -> Result<(), String> {
     let sequential = attribute(node, "seq")
         .map(parse_bool)
@@ -197,9 +212,7 @@ fn parse_not_all(
         ));
         return Ok(());
     }
-    if let Some((mut fact, warnings)) =
-        parse_conflict(node, state, origin, true, iteration_context)?
-    {
+    if let Some((mut fact, warnings)) = parse_conflict(node, state, origin, true, iteration)? {
         // OTAWA's not-all form is a sequence; never let an ordered attribute
         // downgrade it to an unordered conflict.
         fact.ordered = true;
@@ -213,20 +226,22 @@ fn process_iteration_children(
     node: &Node<'_, '_>,
     state: &mut State,
     origin: &str,
+    iteration: IterationContext,
 ) -> Result<(), String> {
     for child in node.children().filter(Node::is_element) {
         match child.tag_name().name() {
             "conflict" => {
-                if let Some((fact, warnings)) = parse_conflict(&child, state, origin, false, true)?
+                if let Some((fact, warnings)) =
+                    parse_conflict(&child, state, origin, false, iteration)?
                 {
                     state.document.conflicts.push(fact);
                     state.document.warnings.extend(warnings);
                 }
             }
-            "not-all" => parse_not_all(&child, state, origin, true)?,
+            "not-all" => parse_not_all(&child, state, origin, iteration)?,
             other => {
                 state.document.warnings.push(format!(
-                    "{origin}: iteration-specific <{other}> is ignored because the analysis is not iteration-sensitive"
+                    "{origin}: iteration-specific <{other}> is unsupported and ignored"
                 ));
             }
         }
@@ -382,7 +397,7 @@ fn parse_conflict(
     state: &mut State,
     origin: &str,
     default_ordered: bool,
-    iteration_context: bool,
+    iteration: IterationContext,
 ) -> Result<Option<(ConflictFact, Vec<String>)>, String> {
     let Some(scope) = state.current_function() else {
         return Ok(Some((
@@ -394,7 +409,7 @@ fn parse_conflict(
                 context_sites: state.context_sites(),
                 context_kind: ContextKind::FfxCall,
                 loop_context: state.loops.last().cloned(),
-                all_iterations: iteration_context,
+                iteration,
             },
             Vec::new(),
         )));
@@ -430,7 +445,7 @@ fn parse_conflict(
             context_sites,
             context_kind: ContextKind::FfxCall,
             loop_context,
-            all_iterations: iteration_context,
+            iteration,
         },
         warnings,
     )))
@@ -765,7 +780,8 @@ mod tests {
 mod non_loop_tests {
     use super::parse;
     use crate::flow_facts::{
-        BranchOutcome, CallTarget, ConflictElementFact, LocationTarget, LoopTarget,
+        BranchOutcome, CallTarget, ConflictElementFact, IterationContext, LocationTarget,
+        LoopTarget,
     };
 
     #[test]
@@ -964,6 +980,7 @@ mod non_loop_tests {
             document.conflicts[0].loop_context,
             Some(LoopTarget::Address(0x1000))
         ));
+        assert_eq!(document.conflicts[0].iteration, IterationContext::All);
         assert!(
             document
                 .warnings
@@ -973,7 +990,7 @@ mod non_loop_tests {
     }
 
     #[test]
-    fn ignores_specific_iteration_conflicts() {
+    fn parses_specific_iteration_conflicts() {
         let document = parse(
             r#"
 <flowfacts>
@@ -992,12 +1009,63 @@ mod non_loop_tests {
             "last-iteration.ffx",
         )
         .expect("parse");
+        assert_eq!(document.conflicts.len(), 1);
+        assert_eq!(
+            document.conflicts[0].iteration,
+            IterationContext::Specific(-1)
+        );
+    }
+
+    #[test]
+    fn invalid_iteration_contexts_are_ignored() {
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x1000">
+      <iteration number="not-a-number">
+        <conflict>
+          <block address="0x1002"/>
+          <block address="0x1004"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "invalid-iteration.ffx",
+        )
+        .expect("parse");
         assert!(document.conflicts.is_empty());
         assert!(
             document
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("iteration-specific"))
+                .any(|warning| warning.contains("invalid <iteration"))
+        );
+
+        let document = parse(
+            r#"
+<flowfacts>
+  <function name="main">
+    <iteration number="2">
+      <conflict>
+        <block address="0x1002"/>
+        <block address="0x1004"/>
+      </conflict>
+    </iteration>
+  </function>
+</flowfacts>
+"#,
+            "orphan-iteration.ffx",
+        )
+        .expect("parse");
+        assert!(document.conflicts.is_empty());
+        assert!(
+            document
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("requires an enclosing <loop>"))
         );
     }
 

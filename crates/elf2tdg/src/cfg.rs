@@ -25,7 +25,7 @@ use crate::loader::{ArchKind, Image};
 use crate::rules::normalize_crate_hashes;
 
 /// Version of the JSON CFG document emitted by this module.
-pub const CFG_SCHEMA_VERSION: &str = "2.44";
+pub const CFG_SCHEMA_VERSION: &str = "2.45";
 
 /// A control-flow terminator classification for a basic block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1424,6 +1424,10 @@ pub struct CfgInfeasiblePathInfo {
     /// Loop header for a loop-scoped constraint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loop_header: Option<BlockId>,
+    /// Specific loop iteration for a cross-function constraint: a positive
+    /// 1-based iteration number, or `-1` for the last iteration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iteration: Option<i64>,
     /// First selected call boundary for a cross-function constraint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<CfgInfeasibleCallInfo>,

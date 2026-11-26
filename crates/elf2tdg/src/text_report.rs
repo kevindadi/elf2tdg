@@ -717,6 +717,16 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 .as_deref()
                 .map(|mode| format!(", mode {mode}"))
                 .unwrap_or_default();
+            let iteration = conflict
+                .iteration
+                .map(|iteration| {
+                    if iteration == -1 {
+                        ", iteration last".to_owned()
+                    } else {
+                        format!(", iteration {iteration}")
+                    }
+                })
+                .unwrap_or_default();
             let context = context_suffix(&conflict.context, conflict.context_sites.as_deref());
             let call = if conflict.calls.len() > 1 {
                 let groups: Vec<String> = conflict
@@ -741,7 +751,7 @@ fn render_wcet_info(out: &mut String, wcet: &CfgWcetInfo) {
                 out,
                 "infeasible path",
                 &format!(
-                    "{status} {} element(s), scope {scope}{mode}{call}{context} ({}){reason}",
+                    "{status} {} element(s), scope {scope}{iteration}{mode}{call}{context} ({}){reason}",
                     conflict.elements.len(),
                     conflict.source
                 ),
