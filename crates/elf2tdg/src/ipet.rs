@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; a same-function unordered conflict that mixes loop and non-loop elements uses binary presence indicators at function scope so a repeated loop element counts as one present element. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Iteration-scoped mixed unordered conflicts and unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -816,6 +816,7 @@ fn solve_function(
         facts,
         function_id,
         scope,
+        &mut vars,
     ));
     let mut cache_variables = 0_usize;
     let mut cache_conflicts = 0_usize;
@@ -1935,6 +1936,7 @@ fn solve_simple_ipet(
         facts,
         function_id,
         scope,
+        &mut vars,
     ));
     let model = vars.maximise(objective.clone()).using(good_lp::microlp);
     let solution = model
@@ -2191,6 +2193,194 @@ fn constraints(
     constraints
 }
 
+const MAX_MIXED_PRESENCE_COUNT: f64 = 1e15;
+
+fn mixed_element_bound(
+    cfg: &FunctionCfg,
+    facts: &FlowFacts,
+    scope: FactScope<'_>,
+    element: &InfeasibleElement,
+) -> Option<f64> {
+    let analysis = cfg.analyze_graph();
+    let blocks: Vec<&BlockId> = match element {
+        InfeasibleElement::Block { block } => vec![block],
+        InfeasibleElement::Edge { source, target, .. } => vec![source, target],
+    };
+    let mut bound = 1.0_f64;
+    for loop_ in &analysis.loops {
+        if !analysis.reachable.contains(&loop_.header) {
+            continue;
+        }
+        let contains_element = blocks
+            .iter()
+            .any(|block| loop_.blocks.iter().any(|candidate| candidate == *block));
+        if !contains_element {
+            continue;
+        }
+        let header = cfg
+            .blocks_by_address
+            .values()
+            .find(|node| cfg.graph[**node].id == loop_.header)?;
+        let address = cfg.graph[*header].address;
+        let loop_bound = match scope {
+            FactScope::Context(context) => facts.bound_for_context(address, context),
+            FactScope::Insensitive => facts.bound_for(address),
+        }?;
+        let block_set: BTreeSet<&BlockId> = loop_.blocks.iter().collect();
+        let entries = cfg
+            .graph
+            .edges_directed(*header, petgraph::Direction::Incoming)
+            .filter(|edge| !block_set.contains(&cfg.graph[edge.source()].id))
+            .count()
+            .max(1);
+        let entries = u32::try_from(entries).unwrap_or(u32::MAX);
+        bound *= f64::from(loop_bound) * f64::from(entries);
+        if !bound.is_finite() || bound > MAX_MIXED_PRESENCE_COUNT {
+            return None;
+        }
+    }
+    Some(bound)
+}
+
+/// Enforce an unordered conflict through exact presence indicators. Mixed
+/// loop/non-loop conflicts are scoped to the function invocation; binary
+/// presence variables make `not all elements present` expressible without
+/// excluding feasible paths that execute one element several times.
+fn mixed_presence_constraints(
+    cfg: &FunctionCfg,
+    facts: &FlowFacts,
+    scope: FactScope<'_>,
+    conflict: &crate::flow_facts::InfeasiblePathConstraint,
+    element_expression: &dyn Fn(&InfeasibleElement) -> Option<Expression>,
+    vars: &mut ProblemVariables,
+) -> Vec<good_lp::Constraint> {
+    let Some(count) = u32::try_from(conflict.elements.len()).ok() else {
+        return Vec::new();
+    };
+    if count < 2 {
+        return Vec::new();
+    }
+    let mut expressions = Vec::with_capacity(conflict.elements.len());
+    let mut bounds = Vec::with_capacity(conflict.elements.len());
+    for element in &conflict.elements {
+        let Some(expression) = element_expression(element) else {
+            return Vec::new();
+        };
+        let Some(bound) = mixed_element_bound(cfg, facts, scope, element) else {
+            return Vec::new();
+        };
+        expressions.push(expression);
+        bounds.push(bound);
+    }
+    let mut presence = Vec::with_capacity(expressions.len());
+    let mut constraints = Vec::with_capacity(expressions.len() * 2 + 1);
+    for (expression, bound) in expressions.into_iter().zip(bounds) {
+        let variable = vars.add(good_lp::variable().integer().min(0.0).max(1.0));
+        constraints.push(constraint::leq(
+            expression.clone() - Expression::from(variable) * bound,
+            0.0,
+        ));
+        constraints.push(constraint::leq(
+            Expression::from(variable) - expression,
+            0.0,
+        ));
+        presence.push(variable);
+    }
+    let mut sum = Expression::from(0.0);
+    for variable in &presence {
+        sum += *variable;
+    }
+    constraints.push(constraint::leq(sum, f64::from(count - 1)));
+    constraints
+}
+
+#[allow(clippy::too_many_arguments)]
+fn aggregate_conflict_constraints(
+    cfg: &FunctionCfg,
+    node_by_block_id: &BTreeMap<BlockId, NodeIndex>,
+    block_expression: &dyn Fn(&BlockId) -> Expression,
+    edge_expression: &dyn Fn(EdgeIndex) -> Expression,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+    vars: &mut ProblemVariables,
+) -> Vec<good_lp::Constraint> {
+    let element_expression = |element: &InfeasibleElement| -> Option<Expression> {
+        match element {
+            InfeasibleElement::Block { block } => {
+                node_by_block_id.get(block)?;
+                Some(block_expression(block))
+            }
+            InfeasibleElement::Edge {
+                source,
+                target,
+                site,
+            } => {
+                let source = node_by_block_id.get(source)?;
+                let target = node_by_block_id.get(target)?;
+                let edge = cfg
+                    .graph
+                    .edges_directed(*source, petgraph::Direction::Outgoing)
+                    .find(|edge| edge.target() == *target && edge.weight().site == *site)?;
+                Some(edge_expression(edge.id()))
+            }
+        }
+    };
+    let mut constraints = Vec::new();
+    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
+        conflict.applied
+            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
+            && conflict
+                .function
+                .as_ref()
+                .is_some_and(|function| function == function_id)
+            && scope.matches(&conflict.context)
+    }) {
+        if conflict.mixed {
+            constraints.extend(mixed_presence_constraints(
+                cfg,
+                facts,
+                scope,
+                conflict,
+                &element_expression,
+                vars,
+            ));
+            continue;
+        }
+        let mut sum = Expression::from(0.0);
+        let mut resolved = true;
+        for element in &conflict.elements {
+            if let Some(expression) = element_expression(element) {
+                sum += expression;
+            } else {
+                resolved = false;
+                break;
+            }
+        }
+        if !resolved {
+            continue;
+        }
+        let Ok(count) = u32::try_from(conflict.elements.len()) else {
+            continue;
+        };
+        let bound = f64::from(count.saturating_sub(1));
+        match conflict.scope.as_ref() {
+            Some(InfeasibleScope::Function) => {
+                constraints.push(constraint::leq(sum, bound));
+            }
+            Some(InfeasibleScope::Loop { header }) => {
+                if !node_by_block_id.contains_key(header) {
+                    continue;
+                }
+                let header_expression = block_expression(header);
+                constraints.push(constraint::leq(sum - header_expression * bound, 0.0));
+            }
+            Some(InfeasibleScope::CrossFunction) | None => {}
+        }
+    }
+    constraints
+}
+
 fn infeasible_path_constraints(
     cfg: &FunctionCfg,
     block_vars: &BTreeMap<NodeIndex, Variable>,
@@ -2198,62 +2388,90 @@ fn infeasible_path_constraints(
     facts: &FlowFacts,
     function_id: &FunctionId,
     scope: FactScope<'_>,
+    vars: &mut ProblemVariables,
 ) -> Vec<good_lp::Constraint> {
     let node_by_id: BTreeMap<_, _> = cfg
         .blocks_by_address
         .values()
         .map(|node| (cfg.graph[*node].id.clone(), *node))
         .collect();
-    facts
-        .infeasible_paths()
-        .iter()
-        .filter(|conflict| {
-            conflict.applied
-                && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
-                && conflict
-                    .function
-                    .as_ref()
-                    .is_some_and(|function| function == function_id)
-                && scope.matches(&conflict.context)
-        })
-        .filter_map(|conflict| {
-            let mut lhs = Expression::from(0.0);
-            for element in &conflict.elements {
-                let variable = match element {
-                    InfeasibleElement::Block { block } => {
-                        let node = node_by_id.get(block)?;
-                        *block_vars.get(node)?
-                    }
-                    InfeasibleElement::Edge {
-                        source,
-                        target,
-                        site,
-                    } => {
-                        let source = node_by_id.get(source)?;
-                        let target = node_by_id.get(target)?;
-                        let edge = cfg
-                            .graph
-                            .edges_directed(*source, petgraph::Direction::Outgoing)
-                            .find(|edge| edge.target() == *target && edge.weight().site == *site)?;
-                        *edge_vars.get(&edge.id())?
-                    }
+    let element_expression = |element: &InfeasibleElement| -> Option<Expression> {
+        match element {
+            InfeasibleElement::Block { block } => {
+                let node = node_by_id.get(block)?;
+                Some(Expression::from(*block_vars.get(node)?))
+            }
+            InfeasibleElement::Edge {
+                source,
+                target,
+                site,
+            } => {
+                let source = node_by_id.get(source)?;
+                let target = node_by_id.get(target)?;
+                let edge = cfg
+                    .graph
+                    .edges_directed(*source, petgraph::Direction::Outgoing)
+                    .find(|edge| edge.target() == *target && edge.weight().site == *site)?;
+                Some(Expression::from(*edge_vars.get(&edge.id())?))
+            }
+        }
+    };
+    let mut constraints = Vec::new();
+    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
+        conflict.applied
+            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
+            && conflict
+                .function
+                .as_ref()
+                .is_some_and(|function| function == function_id)
+            && scope.matches(&conflict.context)
+    }) {
+        if conflict.mixed {
+            constraints.extend(mixed_presence_constraints(
+                cfg,
+                facts,
+                scope,
+                conflict,
+                &element_expression,
+                vars,
+            ));
+            continue;
+        }
+        let mut lhs = Expression::from(0.0);
+        let mut resolved = true;
+        for element in &conflict.elements {
+            if let Some(expression) = element_expression(element) {
+                lhs += expression;
+            } else {
+                resolved = false;
+                break;
+            }
+        }
+        if !resolved {
+            continue;
+        }
+        let Some(count) = u32::try_from(conflict.elements.len()).ok() else {
+            continue;
+        };
+        let bound = f64::from(count.saturating_sub(1));
+        match conflict.scope.as_ref() {
+            Some(InfeasibleScope::Function) => {
+                constraints.push(constraint::leq(lhs, bound));
+            }
+            Some(InfeasibleScope::Loop { header }) => {
+                let Some(node) = node_by_id.get(header) else {
+                    continue;
                 };
-                lhs += variable;
+                let Some(header) = block_vars.get(node) else {
+                    continue;
+                };
+                let rhs = Expression::from(*header) * bound;
+                constraints.push(constraint::leq(lhs - rhs, 0.0));
             }
-            let count = u32::try_from(conflict.elements.len()).ok()?;
-            let bound = f64::from(count.saturating_sub(1));
-            match conflict.scope.as_ref()? {
-                InfeasibleScope::Function => Some(constraint::leq(lhs, bound)),
-                InfeasibleScope::Loop { header } => {
-                    let node = node_by_id.get(header)?;
-                    let header = block_vars.get(node)?;
-                    let rhs = Expression::from(*header) * bound;
-                    Some(constraint::leq(lhs - rhs, 0.0))
-                }
-                InfeasibleScope::CrossFunction => None,
-            }
-        })
-        .collect()
+            Some(InfeasibleScope::CrossFunction) | None => {}
+        }
+    }
+    constraints
 }
 
 const MAX_AUTOMATON_NODES: usize = 100_000;
@@ -3088,55 +3306,16 @@ fn solve_function_with_automata(
             f64::from(call.max_count),
         ));
     }
-    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
-        conflict.applied
-            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
-            && conflict
-                .function
-                .as_ref()
-                .is_some_and(|function| function == function_id)
-            && scope.matches(&conflict.context)
-    }) {
-        let mut sum = Expression::from(0.0);
-        for element in &conflict.elements {
-            match element {
-                InfeasibleElement::Block { block } => sum += block_expression(block),
-                InfeasibleElement::Edge {
-                    source,
-                    target,
-                    site,
-                } => {
-                    let Some(&source) = node_by_block_id.get(source) else {
-                        continue;
-                    };
-                    let Some(&target) = node_by_block_id.get(target) else {
-                        continue;
-                    };
-                    if let Some(edge) = cfg
-                        .graph
-                        .edges_directed(source, petgraph::Direction::Outgoing)
-                        .find(|edge| edge.target() == target && edge.weight().site == *site)
-                    {
-                        sum += edge_expression(edge.id());
-                    }
-                }
-            }
-        }
-        let Ok(count) = u32::try_from(conflict.elements.len()) else {
-            continue;
-        };
-        let bound = f64::from(count.saturating_sub(1));
-        match conflict.scope.as_ref() {
-            Some(InfeasibleScope::Function) => {
-                constraints.push(constraint::leq(sum, bound));
-            }
-            Some(InfeasibleScope::Loop { header }) => {
-                let header_expression = block_expression(header);
-                constraints.push(constraint::leq(sum - header_expression * bound, 0.0));
-            }
-            Some(InfeasibleScope::CrossFunction) | None => {}
-        }
-    }
+    constraints.extend(aggregate_conflict_constraints(
+        cfg,
+        &node_by_block_id,
+        &block_expression,
+        &edge_expression,
+        facts,
+        function_id,
+        scope,
+        &mut vars,
+    ));
 
     let mut cache_variables = 0_usize;
     let mut cache_conflicts = 0_usize;
@@ -4825,55 +5004,16 @@ fn solve_function_with_cross_function_automata(
             f64::from(call.max_count),
         ));
     }
-    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
-        conflict.applied
-            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
-            && conflict
-                .function
-                .as_ref()
-                .is_some_and(|function| function == function_id)
-            && scope.matches(&conflict.context)
-    }) {
-        let mut sum = Expression::from(0.0);
-        for element in &conflict.elements {
-            match element {
-                InfeasibleElement::Block { block } => sum += block_expression(block),
-                InfeasibleElement::Edge {
-                    source,
-                    target,
-                    site,
-                } => {
-                    let Some(&source) = node_by_block_id.get(source) else {
-                        continue;
-                    };
-                    let Some(&target) = node_by_block_id.get(target) else {
-                        continue;
-                    };
-                    if let Some(edge) = cfg
-                        .graph
-                        .edges_directed(source, petgraph::Direction::Outgoing)
-                        .find(|edge| edge.target() == target && edge.weight().site == *site)
-                    {
-                        sum += edge_expression(edge.id());
-                    }
-                }
-            }
-        }
-        let Ok(count) = u32::try_from(conflict.elements.len()) else {
-            continue;
-        };
-        let bound = f64::from(count.saturating_sub(1));
-        match conflict.scope.as_ref() {
-            Some(InfeasibleScope::Function) => {
-                constraints.push(constraint::leq(sum, bound));
-            }
-            Some(InfeasibleScope::Loop { header }) => {
-                let header_expression = block_expression(header);
-                constraints.push(constraint::leq(sum - header_expression * bound, 0.0));
-            }
-            Some(InfeasibleScope::CrossFunction) | None => {}
-        }
-    }
+    constraints.extend(aggregate_conflict_constraints(
+        cfg,
+        &node_by_block_id,
+        &block_expression,
+        &edge_expression,
+        facts,
+        function_id,
+        scope,
+        &mut vars,
+    ));
 
     let mut objective = Expression::from(0.0);
     for (index, product) in product_nodes.iter().enumerate() {
@@ -6846,7 +6986,7 @@ fn solve_function_with_state_products(
             let mut caveats = vec![
                 "State-product SESE regions are summarized by the worst local path from each entry cache/prediction/pipeline/BTB/RAS state to each exit state; entry and exit states remain explicit in the final product graph. Nested regions are summarized innermost first, and their costs and block counts are folded into enclosing summaries.".to_owned(),
                 "A region entry state that can reach several exit states may use those exits more freely in the final IPET than in a concrete execution. This over-approximates the monolithic state-product model, so the result remains a safe upper bound but can be larger.".to_owned(),
-                "Regions containing loop headers or latches, or ending at a loop header, are left monolithic. Supported branch/call facts and unordered aggregate infeasible-path constraints are applied by the final product model; a region that touches any referenced block is left monolithic. Ordered, cross-function and automaton constraints, or unresolved control flow, disable state-aware partitioning. Block counts inside a summarized region describe one worst-cost local path per entry/exit state and are diagnostic.".to_owned(),
+                "Regions containing loop headers or latches, or ending at a loop header, are left monolithic. Supported branch/call facts and unordered aggregate or presence infeasible-path constraints are applied by the final product model; a region that touches any referenced block is left monolithic. Ordered, cross-function and automaton constraints, or unresolved control flow, disable state-aware partitioning. Block counts inside a summarized region describe one worst-cost local path per entry/exit state and are diagnostic.".to_owned(),
             ];
             if let Some(caveat) = call_site_partition_caveat(scope) {
                 caveats.push(caveat);
@@ -7054,55 +7194,16 @@ fn solve_function_with_state_products(
             f64::from(call.max_count),
         ));
     }
-    for conflict in facts.infeasible_paths().iter().filter(|conflict| {
-        conflict.applied
-            && matches!(conflict.enforcement, InfeasibleEnforcement::Aggregate)
-            && conflict
-                .function
-                .as_ref()
-                .is_some_and(|function| function == function_id)
-            && scope.matches(&conflict.context)
-    }) {
-        let mut sum = Expression::from(0.0);
-        for element in &conflict.elements {
-            match element {
-                InfeasibleElement::Block { block } => sum += block_expression(block),
-                InfeasibleElement::Edge {
-                    source,
-                    target,
-                    site,
-                } => {
-                    let Some(&source) = node_by_block_id.get(source) else {
-                        continue;
-                    };
-                    let Some(&target) = node_by_block_id.get(target) else {
-                        continue;
-                    };
-                    if let Some(edge) = cfg
-                        .graph
-                        .edges_directed(source, petgraph::Direction::Outgoing)
-                        .find(|edge| edge.target() == target && edge.weight().site == *site)
-                    {
-                        sum += edge_expression(edge.id());
-                    }
-                }
-            }
-        }
-        let Ok(count) = u32::try_from(conflict.elements.len()) else {
-            continue;
-        };
-        let bound = f64::from(count.saturating_sub(1));
-        match conflict.scope.as_ref() {
-            Some(InfeasibleScope::Function) => {
-                constraints.push(constraint::leq(sum, bound));
-            }
-            Some(InfeasibleScope::Loop { header }) => {
-                let header_expression = block_expression(header);
-                constraints.push(constraint::leq(sum - header_expression * bound, 0.0));
-            }
-            Some(InfeasibleScope::CrossFunction) | None => {}
-        }
-    }
+    constraints.extend(aggregate_conflict_constraints(
+        cfg,
+        &node_by_block_id,
+        &block_expression,
+        &edge_expression,
+        facts,
+        function_id,
+        scope,
+        &mut vars,
+    ));
 
     let mut objective = Expression::from(0.0);
     for (index, node) in product_nodes.iter().enumerate() {
@@ -7538,6 +7639,39 @@ auto_loop_bounds = false
                     edge(0x200a, 0x200c, CfgEdgeKind::Fallthrough),
                 ],
                 Some(0x2000),
+            ),
+        )])
+    }
+
+    fn mixed_unordered_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x9000,
+            FunctionCfg::build(
+                vec![
+                    block(0x9000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x9002, CfgTerminator::Branch, 1.0),
+                    block(0x9004, CfgTerminator::Fallthrough, 100.0),
+                    block(0x9006, CfgTerminator::Fallthrough, 20.0),
+                    block(0x9008, CfgTerminator::Fallthrough, 5.0),
+                    block(0x900a, CfgTerminator::Branch, 1.0),
+                    block(0x900c, CfgTerminator::Branch, 1.0),
+                    block(0x900e, CfgTerminator::Fallthrough, 1.0),
+                    block(0x9010, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x9000, 0x9002, CfgEdgeKind::Fallthrough),
+                    edge(0x9002, 0x9004, CfgEdgeKind::Branch),
+                    edge(0x9002, 0x9008, CfgEdgeKind::Fallthrough),
+                    edge(0x9004, 0x9006, CfgEdgeKind::Fallthrough),
+                    edge(0x9006, 0x900a, CfgEdgeKind::Fallthrough),
+                    edge(0x9008, 0x900a, CfgEdgeKind::Fallthrough),
+                    edge(0x900a, 0x9002, CfgEdgeKind::Branch),
+                    edge(0x900a, 0x900c, CfgEdgeKind::Fallthrough),
+                    edge(0x900c, 0x900e, CfgEdgeKind::Branch),
+                    edge(0x900c, 0x9010, CfgEdgeKind::Fallthrough),
+                    edge(0x900e, 0x9010, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x9000),
             ),
         )])
     }
@@ -10321,6 +10455,191 @@ max_states = 16
     }
 
     #[test]
+    fn mixed_loop_unordered_conflicts_use_presence_indicators() {
+        let program = mixed_unordered_program();
+        let baseline = analyze_baseline(&program);
+        let (optional, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0x9004"/>
+      <block address="0x900e"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(baseline, 492.0);
+        assert_eq!(
+            optional, 491.0,
+            "the loop may repeat when the optional outside block is absent"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(conflict.mixed);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::Function));
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Aggregate
+        ));
+        assert_eq!(facts.info().conflicts[0].scope.as_deref(), Some("function"));
+        assert_eq!(facts.info().conflicts[0].mode.as_deref(), Some("aggregate"));
+        assert_eq!(facts.info().conflicts[0].iteration, None);
+
+        let (mandatory, mandatory_facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0x9004"/>
+      <block address="0x9010"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(
+            mandatory, 32.0,
+            "a present outside element must suppress the loop element"
+        );
+        assert!(mandatory_facts.infeasible_paths()[0].mixed);
+
+        let (all_iterations, all_facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x9002">
+      <iteration number="*">
+        <conflict>
+          <block address="0x9004"/>
+          <block address="0x900e"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(
+            all_iterations, baseline,
+            "all-iteration mixed unordered conflicts remain unsupported"
+        );
+        let conflict = &all_facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("mixes loop and non-loop"))
+        );
+    }
+
+    #[test]
+    fn mixed_loop_unordered_conflicts_apply_with_ordered_automata() {
+        let program = mixed_unordered_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x9004"/>
+      <block address="0x9010"/>
+    </conflict>
+    <conflict>
+      <block address="0x9004"/>
+      <block address="0x900e"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            constrained < baseline,
+            "mixed unordered presence must apply beside ordered automata: \
+             {constrained} < {baseline}"
+        );
+        assert_eq!(facts.infeasible_paths().len(), 2);
+        assert!(matches!(
+            facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::Automaton { .. }
+        ));
+        let mixed = &facts.infeasible_paths()[1];
+        assert!(mixed.applied);
+        assert!(mixed.mixed);
+        assert_eq!(mixed.scope, Some(InfeasibleScope::Function));
+        assert!(matches!(
+            mixed.enforcement,
+            InfeasibleEnforcement::Aggregate
+        ));
+    }
+
+    #[test]
+    fn mixed_loop_unordered_conflicts_apply_in_branch_state_products() {
+        let board = branch_board(256);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+
+        let mut baseline_program = mixed_unordered_program();
+        let _ = crate::branch_prediction::analyze_program(&mut baseline_program, prediction);
+        let _ =
+            analyze_program_with_branch_prediction(&mut baseline_program, &facts, Some(prediction));
+        let baseline = baseline_program.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.cycles)
+            .expect("baseline cycles");
+
+        let mut constrained_program = mixed_unordered_program();
+        let _ = crate::branch_prediction::analyze_program(&mut constrained_program, prediction);
+        let mut constrained_facts =
+            FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0x9004"/>
+      <block address="0x900e"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "mixed-state-product.ffx",
+        )
+        .expect("parse mixed state-product conflict");
+        constrained_facts
+            .apply_document(document, &constrained_program)
+            .expect("apply mixed state-product conflict");
+        let _ = analyze_program_with_branch_prediction(
+            &mut constrained_program,
+            &constrained_facts,
+            Some(prediction),
+        );
+        let wcet = constrained_program.functions[0]
+            .wcet
+            .as_ref()
+            .expect("constraint WCET");
+        let constrained = wcet.cycles.expect("finite cycles");
+        assert!(
+            constrained < baseline,
+            "mixed presence must apply in branch state products: {constrained} < {baseline}"
+        );
+        assert_eq!(
+            wcet.ipet
+                .as_ref()
+                .and_then(|ipet| ipet.branch_model.as_deref()),
+            Some("state-product")
+        );
+        assert!(constrained_facts.infeasible_paths()[0].mixed);
+    }
+
+    #[test]
     fn mixed_loop_cross_function_conflict_uses_function_scope() {
         let program = loop_cross_partition_program();
         let baseline = analyze_baseline_for(&program, 0xc000);
@@ -10368,6 +10687,69 @@ max_states = 16
         assert!(
             constrained < baseline,
             "mixed cross-function order must be enforced: {constrained} < {baseline}"
+        );
+    }
+
+    #[test]
+    fn mixed_loop_unordered_conflicts_apply_with_cross_function_automata() {
+        let program = loop_cross_partition_program();
+        let baseline = analyze_baseline_for(&program, 0xc000);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <conflict ordered="yes">
+        <call name="helper">
+          <block address="0x9000"/>
+        </call>
+        <block address="0xc01c"/>
+      </conflict>
+    </loop>
+    <conflict>
+      <block address="0xc012"/>
+      <block address="0xc016"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            "mixed-cross-state.ffx",
+        )
+        .expect("parse mixed cross state conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply mixed cross state conflict");
+        assert_eq!(facts.infeasible_paths().len(), 2);
+        assert!(facts.infeasible_paths().iter().any(|conflict| matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossFunctionAutomaton
+        )));
+        let mixed = facts
+            .infeasible_paths()
+            .iter()
+            .find(|conflict| conflict.mixed)
+            .expect("mixed presence constraint");
+        assert!(mixed.applied);
+        assert_eq!(mixed.scope, Some(InfeasibleScope::Function));
+        assert!(matches!(
+            mixed.enforcement,
+            InfeasibleEnforcement::Aggregate
+        ));
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let constrained = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite cycles");
+        assert!(
+            constrained < baseline,
+            "mixed presence must apply beside cross-function automata: \
+             {constrained} < {baseline}"
         );
     }
 
