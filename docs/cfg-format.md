@@ -1117,7 +1117,9 @@ asserts that the CFG validates.
   an enclosing declared loop when events span child loops, and an iteration
   context pins its declaring loop. If no declared loop contains all caller
   events but some touch a declared loop, a no-iteration ordered conflict uses
-  function scope; iteration-scoped mixed conflicts are ignored. A numeric
+  function scope. A numeric or last iteration keeps its selected loop and lets
+  outside events match before/after it; all-iteration mixed conflicts are
+  ignored. A numeric
   `<iteration number="N">`
   cross-function conflict
   additionally records `iteration: N` and checks only the selected 1-based

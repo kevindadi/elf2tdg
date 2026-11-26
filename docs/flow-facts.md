@@ -367,18 +367,25 @@ appear in one execution sub-trace:
   an enclosing declared loop. An `<iteration>` context pins the selected loop
   to the loop where it was declared. If no declared loop contains all events
   but at least one event touches a declared loop, an ordered conflict without
-  an `<iteration>` context is enforced at function-invocation scope. This is
-  the supported mixed loop/non-loop form; iteration-scoped mixed conflicts are
-  ignored. For cross-function conflicts, caller elements and every group's call
-  block, continuation and call-return endpoints participate in this selection;
-  callee-side elements stay in the callee CFG.
+  an `<iteration>` context is enforced at function-invocation scope.
+  A numeric or `-1` specific iteration instead keeps its selected loop:
+  in-loop events activate only in that iteration, outside-loop events remain
+  matchable before and after the loop, progress from outside-before events
+  survives loop entry, and a last-iteration outside tail uses the most recent
+  iteration's sequence progress as its candidate. `<iteration number="*">` mixed conflicts
+  remain unsupported. For cross-function conflicts, caller elements and every
+  group's call block, continuation and call-return endpoints participate in
+  this selection; callee-side elements stay in the callee CFG.
 - For same-function conflicts, all elements must resolve inside one function.
   For a loop-selected ordered conflict, every element and edge endpoint in the
   declaring function must be inside the selected loop; entry/exit edges are
-  rejected with a warning. Cross-function groups additionally require their
-  call block, continuation and call-return endpoints inside the same selected
-  loop. Mixed loop/non-loop ordering has no selected loop and uses function
-  scope. Two structural aggregate forms are enforced by IPET:
+  rejected with a warning. Numeric/last specific-iteration mixed conflicts are
+  the exception: outside events are allowed and use the selected iteration's
+  automaton. Cross-function groups additionally require their call block,
+  continuation and call-return endpoints inside the same selected loop, except
+  that specific mixed groups may straddle it. Mixed loop/non-loop ordering
+  without an iteration context has no selected loop and uses function scope.
+  Two structural aggregate forms are enforced by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
