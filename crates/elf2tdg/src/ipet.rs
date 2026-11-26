@@ -5062,6 +5062,89 @@ fn state_partition_eligible(
         })
 }
 
+struct StateProductView {
+    nodes_by_block: BTreeMap<NodeIndex, Vec<usize>>,
+    incoming: Vec<Vec<usize>>,
+    outgoing: Vec<Vec<usize>>,
+}
+
+fn state_product_view(nodes: &[StateProductNode], edges: &[StateProductEdge]) -> StateProductView {
+    let mut nodes_by_block: BTreeMap<NodeIndex, Vec<usize>> = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        nodes_by_block.entry(node.key.node).or_default().push(index);
+    }
+    let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for (index, edge) in edges.iter().enumerate() {
+        incoming[edge.to].push(index);
+        outgoing[edge.from].push(index);
+    }
+    StateProductView {
+        nodes_by_block,
+        incoming,
+        outgoing,
+    }
+}
+
+fn select_state_partition_regions(mut candidates: Vec<PartitionRegion>) -> Vec<PartitionRegion> {
+    candidates.sort_by(|left, right| {
+        right
+            .blocks
+            .len()
+            .cmp(&left.blocks.len())
+            .then_with(|| left.entry.index().cmp(&right.entry.index()))
+            .then_with(|| left.exit.index().cmp(&right.exit.index()))
+    });
+    let mut selected: Vec<PartitionRegion> = Vec::new();
+    for region in candidates.drain(..) {
+        if selected.len() >= usize::try_from(MAX_PARTITION_REGIONS).unwrap_or(usize::MAX) {
+            break;
+        }
+        if selected
+            .iter()
+            .all(|other| state_partition_regions_compatible(&region, other))
+        {
+            selected.push(region);
+        }
+    }
+    selected.sort_by(|left, right| {
+        left.blocks
+            .len()
+            .cmp(&right.blocks.len())
+            .then_with(|| left.entry.index().cmp(&right.entry.index()))
+            .then_with(|| left.exit.index().cmp(&right.exit.index()))
+    });
+    selected
+}
+
+fn state_partition_regions_compatible(left: &PartitionRegion, right: &PartitionRegion) -> bool {
+    if left.blocks == right.blocks {
+        return false;
+    }
+    if left.blocks.is_subset(&right.blocks) {
+        return state_partition_region_contains(right, left);
+    }
+    if right.blocks.is_subset(&left.blocks) {
+        return state_partition_region_contains(left, right);
+    }
+    if left.blocks.is_disjoint(&right.blocks) {
+        return state_partition_regions_disjoint_safe(left, right);
+    }
+    false
+}
+
+fn state_partition_region_contains(outer: &PartitionRegion, inner: &PartitionRegion) -> bool {
+    let entry_kept = inner.entry == outer.entry || !inner.blocks.contains(&outer.entry);
+    let exit_kept = inner.exit == outer.exit || outer.blocks.contains(&inner.exit);
+    entry_kept && exit_kept && inner.exit != outer.entry
+}
+
+fn state_partition_regions_disjoint_safe(left: &PartitionRegion, right: &PartitionRegion) -> bool {
+    let left_keeps_right_exit = !left.blocks.contains(&right.exit) || left.entry == right.exit;
+    let right_keeps_left_exit = !right.blocks.contains(&left.exit) || right.entry == left.exit;
+    left_keeps_right_exit && right_keeps_left_exit
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn partition_state_product_graph(
     cfg: &FunctionCfg,
@@ -5078,79 +5161,79 @@ fn partition_state_product_graph(
     if candidates.is_empty() {
         return None;
     }
-    let mut nodes_by_block: BTreeMap<NodeIndex, Vec<usize>> = BTreeMap::new();
-    for (index, node) in nodes.iter().enumerate() {
-        nodes_by_block.entry(node.key.node).or_default().push(index);
+    let regions = select_state_partition_regions(candidates);
+    if regions.is_empty() {
+        return None;
     }
-    let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
-    let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
-    for (index, edge) in edges.iter().enumerate() {
-        incoming[edge.to].push(index);
-        outgoing[edge.from].push(index);
-    }
-    let mut selected: Vec<StatePartitionPlan> = Vec::new();
-    let mut selected_blocks: BTreeSet<NodeIndex> = BTreeSet::new();
-    for region in candidates {
-        if selected.len() >= usize::try_from(MAX_PARTITION_REGIONS).unwrap_or(usize::MAX) {
-            break;
-        }
-        if !region.blocks.is_disjoint(&selected_blocks) {
-            continue;
-        }
-        let mut safe = true;
-        for plan in &selected {
-            let selected_region = &plan.region;
-            if region.blocks.contains(&selected_region.exit) && region.entry != selected_region.exit
-            {
-                safe = false;
-                break;
-            }
-            if selected_region.blocks.contains(&region.exit) && selected_region.entry != region.exit
-            {
-                safe = false;
-                break;
-            }
-        }
-        if !safe {
-            continue;
-        }
-        let Some(summaries) = summarize_state_region(
-            cfg,
-            &region,
-            nodes,
-            &nodes_by_block,
-            &incoming,
-            &outgoing,
-            edges,
-            pipeline_model,
-            pipeline_stalls,
-        ) else {
+    let mut working_nodes = nodes.to_vec();
+    let mut working_edges = edges.to_vec();
+    let mut view: Option<StateProductView> = None;
+    let mut hidden_blocks: BTreeSet<NodeIndex> = BTreeSet::new();
+    let mut summarized = 0_u32;
+    for region in regions {
+        let summaries = {
+            let current =
+                view.get_or_insert_with(|| state_product_view(&working_nodes, &working_edges));
+            summarize_state_region(
+                cfg,
+                &region,
+                &working_nodes,
+                &current.nodes_by_block,
+                &current.incoming,
+                &current.outgoing,
+                &working_edges,
+                pipeline_model,
+                pipeline_stalls,
+            )
+        };
+        let Some(summaries) = summaries else {
             continue;
         };
         if summaries.is_empty() {
             continue;
         }
-        selected_blocks.extend(region.blocks.iter().copied());
-        selected.push(StatePartitionPlan { region, summaries });
+        let plan = StatePartitionPlan { region, summaries };
+        let hidden: BTreeSet<NodeIndex> = working_nodes
+            .iter()
+            .filter(|node| {
+                plan.region.blocks.contains(&node.key.node) && node.key.node != plan.region.entry
+            })
+            .map(|node| node.key.node)
+            .collect();
+        let Some((new_nodes, new_edges)) =
+            apply_state_partition_plan(&working_nodes, &working_edges, &plan)
+        else {
+            continue;
+        };
+        working_nodes = new_nodes;
+        working_edges = new_edges;
+        view = None;
+        hidden_blocks.extend(hidden);
+        summarized = summarized.saturating_add(1);
     }
-    if selected.is_empty() {
+    if summarized == 0 {
         return None;
     }
+    Some(StateProductPartition {
+        nodes: working_nodes,
+        edges: working_edges,
+        regions: summarized,
+        summarized_blocks: u32::try_from(hidden_blocks.len()).unwrap_or(u32::MAX),
+    })
+}
 
-    let selected_entries: BTreeSet<NodeIndex> =
-        selected.iter().map(|plan| plan.region.entry).collect();
+fn apply_state_partition_plan(
+    nodes: &[StateProductNode],
+    edges: &[StateProductEdge],
+    plan: &StatePartitionPlan,
+) -> Option<(Vec<StateProductNode>, Vec<StateProductEdge>)> {
     let mut removed_nodes: BTreeSet<usize> = BTreeSet::new();
-    for plan in &selected {
-        for (index, node) in nodes.iter().enumerate() {
-            if plan.region.blocks.contains(&node.key.node) && node.key.node != plan.region.entry {
-                removed_nodes.insert(index);
-            }
-        }
-    }
     let mut entry_sources: BTreeSet<usize> = BTreeSet::new();
     for (index, node) in nodes.iter().enumerate() {
-        if selected_entries.contains(&node.key.node) {
+        if node.key.node == plan.region.entry {
             entry_sources.insert(index);
+        } else if plan.region.blocks.contains(&node.key.node) {
+            removed_nodes.insert(index);
         }
     }
     let kept: Vec<usize> = (0..nodes.len())
@@ -5183,29 +5266,18 @@ fn partition_state_product_graph(
             summary_counts: None,
         });
     }
-    for plan in &selected {
-        for summary in &plan.summaries {
-            let from = *old_to_new.get(&summary.from)?;
-            let to = *old_to_new.get(&summary.to)?;
-            new_edges.push(StateProductEdge {
-                from,
-                to,
-                original: None,
-                branch_cost: summary.cost,
-                summary_counts: Some(summary.counts.clone()),
-            });
-        }
+    for summary in &plan.summaries {
+        let from = *old_to_new.get(&summary.from)?;
+        let to = *old_to_new.get(&summary.to)?;
+        new_edges.push(StateProductEdge {
+            from,
+            to,
+            original: None,
+            branch_cost: summary.cost,
+            summary_counts: Some(summary.counts.clone()),
+        });
     }
-    let summarized_block_nodes: BTreeSet<NodeIndex> = removed_nodes
-        .iter()
-        .map(|index| nodes[*index].key.node)
-        .collect();
-    Some(StateProductPartition {
-        nodes: new_nodes,
-        edges: new_edges,
-        regions: u32::try_from(selected.len()).unwrap_or(u32::MAX),
-        summarized_blocks: u32::try_from(summarized_block_nodes.len()).unwrap_or(u32::MAX),
-    })
+    Some((new_nodes, new_edges))
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -5365,7 +5437,7 @@ fn summarize_state_region(
     for &entry_old in &entry_nodes {
         let entry_local = *local_index.get(&entry_old)?;
         let mut best = vec![f64::NEG_INFINITY; local_count];
-        let mut predecessor: Vec<Option<usize>> = vec![None; local_count];
+        let mut predecessor: Vec<Option<(usize, usize)>> = vec![None; local_count];
         best[entry_local] = 0.0;
         for &source in &topological {
             if !best[source].is_finite() {
@@ -5379,7 +5451,7 @@ fn summarize_state_region(
                 }
                 if candidate.is_finite() && candidate > best[target] + 1e-9 {
                     best[target] = candidate;
-                    predecessor[target] = Some(source);
+                    predecessor[target] = Some((source, edge_index));
                 }
             }
         }
@@ -5397,11 +5469,17 @@ fn summarize_state_region(
             saw_exit = true;
             let mut counts: BTreeMap<BlockId, u64> = BTreeMap::new();
             let mut current = exit_local;
-            while let Some(previous) = predecessor[current] {
+            while let Some((previous, edge_index)) = predecessor[current] {
                 if is_internal[current] {
                     let block = &cfg.graph[nodes[local_old[current]].key.node].id;
                     let count = counts.entry(block.clone()).or_default();
                     *count = count.saturating_add(1);
+                }
+                if let Some(nested) = &edges[edge_index].summary_counts {
+                    for (block, count) in nested {
+                        let entry = counts.entry(block.clone()).or_default();
+                        *entry = entry.saturating_add(*count);
+                    }
                 }
                 current = previous;
             }
@@ -5547,7 +5625,7 @@ fn solve_function_with_state_products(
                 regions: partition.regions,
                 summarized_blocks: partition.summarized_blocks,
                 caveats: vec![
-                    "State-product SESE regions are summarized by the worst local path from each entry cache/prediction/pipeline/BTB/RAS state to each exit state; entry and exit states remain explicit in the final product graph.".to_owned(),
+                    "State-product SESE regions are summarized by the worst local path from each entry cache/prediction/pipeline/BTB/RAS state to each exit state; entry and exit states remain explicit in the final product graph. Nested regions are summarized innermost first, and their costs and block counts are folded into enclosing summaries.".to_owned(),
                     "A region entry state that can reach several exit states may use those exits more freely in the final IPET than in a concrete execution. This over-approximates the monolithic state-product model, so the result remains a safe upper bound but can be larger.".to_owned(),
                     "Regions containing loop headers or latches, or ending at a loop header, are left monolithic. Functions with non-loop flow facts, infeasible-path constraints, unresolved control flow or recovered calls are not partitioned; block counts inside a summarized region describe one worst-cost local path per entry/exit state and are diagnostic.".to_owned(),
                 ],
@@ -6489,6 +6567,73 @@ auto_loop_bounds = false
         )])
     }
 
+    fn nested_state_partition_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x4000,
+            FunctionCfg::build(
+                vec![
+                    block(0x4000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x4002, CfgTerminator::Branch, 1.0),
+                    block(0x4004, CfgTerminator::Branch, 1.0),
+                    block(0x4006, CfgTerminator::Fallthrough, 4.0),
+                    block(0x4008, CfgTerminator::Fallthrough, 2.0),
+                    block(0x400a, CfgTerminator::Fallthrough, 1.0),
+                    block(0x400c, CfgTerminator::Fallthrough, 0.5),
+                    block(0x4010, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x4000, 0x4002, CfgEdgeKind::Fallthrough),
+                    edge(0x4002, 0x4004, CfgEdgeKind::Branch),
+                    edge(0x4002, 0x400c, CfgEdgeKind::Fallthrough),
+                    edge(0x4004, 0x4006, CfgEdgeKind::Branch),
+                    edge(0x4004, 0x4008, CfgEdgeKind::Fallthrough),
+                    edge(0x4006, 0x400a, CfgEdgeKind::Fallthrough),
+                    edge(0x4008, 0x400a, CfgEdgeKind::Fallthrough),
+                    edge(0x400a, 0x4010, CfgEdgeKind::Fallthrough),
+                    edge(0x400c, 0x4010, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x4000),
+            ),
+        )])
+    }
+
+    fn deeply_nested_state_partition_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x5000,
+            FunctionCfg::build(
+                vec![
+                    block(0x5000, CfgTerminator::Fallthrough, 1.0),
+                    block(0x5002, CfgTerminator::Branch, 1.0),
+                    block(0x5004, CfgTerminator::Branch, 1.0),
+                    block(0x5006, CfgTerminator::Branch, 1.0),
+                    block(0x5008, CfgTerminator::Fallthrough, 5.0),
+                    block(0x500a, CfgTerminator::Fallthrough, 1.0),
+                    block(0x500c, CfgTerminator::Fallthrough, 1.0),
+                    block(0x5010, CfgTerminator::Fallthrough, 1.0),
+                    block(0x5014, CfgTerminator::Fallthrough, 0.5),
+                    block(0x5020, CfgTerminator::Fallthrough, 0.5),
+                    block(0x5028, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x5000, 0x5002, CfgEdgeKind::Fallthrough),
+                    edge(0x5002, 0x5004, CfgEdgeKind::Branch),
+                    edge(0x5002, 0x5020, CfgEdgeKind::Fallthrough),
+                    edge(0x5004, 0x5006, CfgEdgeKind::Branch),
+                    edge(0x5004, 0x5014, CfgEdgeKind::Fallthrough),
+                    edge(0x5006, 0x5008, CfgEdgeKind::Branch),
+                    edge(0x5006, 0x500a, CfgEdgeKind::Fallthrough),
+                    edge(0x5008, 0x500c, CfgEdgeKind::Fallthrough),
+                    edge(0x500a, 0x500c, CfgEdgeKind::Fallthrough),
+                    edge(0x500c, 0x5010, CfgEdgeKind::Fallthrough),
+                    edge(0x5014, 0x5010, CfgEdgeKind::Fallthrough),
+                    edge(0x5010, 0x5028, CfgEdgeKind::Fallthrough),
+                    edge(0x5020, 0x5028, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x5000),
+            ),
+        )])
+    }
+
     fn block_counts(solution: &CfgIpetSolution) -> BTreeMap<&str, u64> {
         solution
             .blocks
@@ -6921,6 +7066,83 @@ max_states = 16
             "loop-body state partition {} must not undercut monolithic {}",
             partitioned.objective,
             monolithic.objective
+        );
+    }
+
+    #[test]
+    fn state_partition_summarizes_nested_regions() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 64
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 16
+",
+        );
+        let mut program = nested_state_partition_program();
+        prepare_cache_program(&mut program, &board);
+
+        let monolithic = state_partition_solution(&program, &board, false);
+        let partitioned = state_partition_solution(&program, &board, true);
+        let partitioning = partitioned
+            .partitioning
+            .as_ref()
+            .expect("nested state partitioning");
+        assert_eq!(partitioning.model, "sese-state-product-regions");
+        assert_eq!(partitioning.regions, 2);
+        assert!(partitioning.summarized_blocks >= 5);
+        assert!(
+            partitioned.objective + 1e-6 >= monolithic.objective,
+            "nested state partition {} must not undercut monolithic {}",
+            partitioned.objective,
+            monolithic.objective
+        );
+        assert!(
+            partitioned
+                .blocks
+                .iter()
+                .any(|block| block.block.as_str() == "bb:0x4006"),
+            "nested summary counts must be composed into the outer region"
+        );
+    }
+
+    #[test]
+    fn state_partition_composes_deeply_nested_summaries() {
+        let board = cache_board(
+            r"
+[instruction_cache]
+size = 64
+line_bytes = 16
+ways = 2
+miss_penalty = 10
+max_states = 16
+",
+        );
+        let mut program = deeply_nested_state_partition_program();
+        prepare_cache_program(&mut program, &board);
+
+        let monolithic = state_partition_solution(&program, &board, false);
+        let partitioned = state_partition_solution(&program, &board, true);
+        let partitioning = partitioned
+            .partitioning
+            .as_ref()
+            .expect("deeply nested state partitioning");
+        assert_eq!(partitioning.regions, 3);
+        assert!(partitioning.summarized_blocks >= 6);
+        assert!(
+            partitioned.objective + 1e-6 >= monolithic.objective,
+            "deeply nested state partition {} must not undercut monolithic {}",
+            partitioned.objective,
+            monolithic.objective
+        );
+        assert!(
+            partitioned
+                .blocks
+                .iter()
+                .any(|block| block.block.as_str() == "bb:0x5008"),
+            "deepest summary counts must survive two enclosing summaries"
         );
     }
 
