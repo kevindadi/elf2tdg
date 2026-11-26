@@ -362,10 +362,11 @@ missing metadata falls back to the existing bounded heuristics.
 
 ## JSON document
 
-`cfg_schema_version` is `2.44`.
+`cfg_schema_version` is `2.45`.
 Every document contains image metadata, diagnostics, and the selected
-functions. Version 2.44 adds `calls` listing every group of a multi-group
-cross-function conflict; `call` remains the first group. Version 2.43 adds per-frame call-site addresses to contextual flow-fact metadata. Version 2.42 adds IPET `partitioning` metadata for SESE
+functions. Version 2.45 adds the specific loop `iteration` field to
+cross-function conflict records. Version 2.44 adds `calls` listing every group
+of a multi-group cross-function conflict; `call` remains the first group. Version 2.43 adds per-frame call-site addresses to contextual flow-fact metadata. Version 2.42 adds IPET `partitioning` metadata for SESE
 region summaries. Version 2.41 adds store-to-load forwarding metadata
 (`board_profile_pipeline_store_forwarding`, latency and entry count). Version
 2.40 adds data-forwarding metadata
@@ -443,7 +444,7 @@ global data.
 
 ```json
 {
-  "cfg_schema_version": "2.44",
+  "cfg_schema_version": "2.45",
   "image": { "arch": "thumb", "...": "..." },
   "timing": { "models": [], "frequency_domains": [] },
   "wcet": {
@@ -1111,11 +1112,16 @@ asserts that the CFG validates.
   loop-scoped cross-function conflict uses `scope: "loop"` with `loop_header`;
   its caller-side elements and call boundaries must stay in the declaring
   function's loop, and progress resets on loop entry or, for iteration scope,
-  every backedge. The
-  `calls` array records every group, with `call` retaining the first group.
+  every backedge. A numeric `<iteration number="N">` cross-function conflict
+  additionally records `iteration: N` and checks only the selected 1-based
+  iteration; `iteration: -1` is the last iteration. Same-function numeric
+  iteration conflicts are not applied. The `calls` array records every group,
+  with `call` retaining the first group. Product states that cannot reach a
+  function exit are pruned so dead circulations cannot inflate the objective.
   The product is capped; exceeding the cap makes the function `unknown`.
-  Specific-iteration, nested-group, repeated-call-site, ambiguous-call-site and
-  duplicate-edge conflicts are ignored with warnings.
+  Nested-group, repeated-call-site, ambiguous-call-site and duplicate-edge
+  conflicts are ignored with warnings; numeric iterations above 256 are also
+  ignored conservatively.
   When LRU instruction/data-cache profiles are active, the IPET backend builds
   a per-function product with the concrete cache states, replaces the per-block
   worst-case miss penalty with the modeled misses on each product state, and

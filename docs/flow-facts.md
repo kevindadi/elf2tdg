@@ -219,8 +219,8 @@ Semantics and limits:
   bound.
 - Numeric branch counts (`maxcount`/`totalcount` on a case) are not supported
   yet; only `executed=false` is applied, with a warning for the numeric form.
-  Iteration- and scenario-specific elements are ignored entirely because the
-  current analysis is not iteration- or scenario-sensitive.
+  Iteration- and scenario-specific branch/call elements are ignored entirely;
+  numeric iterations are supported only for ordered cross-function conflicts.
 - Context-specific branch/call facts are applied only in matching caller
   contexts by IPET. A fact whose caller chain matches no analyzed context has no
   effect.
@@ -230,11 +230,11 @@ Semantics and limits:
   infeasible-path constraints. Regions that touch a fact-referenced block stay
   monolithic, and the final parent model enforces the fact. Exact state-free
   partitioning also supports ordered automata, including cross-function
-  conflicts: automaton reset-loop blocks (also for loop-scoped cross-function
-  resets), all call-group boundaries and caller-side pattern elements stay
-  monolithic, and the final automaton or cross-function product enforces the
-  order. State-product partitioning keeps ordered and cross-function automata
-  monolithic.
+  conflicts: automaton reset-loop blocks (also for loop-scoped and
+  specific-iteration cross-function resets), all call-group boundaries and
+  caller-side pattern elements stay monolithic, and the final automaton or
+  cross-function product enforces the order. State-product partitioning keeps
+  ordered and cross-function automata monolithic.
 - F4 non-loop directives are not implemented; unknown F4 directives are
   reported and ignored. Use FFX for branch/call facts.
 
@@ -330,7 +330,19 @@ appear in one execution sub-trace:
     when control enters the loop and spans all its iterations.
     `<iteration number="*">` also resets on every loop backedge, so a sequence
     cannot span iterations; a pattern naming a loop-backedge edge in that scope
-    is ignored.
+    is ignored. A numeric `<iteration number="N">` selects one 1-based loop
+    iteration, and `number="-1"` selects the last iteration. The sequence is
+    checked only in that iteration and cannot span iterations. Iteration 1
+    starts when control enters the loop, and each backedge starts the next
+    iteration. A last-iteration sequence that completes is rejected when the
+    loop exits after that iteration. A backedge defers the decision: entering
+    another loop body clears the completed marker, while exiting at the loop
+    header rejects the path. A numeric iteration above the configured
+    per-entry loop bound is exactly vacuous. Same-function conflicts at a
+    numeric iteration remain unsupported. At most 256 is accepted; larger
+    numbers are ignored conservatively.
+    Product states that cannot reach a function exit are pruned, so a sequence
+    cannot be hidden in a dead circulation that never completes the loop.
   If the sequence is structurally impossible, the fact is vacuously satisfied:
   no constraint or automaton is needed and the record explains why. Ordered
   conflicts that repeat an element, name a backedge element in an iteration
@@ -341,9 +353,11 @@ appear in one execution sub-trace:
   `<loop ...>` may omit its bound and acts as a context only; a missing bound
   produces a warning and falls back to the profile/default or inference.
   `<iteration number="*">` conflicts are supported and reset ordered progress
-  on loop entry and every backedge. Conflicts for a specific iteration number
-  are ignored with warnings. Unordered conflicts spanning nested loops are
-  ignored; ordered conflicts use the automaton product.
+  on loop entry and every backedge. Numeric iterations are supported for
+  ordered cross-function conflicts; same-function numeric iterations, or
+  cross-function numbers outside the supported range, are ignored with
+  warnings. Unordered conflicts spanning nested loops are ignored; ordered
+  conflicts use the automaton product.
 - For same-function conflicts, all elements must resolve inside one function.
   For any conflict declared inside a `<loop>` or `<iteration>` context, every
   element and edge endpoint in the declaring function must be inside that loop;

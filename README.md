@@ -74,9 +74,9 @@ Implemented:
     enforced by the parent model, and regions touching referenced blocks stay
     monolithic. Ordered automata, including cross-function conflicts, are also
     supported by the exact partitioner, with automaton reset-loop blocks,
-    loop-scoped cross-function resets, call boundaries and caller-side pattern
-    elements kept monolithic, and the automaton or cross-function product run
-    on the reduced CFG. State-product
+    loop-scoped and specific-iteration cross-function resets, call boundaries
+    and caller-side pattern elements kept monolithic, and the automaton or
+    cross-function product run on the reduced CFG. State-product
     ordered and cross-function automata stay monolithic. When
     cache/pipeline/branch/BTB/RAS state products are active,
     a laminar family of regions without loop headers/latches or loop-header
@@ -102,7 +102,9 @@ Implemented:
     with one or more direct `<call>` groups by inlining the selected callees.
     Cross-function sequences may be loop-scoped; caller elements and call
     boundaries must stay in the declaring function's loop, and progress resets
-    on loop entry or, for iteration scope, every backedge.
+    on loop entry or, for iteration scope, every backedge. A numeric
+    `<iteration number="N">` checks one 1-based iteration, while `-1` selects
+    the last iteration.
   Profiles are strictly validated, and timing metadata records the profile ID,
   SHA-256 and source. See [docs/board-profile.md](docs/board-profile.md) and
   [docs/flow-facts.md](docs/flow-facts.md).
@@ -357,10 +359,13 @@ groups inline the selected callees in the product; each group's callee elements
 must match within one invocation, and the callee summary remains the cost bound.
 A conflict may be loop-scoped: caller-side pattern elements and call boundaries
 must stay inside the declaring function's loop, and progress resets on loop
-entry or, for iteration scope, every backedge. A multi-group automaton
-preserves the declared caller/callee group order.
-Specific-iteration, nested-group and ambiguous-call-site forms are recorded but
-ignored. Context enumeration has bounded depth and counts; exceeding a limit
+entry or, for iteration scope, every backedge. Numeric iteration scopes check
+only the selected 1-based iteration; `-1` tracks the last iteration and is
+rejected when the loop exits after the conflict sequence. Iterations above the
+configured bound are vacuously satisfied. A multi-group automaton preserves the
+declared caller/callee group order. Same-function numeric iterations, nested
+call groups and ambiguous call sites are recorded but ignored. Context
+enumeration has bounded depth and counts; exceeding a limit
 falls back to a conservative context-insensitive model and marks affected
 results `partial`.
 Irreducible cycles and recursive call cycles are unbounded, while unresolved
