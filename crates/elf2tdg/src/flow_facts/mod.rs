@@ -977,10 +977,12 @@ pub(crate) enum InfeasibleElement {
 pub(crate) enum InfeasibleScope {
     /// All elements execute at most once per function invocation.
     Function,
-    /// All elements touch one non-nested natural loop; the constraint is
-    /// valid per loop iteration.
+    /// Elements touch one non-nested natural loop. Unordered and
+    /// iteration-scoped ordered forms are per iteration; loop-entry ordered
+    /// automata span all iterations.
     Loop { header: BlockId },
-    /// Elements span the declaring function and one directly called callee.
+    /// Elements span the declaring function and one or more directly called
+    /// callees.
     CrossFunction,
 }
 
@@ -991,7 +993,7 @@ pub(crate) enum InfeasibleEnforcement {
     Aggregate,
     /// Product IPET with a sequence-progress automaton.
     Automaton { reset: OrderedReset },
-    /// Product IPET with the selected callee inlined for the conflict.
+    /// Product IPET with the selected call groups inlined for the conflict.
     CrossFunctionAutomaton,
 }
 
@@ -1053,6 +1055,10 @@ pub(crate) struct CrossFunctionConstraint {
     pub(crate) call_return: InfeasibleElement,
     /// One entry per `<call>` group, in declaration order.
     pub(crate) groups: Vec<CrossFunctionGroup>,
+    /// Sequence-reset scope. `Function` spans one invocation, `LoopEntry`
+    /// spans all iterations of the loop, and `LoopIteration` resets on entry
+    /// and every backedge.
+    pub(crate) reset: OrderedReset,
     /// Conflict elements in declaration order.
     pub(crate) pattern: Vec<CrossFunctionSlot>,
 }
@@ -1371,12 +1377,6 @@ fn resolve_cross_function_conflict(
         ));
         return Ok(record);
     }
-    if fact.loop_context.is_some() || fact.all_iterations {
-        record.reason = Some(format!(
-            "{origin}: loop- or iteration-scoped cross-function conflicts are not supported; conflict ignored"
-        ));
-        return Ok(record);
-    }
     if fact
         .elements
         .iter()
@@ -1491,6 +1491,92 @@ fn resolve_cross_function_conflict(
             }
         }
     }
+    record.elements = flatten_pattern(&pattern);
+    let loop_scope = if let Some(target) = &fact.loop_context {
+        let header_address = resolve_target(program, target, origin)?;
+        let context_function = function_for_block(program, header_address, origin)?;
+        if context_function.id != function.id {
+            record.reason = Some(format!(
+                "{origin}: cross-function conflict loop context belongs to another function; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        let Some(&node) = function.cfg.blocks_by_address.get(&header_address) else {
+            record.reason = Some(format!(
+                "{origin}: cross-function conflict loop context is not a block in {:?}; conflict ignored",
+                function.primary_name
+            ));
+            return Ok(record);
+        };
+        let header = function.cfg.graph[node].id.clone();
+        let analysis = crate::cfg_graph::analyze(&function.cfg);
+        let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == header) else {
+            record.reason = Some(format!(
+                "{origin}: cross-function conflict loop context is not a natural loop; conflict ignored"
+            ));
+            return Ok(record);
+        };
+        let loop_blocks: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
+        let element_inside = |element: &InfeasibleElement| match element {
+            InfeasibleElement::Block { block } => loop_blocks.contains(block),
+            InfeasibleElement::Edge { source, target, .. } => {
+                loop_blocks.contains(source) && loop_blocks.contains(target)
+            }
+        };
+        if pattern.iter().any(
+            |slot| matches!(slot, CrossFunctionSlot::Caller(element) if !element_inside(element)),
+        ) {
+            record.reason = Some(format!(
+                "{origin}: cross-function loop-scoped conflict has a caller element outside the loop; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        if groups.iter().any(|group| {
+            !loop_blocks.contains(&group.call_block)
+                || !loop_blocks.contains(&group.continuation)
+                || !element_inside(&group.call_return)
+        }) {
+            record.reason = Some(format!(
+                "{origin}: cross-function loop-scoped conflict has a call boundary outside the loop; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        if fact.all_iterations {
+            let backedges: BTreeSet<(BlockId, BlockId)> = loop_
+                .backedges
+                .iter()
+                .map(|edge| (edge.from.clone(), edge.to.clone()))
+                .collect();
+            if pattern.iter().any(|slot| {
+                matches!(slot, CrossFunctionSlot::Caller(InfeasibleElement::Edge { source, target, .. })
+                    if backedges.contains(&(source.clone(), target.clone())))
+            }) {
+                record.reason = Some(format!(
+                    "{origin}: iteration-scoped cross-function ordered conflict contains a loop-backedge element; conflict ignored"
+                ));
+                return Ok(record);
+            }
+        }
+        Some((header, fact.all_iterations))
+    } else {
+        if fact.all_iterations {
+            record.reason = Some(format!(
+                "{origin}: iteration-scoped cross-function ordered conflict lacks a loop context; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        None
+    };
+    let reset = match &loop_scope {
+        Some((header, true)) => OrderedReset::LoopIteration {
+            header: header.clone(),
+        },
+        Some((header, false)) => OrderedReset::LoopEntry {
+            header: header.clone(),
+        },
+        None => OrderedReset::Function,
+    };
+
     let Some(first) = groups.first() else {
         record.reason = Some(format!(
             "{origin}: cross-function conflict has no call group; conflict ignored"
@@ -1505,10 +1591,15 @@ fn resolve_cross_function_conflict(
         continuation: first.continuation.clone(),
         call_return: first.call_return.clone(),
         groups,
+        reset,
         pattern: pattern.clone(),
     };
-    record.elements = flatten_pattern(&pattern);
-    record.scope = Some(InfeasibleScope::CrossFunction);
+    record.scope = match &loop_scope {
+        Some((header, _)) => Some(InfeasibleScope::Loop {
+            header: header.clone(),
+        }),
+        None => Some(InfeasibleScope::CrossFunction),
+    };
     record.enforcement = InfeasibleEnforcement::CrossFunctionAutomaton;
     record.cross_function = Some(cross);
     record.applied = true;

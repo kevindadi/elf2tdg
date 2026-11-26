@@ -1421,7 +1421,7 @@ pub struct CfgInfeasiblePathInfo {
     /// Constraint scope: `function`, `loop` or `cross-function`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// Loop header for a per-iteration constraint.
+    /// Loop header for a loop-scoped constraint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loop_header: Option<BlockId>,
     /// First selected call boundary for a cross-function constraint.

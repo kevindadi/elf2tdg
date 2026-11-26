@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. Cross-function ordered conflicts with one direct call group inline the selected callee in the product and require the callee elements to match within one invocation; the callee summary remains the cost bound. Specific-iteration, duplicate-edge, multi-group and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Specific-iteration, nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -382,7 +382,7 @@ fn analyze_program_impl(
             .is_some_and(|ipet| ipet.partitioning.is_some())
     }) {
         info.caveats.push(
-            "IPET CFG partitioning summarizes SESE branch regions with an exact per-entry local model and expands their block counts into the final solution. Fixed per-call-block callee costs are included in both local and final models. Functions with cache/pipeline/branch/BTB/RAS state models, non-loop flow facts, infeasible-path constraints or recovered-call gaps use the monolithic model."
+            "IPET CFG partitioning summarizes SESE branch regions with an exact per-entry local model and expands their block counts into the final solution. Fixed per-call-block callee costs are included in both local and final models. Supported branch/call facts and infeasible-path constraints are enforced by the final model; regions touching referenced blocks stay monolithic. Exact state-free partitioning supports ordered and cross-function automata, including loop-scoped resets; state-product partitioning keeps ordered and cross-function automata monolithic. Other shapes use monolithic IPET."
                 .to_owned(),
         );
     }
@@ -1035,7 +1035,10 @@ fn partition_facts_supported(
                 allow_cross_function
                     && conflict.ordered
                     && conflict.cross_function.is_some()
-                    && matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
+                    && matches!(
+                        conflict.scope,
+                        Some(InfeasibleScope::CrossFunction | InfeasibleScope::Loop { .. })
+                    )
             }
         }
     })
@@ -1127,9 +1130,15 @@ fn non_loop_fact_blocks(
         if let Some(InfeasibleScope::Loop { header }) = &conflict.scope {
             blocks.insert(header.clone());
         }
-        if let InfeasibleEnforcement::Automaton {
-            reset: OrderedReset::LoopEntry { header } | OrderedReset::LoopIteration { header },
-        } = &conflict.enforcement
+        let reset = match &conflict.enforcement {
+            InfeasibleEnforcement::Automaton { reset } => Some(reset),
+            InfeasibleEnforcement::CrossFunctionAutomaton => {
+                conflict.cross_function.as_ref().map(|cross| &cross.reset)
+            }
+            InfeasibleEnforcement::Aggregate => None,
+        };
+        if let Some(OrderedReset::LoopEntry { header } | OrderedReset::LoopIteration { header }) =
+            reset
             && let Some(loop_) = loop_analysis
                 .get_or_insert_with(|| cfg.analyze_graph())
                 .loops
@@ -2303,19 +2312,32 @@ struct AutomatonRuntime {
 
 impl AutomatonRuntime {
     fn reset_on(&self, source: &BlockId, target: &BlockId) -> bool {
-        match &self.reset {
-            OrderedReset::Function => false,
-            OrderedReset::LoopEntry { .. } => self
-                .loop_blocks
-                .as_ref()
-                .is_some_and(|blocks| !blocks.contains(source) && blocks.contains(target)),
-            OrderedReset::LoopIteration { .. } => {
-                let entry = self
-                    .loop_blocks
-                    .as_ref()
-                    .is_some_and(|blocks| !blocks.contains(source) && blocks.contains(target));
-                entry || self.backedges.contains(&(source.clone(), target.clone()))
-            }
+        sequence_resets(
+            &self.reset,
+            self.loop_blocks.as_ref(),
+            &self.backedges,
+            source,
+            target,
+        )
+    }
+}
+
+fn sequence_resets(
+    reset: &OrderedReset,
+    loop_blocks: Option<&BTreeSet<BlockId>>,
+    backedges: &BTreeSet<(BlockId, BlockId)>,
+    source: &BlockId,
+    target: &BlockId,
+) -> bool {
+    match reset {
+        OrderedReset::Function => false,
+        OrderedReset::LoopEntry { .. } => {
+            loop_blocks.is_some_and(|blocks| !blocks.contains(source) && blocks.contains(target))
+        }
+        OrderedReset::LoopIteration { .. } => {
+            let entry = loop_blocks
+                .is_some_and(|blocks| !blocks.contains(source) && blocks.contains(target));
+            entry || backedges.contains(&(source.clone(), target.clone()))
         }
     }
 }
@@ -2973,6 +2995,21 @@ struct CrossGroupModel {
 struct CrossAutomatonModel {
     slots: Vec<CrossFunctionSlot>,
     groups: Vec<CrossGroupModel>,
+    reset: OrderedReset,
+    loop_blocks: Option<BTreeSet<BlockId>>,
+    backedges: BTreeSet<(BlockId, BlockId)>,
+}
+
+impl CrossAutomatonModel {
+    fn reset_on(&self, source: &BlockId, target: &BlockId) -> bool {
+        sequence_resets(
+            &self.reset,
+            self.loop_blocks.as_ref(),
+            &self.backedges,
+            source,
+            target,
+        )
+    }
 }
 
 fn caller_node_by_block(cfg: &FunctionCfg, block: &BlockId) -> Option<NodeIndex> {
@@ -3278,8 +3315,10 @@ fn build_cross_model(
 
 fn cross_automaton_models(
     model: &ModelGraph,
+    cfg: &FunctionCfg,
     cross: &[&CrossFunctionConstraint],
 ) -> Result<Vec<CrossAutomatonModel>, IpetError> {
+    let analysis = crate::cfg_graph::analyze(cfg);
     if model.constraint_groups.len() != cross.len() {
         return Err(IpetError::Unknown("cross-function-model".to_owned()));
     }
@@ -3326,7 +3365,33 @@ fn cross_automaton_models(
                     "cross-function-pattern-order".to_owned(),
                 ));
             }
-            Ok(CrossAutomatonModel { slots, groups })
+            let (loop_blocks, backedges) = match &constraint.reset {
+                OrderedReset::Function => (None, BTreeSet::new()),
+                OrderedReset::LoopEntry { header } | OrderedReset::LoopIteration { header } => {
+                    let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == *header)
+                    else {
+                        return Err(IpetError::Unknown("ordered-loop-missing".to_owned()));
+                    };
+                    let backedges =
+                        if matches!(constraint.reset, OrderedReset::LoopIteration { .. }) {
+                            loop_
+                                .backedges
+                                .iter()
+                                .map(|edge| (edge.from.clone(), edge.to.clone()))
+                                .collect()
+                        } else {
+                            BTreeSet::new()
+                        };
+                    (Some(loop_.blocks.iter().cloned().collect()), backedges)
+                }
+            };
+            Ok(CrossAutomatonModel {
+                slots,
+                groups,
+                reset: constraint.reset.clone(),
+                loop_blocks,
+                backedges,
+            })
         })
         .collect()
 }
@@ -3429,6 +3494,14 @@ fn advance_cross_state(
 ) -> Option<CrossState> {
     match edge.kind {
         ModelEdgeKind::Caller => {
+            let (source, target_node) = cfg
+                .graph
+                .edge_endpoints(edge.original)
+                .expect("model graph caller edge endpoint");
+            let mut state = state;
+            if automaton.reset_on(&cfg.graph[source].id, &cfg.graph[target_node].id) {
+                state = CrossState { slot: 0, sub: 0 };
+            }
             let element = caller_edge_element(cfg, edge.original);
             let target = &model.nodes[edge.target].block;
             let slot =
@@ -3476,8 +3549,14 @@ fn advance_cross_state(
             })
         }
         ModelEdgeKind::ReturnCall => {
+            let (source, target_node) = cfg
+                .graph
+                .edge_endpoints(edge.original)
+                .expect("model graph caller edge endpoint");
             let mut slot = state.slot;
-            if let Some(group) = cross_group_for_call(automaton, edge.call, state.slot)
+            if automaton.reset_on(&cfg.graph[source].id, &cfg.graph[target_node].id) {
+                slot = 0;
+            } else if let Some(group) = cross_group_for_call(automaton, edge.call, state.slot)
                 && state.sub == group.len
             {
                 slot = group.start + group.len;
@@ -3703,7 +3782,7 @@ fn solve_function_with_cross_function_automata(
         cross,
     )?;
     let runtimes = automaton_runtimes(cfg, automata)?;
-    let cross_automata = cross_automaton_models(&model, cross)?;
+    let cross_automata = cross_automaton_models(&model, cfg, cross)?;
     let model_loops = build_model_loops(&model, loops);
     let (product_nodes, product_edges) =
         build_cross_product_graph(&model, program, cfg, &runtimes, &cross_automata)?;
@@ -6798,6 +6877,59 @@ auto_loop_bounds = false
         ])
     }
 
+    fn loop_cross_partition_program() -> ProgramCfg {
+        let caller_cfg = FunctionCfg::build(
+            vec![
+                block(0xc000, CfgTerminator::Fallthrough, 1.0),
+                block(0xc002, CfgTerminator::Branch, 1.0),
+                block(0xc004, CfgTerminator::Branch, 1.0),
+                block(0xc006, CfgTerminator::Fallthrough, 1.0),
+                block(0xc008, CfgTerminator::Fallthrough, 1.0),
+                block(0xc00a, CfgTerminator::Fallthrough, 1.0),
+                block(0xc010, CfgTerminator::Branch, 1.0),
+                call_block(0xc012, 1.0, 0x9000),
+                block(0xc014, CfgTerminator::Branch, 1.0),
+                block(0xc016, CfgTerminator::Fallthrough, 1.0),
+                block(0xc01c, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0xc000, 0xc002, CfgEdgeKind::Fallthrough),
+                edge(0xc002, 0xc004, CfgEdgeKind::Branch),
+                edge(0xc002, 0xc010, CfgEdgeKind::Fallthrough),
+                edge(0xc004, 0xc006, CfgEdgeKind::Branch),
+                edge(0xc004, 0xc008, CfgEdgeKind::Fallthrough),
+                edge(0xc006, 0xc00a, CfgEdgeKind::Fallthrough),
+                edge(0xc008, 0xc00a, CfgEdgeKind::Fallthrough),
+                edge(0xc00a, 0xc01c, CfgEdgeKind::Fallthrough),
+                edge(0xc010, 0xc012, CfgEdgeKind::Branch),
+                edge(0xc010, 0xc016, CfgEdgeKind::Fallthrough),
+                edge(0xc012, 0xc014, CfgEdgeKind::CallReturn),
+                edge(0xc014, 0xc010, CfgEdgeKind::Branch),
+                edge(0xc016, 0xc01c, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0xc000),
+        );
+        let helper_cfg = FunctionCfg::build(
+            vec![
+                block(0x9000, CfgTerminator::Branch, 1.0),
+                block(0x9002, CfgTerminator::Fallthrough, 50.0),
+                block(0x9004, CfgTerminator::Fallthrough, 1.0),
+                block(0x9006, CfgTerminator::Return, 1.0),
+            ],
+            vec![
+                edge(0x9000, 0x9002, CfgEdgeKind::Branch),
+                edge(0x9000, 0x9004, CfgEdgeKind::Fallthrough),
+                edge(0x9002, 0x9006, CfgEdgeKind::Fallthrough),
+                edge(0x9004, 0x9006, CfgEdgeKind::Fallthrough),
+            ],
+            Some(0x9000),
+        );
+        ProgramCfg::new(vec![
+            named_function(0xc000, "main", caller_cfg),
+            named_function(0x9000, "helper", helper_cfg),
+        ])
+    }
+
     fn nested_partition_diamond_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x6000,
@@ -7928,6 +8060,321 @@ max_states = 16
     }
 
     #[test]
+    fn loop_scoped_cross_function_fact_applies_loop_entry_reset() {
+        let program = loop_caller_program(true);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x3002">
+      <conflict ordered="yes">
+        <block address="0x3002"/>
+        <call name="helper">
+          <block address="0x2004"/>
+        </call>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "loop-cross.ffx",
+        )
+        .expect("loop cross-function conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply loop cross conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop {
+                header: BlockId::new("bb:0x3002")
+            })
+        );
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(
+            cross.reset,
+            OrderedReset::LoopEntry {
+                header: BlockId::new("bb:0x3002")
+            }
+        );
+        let info = facts.info();
+        assert_eq!(info.conflicts[0].scope.as_deref(), Some("loop"));
+        assert_eq!(
+            info.conflicts[0].loop_header.as_ref().map(BlockId::as_str),
+            Some("bb:0x3002")
+        );
+        let call = info.conflicts[0].call.as_ref().expect("call boundary");
+        assert_eq!(call.callee.as_str(), "fn:0x2000");
+        assert_eq!(call.block.as_str(), "bb:0x3004");
+        assert_eq!(call.continuation.as_str(), "bb:0x3006");
+        assert_eq!(
+            info.conflicts[0].elements[0]
+                .function
+                .as_ref()
+                .map(FunctionId::as_str),
+            Some("fn:0x1000")
+        );
+        assert_eq!(
+            info.conflicts[0].elements[1]
+                .function
+                .as_ref()
+                .map(FunctionId::as_str),
+            Some("fn:0x2000")
+        );
+    }
+
+    #[test]
+    fn loop_scoped_cross_function_fact_allows_region_partitioning() {
+        let program = loop_cross_partition_program();
+        let mut baseline_program = program.clone();
+        let _ = analyze_program(&mut baseline_program, &facts());
+        let baseline = baseline_program
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("baseline caller cycles");
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <conflict ordered="yes">
+        <block address="0xc010"/>
+        <call name="helper">
+          <block address="0x9000"/>
+        </call>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "loop-cross-partition.ffx",
+        )
+        .expect("loop cross-function conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply loop cross conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(
+            cross.reset,
+            OrderedReset::LoopEntry {
+                header: BlockId::new("bb:0xc010")
+            }
+        );
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let caller = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .expect("caller WCET");
+        let constrained = caller.cycles.expect("finite cycles");
+        assert!(
+            constrained < baseline,
+            "loop-scoped cross automaton must reduce the objective: {constrained} < {baseline}"
+        );
+        let solution = caller.ipet.as_ref().expect("IPET solution");
+        let partitioning = solution
+            .partitioning
+            .as_ref()
+            .expect("fact-free diamond region uses loop-cross partition");
+        assert_eq!(partitioning.model, "sese-branch-regions");
+        assert!(partitioning.regions >= 1);
+    }
+
+    #[test]
+    fn loop_scoped_cross_function_sequence_spans_iterations() {
+        let program = loop_cross_partition_program();
+        let mut baseline_program = program.clone();
+        let _ = analyze_program(&mut baseline_program, &facts());
+        let baseline = baseline_program
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("baseline caller cycles");
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <conflict ordered="yes">
+        <block address="0xc014"/>
+        <block address="0xc010"/>
+        <call name="helper">
+          <block address="0x9000"/>
+        </call>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "loop-cross-span.ffx",
+        )
+        .expect("loop cross-function conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply loop cross conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(
+            cross.reset,
+            OrderedReset::LoopEntry {
+                header: BlockId::new("bb:0xc010")
+            }
+        );
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let constrained = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite caller cycles");
+        assert!(
+            constrained < baseline,
+            "loop-entry reset must allow a sequence across iterations: \
+             {constrained} < {baseline}"
+        );
+    }
+
+    #[test]
+    fn iteration_scoped_cross_function_sequence_resets_at_backedges() {
+        let program = loop_cross_partition_program();
+        let mut baseline_program = program.clone();
+        let _ = analyze_program(&mut baseline_program, &facts());
+        let baseline = baseline_program
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("baseline caller cycles");
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="*">
+        <conflict ordered="yes">
+          <block address="0xc014"/>
+          <block address="0xc010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "iteration-cross-span.ffx",
+        )
+        .expect("iteration cross-function conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply iteration cross conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(
+            cross.reset,
+            OrderedReset::LoopIteration {
+                header: BlockId::new("bb:0xc010")
+            }
+        );
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let constrained = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite caller cycles");
+        assert_eq!(
+            constrained, baseline,
+            "iteration reset must prevent the sequence from spanning iterations"
+        );
+    }
+
+    #[test]
+    fn invalid_loop_scoped_cross_function_shapes_are_ignored() {
+        let program = loop_cross_partition_program();
+        let (cycles, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <conflict ordered="yes">
+        <block address="0xc000"/>
+        <call name="helper">
+          <block address="0x9000"/>
+        </call>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(cycles.is_finite());
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("caller element outside the loop"))
+        );
+
+        let (cycles, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="*">
+        <conflict ordered="yes">
+          <edge src="0xc014" dst="0xc010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(cycles.is_finite());
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("loop-backedge element"))
+        );
+    }
+
+    #[test]
     fn recovered_calls_stay_partial_with_exact_partitioning() {
         let mut program = partition_diamond_program();
         program.functions[0]
@@ -8623,7 +9070,8 @@ max_states = 16
             &cross,
         )
         .expect("cross model");
-        let automata = super::cross_automaton_models(&model, &cross).expect("automata");
+        let automata =
+            super::cross_automaton_models(&model, &caller.cfg, &cross).expect("automata");
         let automaton = &automata[0];
         let find_edge = |predicate: &dyn Fn(&super::ModelEdge) -> bool| {
             model.edges.iter().position(predicate).expect("model edge")
@@ -8741,33 +9189,6 @@ max_states = 16
     #[test]
     fn unsupported_cross_function_shapes_are_ignored() {
         let program = branch_caller_program();
-        let (loop_scoped, facts) = analyze_with(
-            &program,
-            r#"
-<flowfacts>
-  <function name="main">
-    <loop address="0x1002">
-      <conflict ordered="yes">
-        <block address="0x1004"/>
-        <call name="helper">
-          <block address="0x2002"/>
-        </call>
-      </conflict>
-    </loop>
-  </function>
-</flowfacts>
-"#,
-        );
-        assert_eq!(loop_scoped, 63.0);
-        let conflict = &facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
-        assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("loop- or iteration-scoped"))
-        );
-
         let (multi_group, facts) = analyze_with(
             &program,
             r#"
