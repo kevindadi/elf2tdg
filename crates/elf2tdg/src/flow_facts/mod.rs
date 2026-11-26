@@ -1596,7 +1596,7 @@ fn resolve_cross_function_conflict(
         scope_elements.push(group.call_return.clone());
     }
     let loop_scope = match declared_loop_scope(program, function, fact, &scope_elements, origin)? {
-        DeclaredLoopOutcome::None => {
+        DeclaredLoopOutcome::None | DeclaredLoopOutcome::Mixed => {
             if fact.iteration.is_iteration() {
                 record.reason = Some(format!(
                     "{origin}: iteration-scoped cross-function ordered conflict lacks a loop context; conflict ignored"
@@ -1801,7 +1801,7 @@ fn resolve_ordered_conflict(
         &record.elements,
         origin,
     )? {
-        DeclaredLoopOutcome::None => {
+        DeclaredLoopOutcome::None | DeclaredLoopOutcome::Mixed => {
             if fact.iteration.is_iteration() {
                 record.reason = Some(format!(
                     "{origin}: iteration-scoped ordered conflict lacks a loop context; conflict ignored"
@@ -2300,6 +2300,9 @@ struct DeclaredLoopScope {
 enum DeclaredLoopOutcome {
     None,
     Selected(DeclaredLoopScope),
+    /// Ordered events straddle the declared loop boundary, so the conflict is
+    /// enforced over the whole function invocation instead of a sub-trace.
+    Mixed,
     Ignore(String),
 }
 
@@ -2313,6 +2316,15 @@ fn element_within_loop(element: &InfeasibleElement, blocks: &BTreeSet<BlockId>) 
         InfeasibleElement::Block { block } => blocks.contains(block),
         InfeasibleElement::Edge { source, target, .. } => {
             blocks.contains(source) && blocks.contains(target)
+        }
+    }
+}
+
+fn element_touches_loop(element: &InfeasibleElement, blocks: &BTreeSet<BlockId>) -> bool {
+    match element {
+        InfeasibleElement::Block { block } => blocks.contains(block),
+        InfeasibleElement::Edge { source, target, .. } => {
+            blocks.contains(source) || blocks.contains(target)
         }
     }
 }
@@ -2411,6 +2423,14 @@ fn declared_loop_scope(
         if contains_all(&context.scope) {
             return Ok(DeclaredLoopOutcome::Selected(context.scope.clone()));
         }
+    }
+    let touches_declared_loop = elements.iter().any(|element| {
+        resolved
+            .iter()
+            .any(|context| element_touches_loop(element, &context.scope.blocks))
+    });
+    if touches_declared_loop {
+        return Ok(DeclaredLoopOutcome::Mixed);
     }
     Ok(DeclaredLoopOutcome::Ignore(
         "conflict has an element outside the declared loop contexts".to_owned(),

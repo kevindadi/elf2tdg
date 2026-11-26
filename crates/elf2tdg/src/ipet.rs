@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events, and mixed loop/non-loop ordering uses function scope. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -7241,6 +7241,18 @@ auto_loop_bounds = false
         (cycles, facts)
     }
 
+    fn analyze_baseline_for(program: &ProgramCfg, address: u64) -> f64 {
+        let mut program = program.clone();
+        let _ = analyze_program(&mut program, &facts());
+        program
+            .functions
+            .iter()
+            .find(|function| function.address == address)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite function cycles")
+    }
+
     fn analyze_baseline(program: &ProgramCfg) -> f64 {
         let mut program = program.clone();
         let _ = analyze_program(&mut program, &facts());
@@ -9112,33 +9124,6 @@ max_states = 16
 <flowfacts>
   <function name="main">
     <loop address="0xc010">
-      <conflict ordered="yes">
-        <block address="0xc000"/>
-        <call name="helper">
-          <block address="0x9000"/>
-        </call>
-      </conflict>
-    </loop>
-  </function>
-</flowfacts>
-"#,
-        );
-        assert!(cycles.is_finite());
-        let conflict = &facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
-        assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("element outside the declared loop contexts"))
-        );
-
-        let (cycles, facts) = analyze_with(
-            &program,
-            r#"
-<flowfacts>
-  <function name="main">
-    <loop address="0xc010">
       <iteration number="*">
         <conflict ordered="yes">
           <edge src="0xc014" dst="0xc010"/>
@@ -10036,6 +10021,118 @@ max_states = 16
             conflict.scope,
             Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0xf002"
         ));
+    }
+
+    #[test]
+    fn mixed_loop_ordered_conflicts_use_function_scope() {
+        let program = loop_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <conflict ordered="yes">
+        <block address="0x2004"/>
+        <block address="0x200c"/>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            constrained < baseline,
+            "mixed loop/non-loop order must be enforced: {constrained} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::Function));
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Automaton {
+                reset: OrderedReset::Function
+            }
+        ));
+        assert_eq!(facts.info().conflicts[0].scope.as_deref(), Some("function"));
+
+        let (_, ignored_facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="*">
+        <conflict ordered="yes">
+          <block address="0x2004"/>
+          <block address="0x200c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        let conflict = &ignored_facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("element outside the loop"))
+        );
+    }
+
+    #[test]
+    fn mixed_loop_cross_function_conflict_uses_function_scope() {
+        let program = loop_cross_partition_program();
+        let baseline = analyze_baseline_for(&program, 0xc000);
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <conflict ordered="yes">
+        <call name="helper">
+          <block address="0x9000"/>
+        </call>
+        <block address="0xc01c"/>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "mixed-cross.ffx",
+        )
+        .expect("mixed cross conflict");
+        facts
+            .apply_document(document, &program)
+            .expect("apply mixed cross conflict");
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert_eq!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossFunctionAutomaton
+        );
+        let cross = conflict.cross_function.as_ref().expect("cross constraint");
+        assert_eq!(cross.reset, OrderedReset::Function);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::CrossFunction));
+
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &facts);
+        let constrained = analyzed
+            .functions
+            .iter()
+            .find(|function| function.address == 0xc000)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite caller cycles");
+        assert!(
+            constrained < baseline,
+            "mixed cross-function order must be enforced: {constrained} < {baseline}"
+        );
     }
 
     #[test]
