@@ -711,16 +711,31 @@ the selected timing model, for example `cortex-m4-edge-context` or
 registers and resources at function entry, carries the exit state across
 edges, and resets on call-return edges; it falls back to edge stalls when the
 table exceeds its per-function state cap or the ordered/cross-function
-automata are selected. When IPET summarizes CFG partitions, `ipet.partitioning`
-records `model` (`sese-branch-regions`), the number of summarized regions,
-the number of original blocks hidden in region summaries and model caveats.
-A summarized region whose entry is the function entry becomes the new function
-entry. Block execution counts in `ipet.blocks` are expanded back to original
-block IDs. Fixed per-call-block callee costs are included in local region models
-and the final model. Partitioning is disabled for functions with cache/
-pipeline/branch/BTB/RAS state models, non-loop flow facts, infeasible-path
-constraints or recovered-call gaps. Partitioning is capped at 4096 blocks,
-512 regions and a bounded scan-work budget; functions outside the eligible
+automata are selected. When IPET summarizes CFG partitions, `ipet.partitioning` records `model`, the
+number of summarized regions, the number of original blocks hidden in region
+summaries and model caveats. `sese-branch-regions` is the exact state-free
+model: branch-entry SESE regions are solved bottom-up with an entry count of
+one, replaced by a per-entry cost block, and expanded when the parent assigns
+executions to that block. A summarized region whose entry is the function
+entry becomes the new function entry. Fixed per-call-block callee costs are
+included in local region models and the final model. `sese-state-product-regions`
+is used when a cache, pipeline, branch-prediction, BTB or RAS state product is
+active. It selects non-overlapping branch-entry regions that contain no loop
+header or latch and do not end at a loop header, summarizes every reachable
+entry product state by its worst-cost local path to each reachable exit product
+state, preserves the entry and exit states in the final product graph, and
+replaces the interior product nodes with state-to-state summary edges. A region entry state that can
+reach several exit states may use those exits more freely in the final IPET
+than in a concrete execution; the result is therefore a safe upper bound but
+can exceed the monolithic state-product objective. Regions containing loop
+headers or latches, or ending at a loop header, remain monolithic; functions
+with non-loop flow facts, infeasible-path constraints, unresolved control flow
+or recovered-call gaps are not partitioned.
+Block execution counts in `ipet.blocks` are expanded back to original block
+IDs; counts inside a state-summarized region describe one worst-cost local path
+per entry/exit state and are diagnostic. Partitioning is capped at 4096 blocks,
+512 regions, 128 entry states and 256 exit states per region, 20,000 local
+product nodes and a bounded scan-work budget; functions outside the eligible
 shape use the monolithic IPET model. The top-level `wcet.flow_facts` object records the loop bounds and
 defaults used by the model, including bounds imported from F4/FFX files and
 conservatively inferred counted-loop bounds; each loop bound carries a

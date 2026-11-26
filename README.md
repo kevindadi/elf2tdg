@@ -67,11 +67,14 @@ Implemented:
     per-block read/write/fetch attribution;
   - loop-bounded per-function and per-root WCET estimates, from either a CFG
     longest-path backend or an IPET/ILP backend solved with pure-Rust `microlp`;
-  - IPET SESE CFG partitioning: functions with statically modeled call blocks,
-    but without cache/pipeline/branch/BTB/RAS state models and without non-loop
-    flow facts or infeasible-path constraints, are solved through bottom-up
-    per-entry region summaries, including function-entry regions, with
-    per-call-block callee costs and block counts preserved in the final CFG;
+  - IPET SESE CFG partitioning: functions with statically modeled call blocks
+    and without non-loop flow facts or infeasible-path constraints use
+    bottom-up exact per-entry region summaries, including function-entry
+    regions, with per-call-block callee costs and block counts preserved in the
+    final CFG. When cache/pipeline/branch/BTB/RAS state products are active,
+    eligible regions without loop headers/latches or loop-header exits are
+    summarized per entry/exit product state; this keeps state explicit and is
+    a safe upper bound that may exceed monolithic state-product IPET;
   - conservative automatic loop-bound inference for canonical counted loops
     (`auto_loop_bounds`, enabled by default);
   - external F4 `.ff` and FFX `.ffx` flow-fact files (`--flowfacts`) that add

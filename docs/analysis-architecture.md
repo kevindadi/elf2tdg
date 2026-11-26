@@ -66,15 +66,24 @@ elf2tdg firmware.elf --board-profile board.toml \
 
 It builds a per-function integer program with flow conservation, natural-loop
 bounds and callee summaries, solves it with `microlp`, and records the positive
-block execution counts. Functions with statically modeled call blocks, but
-without cache/pipeline/branch/BTB/RAS state models and without non-loop flow
-facts or infeasible-path constraints, first summarize branch-entry SESE regions
-bottom-up; fixed per-call-block callee costs are included in both local and
-final models. Each region is replaced by an exact per-entry cost block and
-block counts are expanded into the original CFG. A region whose entry is the function entry replaces it with a new entry
-block. The first partitioner is capped at 4096 blocks, 512 regions and a bounded
-scan-work budget, and is skipped for the unsupported shapes above; those
-functions use monolithic IPET. The remaining P1 work is:
+block execution counts. State-free functions with statically modeled call
+blocks, but without non-loop flow facts or infeasible-path constraints, first
+summarize branch-entry SESE regions bottom-up; fixed per-call-block callee costs
+are included in both local and final models. Each region is replaced by an
+exact per-entry cost block and block counts are expanded into the original CFG.
+A region whose entry is the function entry replaces it with a new entry block.
+When cache, pipeline, branch-prediction, BTB or RAS state products are active,
+the same partitioner selects non-overlapping branch-entry regions that contain
+no loop header or latch and do not end at a loop header. It summarizes each
+reachable entry product state by its worst-cost local path to each reachable
+exit product state and replaces the interior product nodes with state-preserving
+summary edges. A single entry
+state that reaches several exit states is relaxed to use each exit
+independently, so the state-aware path is a safe upper bound but can exceed the
+monolithic state-product objective. The first partitioner is capped at 4096
+blocks, 512 regions and a bounded scan-work budget; state summaries additionally
+cap entry/exit states and local product nodes. Unsupported shapes use
+monolithic IPET. The remaining P1 work is:
 
 1. Additional FFX constructs, richer cross-function conflict forms (multiple
    groups, loop-scoped groups, call-address selection) and inference beyond
@@ -83,8 +92,8 @@ functions use monolithic IPET. The remaining P1 work is:
 3. Larger benchmarks comparing IPET and longest-path precision and solve time.
    `elf2tdg-bench` now provides a reproducible local suite with cycle results,
    model/fallback summaries and external-reference slots; OTAWA reference
-   population, larger public benchmark sets, richer partition shapes and
-   partitioning across recovered calls/state models remain.
+   population, larger public benchmark sets, richer partition shapes, nested
+   state-aware regions and partitioning across recovered calls remain.
 4. Making IPET the default only after the bounded-results contract is validated.
 
 The irreducible-cycle guard is deliberate: if removing all natural-loop
@@ -134,12 +143,18 @@ from summed local estimates.
 
 ## Current limits
 
-- IPET CFG partitioning currently covers branch-entry SESE regions in
-  functions with statically modeled calls, but without cache/pipeline/branch/
-  BTB/RAS state models and without non-loop flow facts or infeasible-path
-  constraints. It is capped at 4096 blocks, 512 regions and a bounded
-  scan-work budget; other functions use monolithic IPET. Region summaries assume homogeneous per-entry
-  scaling and reconstruct block counts from per-region optima.
+- IPET CFG partitioning covers branch-entry SESE regions in functions with
+  statically modeled calls and without non-loop flow facts or infeasible-path
+  constraints. State-free regions use exact per-entry summaries and
+  homogeneous scaling. With cache/pipeline/branch/BTB/RAS state products,
+  regions that contain no loop header or latch and do not end at a loop header
+  are summarized per entry and exit product state; the final IPET may combine
+  exit states more freely than a concrete execution, so this mode is a safe
+  upper bound but not an exact match for monolithic state-product IPET. It is capped at 4096 blocks, 512
+  regions and a bounded scan-work budget, plus 128 entry states, 256 exit
+  states and 20,000 local product nodes per state-aware region. Other
+  functions or regions use monolithic IPET, and block counts inside a
+  state-summarized region are diagnostic.
 - Context-sensitive flow facts use caller-chain function versions: F4 `in ...`
   chains and FFX `<call>` nesting select per-context loop bounds and, in IPET,
   per-context branch/call constraints. Context identity is the caller function,

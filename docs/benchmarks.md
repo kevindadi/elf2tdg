@@ -103,7 +103,7 @@ and load.
 |---|---|---|---|
 | `cortex-m0-isr` | `examples/cortex-m0-isr` | `benchmarks/profiles/cortex-m0-benchmark.toml` | deterministic M0 longest-path/IPET comparison |
 | `cortex-m0-fixture` | `tests/fixtures/cortex_m0/firmware.elf` | same | small regression fixture |
-| `rust-concurrency-full-stack` | `examples/rust-concurrency` | `examples/profiles/cortex-m4-full-stack.toml` | IPET with cache, pipeline and branch models/fallbacks |
+| `rust-concurrency-full-stack` | `examples/rust-concurrency` | `examples/profiles/cortex-m4-full-stack.toml` | IPET with cache/pipeline state products, branch fallbacks and state-aware region summaries |
 
 The benchmark profiles are deliberately separate from board-validation
 profiles. They are not evidence that a real board matches the timing values.
@@ -117,12 +117,21 @@ profiles. They are not evidence that a real board matches the timing values.
 - `state-product`, `block-bounds`, `edge-context` and
   `interprocedural-state-product` entries expose where a model completed or
   fell back.
-- `partition:sese-branch-regions` means IPET summarized eligible branch-entry
-  SESE regions before solving. The cycle objective should be identical to the
-  monolithic model for the same eligible function; report a mismatch as a
-  partitioning regression. Functions with state models, non-loop flow facts,
-  infeasible-path constraints or recovered-call gaps intentionally stay
-  monolithic; fixed call-block summaries are allowed.
+- `partition:sese-branch-regions` means IPET summarized eligible state-free
+  branch-entry SESE regions before solving. The cycle objective should be
+  identical to the monolithic model for the same eligible function; report a
+  mismatch as a partitioning regression.
+- `partition:sese-state-product-regions` means IPET summarized eligible
+  branch-entry regions on an active cache/pipeline/branch/BTB/RAS state
+  product. The summary preserves entry and exit states and is a safe upper
+  bound, but an entry state that reaches several exit states may be relaxed,
+  so it can exceed monolithic state-product IPET. Compare it against the
+  same build without partitioning, not against the state-free baseline.
+  Regions containing loop headers or latches, or ending at a loop header,
+  stay monolithic.
+- Functions with non-loop flow facts, infeasible-path constraints or
+  recovered-call gaps intentionally stay monolithic; fixed call-block
+  summaries are allowed.
 - `partial`, `unbounded` and `unknown` function counts are more important than
   a single objective value. A benchmark with any partial/unbounded root is not
   a safe WCET result.
