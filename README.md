@@ -103,7 +103,8 @@ Implemented:
     Sequences may be loop-scoped; caller elements and call boundaries must stay
     in the declaring function's loop, and progress resets on loop entry or, for
     iteration scope, every backedge. Nested loop contexts select the innermost
-    containing scope. A numeric `<iteration number="N">` checks
+    containing scope, while mixed loop/non-loop ordering uses function scope.
+    A numeric `<iteration number="N">` checks
     one 1-based iteration, while `-1` selects the last iteration; this applies
     to same-function and cross-function ordered conflicts.
   Profiles are strictly validated, and timing metadata records the profile ID,
@@ -351,7 +352,10 @@ Unordered FFX infeasible-path conflicts are enforced by IPET when all elements
 share one function and are outside loops or within one non-nested loop. Ordered
 conflicts with nested `<loop>` contexts select the innermost declared loop
 containing every event, lifting to an enclosing declared loop when events span
-child loops; an `<iteration>` context pins its declaring loop. Ordered conflicts
+child loops; an `<iteration>` context pins its declaring loop. An ordered
+conflict with no containing declared loop but events on both sides of a loop
+boundary is enforced at function scope; iteration-scoped mixed conflicts remain
+unsupported. Ordered conflicts
 are reduced to the same constraints when CFG reachability (or per-iteration
 reachability with loop backedges removed) forces the declared order. Other
 ordered conflicts use a product IPET with a sequence-progress

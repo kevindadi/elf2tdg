@@ -365,15 +365,20 @@ appear in one execution sub-trace:
   context, the innermost declared loop that contains every event is selected,
   so events may span child loops; an event outside that loop lifts the scope to
   an enclosing declared loop. An `<iteration>` context pins the selected loop
-  to the loop where it was declared. For cross-function conflicts, caller
-  elements and every group's call block, continuation and call-return endpoints
-  participate in this selection; callee-side elements stay in the callee CFG.
+  to the loop where it was declared. If no declared loop contains all events
+  but at least one event touches a declared loop, an ordered conflict without
+  an `<iteration>` context is enforced at function-invocation scope. This is
+  the supported mixed loop/non-loop form; iteration-scoped mixed conflicts are
+  ignored. For cross-function conflicts, caller elements and every group's call
+  block, continuation and call-return endpoints participate in this selection;
+  callee-side elements stay in the callee CFG.
 - For same-function conflicts, all elements must resolve inside one function.
-  For an ordered conflict declared inside `<loop>` contexts, every element and
-  edge endpoint in the declaring function must be inside the selected loop;
-  entry/exit edges are rejected with a warning. Cross-function groups
-  additionally require their call block, continuation and call-return endpoints
-  inside the same selected loop. Two structural forms are enforced by IPET:
+  For a loop-selected ordered conflict, every element and edge endpoint in the
+  declaring function must be inside the selected loop; entry/exit edges are
+  rejected with a warning. Cross-function groups additionally require their
+  call block, continuation and call-return endpoints inside the same selected
+  loop. Mixed loop/non-loop ordering has no selected loop and uses function
+  scope. Two structural aggregate forms are enforced by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
@@ -381,10 +386,10 @@ appear in one execution sub-trace:
     conservative per-iteration relaxation and also covers whole-loop conflicts.
     Ordered nested scopes use the automaton product instead of this aggregate
     reduction.
-- Mixed loop/non-loop sets, unordered nested-loop elements and unsupported
-  cross-function shapes are ignored with warnings. Unordered cross-function
-  conflicts are not supported. Unsupported or unresolvable conflicts only lose
-  precision and never tighten the bound incorrectly.
+- Unordered mixed loop/non-loop sets, unordered nested-loop elements and
+  unsupported cross-function shapes are ignored with warnings. Unordered
+  cross-function conflicts are not supported. Unsupported or unresolvable
+  conflicts only lose precision and never tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model
