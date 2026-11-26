@@ -382,9 +382,10 @@ appear in one execution sub-trace:
   rejected with a warning. Numeric/last specific-iteration mixed conflicts are
   the exception: outside events are allowed and use the selected iteration's
   automaton. Cross-function groups additionally require their call block,
-  continuation and call-return endpoints inside the same selected loop, except
-  that specific mixed groups may straddle it. Mixed loop/non-loop ordering
-  without an iteration context has no selected loop and uses function scope.
+  continuation and call-return endpoints inside the same selected loop; in a
+  mixed conflict those boundaries may lie outside and participate in the
+  selection. Mixed loop/non-loop ordering without an iteration context has no
+  selected loop and uses function scope.
   Two structural aggregate forms are enforced by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;

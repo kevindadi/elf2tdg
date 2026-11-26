@@ -104,8 +104,8 @@ Implemented:
     in the declaring function's loop, and progress resets on loop entry or, for
     iteration scope, every backedge. Nested loop contexts select the innermost
     containing scope, while mixed loop/non-loop ordering uses function scope
-    unless a numeric/last iteration anchors it to the selected loop. A numeric
-    `<iteration number="N">` checks
+    unless a numeric, last or all-iteration scope anchors it to the selected
+    loop. A numeric `<iteration number="N">` checks
     one 1-based iteration, while `-1` selects the last iteration; this applies
     to same-function and cross-function ordered conflicts.
   Profiles are strictly validated, and timing metadata records the profile ID,
@@ -355,10 +355,9 @@ conflicts with nested `<loop>` contexts select the innermost declared loop
 containing every event, lifting to an enclosing declared loop when events span
 child loops; an `<iteration>` context pins its declaring loop. An ordered
 conflict with no containing declared loop but events on both sides of a loop
-boundary is enforced at function scope; a numeric or last specific iteration
-instead keeps its selected loop and allows outside events before/after it,
-while `<iteration number="*">` mixed conflicts remain unsupported. Ordered
-conflicts
+boundary is enforced at function scope; numeric, last and all-iteration
+(`*`) scopes instead keep their selected loop and allow outside events before
+and after it. Ordered conflicts
 are reduced to the same constraints when CFG reachability (or per-iteration
 reachability with loop backedges removed) forces the declared order. Other
 ordered conflicts use a product IPET with a sequence-progress

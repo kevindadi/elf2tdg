@@ -203,9 +203,9 @@ from summed local estimates.
   event and lift to an enclosing declared loop when elements span child loops;
   an iteration context pins its declaring loop. If no declared loop contains
   all caller events but some touch a declared loop, an ordered conflict without
-  an iteration context is enforced at function scope. Numeric and last
-  iteration mixed conflicts keep the selected loop and allow outside events
-  before/after it; all-iteration mixed conflicts remain ignored. A numeric
+  an iteration context is enforced at function scope. Numeric, last and
+  all-iteration mixed conflicts keep the selected loop and allow outside events
+  before/after it. A numeric
   iteration scope selects one 1-based iteration; `-1` selects the last
   iteration and defers a completed sequence until a loop exit rejects it. A
   target above the configured per-entry loop bound is exactly vacuous, and
