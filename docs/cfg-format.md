@@ -1104,7 +1104,10 @@ asserts that the CFG validates.
   a `sum <= n - 1` cap). A numeric or last iteration scope uses a product
   presence automaton over the selected loop iteration; inside elements are
   tracked only there while outside elements are tracked across the invocation.
-  Ordered conflicts use aggregate
+  An all-iteration scope uses the common-loop aggregate when available,
+  otherwise a presence automaton resetting inside elements per iteration and
+  retaining outside elements across the invocation. Ordered conflicts use
+  aggregate
   constraints when reachability forces the declared order (function-scope
   acyclic order or per-iteration loop-body order); structurally impossible
   sequences add no constraint. Cross-iteration ordered conflicts use a product

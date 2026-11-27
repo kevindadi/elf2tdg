@@ -359,8 +359,8 @@ appear in one execution sub-trace:
   `<iteration number="*">` conflicts are supported and reset ordered progress
   on loop entry and every backedge. Numeric iterations are supported for
   ordered same-function and cross-function conflicts and for same-function
-  unordered conflicts whose elements stay inside the selected loop; numbers
-  outside the supported range are ignored with warnings. Unordered conflicts
+  unordered conflicts; numbers outside the supported range are ignored with
+  warnings. Unordered conflicts
   spanning nested or disjoint loops without an `<iteration>` context use
   function-invocation presence indicators; ordered conflicts use the automaton
   product.
@@ -375,10 +375,11 @@ appear in one execution sub-trace:
   in-loop events activate only in that iteration, outside-loop events remain
   matchable before and after the loop, progress from outside-before events
   survives loop entry, and a last-iteration outside tail uses the most recent
-  iteration's sequence progress as its candidate. `<iteration number="*">` mixed conflicts
-  remain unsupported. For cross-function conflicts, caller elements and every
-  group's call block, continuation and call-return endpoints participate in
-  this selection; callee-side elements stay in the callee CFG.
+  iteration's sequence progress as its candidate. `<iteration number="*">`
+  mixed ordered conflicts keep the selected loop and allow outside events in
+  each iteration's ordered tail. For cross-function conflicts, caller elements
+  and every group's call block, continuation and call-return endpoints
+  participate in this selection; callee-side elements stay in the callee CFG.
 - For same-function conflicts, all elements must resolve inside one function.
   For a loop-selected ordered conflict, every element and edge endpoint in the
   declaring function must be inside the selected loop; entry/exit edges are
@@ -389,7 +390,7 @@ appear in one execution sub-trace:
   mixed conflict those boundaries may lie outside and participate in the
   selection. Mixed loop/non-loop ordering without an iteration context has no
   selected loop and uses function scope.
-  Four structural enforcement forms are used by IPET:
+  Five structural enforcement forms are used by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
@@ -421,12 +422,20 @@ appear in one execution sub-trace:
     full iteration ending at a backedge is deferred: exiting at the loop header
     makes it the last iteration, while entering another body iteration discards
     the deferred result. Outside elements may complete the conflict after the
-    loop exits.
-- Unordered conflicts with `<iteration number="*">` outside one common
-  non-nested loop and unsupported cross-function shapes are ignored with
-  warnings. An iteration-scoped unordered conflict with no element inside its
-  selected loop is also ignored. Unordered cross-function conflicts are not
-  supported. Unsupported or unresolvable conflicts only lose precision and
+    loop exits;
+  - a same-function unordered conflict with an all-iteration
+    (`<iteration number="*">`) context keeps its selected loop. When every
+    element lies in one common non-nested loop that is also the declared
+    iteration loop, the loop aggregate above is retained. Otherwise a product
+    presence automaton checks every iteration:
+    inside elements reset per iteration, outside elements persist across the
+    invocation, and a path is removed when some iteration contains all inside
+    elements while all outside elements are also present. At least one element
+    must be inside the selected loop; backedge elements are rejected in this
+    presence form.
+- Unsupported cross-function unordered conflicts and iteration-scoped
+  unordered conflicts with no element inside their selected loop are ignored
+  with warnings. Unsupported or unresolvable conflicts only lose precision and
   never tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
