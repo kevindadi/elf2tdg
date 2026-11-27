@@ -390,7 +390,7 @@ appear in one execution sub-trace:
   mixed conflict those boundaries may lie outside and participate in the
   selection. Mixed loop/non-loop ordering without an iteration context has no
   selected loop and uses function scope.
-  Five structural enforcement forms are used by IPET:
+  Six structural enforcement forms are used by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
@@ -432,11 +432,18 @@ appear in one execution sub-trace:
     invocation, and a path is removed when some iteration contains all inside
     elements while all outside elements are also present. At least one element
     must be inside the selected loop; backedge elements are rejected in this
-    presence form.
-- Unsupported cross-function unordered conflicts and iteration-scoped
-  unordered conflicts with no element inside their selected loop are ignored
-  with warnings. Unsupported or unresolvable conflicts only lose precision and
-  never tighten the bound incorrectly.
+    presence form;
+  - a cross-function unordered conflict is enforced at function-invocation
+    scope. Each caller-side element and each non-empty `<call>` group is one
+    presence item; a group is present only when all its callee elements occur
+    in a single invocation of that call. The path is removed when every item is
+    present. Each group must select one unique, unconditional call site, and
+    caller elements follow the same function containment rules as other
+    unordered forms.
+- Loop- or iteration-scoped cross-function unordered conflicts and
+  iteration-scoped unordered conflicts with no element inside their selected
+  loop are ignored with warnings. Unsupported or unresolvable conflicts only
+  lose precision and never tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model

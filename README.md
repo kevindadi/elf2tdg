@@ -104,9 +104,11 @@ Implemented:
     span nested loops, or touch disjoint loops through invocation-scope
     presence indicators, numeric/last-iteration unordered conflicts through a
     loop product that tracks inside elements in the selected iteration and
-    outside elements across the invocation, and all-iteration unordered
-    conflicts through a per-iteration presence product (or the existing loop
-    aggregate for one common non-nested loop).
+    outside elements across the invocation, all-iteration unordered conflicts
+    through a per-iteration presence product (or the existing loop aggregate
+    for one common non-nested loop), and function-scope cross-function
+    unordered conflicts by inlining call groups and tracking per-invocation
+    group presence.
     Sequences may be loop-scoped; caller elements and call boundaries must stay
     in the declaring function's loop, and progress resets on loop entry or, for
     iteration scope, every backedge. Nested loop contexts select the innermost
@@ -368,8 +370,11 @@ completed iteration across a backedge until the loop exits, and outside
 elements may complete the conflict after the loop. All-iteration unordered
 conflicts keep the loop aggregate for one common non-nested loop and otherwise
 check element presence in every iteration, resetting inside elements per
-iteration while outside elements persist. Unordered cross-function conflicts
-remain unsupported. Ordered
+iteration while outside elements persist. Cross-function unordered conflicts
+are enforced at function-invocation scope: caller elements and each non-empty
+call group are presence items, and a group is present only when all its callee
+elements occur in one callee invocation. Loop- and iteration-scoped
+cross-function unordered conflicts remain unsupported. Ordered
 conflicts with nested `<loop>` contexts select the innermost declared loop
 containing every event, lifting to an enclosing declared loop when events span
 child loops; an `<iteration>` context pins its declaring loop. An ordered
