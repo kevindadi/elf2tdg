@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks inside elements in the selected iteration and outside elements across the invocation; last-iteration paths defer a completed iteration at a backedge until the loop exits and outside elements may complete the conflict afterwards. An all-iteration unordered conflict keeps the common-loop aggregate when available, otherwise a presence product resets inside elements per iteration and retains outside elements across the invocation. Cross-function unordered conflicts use presence for caller elements and non-empty call groups; a group is present only when all its callee elements occur in one callee invocation. A loop-scoped conflict resets presence at each loop entry and spans its iterations; iteration-scoped cross-function unordered forms remain unsupported. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks inside elements in the selected iteration and outside elements across the invocation; last-iteration paths defer a completed iteration at a backedge until the loop exits and outside elements may complete the conflict afterwards. An all-iteration unordered conflict keeps the common-loop aggregate when available, otherwise a presence product resets inside elements per iteration and retains outside elements across the invocation. Cross-function unordered conflicts use presence for caller elements and non-empty call groups; a group is present only when all its callee elements occur in one callee invocation. A loop-scoped conflict resets presence at each loop entry and spans its iterations; numeric/last iteration scopes restrict presence to the selected iteration, while all-iteration cross-function unordered forms remain unsupported. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -569,7 +569,7 @@ fn solve_function(
         .filter(|cross| specific_iteration_possible(cfg, facts, scope, cross))
         .collect();
     let presence = presence_automata(cfg, facts, function_id, scope);
-    let cross_unordered = cross_unordered_function_constraints(facts, function_id, scope);
+    let cross_unordered = cross_unordered_function_constraints(cfg, facts, function_id, scope);
     let pipeline_stalls = pipeline_edge_stalls(program, cfg);
     let cache_ccg = ccg::build(program, cfg, reachable_nodes)
         .filter(|model| model.variable_count() <= MAX_MODEL_VARIABLES / 2);
@@ -2594,6 +2594,7 @@ fn cross_function_constraints<'a>(
 }
 
 fn cross_unordered_function_constraints<'a>(
+    cfg: &FunctionCfg,
     facts: &'a FlowFacts,
     function_id: &FunctionId,
     scope: FactScope<'_>,
@@ -2613,7 +2614,16 @@ fn cross_unordered_function_constraints<'a>(
             {
                 return None;
             }
-            conflict.cross_function.as_ref()
+            let cross = conflict.cross_function.as_ref()?;
+            if let OrderedReset::LoopSpecific {
+                header,
+                iteration: SpecificIteration::Number(number),
+            } = &cross.reset
+                && !specific_iteration_within_loop_bound(cfg, facts, scope, header, *number)
+            {
+                return None;
+            }
+            Some(cross)
         })
         .collect()
 }
@@ -4011,9 +4021,15 @@ struct CrossUnorderedModel {
     caller_elements: Vec<InfeasibleElement>,
     caller_full: Vec<u64>,
     groups: Vec<CrossUnorderedGroupModel>,
-    /// Reset and enforce presence per entry of this loop; `None` is function
+    /// Reset and enforce presence inside this loop; `None` is function
     /// invocation scope.
     loop_blocks: Option<BTreeSet<BlockId>>,
+    backedges: BTreeSet<(BlockId, BlockId)>,
+    /// `Some` limits presence to one selected loop iteration. `None` with
+    /// `loop_blocks` spans all iterations of one loop entry.
+    specific_iteration: Option<SpecificIteration>,
+    header: Option<BlockId>,
+    header_has_exit: bool,
 }
 
 impl CrossUnorderedModel {
@@ -4048,14 +4064,28 @@ impl CrossUnorderedModel {
     fn complete(&self, state: &CrossUnorderedState) -> bool {
         self.caller_complete(&state.caller) && state.group_present.iter().all(|present| *present)
     }
+
+    fn tracking(&self, iteration: u32) -> bool {
+        match self.specific_iteration {
+            None => true,
+            Some(SpecificIteration::Number(number)) => iteration == number,
+            Some(SpecificIteration::Last) => iteration > 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct CrossUnorderedState {
     active: bool,
+    /// 1-based iteration while inside a loop; 0 outside. Kept at 1 for
+    /// entry-scoped conflicts because they span all iterations.
+    iteration: u32,
     caller: Vec<u64>,
     group_masks: Vec<Vec<u64>>,
     group_present: Vec<bool>,
+    /// Last-iteration conflict: the iteration ending at a backedge was
+    /// complete and a header exit would make it the last iteration.
+    candidate_complete: bool,
 }
 
 struct CrossAutomatonModel {
@@ -5088,6 +5118,7 @@ fn advance_presence_on_model(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn cross_unordered_models(
     model: &ModelGraph,
     cfg: &FunctionCfg,
@@ -5104,23 +5135,41 @@ fn cross_unordered_models(
             if specs.len() != constraint.groups.len() {
                 return Err(IpetError::Unknown("cross-unordered-groups".to_owned()));
             }
-            let loop_blocks = match &constraint.reset {
-                OrderedReset::Function => None,
-                OrderedReset::LoopEntry { header } => {
-                    let Some(loop_) = analysis.loops.iter().find(|loop_| loop_.header == *header)
-                    else {
+            let (loop_blocks, backedges, header, header_has_exit, specific_iteration) =
+                match &constraint.reset {
+                    OrderedReset::Function => (None, BTreeSet::new(), None, false, None),
+                    OrderedReset::LoopEntry { header }
+                    | OrderedReset::LoopSpecific { header, .. } => {
+                        let Some(loop_) =
+                            analysis.loops.iter().find(|loop_| loop_.header == *header)
+                        else {
+                            return Err(IpetError::Unknown(
+                                "cross-unordered-loop-missing".to_owned(),
+                            ));
+                        };
+                        let blocks: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
+                        let specific = match &constraint.reset {
+                            OrderedReset::LoopSpecific { iteration, .. } => Some(*iteration),
+                            _ => None,
+                        };
+                        (
+                            Some(blocks.clone()),
+                            loop_
+                                .backedges
+                                .iter()
+                                .map(|edge| (edge.from.clone(), edge.to.clone()))
+                                .collect(),
+                            Some(header.clone()),
+                            loop_header_has_exit(cfg, header, &blocks),
+                            specific,
+                        )
+                    }
+                    OrderedReset::LoopIteration { .. } => {
                         return Err(IpetError::Unknown(
-                            "cross-unordered-loop-missing".to_owned(),
+                            "cross-unordered-iteration-scope".to_owned(),
                         ));
-                    };
-                    Some(loop_.blocks.iter().cloned().collect())
-                }
-                OrderedReset::LoopIteration { .. } | OrderedReset::LoopSpecific { .. } => {
-                    return Err(IpetError::Unknown(
-                        "cross-unordered-iteration-scope".to_owned(),
-                    ));
-                }
-            };
+                    }
+                };
             let caller_elements: Vec<InfeasibleElement> = constraint
                 .pattern
                 .iter()
@@ -5169,6 +5218,10 @@ fn cross_unordered_models(
                 caller_full,
                 groups,
                 loop_blocks,
+                backedges,
+                specific_iteration,
+                header,
+                header_has_exit,
             })
         })
         .collect()
@@ -5181,12 +5234,14 @@ fn initial_cross_unordered_progress(
     models
         .iter()
         .map(|model| {
-            let active = model
+            let inside = model
                 .loop_blocks
                 .as_ref()
-                .is_none_or(|blocks| blocks.contains(entry_block));
+                .is_some_and(|blocks| blocks.contains(entry_block));
+            let active = model.loop_blocks.is_none() || inside;
+            let iteration = u32::from(inside);
             let mut caller = model.zero_caller_mask();
-            if active {
+            if active && model.tracking(iteration) {
                 model.caller_apply(
                     &InfeasibleElement::Block {
                         block: entry_block.clone(),
@@ -5196,6 +5251,7 @@ fn initial_cross_unordered_progress(
             }
             CrossUnorderedState {
                 active,
+                iteration,
                 caller,
                 group_masks: model
                     .groups
@@ -5203,11 +5259,13 @@ fn initial_cross_unordered_progress(
                     .map(CrossUnorderedGroupModel::zero_mask)
                     .collect(),
                 group_present: vec![false; model.groups.len()],
+                candidate_complete: false,
             }
         })
         .collect()
 }
 
+#[allow(clippy::too_many_lines)]
 fn advance_cross_unordered(
     model: &ModelGraph,
     program: &ProgramCfg,
@@ -5237,21 +5295,75 @@ fn advance_cross_unordered(
             let target_inside = blocks.contains(target);
             if !source_inside && target_inside {
                 state.active = true;
+                state.iteration = 1;
+                state.candidate_complete = false;
                 runtime.clear(&mut state);
             } else if source_inside && !target_inside {
-                if state.active && runtime.complete(&state) {
+                let complete = if state.active {
+                    match runtime.specific_iteration {
+                        Some(SpecificIteration::Number(number)) => {
+                            state.iteration == number && runtime.complete(&state)
+                        }
+                        Some(SpecificIteration::Last) => {
+                            if runtime.header.as_ref() == Some(source) {
+                                state.candidate_complete
+                            } else {
+                                runtime.complete(&state)
+                            }
+                        }
+                        None => runtime.complete(&state),
+                    }
+                } else {
+                    false
+                };
+                if complete {
                     return None;
                 }
                 state.active = false;
+                state.iteration = 0;
+                state.candidate_complete = false;
                 runtime.clear(&mut state);
                 match_elements = false;
             } else if !source_inside && !target_inside {
                 state.active = false;
+                state.iteration = 0;
+                state.candidate_complete = false;
                 runtime.clear(&mut state);
                 match_elements = false;
+            } else if source_inside && target_inside {
+                let backedge = runtime
+                    .backedges
+                    .contains(&(source.clone(), target.clone()));
+                if backedge {
+                    match runtime.specific_iteration {
+                        Some(SpecificIteration::Number(number)) => {
+                            if state.iteration == number && runtime.complete(&state) {
+                                return None;
+                            }
+                            state.iteration = state
+                                .iteration
+                                .saturating_add(1)
+                                .min(number.saturating_add(1));
+                            state.candidate_complete = false;
+                            runtime.clear(&mut state);
+                        }
+                        Some(SpecificIteration::Last) => {
+                            state.candidate_complete =
+                                runtime.header_has_exit && runtime.complete(&state);
+                            state.iteration = 1;
+                            runtime.clear(&mut state);
+                        }
+                        None => {}
+                    }
+                } else if matches!(runtime.specific_iteration, Some(SpecificIteration::Last))
+                    && runtime.header.as_ref() == Some(source)
+                {
+                    state.candidate_complete = false;
+                }
             }
         }
-        if match_elements && state.active {
+        let tracking = state.active && runtime.tracking(state.iteration);
+        if match_elements && tracking {
             if let Some((_, target)) = &caller_transition {
                 runtime.caller_apply(&caller_edge_element(cfg, edge.original), &mut state.caller);
                 runtime.caller_apply(
@@ -5306,7 +5418,15 @@ fn advance_cross_unordered(
                 }
             }
         }
-        if state.active && runtime.complete(&state) {
+        let violated = if tracking {
+            match runtime.specific_iteration {
+                Some(SpecificIteration::Last) => false,
+                Some(SpecificIteration::Number(_)) | None => runtime.complete(&state),
+            }
+        } else {
+            false
+        };
+        if violated {
             return None;
         }
         next.push(state);
@@ -14680,6 +14800,7 @@ max_states = 1
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn loop_scoped_cross_function_unordered_presence_prunes_body() {
         let program = loop_cross_partition_program();
         let baseline = analyze_baseline_for(&program, 0xc000);
@@ -14745,7 +14866,75 @@ max_states = 1
                 .is_some_and(|reason| reason.contains("outside the selected loop"))
         );
 
-        let (iteration, iteration_facts) = analyze_with_for(
+        let analyze_iteration = |number: &str| -> (f64, FlowFacts) {
+            analyze_with_for(
+                &program,
+                &format!(
+                    r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="{number}">
+        <conflict>
+          <block address="0xc010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#
+                ),
+                0xc000,
+            )
+        };
+
+        let (first, first_facts) = analyze_iteration("1");
+        assert!(
+            first < baseline,
+            "iteration 1 cross-function presence must prune the body: \
+             {first} < {baseline}"
+        );
+        assert!(matches!(
+            first_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::CrossUnorderedPresence
+        ));
+        assert_eq!(first_facts.info().conflicts[0].iteration, Some(1));
+
+        let (second, second_facts) = analyze_iteration("2");
+        assert!(
+            second < baseline && second > first,
+            "iteration 2 only forbids the second body: {second} < {baseline}"
+        );
+        assert_eq!(second_facts.info().conflicts[0].iteration, Some(2));
+
+        let (last, last_facts) = analyze_iteration("-1");
+        assert!(
+            last < baseline,
+            "last-iteration cross-function presence must prune the body: \
+             {last} < {baseline}"
+        );
+        assert_eq!(last_facts.info().conflicts[0].iteration, Some(-1));
+
+        let (above_bound, _) = analyze_iteration("5");
+        assert_eq!(
+            above_bound, baseline,
+            "a cross-function iteration above the loop bound is vacuous"
+        );
+
+        let (all_iterations, all_facts) = analyze_iteration("*");
+        assert_eq!(all_iterations, baseline);
+        assert!(!all_facts.infeasible_paths()[0].applied);
+        assert!(
+            all_facts.infeasible_paths()[0]
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("all-iteration cross-function unordered"))
+        );
+
+        let (mixed_iteration, mixed_facts) = analyze_with_for(
             &program,
             r#"
 <flowfacts>
@@ -14753,7 +14942,7 @@ max_states = 1
     <loop address="0xc010">
       <iteration number="1">
         <conflict>
-          <block address="0xc010"/>
+          <block address="0xc016"/>
           <call name="helper">
             <block address="0x9000"/>
           </call>
@@ -14765,13 +14954,13 @@ max_states = 1
 "#,
             0xc000,
         );
-        assert_eq!(iteration, baseline);
-        assert!(!iteration_facts.infeasible_paths()[0].applied);
+        assert_eq!(mixed_iteration, baseline);
+        assert!(!mixed_facts.infeasible_paths()[0].applied);
         assert!(
-            iteration_facts.infeasible_paths()[0]
+            mixed_facts.infeasible_paths()[0]
                 .reason
                 .as_deref()
-                .is_some_and(|reason| reason.contains("iteration-scoped cross-function unordered"))
+                .is_some_and(|reason| reason.contains("outside the selected loop"))
         );
     }
 

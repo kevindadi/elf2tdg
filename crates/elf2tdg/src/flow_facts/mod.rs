@@ -517,12 +517,12 @@ impl FlowFacts {
                             reset: OrderedReset::LoopSpecific { iteration, .. },
                         } => Some(*iteration),
                         InfeasibleEnforcement::PresenceAutomaton { iteration, .. } => *iteration,
-                        InfeasibleEnforcement::CrossFunctionAutomaton => conflict
+                        InfeasibleEnforcement::CrossFunctionAutomaton
+                        | InfeasibleEnforcement::CrossUnorderedPresence => conflict
                             .cross_function
                             .as_ref()
                             .and_then(|cross| cross.specific_iteration),
                         InfeasibleEnforcement::Automaton { .. }
-                        | InfeasibleEnforcement::CrossUnorderedPresence
                         | InfeasibleEnforcement::Aggregate => None,
                     }
                     .map(|iteration| match iteration {
@@ -1617,21 +1617,34 @@ fn resolve_cross_function_conflict(
         scope_elements.push(group.call_return.clone());
     }
     if !fact.ordered {
-        if fact.iteration.is_iteration() {
-            record.reason = Some(format!(
-                "{origin}: iteration-scoped cross-function unordered conflicts are not supported; conflict ignored"
-            ));
-            return Ok(record);
-        }
         if groups.iter().any(|group| group.slot_len == 0) {
             record.reason = Some(format!(
                 "{origin}: cross-function unordered conflict has an empty call group; conflict ignored"
             ));
             return Ok(record);
         }
-        let loop_header = if fact.loop_context.is_some() {
-            match declared_loop_scope(program, function, fact, &scope_elements, origin)? {
-                DeclaredLoopOutcome::Selected(scope) => Some(scope.header),
+        let specific_iteration = match fact.iteration {
+            IterationContext::Specific(_) => match supported_specific_iteration(fact.iteration) {
+                Ok(iteration) => iteration,
+                Err(reason) => {
+                    record.reason = Some(format!(
+                        "{origin}: specific-iteration cross-function unordered conflict {reason}; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+            },
+            IterationContext::All => {
+                record.reason = Some(format!(
+                    "{origin}: all-iteration cross-function unordered conflicts are not supported; conflict ignored"
+                ));
+                return Ok(record);
+            }
+            IterationContext::None => None,
+        };
+        let (loop_header, specific_iteration) = if let Some(iteration) = specific_iteration {
+            let scope = match declared_loop_scope(program, function, fact, &scope_elements, origin)?
+            {
+                DeclaredLoopOutcome::Selected(scope) => scope,
                 DeclaredLoopOutcome::Ignore(reason) => {
                     record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
                     return Ok(record);
@@ -1641,13 +1654,48 @@ fn resolve_cross_function_conflict(
                 | DeclaredLoopOutcome::SpecificMixed(_)
                 | DeclaredLoopOutcome::AllMixed(_) => {
                     record.reason = Some(format!(
-                        "{origin}: loop-scoped cross-function unordered conflict has an element outside the selected loop; conflict ignored"
+                        "{origin}: specific-iteration cross-function unordered conflict has an element outside the selected loop; conflict ignored"
                     ));
                     return Ok(record);
                 }
+            };
+            if pattern.iter().any(|slot| {
+                matches!(slot, CrossFunctionSlot::Caller(InfeasibleElement::Edge { source, target, .. })
+                    if scope.backedges.contains(&(source.clone(), target.clone())))
+            }) || groups.iter().any(|group| match &group.call_return {
+                InfeasibleElement::Edge { source, target, .. } => {
+                    scope.backedges.contains(&(source.clone(), target.clone()))
+                }
+                InfeasibleElement::Block { .. } => false,
+            }) {
+                record.reason = Some(format!(
+                    "{origin}: specific-iteration cross-function unordered conflict contains a loop-backedge element; conflict ignored"
+                ));
+                return Ok(record);
             }
+            (Some(scope.header), Some(iteration))
         } else {
-            None
+            let loop_header = if fact.loop_context.is_some() {
+                match declared_loop_scope(program, function, fact, &scope_elements, origin)? {
+                    DeclaredLoopOutcome::Selected(scope) => Some(scope.header),
+                    DeclaredLoopOutcome::Ignore(reason) => {
+                        record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
+                        return Ok(record);
+                    }
+                    DeclaredLoopOutcome::None
+                    | DeclaredLoopOutcome::Mixed
+                    | DeclaredLoopOutcome::SpecificMixed(_)
+                    | DeclaredLoopOutcome::AllMixed(_) => {
+                        record.reason = Some(format!(
+                            "{origin}: loop-scoped cross-function unordered conflict has an element outside the selected loop; conflict ignored"
+                        ));
+                        return Ok(record);
+                    }
+                }
+            } else {
+                None
+            };
+            (loop_header, None)
         };
         let Some(first) = groups.first() else {
             record.reason = Some(format!(
@@ -1670,10 +1718,17 @@ fn resolve_cross_function_conflict(
             continuation: first.continuation.clone(),
             call_return: first.call_return.clone(),
             groups,
-            reset: loop_header.map_or(OrderedReset::Function, |header| OrderedReset::LoopEntry {
-                header,
-            }),
-            specific_iteration: None,
+            reset: match (&loop_header, specific_iteration) {
+                (Some(header), Some(iteration)) => OrderedReset::LoopSpecific {
+                    header: header.clone(),
+                    iteration,
+                },
+                (Some(header), None) => OrderedReset::LoopEntry {
+                    header: header.clone(),
+                },
+                (None, _) => OrderedReset::Function,
+            },
+            specific_iteration,
             pattern,
         });
         record.applied = true;
