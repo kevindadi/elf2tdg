@@ -1110,8 +1110,8 @@ asserts that the CFG validates.
   conflicts use presence for caller elements and non-empty call groups; a group
   must match within one callee invocation. A loop-scoped conflict resets
   presence at each loop entry and spans its iterations; numeric/last iterations
-  restrict presence to the selected iteration. Ordered conflicts use
-  aggregate
+  track inside items in the selected iteration and outside items across the
+  invocation. Ordered conflicts use aggregate
   constraints when reachability forces the declared order (function-scope
   acyclic order or per-iteration loop-body order); structurally impossible
   sequences add no constraint. Cross-iteration ordered conflicts use a product
