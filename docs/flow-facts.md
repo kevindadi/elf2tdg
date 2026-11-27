@@ -360,7 +360,9 @@ appear in one execution sub-trace:
   on loop entry and every backedge. Numeric iterations are supported for
   ordered same-function and cross-function conflicts; numbers outside the
   supported range are ignored with warnings. Unordered conflicts spanning
-  nested loops are ignored; ordered conflicts use the automaton product.
+  nested or disjoint loops without an `<iteration>` context use
+  function-invocation presence indicators; ordered conflicts use the automaton
+  product.
 - Ordered conflicts may use nested `<loop>` contexts. Without an `<iteration>`
   context, the innermost declared loop that contains every event is selected,
   so events may span child loops; an event outside that loop lifts the scope to
@@ -386,7 +388,7 @@ appear in one execution sub-trace:
   mixed conflict those boundaries may lie outside and participate in the
   selection. Mixed loop/non-loop ordering without an iteration context has no
   selected loop and uses function scope.
-  Three structural aggregate forms are enforced by IPET:
+  Three structural enforcement forms are used by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
@@ -394,22 +396,24 @@ appear in one execution sub-trace:
     conservative per-iteration relaxation and also covers whole-loop conflicts.
     Ordered nested scopes use the automaton product instead of this aggregate
     reduction;
-  - same-function unordered conflicts without an `<iteration>` context mix at
-    least one loop-touching element with one element outside every natural
-    loop: each element gets a binary presence indicator at function-invocation
-    scope. Big-M constraints link the indicator to the element's execution
-    count, so a repeated loop body still counts as one present element, and
-    `sum(presence) <= n - 1` forbids only an invocation in which every element
-    executes. The loop-touching elements may lie in nested or different
-    natural loops; presence is still an invocation-level set constraint. The
-    conservative big-M bound multiplies every containing loop bound by its
+  - same-function unordered conflicts without an `<iteration>` context that
+    do not fit the two linear forms above use function-invocation presence
+    indicators. This covers mixed loop/non-loop elements, elements spanning
+    nested loops, and elements in disjoint loops. Each element gets a binary
+    presence indicator. Big-M constraints link the indicator to the element's
+    execution count, so a repeated loop body still counts as one present
+    element, and `sum(presence) <= n - 1` forbids only an invocation in which
+    every element executes. Presence is the exact whole-invocation reading of
+    an unordered conflict, so it can be stronger than the conservative
+    per-iteration relaxation used by the common-loop form. The conservative
+    big-M bound multiplies every reachable containing loop bound by its
     outside-entry edge count; a missing bound or a value above 1e15 skips the
     constraint rather than guessing.
 - Unordered conflicts with `<iteration number="*">` or a numeric/last
-  iteration, all-loop nested-loop elements (no outside-loop element), and
-  unsupported cross-function shapes are ignored with warnings. Unordered
-  cross-function conflicts are not supported. Unsupported or unresolvable
-  conflicts only lose precision and never tighten the bound incorrectly.
+  iteration and unsupported cross-function shapes are ignored with warnings.
+  Unordered cross-function conflicts are not supported. Unsupported or
+  unresolvable conflicts only lose precision and never tighten the bound
+  incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model

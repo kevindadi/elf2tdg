@@ -1099,9 +1099,9 @@ asserts that the CFG validates.
   conservative counted-loop inference. FFX branch/call facts are enforced as
   edge/block constraints in matching contexts. Unordered infeasible-path
   conflicts are enforced when their elements share one function and are either
-  outside loops, within one non-nested loop, or mix a loop-touching element
-  with an outside-loop element at invocation scope (binary presence indicators
-  with a `sum <= n - 1` cap). Ordered conflicts use aggregate
+  outside loops, within one non-nested loop, or span mixed loop/non-loop,
+  nested or disjoint loops at invocation scope (binary presence indicators with
+  a `sum <= n - 1` cap). Ordered conflicts use aggregate
   constraints when reachability forces the declared order (function-scope
   acyclic order or per-iteration loop-body order); structurally impossible
   sequences add no constraint. Cross-iteration ordered conflicts use a product

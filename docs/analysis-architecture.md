@@ -51,7 +51,7 @@ Rust `dylib` interface.
 | Level | Capability | Status |
 |---|---|---|
 | P0 | CFG recovery, roots, runtime rules, longest-path WCET | implemented |
-| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain and call-site analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (ordered loop and cross-function conflicts use product automata; cross-function inlines one or more direct call groups and both forms support loop-scoped sequences with entry, per-iteration backedge, numeric-iteration or last-iteration reset, including nested and mixed loop/non-loop contexts), per-function IPET, pure-Rust `microlp`; richer FFX constructs and conflict scalability are next |
+| P1 | Flow facts and IPET/ILP backend | implemented: profile bounds, F4 `.ff`/FFX import, conservative counted-loop inference, context-sensitive caller-chain and call-site analysis, FFX branch/call facts, unordered/structurally-forced/cross-iteration/cross-function ordered infeasible-path conflicts in IPET (ordered loop and cross-function conflicts use product automata; cross-function inlines one or more direct call groups and both forms support loop-scoped sequences with entry, per-iteration backedge, numeric-iteration or last-iteration reset, including nested and mixed loop/non-loop contexts, while unordered same-function presence indicators cover mixed loop/non-loop, nested-loop and disjoint-loop elements), per-function IPET, pure-Rust `microlp`; richer FFX constructs and conflict scalability are next |
 | P2 | Cache, pipeline and branch constraints in IPET | first versions implemented: per-block LRU I/D-cache models with line-split logical blocks and a per-function cache-state product, a full instruction-cache CCG flow model, per-line first-miss and aggregate conflict bounds for fallback, concrete branch-predictor state products with per-edge misprediction costs, optional unknown first-execution history, global-history, gshare, local-history, configurable two-level pattern tables, a global/local tournament predictor, set-associative BTB miss models and bounded return-address stacks, interprocedural branch summaries that carry predictor state and branch costs through direct calls, and multiple-issue Cortex-M4 plus generic/bounded AArch64/RISC-V resource/dependency pipeline models with full inter-block state tables in the IPET state product with first-order edge stalls as fallback; other tournament component pairs are next |
 | P3 | Call-site-sensitive context summaries, bounded recursion, SMT infeasible paths | first version implemented in P1: FFX `address`/`site` frames distinguish call sites and select per-site callee/partition versions; bounded recursion and SMT infeasible paths are planned |
 | P4 | Interrupt/CRPD and multicore shared-resource interference | first versions implemented: `[multicore]` per-access/per-fetch budget, a layered task/place/transition model, its state-equation ILP relaxation, `[system]` activation/periodic/resource/lock/link constraints, work-conserving and fixed-priority per-task response bounds, priority-ceiling blocking and priority-inversion analysis, and a first discrete-time-expanded deadline-feasibility model; timed-state response analysis, priority inheritance/chained blocking, automatic link derivation, arbitration schedules, shared caches, CRPD and interrupt effects are next |
@@ -186,11 +186,12 @@ from summed local estimates.
   context-insensitive model and marks results `partial`.
 - IPET enforces unordered infeasible-path conflicts when all elements share one
   function and are outside natural loops (`sum <= n-1` per invocation) or touch
-  one common non-nested loop (`sum <= (n-1) * loop iterations`). A same-function
-  conflict that mixes loop-touching and outside-loop elements without an
-  iteration context uses binary presence indicators at invocation scope, with
-  big-M bounds from the containing loop bounds and `sum(presence) <= n-1`, so a
-  repeated loop element is not mistaken for multiple present elements. Ordered
+  one common non-nested loop (`sum <= (n-1) * loop iterations`). Same-function
+  conflicts without an iteration context that mix loop and non-loop elements,
+  span nested loops, or touch disjoint loops use binary presence indicators at
+  invocation scope, with big-M bounds from the containing loop bounds and
+  `sum(presence) <= n-1`, so a repeated loop element is not mistaken for
+  multiple present elements. Ordered
   conflicts reduce to the same constraints only when reachability forces the
   declared order: function-scope acyclic order, or per-iteration loop-body
   order with loop backedges removed. Structurally impossible sequences add no
