@@ -441,12 +441,18 @@ appear in one execution sub-trace:
     `<iteration>`) every caller element and every group call block,
     continuation and call-return edge must be inside the selected loop;
     presence resets on each loop entry and spans all its iterations, so the
-    conflict is checked separately per loop entry. Each group must select one
-    unique, unconditional call site.
-- Iteration-scoped cross-function unordered conflicts and iteration-scoped
-  unordered conflicts with no element inside their selected loop are ignored
-  with warnings. Unsupported or unresolvable conflicts only lose precision and
-  never tighten the bound incorrectly.
+    conflict is checked separately per loop entry. With a numeric or last
+    `<iteration>` context, every caller element and group boundary must still
+    be inside the selected loop; presence is tracked only in that iteration,
+    with the same top-tested last-iteration candidate rule as same-function
+    unordered conflicts. Backedge elements are rejected. Each group must
+    select one unique, unconditional call site.
+- All-iteration (`<iteration number="*">`) cross-function unordered conflicts,
+  specific-iteration cross-function unordered conflicts with a caller element
+  or group boundary outside the selected loop, and iteration-scoped unordered
+  conflicts with no element inside their selected loop are ignored with
+  warnings. Unsupported or unresolvable conflicts only lose precision and never
+  tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model
