@@ -1600,42 +1600,6 @@ fn resolve_cross_function_conflict(
         }
     }
     record.elements = flatten_pattern(&pattern);
-    if !fact.ordered {
-        if fact.iteration.is_iteration() || fact.loop_context.is_some() {
-            record.reason = Some(format!(
-                "{origin}: loop- or iteration-scoped cross-function unordered conflicts are not supported; conflict ignored"
-            ));
-            return Ok(record);
-        }
-        if groups.iter().any(|group| group.slot_len == 0) {
-            record.reason = Some(format!(
-                "{origin}: cross-function unordered conflict has an empty call group; conflict ignored"
-            ));
-            return Ok(record);
-        }
-        let Some(first) = groups.first() else {
-            record.reason = Some(format!(
-                "{origin}: cross-function unordered conflict has no call group; conflict ignored"
-            ));
-            return Ok(record);
-        };
-        record.scope = Some(InfeasibleScope::CrossFunction);
-        record.enforcement = InfeasibleEnforcement::CrossUnorderedPresence;
-        record.cross_function = Some(CrossFunctionConstraint {
-            caller: function.id.clone(),
-            callee: first.callee.clone(),
-            call_block: first.call_block.clone(),
-            call_site: first.call_site,
-            continuation: first.continuation.clone(),
-            call_return: first.call_return.clone(),
-            groups,
-            reset: OrderedReset::Function,
-            specific_iteration: None,
-            pattern,
-        });
-        record.applied = true;
-        return Ok(record);
-    }
     let mut scope_elements: Vec<InfeasibleElement> = pattern
         .iter()
         .filter_map(|slot| match slot {
@@ -1651,6 +1615,69 @@ fn resolve_cross_function_conflict(
             block: group.continuation.clone(),
         });
         scope_elements.push(group.call_return.clone());
+    }
+    if !fact.ordered {
+        if fact.iteration.is_iteration() {
+            record.reason = Some(format!(
+                "{origin}: iteration-scoped cross-function unordered conflicts are not supported; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        if groups.iter().any(|group| group.slot_len == 0) {
+            record.reason = Some(format!(
+                "{origin}: cross-function unordered conflict has an empty call group; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        let loop_header = if fact.loop_context.is_some() {
+            match declared_loop_scope(program, function, fact, &scope_elements, origin)? {
+                DeclaredLoopOutcome::Selected(scope) => Some(scope.header),
+                DeclaredLoopOutcome::Ignore(reason) => {
+                    record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
+                    return Ok(record);
+                }
+                DeclaredLoopOutcome::None
+                | DeclaredLoopOutcome::Mixed
+                | DeclaredLoopOutcome::SpecificMixed(_)
+                | DeclaredLoopOutcome::AllMixed(_) => {
+                    record.reason = Some(format!(
+                        "{origin}: loop-scoped cross-function unordered conflict has an element outside the selected loop; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+            }
+        } else {
+            None
+        };
+        let Some(first) = groups.first() else {
+            record.reason = Some(format!(
+                "{origin}: cross-function unordered conflict has no call group; conflict ignored"
+            ));
+            return Ok(record);
+        };
+        record.scope = Some(loop_header.as_ref().map_or(
+            InfeasibleScope::CrossFunction,
+            |header| InfeasibleScope::Loop {
+                header: header.clone(),
+            },
+        ));
+        record.enforcement = InfeasibleEnforcement::CrossUnorderedPresence;
+        record.cross_function = Some(CrossFunctionConstraint {
+            caller: function.id.clone(),
+            callee: first.callee.clone(),
+            call_block: first.call_block.clone(),
+            call_site: first.call_site,
+            continuation: first.continuation.clone(),
+            call_return: first.call_return.clone(),
+            groups,
+            reset: loop_header.map_or(OrderedReset::Function, |header| OrderedReset::LoopEntry {
+                header,
+            }),
+            specific_iteration: None,
+            pattern,
+        });
+        record.applied = true;
+        return Ok(record);
     }
     let loop_scope = match declared_loop_scope(program, function, fact, &scope_elements, origin)? {
         DeclaredLoopOutcome::None | DeclaredLoopOutcome::Mixed => {
