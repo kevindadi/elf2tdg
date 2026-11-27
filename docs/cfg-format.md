@@ -1102,8 +1102,9 @@ asserts that the CFG validates.
   outside loops, within one non-nested loop, or span mixed loop/non-loop,
   nested or disjoint loops at invocation scope (binary presence indicators with
   a `sum <= n - 1` cap). A numeric or last iteration scope uses a product
-  presence automaton over the selected loop iteration. Ordered conflicts use
-  aggregate
+  presence automaton over the selected loop iteration; inside elements are
+  tracked only there while outside elements are tracked across the invocation.
+  Ordered conflicts use aggregate
   constraints when reachability forces the declared order (function-scope
   acyclic order or per-iteration loop-body order); structurally impossible
   sequences add no constraint. Cross-iteration ordered conflicts use a product

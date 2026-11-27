@@ -411,20 +411,23 @@ appear in one execution sub-trace:
     outside-entry edge count; a missing bound or a value above 1e15 skips the
     constraint rather than guessing;
   - a same-function unordered conflict with a numeric or last `<iteration>`
-    context uses a product presence automaton. Every element must be inside
-    the selected loop and backedge elements are rejected. The automaton tracks
-    which elements have occurred in the current selected iteration; a path in
-    which every element occurs in that iteration is removed. Numeric
-    iterations above the per-entry loop bound are vacuous. For `-1`, a full
-    iteration ending at a backedge is deferred: exiting at the loop header
-    rejects the path, while entering another body iteration discards the
-    deferred result because that iteration was not last.
+    context uses a product presence automaton. At least one element must be
+    inside the selected loop; backedge elements are rejected. Elements inside
+    the loop are tracked only during the selected iteration, while elements
+    outside it are tracked anywhere in the invocation, before or after the
+    loop. A path is removed when every inside element occurred in the selected
+    iteration and every outside element occurred somewhere in the invocation.
+    Numeric iterations above the per-entry loop bound are vacuous. For `-1`, a
+    full iteration ending at a backedge is deferred: exiting at the loop header
+    makes it the last iteration, while entering another body iteration discards
+    the deferred result. Outside elements may complete the conflict after the
+    loop exits.
 - Unordered conflicts with `<iteration number="*">` outside one common
-  non-nested loop, mixed specific-iteration unordered conflicts (an element
-  outside the selected loop), and unsupported cross-function shapes are
-  ignored with warnings. Unordered cross-function conflicts are not supported.
-  Unsupported or unresolvable conflicts only lose precision and never tighten
-  the bound incorrectly.
+  non-nested loop and unsupported cross-function shapes are ignored with
+  warnings. An iteration-scoped unordered conflict with no element inside its
+  selected loop is also ignored. Unordered cross-function conflicts are not
+  supported. Unsupported or unresolvable conflicts only lose precision and
+  never tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model
