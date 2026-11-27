@@ -1048,8 +1048,9 @@ pub(crate) enum InfeasibleEnforcement {
     Aggregate,
     /// Product IPET with a sequence-progress automaton.
     Automaton { reset: OrderedReset },
-    /// Product IPET that tracks element presence inside one selected loop
-    /// iteration. Used by specific-iteration unordered conflicts.
+    /// Product IPET that tracks inside-element presence in one selected loop
+    /// iteration and outside-element presence across the invocation. Used by
+    /// specific-iteration unordered conflicts.
     PresenceAutomaton {
         header: BlockId,
         iteration: SpecificIteration,
@@ -1815,13 +1816,7 @@ fn resolve_specific_unordered_conflict(
         }
     };
     let scope = match declared_loop_scope(program, function, fact, &record.elements, origin)? {
-        DeclaredLoopOutcome::Selected(scope) => scope,
-        DeclaredLoopOutcome::SpecificMixed(_) => {
-            record.reason = Some(format!(
-                "{origin}: specific-iteration unordered conflict has an element outside the selected loop; conflict ignored"
-            ));
-            return Ok(record);
-        }
+        DeclaredLoopOutcome::Selected(scope) | DeclaredLoopOutcome::SpecificMixed(scope) => scope,
         DeclaredLoopOutcome::Ignore(reason) => {
             record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
             return Ok(record);
@@ -1835,6 +1830,16 @@ fn resolve_specific_unordered_conflict(
             return Ok(record);
         }
     };
+    if !record
+        .elements
+        .iter()
+        .any(|element| element_within_loop(element, &scope.blocks))
+    {
+        record.reason = Some(format!(
+            "{origin}: specific-iteration unordered conflict has no element inside the selected loop; conflict ignored"
+        ));
+        return Ok(record);
+    }
     if record.elements.iter().any(|element| match element {
         InfeasibleElement::Edge { source, target, .. } => {
             scope.backedges.contains(&(source.clone(), target.clone()))

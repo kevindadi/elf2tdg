@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks element presence in the selected iteration; last-iteration paths defer a completed iteration at a backedge until the loop exits. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. All-iteration unordered conflicts outside one common non-nested loop, mixed specific-iteration unordered conflicts and unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks inside elements in the selected iteration and outside elements across the invocation; last-iteration paths defer a completed iteration at a backedge until the loop exits and outside elements may complete the conflict afterwards. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. All-iteration unordered conflicts outside one common non-nested loop and unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -2685,12 +2685,14 @@ impl AutomatonRuntime {
 #[derive(Clone, Debug)]
 struct PresenceRuntime {
     elements: Vec<InfeasibleElement>,
+    inside_element: Vec<bool>,
     blocks: BTreeSet<BlockId>,
     backedges: BTreeSet<(BlockId, BlockId)>,
     header: BlockId,
     header_has_exit: bool,
     selected: SpecificIteration,
-    full: Vec<u64>,
+    inside_full: Vec<u64>,
+    outside_full: Vec<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2698,20 +2700,33 @@ struct PresenceState {
     /// 0 outside the loop, 1-based iteration inside. Numeric selectors cap the
     /// value at `selected + 1` once the target iteration has passed.
     iteration: u32,
-    /// Elements already present in the tracked iteration.
-    mask: Vec<u64>,
+    /// Elements inside the selected loop that occurred in the tracked iteration.
+    inside: Vec<u64>,
+    /// Elements outside the selected loop that occurred anywhere in the
+    /// invocation. This mask is not reset at loop iteration boundaries.
+    outside: Vec<u64>,
     /// Last-iteration only: the iteration that just ended at a backedge had
-    /// every element, and a header exit would make it the last iteration.
-    candidate_full: bool,
+    /// every inside element, and a header exit would make it the last iteration.
+    candidate_inside_full: bool,
+    /// Numeric selectors: the selected iteration already contained every inside
+    /// element. Outside elements may still appear later in the invocation.
+    selected_inside_full: bool,
+    /// Last selectors: the last completed loop iteration already contained every
+    /// inside element. Outside elements may still appear after the loop.
+    last_inside_full: bool,
 }
 
 impl PresenceRuntime {
     fn zero_mask(&self) -> Vec<u64> {
-        vec![0; self.full.len()]
+        vec![0; self.elements.len().div_ceil(64)]
     }
 
-    fn mask_full(&self, mask: &[u64]) -> bool {
-        mask == self.full.as_slice()
+    fn inside_complete(&self, mask: &[u64]) -> bool {
+        mask == self.inside_full.as_slice()
+    }
+
+    fn outside_complete(&self, mask: &[u64]) -> bool {
+        mask == self.outside_full.as_slice()
     }
 
     fn tracking(&self, iteration: u32) -> bool {
@@ -2721,13 +2736,26 @@ impl PresenceRuntime {
         }
     }
 
-    fn apply(&self, element: &InfeasibleElement, mask: &mut [u64]) {
-        if let Some(index) = self
+    fn apply(
+        &self,
+        element: &InfeasibleElement,
+        track_inside: bool,
+        inside: &mut [u64],
+        outside: &mut [u64],
+    ) {
+        let Some(index) = self
             .elements
             .iter()
             .position(|candidate| candidate == element)
-        {
-            mask[index / 64] |= 1_u64 << (index % 64);
+        else {
+            return;
+        };
+        if self.inside_element[index] {
+            if track_inside {
+                inside[index / 64] |= 1_u64 << (index % 64);
+            }
+        } else {
+            outside[index / 64] |= 1_u64 << (index % 64);
         }
     }
 }
@@ -2754,18 +2782,31 @@ fn presence_runtimes(
                 .map(|edge| (edge.from.clone(), edge.to.clone()))
                 .collect();
             let header_has_exit = loop_header_has_exit(cfg, &automaton.header, &blocks);
-            let mut full = vec![0_u64; automaton.elements.len().div_ceil(64)];
-            for index in 0..automaton.elements.len() {
+            let inside_element: Vec<bool> = automaton
+                .elements
+                .iter()
+                .map(|element| element_within_blocks(element, &blocks))
+                .collect();
+            let mut inside_full = vec![0_u64; automaton.elements.len().div_ceil(64)];
+            let mut outside_full = inside_full.clone();
+            for (index, inside) in inside_element.iter().enumerate() {
+                let full = if *inside {
+                    &mut inside_full
+                } else {
+                    &mut outside_full
+                };
                 full[index / 64] |= 1_u64 << (index % 64);
             }
             Ok(PresenceRuntime {
                 elements: automaton.elements.clone(),
+                inside_element,
                 blocks,
                 backedges,
                 header: automaton.header.clone(),
                 header_has_exit,
                 selected: automaton.iteration,
-                full,
+                inside_full,
+                outside_full,
             })
         })
         .collect()
@@ -2780,21 +2821,29 @@ fn initial_presence_progress(
         let iteration = u32::from(runtime.blocks.contains(entry_block));
         let mut state = PresenceState {
             iteration,
-            mask: runtime.zero_mask(),
-            candidate_full: false,
+            inside: runtime.zero_mask(),
+            outside: runtime.zero_mask(),
+            candidate_inside_full: false,
+            selected_inside_full: false,
+            last_inside_full: false,
         };
-        if iteration > 0 && runtime.tracking(iteration) {
-            runtime.apply(
-                &InfeasibleElement::Block {
-                    block: entry_block.clone(),
-                },
-                &mut state.mask,
-            );
-            if matches!(runtime.selected, SpecificIteration::Number(_))
-                && runtime.mask_full(&state.mask)
-            {
-                return None;
-            }
+        let track_inside = iteration > 0 && runtime.tracking(iteration);
+        runtime.apply(
+            &InfeasibleElement::Block {
+                block: entry_block.clone(),
+            },
+            track_inside,
+            &mut state.inside,
+            &mut state.outside,
+        );
+        if track_inside
+            && matches!(runtime.selected, SpecificIteration::Number(_))
+            && runtime.inside_complete(&state.inside)
+        {
+            state.selected_inside_full = true;
+        }
+        if state.selected_inside_full && runtime.outside_complete(&state.outside) {
+            return None;
         }
         progress.push(state);
     }
@@ -2817,63 +2866,86 @@ fn advance_presence_progress(
         let backedge = runtime
             .backedges
             .contains(&(source.clone(), target.clone()));
-        let mut match_elements = true;
-        if source_inside && !target_inside {
-            let violated = match runtime.selected {
+        let track_inside = if source_inside && !target_inside {
+            match runtime.selected {
                 SpecificIteration::Number(number) => {
-                    state.iteration == number && runtime.mask_full(&state.mask)
-                }
-                SpecificIteration::Last => {
-                    if runtime.header == *source {
-                        state.candidate_full
-                    } else {
-                        runtime.mask_full(&state.mask)
+                    if state.iteration == number && runtime.inside_complete(&state.inside) {
+                        state.selected_inside_full = true;
                     }
                 }
-            };
-            if violated {
-                return None;
+                SpecificIteration::Last => {
+                    let current_full = runtime.inside_complete(&state.inside);
+                    let last_full = if runtime.header == *source {
+                        state.candidate_inside_full
+                    } else {
+                        current_full
+                    };
+                    if last_full && runtime.outside_complete(&state.outside) {
+                        return None;
+                    }
+                    state.last_inside_full |= last_full;
+                }
             }
             state.iteration = 0;
-            state.mask = runtime.zero_mask();
-            state.candidate_full = false;
-            match_elements = false;
+            state.inside = runtime.zero_mask();
+            state.candidate_inside_full = false;
+            false
         } else if !source_inside && target_inside {
             state.iteration = 1;
-            state.mask = runtime.zero_mask();
-            state.candidate_full = false;
+            state.inside = runtime.zero_mask();
+            state.candidate_inside_full = false;
+            runtime.tracking(1)
         } else if source_inside && target_inside && backedge {
             match runtime.selected {
                 SpecificIteration::Number(number) => {
+                    if state.iteration == number && runtime.inside_complete(&state.inside) {
+                        state.selected_inside_full = true;
+                    }
                     state.iteration = state
                         .iteration
                         .saturating_add(1)
                         .min(number.saturating_add(1));
-                    state.mask = runtime.zero_mask();
-                    state.candidate_full = false;
+                    state.candidate_inside_full = false;
                 }
                 SpecificIteration::Last => {
-                    state.candidate_full =
-                        runtime.header_has_exit && runtime.mask_full(&state.mask);
+                    state.candidate_inside_full =
+                        runtime.header_has_exit && runtime.inside_complete(&state.inside);
                     state.iteration = 1;
-                    state.mask = runtime.zero_mask();
                 }
             }
+            state.inside = runtime.zero_mask();
+            runtime.tracking(state.iteration)
         } else if source_inside && target_inside {
             if matches!(runtime.selected, SpecificIteration::Last) && runtime.header == *source {
-                state.candidate_full = false;
+                state.candidate_inside_full = false;
             }
+            runtime.tracking(state.iteration)
         } else {
-            match_elements = false;
+            false
+        };
+        runtime.apply(
+            edge_element,
+            track_inside,
+            &mut state.inside,
+            &mut state.outside,
+        );
+        runtime.apply(block, track_inside, &mut state.inside, &mut state.outside);
+        if track_inside
+            && matches!(runtime.selected, SpecificIteration::Number(_))
+            && runtime.inside_complete(&state.inside)
+        {
+            state.selected_inside_full = true;
         }
-        if match_elements && state.iteration > 0 && runtime.tracking(state.iteration) {
-            runtime.apply(edge_element, &mut state.mask);
-            runtime.apply(block, &mut state.mask);
-            if matches!(runtime.selected, SpecificIteration::Number(_))
-                && runtime.mask_full(&state.mask)
-            {
-                return None;
+        let violated = match runtime.selected {
+            SpecificIteration::Number(_) => {
+                state.selected_inside_full && runtime.outside_complete(&state.outside)
             }
+            SpecificIteration::Last => {
+                state.last_inside_full && runtime.outside_complete(&state.outside)
+            }
+        };
+        if violated {
+            return None;
         }
         next.push(state);
     }
@@ -11018,19 +11090,88 @@ max_states = 16
     }
 
     #[test]
-    fn mixed_specific_iteration_unordered_conflicts_are_ignored() {
+    fn mixed_specific_iteration_unordered_conflicts_track_outside_presence() {
         let program = loop_program();
         let baseline = analyze_baseline(&program);
+        let analyze = |number: &str, outside: &str| -> (f64, FlowFacts) {
+            analyze_with(
+                &program,
+                &format!(
+                    r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="{number}">
+        <conflict>
+          <block address="0x2004"/>
+          <block address="{outside}"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#
+                ),
+            )
+        };
+
+        let (first, first_facts) = analyze("1", "0x200c");
+        assert!(
+            first < baseline,
+            "a present outside block must suppress the selected body: \
+             {first} < {baseline}"
+        );
+        let conflict = &first_facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: SpecificIteration::Number(1),
+                ref header,
+            } if header.as_str() == "bb:0x2002"
+        ));
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0x2002"
+        ));
+
+        let (before, before_facts) = analyze("1", "0x2000");
+        assert!(
+            before < baseline,
+            "a present pre-loop block must suppress the selected body: \
+             {before} < {baseline}"
+        );
+        assert!(before_facts.infeasible_paths()[0].applied);
+
+        let (last, last_facts) = analyze("-1", "0x200c");
+        assert!(
+            last < baseline,
+            "last-iteration presence must include outside blocks: {last} < {baseline}"
+        );
+        assert!(matches!(
+            last_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: SpecificIteration::Last,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn mixed_specific_iteration_unordered_requires_outside_presence() {
+        let program = mixed_unordered_program();
+        let baseline = analyze_baseline(&program);
+        assert_eq!(baseline, 492.0);
         let (constrained, facts) = analyze_with(
             &program,
             r#"
 <flowfacts>
   <function name="main">
-    <loop address="0x2002">
+    <loop address="0x9002">
       <iteration number="1">
         <conflict>
-          <block address="0x2004"/>
-          <block address="0x200c"/>
+          <block address="0x9004"/>
+          <block address="0x900e"/>
         </conflict>
       </iteration>
     </loop>
@@ -11038,15 +11179,17 @@ max_states = 16
 </flowfacts>
 "#,
         );
-        assert_eq!(constrained, baseline);
-        let conflict = &facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
-        assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("outside the selected loop"))
+        assert_eq!(
+            constrained, 491.0,
+            "the optional outside block must stay absent; the selected body may repeat"
         );
+        assert!(matches!(
+            facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: SpecificIteration::Number(1),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -11520,6 +11663,43 @@ max_states = 16
             })
             .expect("presence automaton");
         assert!(presence.applied);
+
+        let mixed_text = r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="2">
+        <conflict ordered="yes">
+          <block address="0xc010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+      <iteration number="1">
+        <conflict>
+          <block address="0xc012"/>
+          <block address="0xc01c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#;
+        let (mixed, mixed_facts) = analyze_with_for(&program, mixed_text, 0xc000);
+        assert!(
+            mixed < cross,
+            "outside-block presence must combine with cross automata: {mixed} < {cross}"
+        );
+        assert!(mixed_facts.infeasible_paths().iter().any(|conflict| {
+            matches!(
+                conflict.enforcement,
+                InfeasibleEnforcement::PresenceAutomaton {
+                    iteration: SpecificIteration::Number(1),
+                    ..
+                }
+            )
+        }));
     }
 
     #[test]
