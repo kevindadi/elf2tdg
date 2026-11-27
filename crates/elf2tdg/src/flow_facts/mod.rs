@@ -1623,6 +1623,7 @@ fn resolve_cross_function_conflict(
             ));
             return Ok(record);
         }
+        let all_iterations = fact.iteration == IterationContext::All;
         let specific_iteration = match fact.iteration {
             IterationContext::Specific(_) => match supported_specific_iteration(fact.iteration) {
                 Ok(iteration) => iteration,
@@ -1633,28 +1634,21 @@ fn resolve_cross_function_conflict(
                     return Ok(record);
                 }
             },
-            IterationContext::All => {
-                record.reason = Some(format!(
-                    "{origin}: all-iteration cross-function unordered conflicts are not supported; conflict ignored"
-                ));
-                return Ok(record);
-            }
-            IterationContext::None => None,
+            IterationContext::All | IterationContext::None => None,
         };
-        let (loop_header, specific_iteration) = if let Some(iteration) = specific_iteration {
+        let (loop_header, specific_iteration) = if specific_iteration.is_some() || all_iterations {
             let scope = match declared_loop_scope(program, function, fact, &scope_elements, origin)?
             {
                 DeclaredLoopOutcome::Selected(scope)
-                | DeclaredLoopOutcome::SpecificMixed(scope) => scope,
+                | DeclaredLoopOutcome::SpecificMixed(scope)
+                | DeclaredLoopOutcome::AllMixed(scope) => scope,
                 DeclaredLoopOutcome::Ignore(reason) => {
                     record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
                     return Ok(record);
                 }
-                DeclaredLoopOutcome::None
-                | DeclaredLoopOutcome::Mixed
-                | DeclaredLoopOutcome::AllMixed(_) => {
+                DeclaredLoopOutcome::None | DeclaredLoopOutcome::Mixed => {
                     record.reason = Some(format!(
-                        "{origin}: specific-iteration cross-function unordered conflict has no selected loop; conflict ignored"
+                        "{origin}: iteration-scoped cross-function unordered conflict has no selected loop; conflict ignored"
                     ));
                     return Ok(record);
                 }
@@ -1676,7 +1670,7 @@ fn resolve_cross_function_conflict(
                     group_inside_flags.push(inside);
                 } else {
                     record.reason = Some(format!(
-                        "{origin}: specific-iteration cross-function unordered call group straddles the selected loop boundary; conflict ignored"
+                        "{origin}: iteration-scoped cross-function unordered call group straddles the selected loop boundary; conflict ignored"
                     ));
                     return Ok(record);
                 }
@@ -1686,7 +1680,7 @@ fn resolve_cross_function_conflict(
             });
             if !caller_inside && !group_inside_flags.iter().any(|inside| *inside) {
                 record.reason = Some(format!(
-                    "{origin}: specific-iteration cross-function unordered conflict has no element inside the selected loop; conflict ignored"
+                    "{origin}: iteration-scoped cross-function unordered conflict has no element inside the selected loop; conflict ignored"
                 ));
                 return Ok(record);
             }
@@ -1703,11 +1697,11 @@ fn resolve_cross_function_conflict(
                     }
             }) {
                 record.reason = Some(format!(
-                    "{origin}: specific-iteration cross-function unordered conflict contains a loop-backedge element; conflict ignored"
+                    "{origin}: iteration-scoped cross-function unordered conflict contains a loop-backedge element; conflict ignored"
                 ));
                 return Ok(record);
             }
-            (Some(scope.header), Some(iteration))
+            (Some(scope.header), specific_iteration)
         } else {
             let loop_header = if fact.loop_context.is_some() {
                 match declared_loop_scope(program, function, fact, &scope_elements, origin)? {
@@ -1756,6 +1750,9 @@ fn resolve_cross_function_conflict(
                 (Some(header), Some(iteration)) => OrderedReset::LoopSpecific {
                     header: header.clone(),
                     iteration,
+                },
+                (Some(header), None) if all_iterations => OrderedReset::LoopIteration {
+                    header: header.clone(),
                 },
                 (Some(header), None) => OrderedReset::LoopEntry {
                     header: header.clone(),
