@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; a same-function unordered conflict that mixes loop and non-loop elements uses binary presence indicators at function scope so a repeated loop element counts as one present element. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Iteration-scoped mixed unordered conflicts and unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Iteration-scoped unordered conflicts and unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -2193,9 +2193,9 @@ fn constraints(
     constraints
 }
 
-const MAX_MIXED_PRESENCE_COUNT: f64 = 1e15;
+const MAX_PRESENCE_COUNT: f64 = 1e15;
 
-fn mixed_element_bound(
+fn presence_element_bound(
     cfg: &FunctionCfg,
     facts: &FlowFacts,
     scope: FactScope<'_>,
@@ -2235,18 +2235,18 @@ fn mixed_element_bound(
             .max(1);
         let entries = u32::try_from(entries).unwrap_or(u32::MAX);
         bound *= f64::from(loop_bound) * f64::from(entries);
-        if !bound.is_finite() || bound > MAX_MIXED_PRESENCE_COUNT {
+        if !bound.is_finite() || bound > MAX_PRESENCE_COUNT {
             return None;
         }
     }
     Some(bound)
 }
 
-/// Enforce an unordered conflict through exact presence indicators. Mixed
-/// loop/non-loop conflicts are scoped to the function invocation; binary
-/// presence variables make `not all elements present` expressible without
-/// excluding feasible paths that execute one element several times.
-fn mixed_presence_constraints(
+/// Enforce an unordered conflict through exact presence indicators at function
+/// scope. This covers mixed loop/non-loop elements, nested loops and disjoint
+/// loops. Binary presence variables make `not all elements present` expressible
+/// without excluding feasible paths that execute one element several times.
+fn presence_constraints(
     cfg: &FunctionCfg,
     facts: &FlowFacts,
     scope: FactScope<'_>,
@@ -2266,7 +2266,7 @@ fn mixed_presence_constraints(
         let Some(expression) = element_expression(element) else {
             return Vec::new();
         };
-        let Some(bound) = mixed_element_bound(cfg, facts, scope, element) else {
+        let Some(bound) = presence_element_bound(cfg, facts, scope, element) else {
             return Vec::new();
         };
         expressions.push(expression);
@@ -2336,8 +2336,8 @@ fn aggregate_conflict_constraints(
                 .is_some_and(|function| function == function_id)
             && scope.matches(&conflict.context)
     }) {
-        if conflict.mixed {
-            constraints.extend(mixed_presence_constraints(
+        if conflict.presence {
+            constraints.extend(presence_constraints(
                 cfg,
                 facts,
                 scope,
@@ -2426,8 +2426,8 @@ fn infeasible_path_constraints(
                 .is_some_and(|function| function == function_id)
             && scope.matches(&conflict.context)
     }) {
-        if conflict.mixed {
-            constraints.extend(mixed_presence_constraints(
+        if conflict.presence {
+            constraints.extend(presence_constraints(
                 cfg,
                 facts,
                 scope,
@@ -7569,6 +7569,24 @@ auto_loop_bounds = false
         (cycles, facts)
     }
 
+    fn analyze_with_for(program: &ProgramCfg, text: &str, address: u64) -> (f64, FlowFacts) {
+        let mut constrained = program.clone();
+        let mut facts = facts();
+        let document = FlowFactDocument::parse_text(text, "conflict.ffx").expect("parse");
+        facts
+            .apply_document(document, program)
+            .expect("apply conflict");
+        let _ = analyze_program(&mut constrained, &facts);
+        let cycles = constrained
+            .functions
+            .iter()
+            .find(|function| function.address == address)
+            .and_then(|function| function.wcet.as_ref())
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite function cycles");
+        (cycles, facts)
+    }
+
     fn analyze_baseline_for(program: &ProgramCfg, address: u64) -> f64 {
         let mut program = program.clone();
         let _ = analyze_program(&mut program, &facts());
@@ -7672,6 +7690,38 @@ auto_loop_bounds = false
                     edge(0x900e, 0x9010, CfgEdgeKind::Fallthrough),
                 ],
                 Some(0x9000),
+            ),
+        )])
+    }
+
+    fn disjoint_loop_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x7100,
+            FunctionCfg::build(
+                vec![
+                    block(0x7100, CfgTerminator::Fallthrough, 1.0),
+                    block(0x7102, CfgTerminator::Branch, 1.0),
+                    block(0x7104, CfgTerminator::Fallthrough, 100.0),
+                    block(0x7106, CfgTerminator::Branch, 1.0),
+                    block(0x7108, CfgTerminator::Branch, 1.0),
+                    block(0x710a, CfgTerminator::Fallthrough, 200.0),
+                    block(0x710c, CfgTerminator::Branch, 1.0),
+                    block(0x710e, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x7100, 0x7102, CfgEdgeKind::Fallthrough),
+                    edge(0x7102, 0x7104, CfgEdgeKind::Branch),
+                    edge(0x7102, 0x7108, CfgEdgeKind::Fallthrough),
+                    edge(0x7104, 0x7106, CfgEdgeKind::Fallthrough),
+                    edge(0x7106, 0x7102, CfgEdgeKind::Branch),
+                    edge(0x7106, 0x7108, CfgEdgeKind::Fallthrough),
+                    edge(0x7108, 0x710a, CfgEdgeKind::Branch),
+                    edge(0x7108, 0x710e, CfgEdgeKind::Fallthrough),
+                    edge(0x710a, 0x710c, CfgEdgeKind::Fallthrough),
+                    edge(0x710c, 0x7108, CfgEdgeKind::Branch),
+                    edge(0x710c, 0x710e, CfgEdgeKind::Fallthrough),
+                ],
+                Some(0x7100),
             ),
         )])
     }
@@ -10345,6 +10395,73 @@ max_states = 16
     }
 
     #[test]
+    fn nested_loop_unordered_conflicts_use_invocation_presence() {
+        let program = nested_loop_ordered_program();
+        let baseline = analyze_baseline_for(&program, 0xf000);
+        let (constrained, facts) = analyze_with_for(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0xf004"/>
+      <block address="0xf008"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+            0xf000,
+        );
+        assert!(
+            constrained < baseline,
+            "nested-loop unordered presence must prune the inner path: \
+             {constrained} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(conflict.presence);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::Function));
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Aggregate
+        ));
+        assert_eq!(facts.info().conflicts[0].scope.as_deref(), Some("function"));
+        assert_eq!(facts.info().conflicts[0].mode.as_deref(), Some("aggregate"));
+    }
+
+    #[test]
+    fn disjoint_loop_unordered_conflicts_use_invocation_presence() {
+        let program = disjoint_loop_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0x7104"/>
+      <block address="0x710a"/>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            constrained < baseline,
+            "disjoint-loop unordered presence must prune one loop body: \
+             {constrained} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(conflict.presence);
+        assert_eq!(conflict.scope, Some(InfeasibleScope::Function));
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::Aggregate
+        ));
+    }
+
+    #[test]
     fn nested_loop_cross_function_conflict_selects_the_containing_scope() {
         let program = nested_loop_ordered_program();
         let (baseline, _) = analyze_nested_program(&program, "");
@@ -10478,7 +10595,7 @@ max_states = 16
         );
         let conflict = &facts.infeasible_paths()[0];
         assert!(conflict.applied);
-        assert!(conflict.mixed);
+        assert!(conflict.presence);
         assert_eq!(conflict.scope, Some(InfeasibleScope::Function));
         assert!(matches!(
             conflict.enforcement,
@@ -10505,7 +10622,7 @@ max_states = 16
             mandatory, 32.0,
             "a present outside element must suppress the loop element"
         );
-        assert!(mandatory_facts.infeasible_paths()[0].mixed);
+        assert!(mandatory_facts.infeasible_paths()[0].presence);
 
         let (all_iterations, all_facts) = analyze_with(
             &program,
@@ -10571,7 +10688,7 @@ max_states = 16
         ));
         let mixed = &facts.infeasible_paths()[1];
         assert!(mixed.applied);
-        assert!(mixed.mixed);
+        assert!(mixed.presence);
         assert_eq!(mixed.scope, Some(InfeasibleScope::Function));
         assert!(matches!(
             mixed.enforcement,
@@ -10636,7 +10753,7 @@ max_states = 16
                 .and_then(|ipet| ipet.branch_model.as_deref()),
             Some("state-product")
         );
-        assert!(constrained_facts.infeasible_paths()[0].mixed);
+        assert!(constrained_facts.infeasible_paths()[0].presence);
     }
 
     #[test]
@@ -10728,7 +10845,7 @@ max_states = 16
         let mixed = facts
             .infeasible_paths()
             .iter()
-            .find(|conflict| conflict.mixed)
+            .find(|conflict| conflict.presence)
             .expect("mixed presence constraint");
         assert!(mixed.applied);
         assert_eq!(mixed.scope, Some(InfeasibleScope::Function));
@@ -11246,6 +11363,7 @@ max_states = 16
         assert!(constrained > 0.0);
         let conflict = &applied_facts.infeasible_paths()[0];
         assert!(conflict.applied);
+        assert!(!conflict.presence);
         assert!(matches!(
             conflict.scope,
             Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0x2002"

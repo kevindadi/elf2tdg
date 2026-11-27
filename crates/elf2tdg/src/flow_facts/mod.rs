@@ -1098,9 +1098,9 @@ pub(crate) struct InfeasiblePathConstraint {
     pub(crate) scope: Option<InfeasibleScope>,
     pub(crate) applied: bool,
     pub(crate) enforcement: InfeasibleEnforcement,
-    /// Mixed loop/non-loop unordered conflict enforced through presence
-    /// variables at function scope.
-    pub(crate) mixed: bool,
+    /// Unordered conflict without a linear structural aggregate form, enforced
+    /// through presence variables at function scope.
+    pub(crate) presence: bool,
     pub(crate) cross_function: Option<CrossFunctionConstraint>,
     pub(crate) reason: Option<String>,
 }
@@ -1327,7 +1327,7 @@ fn resolve_conflict(
         scope: None,
         applied: false,
         enforcement: InfeasibleEnforcement::Aggregate,
-        mixed: false,
+        presence: false,
         cross_function: None,
         reason: None,
     };
@@ -1385,14 +1385,15 @@ fn resolve_conflict(
     if fact.ordered {
         return resolve_ordered_conflict(program, function, fact, record, origin);
     }
-    if !fact.iteration.is_iteration() && mixed_unordered_scope(function, &record.elements) {
+    let structural = conflict_scope(function, &record.elements);
+    if !fact.iteration.is_iteration() && structural.is_err() {
         record.scope = Some(InfeasibleScope::Function);
         record.enforcement = InfeasibleEnforcement::Aggregate;
-        record.mixed = true;
+        record.presence = true;
         record.applied = true;
         return Ok(record);
     }
-    match conflict_scope(function, &record.elements) {
+    match structural {
         Ok(scope) => {
             if let Some(target) = &fact.loop_context {
                 let header_address = resolve_target(program, target, origin)?;
@@ -1782,35 +1783,6 @@ fn resolve_conflict_call_return(
         site: edge.weight().site,
     };
     Some((element, target))
-}
-
-fn mixed_unordered_scope(function: &CfgFunction, elements: &[InfeasibleElement]) -> bool {
-    let analysis = crate::cfg_graph::analyze(&function.cfg);
-    let loop_blocks: Vec<BTreeSet<&BlockId>> = analysis
-        .loops
-        .iter()
-        .map(|loop_| loop_.blocks.iter().collect())
-        .collect();
-    if loop_blocks.is_empty() {
-        return false;
-    }
-    let mut touches_loop = false;
-    let mut outside_loop = false;
-    for element in elements {
-        let blocks: Vec<&BlockId> = match element {
-            InfeasibleElement::Block { block } => vec![block],
-            InfeasibleElement::Edge { source, target, .. } => vec![source, target],
-        };
-        if blocks
-            .iter()
-            .any(|block| loop_blocks.iter().any(|set| set.contains(*block)))
-        {
-            touches_loop = true;
-        } else {
-            outside_loop = true;
-        }
-    }
-    touches_loop && outside_loop
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3486,7 +3458,7 @@ bound = 10
             scope: None,
             applied: true,
             enforcement: InfeasibleEnforcement::Aggregate,
-            mixed: false,
+            presence: false,
             cross_function: None,
             reason: None,
         });
