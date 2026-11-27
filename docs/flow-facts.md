@@ -446,14 +446,16 @@ appear in one execution sub-trace:
     that iteration, while outside caller elements and call groups are tracked
     across the invocation; outside items may complete the conflict after the
     loop. The top-tested last-iteration candidate rule applies to the inside
-    items. A call group must be wholly inside or wholly outside the selected
-    loop; a group straddling its boundary is ignored. Backedge elements are
-    rejected and at least one item must be inside the selected loop. Each group
-    must select one unique, unconditional call site.
-- All-iteration (`<iteration number="*">`) cross-function unordered conflicts
-  and iteration-scoped unordered conflicts with no element inside their
-  selected loop are ignored with warnings. Unsupported or unresolvable
-  conflicts only lose precision and never tighten the bound incorrectly.
+    items. With `<iteration number="*">`, inside items reset on every iteration
+    and a conflict is reported when any iteration completes all inside items
+    while all outside items have also occurred. A call group must be wholly
+    inside or wholly outside the selected loop; a group straddling its boundary
+    is ignored. Backedge elements are rejected and at least one item must be
+    inside the selected loop. Each group must select one unique, unconditional
+    call site.
+- Iteration-scoped unordered conflicts with no element inside their selected
+  loop are ignored with warnings. Unsupported or unresolvable conflicts only
+  lose precision and never tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model
