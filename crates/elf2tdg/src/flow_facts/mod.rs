@@ -515,7 +515,10 @@ impl FlowFacts {
                     let iteration = match &conflict.enforcement {
                         InfeasibleEnforcement::Automaton {
                             reset: OrderedReset::LoopSpecific { iteration, .. },
-                        } => Some(*iteration),
+                        }
+                        | InfeasibleEnforcement::PresenceAutomaton { iteration, .. } => {
+                            Some(*iteration)
+                        }
                         InfeasibleEnforcement::CrossFunctionAutomaton => conflict
                             .cross_function
                             .as_ref()
@@ -535,6 +538,7 @@ impl FlowFacts {
                             match conflict.enforcement {
                                 InfeasibleEnforcement::Aggregate => "aggregate",
                                 InfeasibleEnforcement::Automaton { .. }
+                                | InfeasibleEnforcement::PresenceAutomaton { .. }
                                 | InfeasibleEnforcement::CrossFunctionAutomaton => "automaton",
                             }
                             .to_owned()
@@ -1028,9 +1032,9 @@ pub(crate) enum InfeasibleElement {
 pub(crate) enum InfeasibleScope {
     /// All elements execute at most once per function invocation.
     Function,
-    /// Elements touch one non-nested natural loop. Unordered and
-    /// iteration-scoped ordered forms are per iteration; loop-entry ordered
-    /// automata span all iterations.
+    /// Elements touch one non-nested natural loop. Unordered forms and
+    /// iteration-scoped ordered forms are per iteration or per selected
+    /// iteration; loop-entry ordered automata span all iterations.
     Loop { header: BlockId },
     /// Elements span the declaring function and one or more directly called
     /// callees.
@@ -1044,6 +1048,12 @@ pub(crate) enum InfeasibleEnforcement {
     Aggregate,
     /// Product IPET with a sequence-progress automaton.
     Automaton { reset: OrderedReset },
+    /// Product IPET that tracks element presence inside one selected loop
+    /// iteration. Used by specific-iteration unordered conflicts.
+    PresenceAutomaton {
+        header: BlockId,
+        iteration: SpecificIteration,
+    },
     /// Product IPET with the selected call groups inlined for the conflict.
     CrossFunctionAutomaton,
 }
@@ -1361,12 +1371,6 @@ fn resolve_conflict(
     {
         return resolve_cross_function_conflict(program, function, fact, record, origin, warnings);
     }
-    if matches!(fact.iteration, IterationContext::Specific(_)) && !fact.ordered {
-        record.reason = Some(format!(
-            "{origin}: specific-iteration same-function conflicts are supported only with ordered=\"yes\"; conflict ignored"
-        ));
-        return Ok(record);
-    }
     let mut elements = Vec::new();
     for element in &fact.elements {
         let Some(resolved) = resolve_conflict_element(program, function, element, origin, warnings)
@@ -1384,6 +1388,9 @@ fn resolve_conflict(
     record.elements = elements;
     if fact.ordered {
         return resolve_ordered_conflict(program, function, fact, record, origin);
+    }
+    if matches!(fact.iteration, IterationContext::Specific(_)) {
+        return resolve_specific_unordered_conflict(program, function, fact, record, origin);
     }
     let structural = conflict_scope(function, &record.elements);
     if !fact.iteration.is_iteration() && structural.is_err() {
@@ -1783,6 +1790,71 @@ fn resolve_conflict_call_return(
         site: edge.weight().site,
     };
     Some((element, target))
+}
+
+fn resolve_specific_unordered_conflict(
+    program: &ProgramCfg,
+    function: &CfgFunction,
+    fact: &ConflictFact,
+    mut record: InfeasiblePathConstraint,
+    origin: &str,
+) -> Result<InfeasiblePathConstraint, String> {
+    let iteration = match supported_specific_iteration(fact.iteration) {
+        Ok(Some(iteration)) => iteration,
+        Ok(None) => {
+            record.reason = Some(format!(
+                "{origin}: specific-iteration unordered conflict lacks an iteration selector; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        Err(reason) => {
+            record.reason = Some(format!(
+                "{origin}: specific-iteration unordered conflict {reason}; conflict ignored"
+            ));
+            return Ok(record);
+        }
+    };
+    let scope = match declared_loop_scope(program, function, fact, &record.elements, origin)? {
+        DeclaredLoopOutcome::Selected(scope) => scope,
+        DeclaredLoopOutcome::SpecificMixed(_) => {
+            record.reason = Some(format!(
+                "{origin}: specific-iteration unordered conflict has an element outside the selected loop; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        DeclaredLoopOutcome::Ignore(reason) => {
+            record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
+            return Ok(record);
+        }
+        DeclaredLoopOutcome::None
+        | DeclaredLoopOutcome::Mixed
+        | DeclaredLoopOutcome::AllMixed(_) => {
+            record.reason = Some(format!(
+                "{origin}: specific-iteration unordered conflict has no selected loop; conflict ignored"
+            ));
+            return Ok(record);
+        }
+    };
+    if record.elements.iter().any(|element| match element {
+        InfeasibleElement::Edge { source, target, .. } => {
+            scope.backedges.contains(&(source.clone(), target.clone()))
+        }
+        InfeasibleElement::Block { .. } => false,
+    }) {
+        record.reason = Some(format!(
+            "{origin}: specific-iteration unordered conflict contains a loop-backedge element; conflict ignored"
+        ));
+        return Ok(record);
+    }
+    record.scope = Some(InfeasibleScope::Loop {
+        header: scope.header.clone(),
+    });
+    record.enforcement = InfeasibleEnforcement::PresenceAutomaton {
+        header: scope.header,
+        iteration,
+    };
+    record.applied = true;
+    Ok(record)
 }
 
 #[allow(clippy::too_many_lines)]

@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Iteration-scoped unordered conflicts and unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks element presence in the selected iteration; last-iteration paths defer a completed iteration at a backedge until the loop exits. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. All-iteration unordered conflicts outside one common non-nested loop, mixed specific-iteration unordered conflicts and unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -568,6 +568,7 @@ fn solve_function(
         .into_iter()
         .filter(|cross| specific_iteration_possible(cfg, facts, scope, cross))
         .collect();
+    let presence = presence_automata(cfg, facts, function_id, scope);
     let pipeline_stalls = pipeline_edge_stalls(program, cfg);
     let cache_ccg = ccg::build(program, cfg, reachable_nodes)
         .filter(|model| model.variable_count() <= MAX_MODEL_VARIABLES / 2);
@@ -600,6 +601,7 @@ fn solve_function(
             scope,
             &loops,
             &automata,
+            &presence,
             &cross,
             &pipeline_stalls,
             &cache_persistence,
@@ -614,7 +616,7 @@ fn solve_function(
         apply_ras_fallback(&mut outcome, program, has_ras);
         return Ok(outcome);
     }
-    if !automata.is_empty() {
+    if !automata.is_empty() || !presence.is_empty() {
         let mut outcome = solve_function_with_automata(
             cfg,
             entry,
@@ -625,6 +627,7 @@ fn solve_function(
             scope,
             &loops,
             &automata,
+            &presence,
             &pipeline_stalls,
             &cache_persistence,
             cache_ccg.as_ref(),
@@ -1032,6 +1035,7 @@ fn partition_facts_supported(
                 conflict.cross_function.is_none()
                     && !matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
             }
+            InfeasibleEnforcement::PresenceAutomaton { .. } => false,
             InfeasibleEnforcement::Automaton { .. } => {
                 allow_ordered_automata
                     && conflict.ordered
@@ -1142,7 +1146,9 @@ fn non_loop_fact_blocks(
             InfeasibleEnforcement::CrossFunctionAutomaton => {
                 conflict.cross_function.as_ref().map(|cross| &cross.reset)
             }
-            InfeasibleEnforcement::Aggregate => None,
+            InfeasibleEnforcement::PresenceAutomaton { .. } | InfeasibleEnforcement::Aggregate => {
+                None
+            }
         };
         if let Some(
             OrderedReset::LoopEntry { header }
@@ -1331,6 +1337,7 @@ fn try_solve_partitioned(
                 scope,
                 &final_loops,
                 &automata,
+                &[],
                 &BTreeMap::new(),
                 &CachePersistenceModels::default(),
                 None,
@@ -1347,6 +1354,7 @@ fn try_solve_partitioned(
                 scope,
                 &final_loops,
                 &automata,
+                &[],
                 &cross,
                 &BTreeMap::new(),
                 &CachePersistenceModels::default(),
@@ -2511,6 +2519,50 @@ fn ordered_automata(
         .collect()
 }
 
+#[derive(Clone, Debug)]
+struct PresenceAutomaton {
+    elements: Vec<InfeasibleElement>,
+    header: BlockId,
+    iteration: SpecificIteration,
+}
+
+fn presence_automata(
+    cfg: &FunctionCfg,
+    facts: &FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+) -> Vec<PresenceAutomaton> {
+    facts
+        .infeasible_paths()
+        .iter()
+        .filter_map(|conflict| {
+            if !conflict.applied
+                || conflict.ordered
+                || conflict.function.as_ref() != Some(function_id)
+                || !scope.matches(&conflict.context)
+                || conflict.elements.is_empty()
+            {
+                return None;
+            }
+            let InfeasibleEnforcement::PresenceAutomaton { header, iteration } =
+                &conflict.enforcement
+            else {
+                return None;
+            };
+            if let SpecificIteration::Number(number) = iteration
+                && !specific_iteration_within_loop_bound(cfg, facts, scope, header, *number)
+            {
+                return None;
+            }
+            Some(PresenceAutomaton {
+                elements: conflict.elements.clone(),
+                header: header.clone(),
+                iteration: *iteration,
+            })
+        })
+        .collect()
+}
+
 fn cross_function_constraints<'a>(
     facts: &'a FlowFacts,
     function_id: &FunctionId,
@@ -2628,6 +2680,204 @@ impl AutomatonRuntime {
                 .is_some_and(|blocks| blocks.contains(entry_block)),
         )
     }
+}
+
+#[derive(Clone, Debug)]
+struct PresenceRuntime {
+    elements: Vec<InfeasibleElement>,
+    blocks: BTreeSet<BlockId>,
+    backedges: BTreeSet<(BlockId, BlockId)>,
+    header: BlockId,
+    header_has_exit: bool,
+    selected: SpecificIteration,
+    full: Vec<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PresenceState {
+    /// 0 outside the loop, 1-based iteration inside. Numeric selectors cap the
+    /// value at `selected + 1` once the target iteration has passed.
+    iteration: u32,
+    /// Elements already present in the tracked iteration.
+    mask: Vec<u64>,
+    /// Last-iteration only: the iteration that just ended at a backedge had
+    /// every element, and a header exit would make it the last iteration.
+    candidate_full: bool,
+}
+
+impl PresenceRuntime {
+    fn zero_mask(&self) -> Vec<u64> {
+        vec![0; self.full.len()]
+    }
+
+    fn mask_full(&self, mask: &[u64]) -> bool {
+        mask == self.full.as_slice()
+    }
+
+    fn tracking(&self, iteration: u32) -> bool {
+        match self.selected {
+            SpecificIteration::Number(number) => iteration == number,
+            SpecificIteration::Last => iteration > 0,
+        }
+    }
+
+    fn apply(&self, element: &InfeasibleElement, mask: &mut [u64]) {
+        if let Some(index) = self
+            .elements
+            .iter()
+            .position(|candidate| candidate == element)
+        {
+            mask[index / 64] |= 1_u64 << (index % 64);
+        }
+    }
+}
+
+fn presence_runtimes(
+    cfg: &FunctionCfg,
+    automata: &[PresenceAutomaton],
+) -> Result<Vec<PresenceRuntime>, IpetError> {
+    let analysis = cfg.analyze_graph();
+    automata
+        .iter()
+        .map(|automaton| {
+            let Some(loop_) = analysis
+                .loops
+                .iter()
+                .find(|loop_| loop_.header == automaton.header)
+            else {
+                return Err(IpetError::Unknown("presence-loop-missing".to_owned()));
+            };
+            let blocks: BTreeSet<BlockId> = loop_.blocks.iter().cloned().collect();
+            let backedges = loop_
+                .backedges
+                .iter()
+                .map(|edge| (edge.from.clone(), edge.to.clone()))
+                .collect();
+            let header_has_exit = loop_header_has_exit(cfg, &automaton.header, &blocks);
+            let mut full = vec![0_u64; automaton.elements.len().div_ceil(64)];
+            for index in 0..automaton.elements.len() {
+                full[index / 64] |= 1_u64 << (index % 64);
+            }
+            Ok(PresenceRuntime {
+                elements: automaton.elements.clone(),
+                blocks,
+                backedges,
+                header: automaton.header.clone(),
+                header_has_exit,
+                selected: automaton.iteration,
+                full,
+            })
+        })
+        .collect()
+}
+
+fn initial_presence_progress(
+    runtimes: &[PresenceRuntime],
+    entry_block: &BlockId,
+) -> Option<Vec<PresenceState>> {
+    let mut progress = Vec::with_capacity(runtimes.len());
+    for runtime in runtimes {
+        let iteration = u32::from(runtime.blocks.contains(entry_block));
+        let mut state = PresenceState {
+            iteration,
+            mask: runtime.zero_mask(),
+            candidate_full: false,
+        };
+        if iteration > 0 && runtime.tracking(iteration) {
+            runtime.apply(
+                &InfeasibleElement::Block {
+                    block: entry_block.clone(),
+                },
+                &mut state.mask,
+            );
+            if matches!(runtime.selected, SpecificIteration::Number(_))
+                && runtime.mask_full(&state.mask)
+            {
+                return None;
+            }
+        }
+        progress.push(state);
+    }
+    Some(progress)
+}
+
+fn advance_presence_progress(
+    runtimes: &[PresenceRuntime],
+    progress: &[PresenceState],
+    source: &BlockId,
+    target: &BlockId,
+    edge_element: &InfeasibleElement,
+    block: &InfeasibleElement,
+) -> Option<Vec<PresenceState>> {
+    let mut next = Vec::with_capacity(runtimes.len());
+    for (index, runtime) in runtimes.iter().enumerate() {
+        let mut state = progress[index].clone();
+        let source_inside = runtime.blocks.contains(source);
+        let target_inside = runtime.blocks.contains(target);
+        let backedge = runtime
+            .backedges
+            .contains(&(source.clone(), target.clone()));
+        let mut match_elements = true;
+        if source_inside && !target_inside {
+            let violated = match runtime.selected {
+                SpecificIteration::Number(number) => {
+                    state.iteration == number && runtime.mask_full(&state.mask)
+                }
+                SpecificIteration::Last => {
+                    if runtime.header == *source {
+                        state.candidate_full
+                    } else {
+                        runtime.mask_full(&state.mask)
+                    }
+                }
+            };
+            if violated {
+                return None;
+            }
+            state.iteration = 0;
+            state.mask = runtime.zero_mask();
+            state.candidate_full = false;
+            match_elements = false;
+        } else if !source_inside && target_inside {
+            state.iteration = 1;
+            state.mask = runtime.zero_mask();
+            state.candidate_full = false;
+        } else if source_inside && target_inside && backedge {
+            match runtime.selected {
+                SpecificIteration::Number(number) => {
+                    state.iteration = state
+                        .iteration
+                        .saturating_add(1)
+                        .min(number.saturating_add(1));
+                    state.mask = runtime.zero_mask();
+                    state.candidate_full = false;
+                }
+                SpecificIteration::Last => {
+                    state.candidate_full =
+                        runtime.header_has_exit && runtime.mask_full(&state.mask);
+                    state.iteration = 1;
+                    state.mask = runtime.zero_mask();
+                }
+            }
+        } else if source_inside && target_inside {
+            if matches!(runtime.selected, SpecificIteration::Last) && runtime.header == *source {
+                state.candidate_full = false;
+            }
+        } else {
+            match_elements = false;
+        }
+        if match_elements && state.iteration > 0 && runtime.tracking(state.iteration) {
+            runtime.apply(edge_element, &mut state.mask);
+            runtime.apply(block, &mut state.mask);
+            if matches!(runtime.selected, SpecificIteration::Number(_))
+                && runtime.mask_full(&state.mask)
+            {
+                return None;
+            }
+        }
+        next.push(state);
+    }
+    Some(next)
 }
 
 fn sequence_resets(
@@ -2944,6 +3194,7 @@ fn advance_progress(
 struct ProductNode {
     original: NodeIndex,
     progress: Vec<AutomatonProgress>,
+    presence: Vec<PresenceState>,
 }
 
 struct ProductEdge {
@@ -2957,17 +3208,23 @@ fn build_product_graph(
     entry: NodeIndex,
     reachable_nodes: &BTreeSet<NodeIndex>,
     runtimes: &[AutomatonRuntime],
+    presence_runtimes: &[PresenceRuntime],
 ) -> Result<(Vec<ProductNode>, Vec<ProductEdge>), IpetError> {
     let entry_block = cfg.graph[entry].id.clone();
     let Some(start_progress) = initial_progress(runtimes, &entry_block) else {
         return Err(IpetError::Unknown("infeasible-ordered-entry".to_owned()));
     };
-    let mut index_by_key: BTreeMap<(NodeIndex, Vec<AutomatonProgress>), usize> = BTreeMap::new();
+    let Some(start_presence) = initial_presence_progress(presence_runtimes, &entry_block) else {
+        return Err(IpetError::Unknown("infeasible-presence-entry".to_owned()));
+    };
+    let mut index_by_key: BTreeMap<(NodeIndex, Vec<AutomatonProgress>, Vec<PresenceState>), usize> =
+        BTreeMap::new();
     let mut nodes = vec![ProductNode {
         original: entry,
         progress: start_progress.clone(),
+        presence: start_presence.clone(),
     }];
-    index_by_key.insert((entry, start_progress), 0);
+    index_by_key.insert((entry, start_progress, start_presence), 0);
     let mut edges = Vec::new();
     let mut queue = VecDeque::from([0usize]);
     while let Some(from) = queue.pop_front() {
@@ -2975,6 +3232,7 @@ fn build_product_graph(
         let source = node.original;
         let source_id = cfg.graph[source].id.clone();
         let progress = node.progress.clone();
+        let presence = node.presence.clone();
         for edge in cfg
             .graph
             .edges_directed(source, petgraph::Direction::Outgoing)
@@ -2994,7 +3252,19 @@ fn build_product_graph(
             else {
                 continue;
             };
-            let key = (target, next_progress.clone());
+            let Some(next_presence) = advance_presence_progress(
+                presence_runtimes,
+                &presence,
+                &source_id,
+                &target_id,
+                &edge_element,
+                &InfeasibleElement::Block {
+                    block: target_id.clone(),
+                },
+            ) else {
+                continue;
+            };
+            let key = (target, next_progress.clone(), next_presence.clone());
             let to = if let Some(index) = index_by_key.get(&key) {
                 *index
             } else {
@@ -3005,6 +3275,7 @@ fn build_product_graph(
                 nodes.push(ProductNode {
                     original: target,
                     progress: next_progress,
+                    presence: next_presence,
                 });
                 index_by_key.insert(key, index);
                 queue.push_back(index);
@@ -3100,17 +3371,20 @@ fn solve_function_with_automata(
     scope: FactScope<'_>,
     loops: &[LoopModel],
     automata: &[OrderedAutomaton],
+    presence: &[PresenceAutomaton],
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
     cache_persistence: &CachePersistenceModels,
     cache_ccg: Option<&CcgModel>,
 ) -> Result<IpetOutcome, IpetError> {
     let runtimes = automaton_runtimes(cfg, automata)?;
+    let presence_runtimes = presence_runtimes(cfg, presence)?;
     let nonexit_headers: BTreeSet<NodeIndex> = loops
         .iter()
         .filter(|loop_| !loop_.has_exit)
         .map(|loop_| loop_.header)
         .collect();
-    let (nodes, edges) = build_product_graph(cfg, entry, reachable_nodes, &runtimes)?;
+    let (nodes, edges) =
+        build_product_graph(cfg, entry, reachable_nodes, &runtimes, &presence_runtimes)?;
     let (nodes, edges) =
         prune_dead_product_nodes(cfg, reachable_nodes, &nonexit_headers, nodes, edges)?;
     let node_by_block_id: BTreeMap<BlockId, NodeIndex> = cfg
@@ -4565,9 +4839,50 @@ fn advance_existing_on_model(
     }
 }
 
+fn advance_presence_on_model(
+    cfg: &FunctionCfg,
+    runtimes: &[PresenceRuntime],
+    progress: &[PresenceState],
+    edge: &ModelEdge,
+) -> Option<Vec<PresenceState>> {
+    match edge.kind {
+        ModelEdgeKind::Caller | ModelEdgeKind::ReturnCall => {
+            let (source, target) = cfg
+                .graph
+                .edge_endpoints(edge.original)
+                .expect("model graph caller edge endpoint");
+            let source_id = cfg.graph[source].id.clone();
+            let target_id = cfg.graph[target].id.clone();
+            advance_presence_progress(
+                runtimes,
+                progress,
+                &source_id,
+                &target_id,
+                &InfeasibleElement::Edge {
+                    source: source_id.clone(),
+                    target: target_id.clone(),
+                    site: cfg.graph[edge.original].site,
+                },
+                &InfeasibleElement::Block {
+                    block: target_id.clone(),
+                },
+            )
+        }
+        ModelEdgeKind::EnterCall | ModelEdgeKind::CalleeEdge => Some(progress.to_vec()),
+    }
+}
+
+type CrossProductKey = (
+    usize,
+    Vec<AutomatonProgress>,
+    Vec<PresenceState>,
+    Vec<CrossState>,
+);
+
 struct CrossProductNode {
     model: usize,
     existing: Vec<AutomatonProgress>,
+    presence: Vec<PresenceState>,
     cross: Vec<CrossState>,
 }
 
@@ -4582,11 +4897,15 @@ fn build_cross_product_graph(
     program: &ProgramCfg,
     cfg: &FunctionCfg,
     runtimes: &[AutomatonRuntime],
+    presence_runtimes: &[PresenceRuntime],
     automata: &[CrossAutomatonModel],
 ) -> Result<(Vec<CrossProductNode>, Vec<CrossProductEdge>), IpetError> {
     let entry_block = model.nodes[model.entry].block.clone();
     let Some(start_existing) = initial_progress(runtimes, &entry_block) else {
         return Err(IpetError::Unknown("infeasible-ordered-entry".to_owned()));
+    };
+    let Some(start_presence) = initial_presence_progress(presence_runtimes, &entry_block) else {
+        return Err(IpetError::Unknown("infeasible-presence-entry".to_owned()));
     };
     let mut start_cross = Vec::with_capacity(automata.len());
     for automaton in automata {
@@ -4595,23 +4914,32 @@ fn build_cross_product_graph(
         };
         start_cross.push(state);
     }
-    let mut index_by_key: BTreeMap<(usize, Vec<AutomatonProgress>, Vec<CrossState>), usize> =
-        BTreeMap::new();
+    let mut index_by_key: BTreeMap<CrossProductKey, usize> = BTreeMap::new();
     let mut nodes = vec![CrossProductNode {
         model: model.entry,
         existing: start_existing.clone(),
+        presence: start_presence.clone(),
         cross: start_cross.clone(),
     }];
-    index_by_key.insert((model.entry, start_existing, start_cross), 0);
+    index_by_key.insert(
+        (model.entry, start_existing, start_presence, start_cross),
+        0,
+    );
     let mut edges = Vec::new();
     let mut queue = VecDeque::from([0usize]);
     while let Some(from) = queue.pop_front() {
         let source_model = nodes[from].model;
         let existing = nodes[from].existing.clone();
+        let presence = nodes[from].presence.clone();
         let cross = nodes[from].cross.clone();
         for &model_edge in &model.outgoing[source_model] {
             let edge = &model.edges[model_edge];
             let Some(next_existing) = advance_existing_on_model(cfg, runtimes, &existing, edge)
+            else {
+                continue;
+            };
+            let Some(next_presence) =
+                advance_presence_on_model(cfg, presence_runtimes, &presence, edge)
             else {
                 continue;
             };
@@ -4629,7 +4957,12 @@ fn build_cross_product_graph(
             if !allowed {
                 continue;
             }
-            let key = (edge.target, next_existing.clone(), next_cross.clone());
+            let key = (
+                edge.target,
+                next_existing.clone(),
+                next_presence.clone(),
+                next_cross.clone(),
+            );
             let to = if let Some(&index) = index_by_key.get(&key) {
                 index
             } else {
@@ -4640,6 +4973,7 @@ fn build_cross_product_graph(
                 nodes.push(CrossProductNode {
                     model: edge.target,
                     existing: next_existing,
+                    presence: next_presence,
                     cross: next_cross,
                 });
                 index_by_key.insert(key, index);
@@ -4790,6 +5124,7 @@ fn solve_function_with_cross_function_automata(
     scope: FactScope<'_>,
     loops: &[LoopModel],
     automata: &[OrderedAutomaton],
+    presence: &[PresenceAutomaton],
     cross: &[&CrossFunctionConstraint],
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
     cache_persistence: &CachePersistenceModels,
@@ -4807,6 +5142,7 @@ fn solve_function_with_cross_function_automata(
         cross,
     )?;
     let runtimes = automaton_runtimes(cfg, automata)?;
+    let presence_runtimes = presence_runtimes(cfg, presence)?;
     let cross_automata = cross_automaton_models(&model, cfg, cross)?;
     let model_loops = build_model_loops(&model, loops);
     let nonexit_headers: BTreeSet<usize> = loops
@@ -4814,8 +5150,14 @@ fn solve_function_with_cross_function_automata(
         .filter(|loop_| !loop_.has_exit)
         .filter_map(|loop_| model.caller_nodes.get(&loop_.header).copied())
         .collect();
-    let (product_nodes, product_edges) =
-        build_cross_product_graph(&model, program, cfg, &runtimes, &cross_automata)?;
+    let (product_nodes, product_edges) = build_cross_product_graph(
+        &model,
+        program,
+        cfg,
+        &runtimes,
+        &presence_runtimes,
+        &cross_automata,
+    )?;
     let (product_nodes, product_edges) =
         prune_dead_cross_product_nodes(&model, &nonexit_headers, product_nodes, product_edges)?;
     let mut vars = ProblemVariables::new();
@@ -7694,6 +8036,29 @@ auto_loop_bounds = false
         )])
     }
 
+    fn top_tested_loop_program() -> ProgramCfg {
+        ProgramCfg::new(vec![function(
+            0x7400,
+            FunctionCfg::build(
+                vec![
+                    block(0x7400, CfgTerminator::Fallthrough, 1.0),
+                    block(0x7402, CfgTerminator::Branch, 1.0),
+                    block(0x7404, CfgTerminator::Fallthrough, 100.0),
+                    block(0x7406, CfgTerminator::Branch, 1.0),
+                    block(0x7408, CfgTerminator::Return, 1.0),
+                ],
+                vec![
+                    edge(0x7400, 0x7402, CfgEdgeKind::Fallthrough),
+                    edge(0x7402, 0x7404, CfgEdgeKind::Branch),
+                    edge(0x7402, 0x7408, CfgEdgeKind::Fallthrough),
+                    edge(0x7404, 0x7406, CfgEdgeKind::Fallthrough),
+                    edge(0x7406, 0x7402, CfgEdgeKind::Branch),
+                ],
+                Some(0x7400),
+            ),
+        )])
+    }
+
     fn disjoint_loop_program() -> ProgramCfg {
         ProgramCfg::new(vec![function(
             0x7100,
@@ -10061,6 +10426,7 @@ max_states = 16
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn specific_iteration_same_function_facts_select_the_target_iteration() {
         let program = loop_program();
         let baseline = analyze_baseline(&program);
@@ -10143,14 +10509,49 @@ max_states = 16
         );
 
         let (unordered, unordered_facts) = analyze("1", false);
-        assert_eq!(unordered, baseline);
-        let conflict = &unordered_facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
         assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("only with ordered=\"yes\""))
+            unordered < baseline,
+            "iteration 1 unordered presence must remove the body path: \
+             {unordered} < {baseline}"
+        );
+        let conflict = &unordered_facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: SpecificIteration::Number(1),
+                ref header,
+            } if header.as_str() == "bb:0x2002"
+        ));
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0x2002"
+        ));
+        assert_eq!(unordered_facts.info().conflicts[0].iteration, Some(1));
+        assert_eq!(
+            unordered_facts.info().conflicts[0].mode.as_deref(),
+            Some("automaton")
+        );
+
+        let (unordered_last, unordered_last_facts) = analyze("-1", false);
+        assert!(
+            unordered_last < baseline,
+            "last-iteration unordered presence must remove the body path: \
+             {unordered_last} < {baseline}"
+        );
+        assert!(matches!(
+            unordered_last_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: SpecificIteration::Last,
+                ..
+            }
+        ));
+        assert_eq!(unordered_last_facts.info().conflicts[0].iteration, Some(-1));
+
+        let (unordered_above_bound, _) = analyze("5", false);
+        assert_eq!(
+            unordered_above_bound, baseline,
+            "an unordered iteration beyond the loop bound is vacuous"
         );
     }
 
@@ -10459,6 +10860,193 @@ max_states = 16
             conflict.enforcement,
             InfeasibleEnforcement::Aggregate
         ));
+    }
+
+    #[test]
+    fn specific_iteration_unordered_prunes_top_tested_loops() {
+        let program = top_tested_loop_program();
+        let baseline = analyze_baseline(&program);
+        let analyze = |number: &str| -> (f64, FlowFacts) {
+            analyze_with(
+                &program,
+                &format!(
+                    r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x7402">
+      <iteration number="{number}">
+        <conflict>
+          <block address="0x7404"/>
+          <block address="0x7406"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#
+                ),
+            )
+        };
+
+        let (last, last_facts) = analyze("-1");
+        assert!(
+            last < baseline,
+            "last-iteration unordered presence must forbid the final body: \
+             {last} < {baseline}"
+        );
+        assert!(matches!(
+            last_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: SpecificIteration::Last,
+                ..
+            }
+        ));
+
+        let (second, second_facts) = analyze("2");
+        assert!(
+            second < baseline && second > last,
+            "iteration 2 only forbids the second body: {second} < {baseline}"
+        );
+        assert!(matches!(
+            second_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: SpecificIteration::Number(2),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn specific_iteration_unordered_tracks_nested_inner_iterations() {
+        let program = nested_loop_ordered_program();
+        let baseline = analyze_baseline_for(&program, 0xf000);
+        let (constrained, conflict_facts) = analyze_with_for(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xf002">
+      <loop address="0xf006">
+        <iteration number="1">
+          <conflict>
+            <block address="0xf008"/>
+            <block address="0xf00c"/>
+          </conflict>
+        </iteration>
+      </loop>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            0xf000,
+        );
+        assert!(
+            constrained < baseline,
+            "inner iteration presence must prune each entry's call: \
+             {constrained} < {baseline}"
+        );
+        let conflict = &conflict_facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: SpecificIteration::Number(1),
+                ref header,
+            } if header.as_str() == "bb:0xf006"
+        ));
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0xf006"
+        ));
+    }
+
+    #[test]
+    fn specific_iteration_unordered_applies_with_branch_state_models() {
+        let board = branch_board(16);
+        let prediction = board.branch_prediction().expect("branch profile");
+        let facts = FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+
+        let mut baseline = top_tested_loop_program();
+        let _ = crate::branch_prediction::analyze_program(&mut baseline, prediction);
+        let _ = analyze_program_with_branch_prediction(&mut baseline, &facts, Some(prediction));
+        let baseline_cycles = baseline.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.cycles)
+            .expect("baseline cycles");
+
+        let mut constrained = top_tested_loop_program();
+        let _ = crate::branch_prediction::analyze_program(&mut constrained, prediction);
+        let mut constrained_facts =
+            FlowFacts::from_wcet_profile(board.wcet().expect("wcet section"));
+        let document = FlowFactDocument::parse_text(
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x7402">
+      <iteration number="-1">
+        <conflict>
+          <block address="0x7404"/>
+          <block address="0x7406"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            "specific-presence-state.ffx",
+        )
+        .expect("parse specific presence state conflict");
+        constrained_facts
+            .apply_document(document, &constrained)
+            .expect("apply specific presence state conflict");
+        let _ = analyze_program_with_branch_prediction(
+            &mut constrained,
+            &constrained_facts,
+            Some(prediction),
+        );
+        let wcet = constrained.functions[0]
+            .wcet
+            .as_ref()
+            .expect("constraint WCET");
+        let cycles = wcet.cycles.expect("finite cycles");
+        assert!(
+            cycles < baseline_cycles,
+            "specific presence must apply with branch models: {cycles} < {baseline_cycles}"
+        );
+        assert!(constrained_facts.infeasible_paths()[0].applied);
+    }
+
+    #[test]
+    fn mixed_specific_iteration_unordered_conflicts_are_ignored() {
+        let program = loop_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0x2002">
+      <iteration number="1">
+        <conflict>
+          <block address="0x2004"/>
+          <block address="0x200c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(constrained, baseline);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("outside the selected loop"))
+        );
     }
 
     #[test]
@@ -10868,6 +11456,70 @@ max_states = 16
             "mixed presence must apply beside cross-function automata: \
              {constrained} < {baseline}"
         );
+    }
+
+    #[test]
+    fn specific_iteration_unordered_applies_with_cross_function_automata() {
+        let program = loop_cross_partition_program();
+        let baseline = analyze_baseline_for(&program, 0xc000);
+        let cross_text = r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="2">
+        <conflict ordered="yes">
+          <block address="0xc010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#;
+        let (cross, _) = analyze_with_for(&program, cross_text, 0xc000);
+        assert!(cross < baseline, "cross order must prune an iteration path");
+
+        let both_text = r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <iteration number="2">
+        <conflict ordered="yes">
+          <block address="0xc010"/>
+          <call name="helper">
+            <block address="0x9000"/>
+          </call>
+        </conflict>
+      </iteration>
+      <iteration number="1">
+        <conflict>
+          <block address="0xc012"/>
+          <block address="0xc014"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#;
+        let (both, facts) = analyze_with_for(&program, both_text, 0xc000);
+        assert!(
+            both < cross,
+            "specific unordered presence must combine with cross automata: \
+             {both} < {cross}"
+        );
+        let presence = facts
+            .infeasible_paths()
+            .iter()
+            .find(|conflict| {
+                matches!(
+                    conflict.enforcement,
+                    InfeasibleEnforcement::PresenceAutomaton { .. }
+                )
+            })
+            .expect("presence automaton");
+        assert!(presence.applied);
     }
 
     #[test]
