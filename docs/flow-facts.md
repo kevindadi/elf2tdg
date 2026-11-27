@@ -358,9 +358,10 @@ appear in one execution sub-trace:
   produces a warning and falls back to the profile/default or inference.
   `<iteration number="*">` conflicts are supported and reset ordered progress
   on loop entry and every backedge. Numeric iterations are supported for
-  ordered same-function and cross-function conflicts; numbers outside the
-  supported range are ignored with warnings. Unordered conflicts spanning
-  nested or disjoint loops without an `<iteration>` context use
+  ordered same-function and cross-function conflicts and for same-function
+  unordered conflicts whose elements stay inside the selected loop; numbers
+  outside the supported range are ignored with warnings. Unordered conflicts
+  spanning nested or disjoint loops without an `<iteration>` context use
   function-invocation presence indicators; ordered conflicts use the automaton
   product.
 - Ordered conflicts may use nested `<loop>` contexts. Without an `<iteration>`
@@ -388,7 +389,7 @@ appear in one execution sub-trace:
   mixed conflict those boundaries may lie outside and participate in the
   selection. Mixed loop/non-loop ordering without an iteration context has no
   selected loop and uses function scope.
-  Three structural enforcement forms are used by IPET:
+  Four structural enforcement forms are used by IPET:
   - all elements are outside every natural loop: `sum(executions) <= n - 1`
     per function invocation;
   - all elements touch one common natural loop and none lies in a nested loop:
@@ -408,12 +409,22 @@ appear in one execution sub-trace:
     per-iteration relaxation used by the common-loop form. The conservative
     big-M bound multiplies every reachable containing loop bound by its
     outside-entry edge count; a missing bound or a value above 1e15 skips the
-    constraint rather than guessing.
-- Unordered conflicts with `<iteration number="*">` or a numeric/last
-  iteration and unsupported cross-function shapes are ignored with warnings.
-  Unordered cross-function conflicts are not supported. Unsupported or
-  unresolvable conflicts only lose precision and never tighten the bound
-  incorrectly.
+    constraint rather than guessing;
+  - a same-function unordered conflict with a numeric or last `<iteration>`
+    context uses a product presence automaton. Every element must be inside
+    the selected loop and backedge elements are rejected. The automaton tracks
+    which elements have occurred in the current selected iteration; a path in
+    which every element occurs in that iteration is removed. Numeric
+    iterations above the per-entry loop bound are vacuous. For `-1`, a full
+    iteration ending at a backedge is deferred: exiting at the loop header
+    rejects the path, while entering another body iteration discards the
+    deferred result because that iteration was not last.
+- Unordered conflicts with `<iteration number="*">` outside one common
+  non-nested loop, mixed specific-iteration unordered conflicts (an element
+  outside the selected loop), and unsupported cross-function shapes are
+  ignored with warnings. Unordered cross-function conflicts are not supported.
+  Unsupported or unresolvable conflicts only lose precision and never tighten
+  the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model

@@ -100,9 +100,11 @@ Implemented:
     forced ordered conflicts, cross-iteration ordered sequences through a
     product sequence-progress automaton, cross-function ordered sequences
     with one or more direct `<call>` groups by inlining the selected callees,
-    and same-function unordered conflicts that mix loop and non-loop elements,
+    same-function unordered conflicts that mix loop and non-loop elements,
     span nested loops, or touch disjoint loops through invocation-scope
-    presence indicators.
+    presence indicators, and numeric/last-iteration unordered conflicts
+    through a loop product that tracks element presence in the selected
+    iteration.
     Sequences may be loop-scoped; caller elements and call boundaries must stay
     in the declaring function's loop, and progress resets on loop entry or, for
     iteration scope, every backedge. Nested loop contexts select the innermost
@@ -357,8 +359,12 @@ share one function and are outside loops, within one non-nested loop, or span
 mixed loop/non-loop elements, nested loops or disjoint loops. The last form
 uses binary presence indicators at function-invocation scope; a repeated loop
 body still counts as one present element, and at most `n - 1` elements may be
-present. Iteration-scoped unordered conflicts and unordered cross-function
-conflicts remain unsupported. Ordered
+present. A same-function unordered conflict with a numeric or last iteration
+scope uses a loop product that tracks presence in the selected iteration; last
+iteration tracks a completed iteration across a backedge until the loop exits.
+All-iteration unordered conflicts outside one common non-nested loop, mixed
+specific-iteration unordered conflicts and unordered cross-function conflicts
+remain unsupported. Ordered
 conflicts with nested `<loop>` contexts select the innermost declared loop
 containing every event, lifting to an enclosing declared loop when events span
 child loops; an `<iteration>` context pins its declaring loop. An ordered
