@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks inside elements in the selected iteration and outside elements across the invocation; last-iteration paths defer a completed iteration at a backedge until the loop exits and outside elements may complete the conflict afterwards. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. All-iteration unordered conflicts outside one common non-nested loop and unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks inside elements in the selected iteration and outside elements across the invocation; last-iteration paths defer a completed iteration at a backedge until the loop exits and outside elements may complete the conflict afterwards. An all-iteration unordered conflict keeps the common-loop aggregate when available, otherwise a presence product resets inside elements per iteration and retains outside elements across the invocation. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -2523,7 +2523,8 @@ fn ordered_automata(
 struct PresenceAutomaton {
     elements: Vec<InfeasibleElement>,
     header: BlockId,
-    iteration: SpecificIteration,
+    /// `None` applies the presence check to every loop iteration.
+    iteration: Option<SpecificIteration>,
 }
 
 fn presence_automata(
@@ -2549,7 +2550,7 @@ fn presence_automata(
             else {
                 return None;
             };
-            if let SpecificIteration::Number(number) = iteration
+            if let Some(SpecificIteration::Number(number)) = iteration
                 && !specific_iteration_within_loop_bound(cfg, facts, scope, header, *number)
             {
                 return None;
@@ -2690,7 +2691,7 @@ struct PresenceRuntime {
     backedges: BTreeSet<(BlockId, BlockId)>,
     header: BlockId,
     header_has_exit: bool,
-    selected: SpecificIteration,
+    selected: Option<SpecificIteration>,
     inside_full: Vec<u64>,
     outside_full: Vec<u64>,
 }
@@ -2731,9 +2732,13 @@ impl PresenceRuntime {
 
     fn tracking(&self, iteration: u32) -> bool {
         match self.selected {
-            SpecificIteration::Number(number) => iteration == number,
-            SpecificIteration::Last => iteration > 0,
+            None | Some(SpecificIteration::Last) => iteration > 0,
+            Some(SpecificIteration::Number(number)) => iteration == number,
         }
+    }
+
+    fn uses_selected_iteration(&self) -> bool {
+        !matches!(self.selected, Some(SpecificIteration::Last))
     }
 
     fn apply(
@@ -2837,7 +2842,7 @@ fn initial_presence_progress(
             &mut state.outside,
         );
         if track_inside
-            && matches!(runtime.selected, SpecificIteration::Number(_))
+            && runtime.uses_selected_iteration()
             && runtime.inside_complete(&state.inside)
         {
             state.selected_inside_full = true;
@@ -2850,6 +2855,7 @@ fn initial_presence_progress(
     Some(progress)
 }
 
+#[allow(clippy::too_many_lines)]
 fn advance_presence_progress(
     runtimes: &[PresenceRuntime],
     progress: &[PresenceState],
@@ -2868,12 +2874,17 @@ fn advance_presence_progress(
             .contains(&(source.clone(), target.clone()));
         let track_inside = if source_inside && !target_inside {
             match runtime.selected {
-                SpecificIteration::Number(number) => {
+                None => {
+                    if runtime.inside_complete(&state.inside) {
+                        state.selected_inside_full = true;
+                    }
+                }
+                Some(SpecificIteration::Number(number)) => {
                     if state.iteration == number && runtime.inside_complete(&state.inside) {
                         state.selected_inside_full = true;
                     }
                 }
-                SpecificIteration::Last => {
+                Some(SpecificIteration::Last) => {
                     let current_full = runtime.inside_complete(&state.inside);
                     let last_full = if runtime.header == *source {
                         state.candidate_inside_full
@@ -2897,7 +2908,16 @@ fn advance_presence_progress(
             runtime.tracking(1)
         } else if source_inside && target_inside && backedge {
             match runtime.selected {
-                SpecificIteration::Number(number) => {
+                None => {
+                    if runtime.inside_complete(&state.inside) {
+                        state.selected_inside_full = true;
+                    }
+                    // Every iteration runs the same check, so the exact count
+                    // need not be part of the product state.
+                    state.iteration = 1;
+                    state.candidate_inside_full = false;
+                }
+                Some(SpecificIteration::Number(number)) => {
                     if state.iteration == number && runtime.inside_complete(&state.inside) {
                         state.selected_inside_full = true;
                     }
@@ -2907,7 +2927,7 @@ fn advance_presence_progress(
                         .min(number.saturating_add(1));
                     state.candidate_inside_full = false;
                 }
-                SpecificIteration::Last => {
+                Some(SpecificIteration::Last) => {
                     state.candidate_inside_full =
                         runtime.header_has_exit && runtime.inside_complete(&state.inside);
                     state.iteration = 1;
@@ -2916,7 +2936,9 @@ fn advance_presence_progress(
             state.inside = runtime.zero_mask();
             runtime.tracking(state.iteration)
         } else if source_inside && target_inside {
-            if matches!(runtime.selected, SpecificIteration::Last) && runtime.header == *source {
+            if matches!(runtime.selected, Some(SpecificIteration::Last))
+                && runtime.header == *source
+            {
                 state.candidate_inside_full = false;
             }
             runtime.tracking(state.iteration)
@@ -2931,16 +2953,16 @@ fn advance_presence_progress(
         );
         runtime.apply(block, track_inside, &mut state.inside, &mut state.outside);
         if track_inside
-            && matches!(runtime.selected, SpecificIteration::Number(_))
+            && runtime.uses_selected_iteration()
             && runtime.inside_complete(&state.inside)
         {
             state.selected_inside_full = true;
         }
         let violated = match runtime.selected {
-            SpecificIteration::Number(_) => {
+            None | Some(SpecificIteration::Number(_)) => {
                 state.selected_inside_full && runtime.outside_complete(&state.outside)
             }
-            SpecificIteration::Last => {
+            Some(SpecificIteration::Last) => {
                 state.last_inside_full && runtime.outside_complete(&state.outside)
             }
         };
@@ -10591,7 +10613,7 @@ max_states = 16
         assert!(matches!(
             conflict.enforcement,
             InfeasibleEnforcement::PresenceAutomaton {
-                iteration: SpecificIteration::Number(1),
+                iteration: Some(SpecificIteration::Number(1)),
                 ref header,
             } if header.as_str() == "bb:0x2002"
         ));
@@ -10614,7 +10636,7 @@ max_states = 16
         assert!(matches!(
             unordered_last_facts.infeasible_paths()[0].enforcement,
             InfeasibleEnforcement::PresenceAutomaton {
-                iteration: SpecificIteration::Last,
+                iteration: Some(SpecificIteration::Last),
                 ..
             }
         ));
@@ -10903,6 +10925,80 @@ max_states = 16
     }
 
     #[test]
+    fn all_iteration_unordered_conflicts_track_nested_loops() {
+        let program = nested_loop_ordered_program();
+        let baseline = analyze_baseline_for(&program, 0xf000);
+        let (constrained, facts) = analyze_with_for(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xf002">
+      <iteration number="*">
+        <conflict>
+          <block address="0xf004"/>
+          <block address="0xf008"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            0xf000,
+        );
+        assert!(
+            constrained < baseline,
+            "all-iteration presence must prune the inner call in every iteration: \
+             {constrained} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: None,
+                ref header,
+            } if header.as_str() == "bb:0xf002"
+        ));
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0xf002"
+        ));
+        assert_eq!(facts.info().conflicts[0].iteration, None);
+
+        let (inner_under_outer, inner_facts) = analyze_with_for(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xf002">
+      <iteration number="*">
+        <conflict>
+          <block address="0xf008"/>
+          <block address="0xf00c"/>
+        </conflict>
+      </iteration>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            0xf000,
+        );
+        assert!(
+            inner_under_outer < baseline,
+            "the declared outer loop must drive nested all-iteration presence: \
+             {inner_under_outer} < {baseline}"
+        );
+        assert!(matches!(
+            inner_facts.infeasible_paths()[0].enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: None,
+                ref header,
+            } if header.as_str() == "bb:0xf002"
+        ));
+    }
+
+    #[test]
     fn disjoint_loop_unordered_conflicts_use_invocation_presence() {
         let program = disjoint_loop_program();
         let baseline = analyze_baseline(&program);
@@ -10969,7 +11065,7 @@ max_states = 16
         assert!(matches!(
             last_facts.infeasible_paths()[0].enforcement,
             InfeasibleEnforcement::PresenceAutomaton {
-                iteration: SpecificIteration::Last,
+                iteration: Some(SpecificIteration::Last),
                 ..
             }
         ));
@@ -10982,7 +11078,7 @@ max_states = 16
         assert!(matches!(
             second_facts.infeasible_paths()[0].enforcement,
             InfeasibleEnforcement::PresenceAutomaton {
-                iteration: SpecificIteration::Number(2),
+                iteration: Some(SpecificIteration::Number(2)),
                 ..
             }
         ));
@@ -11022,7 +11118,7 @@ max_states = 16
         assert!(matches!(
             conflict.enforcement,
             InfeasibleEnforcement::PresenceAutomaton {
-                iteration: SpecificIteration::Number(1),
+                iteration: Some(SpecificIteration::Number(1)),
                 ref header,
             } if header.as_str() == "bb:0xf006"
         ));
@@ -11126,7 +11222,7 @@ max_states = 16
         assert!(matches!(
             conflict.enforcement,
             InfeasibleEnforcement::PresenceAutomaton {
-                iteration: SpecificIteration::Number(1),
+                iteration: Some(SpecificIteration::Number(1)),
                 ref header,
             } if header.as_str() == "bb:0x2002"
         ));
@@ -11151,7 +11247,7 @@ max_states = 16
         assert!(matches!(
             last_facts.infeasible_paths()[0].enforcement,
             InfeasibleEnforcement::PresenceAutomaton {
-                iteration: SpecificIteration::Last,
+                iteration: Some(SpecificIteration::Last),
                 ..
             }
         ));
@@ -11186,7 +11282,7 @@ max_states = 16
         assert!(matches!(
             facts.infeasible_paths()[0].enforcement,
             InfeasibleEnforcement::PresenceAutomaton {
-                iteration: SpecificIteration::Number(1),
+                iteration: Some(SpecificIteration::Number(1)),
                 ..
             }
         ));
@@ -11373,16 +11469,26 @@ max_states = 16
 "#,
         );
         assert_eq!(
-            all_iterations, baseline,
-            "all-iteration mixed unordered conflicts remain unsupported"
+            all_iterations, 491.0,
+            "all-iteration presence must keep the optional outside block absent"
         );
         let conflict = &all_facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
-        assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("mixes loop and non-loop"))
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: None,
+                ref header,
+            } if header.as_str() == "bb:0x9002"
+        ));
+        assert!(matches!(
+            conflict.scope,
+            Some(InfeasibleScope::Loop { ref header }) if header.as_str() == "bb:0x9002"
+        ));
+        assert_eq!(all_facts.info().conflicts[0].iteration, None);
+        assert_eq!(
+            all_facts.info().conflicts[0].mode.as_deref(),
+            Some("automaton")
         );
     }
 
@@ -11695,7 +11801,7 @@ max_states = 16
             matches!(
                 conflict.enforcement,
                 InfeasibleEnforcement::PresenceAutomaton {
-                    iteration: SpecificIteration::Number(1),
+                    iteration: Some(SpecificIteration::Number(1)),
                     ..
                 }
             )
@@ -12224,12 +12330,24 @@ max_states = 16
             .apply_document(exit_document, &program)
             .expect("apply conflict");
         let conflict = &exit_facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::PresenceAutomaton {
+                iteration: None,
+                ref header,
+            } if header.as_str() == "bb:0x2002"
+        ));
+        let mut analyzed = program.clone();
+        let _ = analyze_program(&mut analyzed, &exit_facts);
+        let cycles = analyzed.functions[0]
+            .wcet
+            .as_ref()
+            .and_then(|wcet| wcet.cycles)
+            .expect("finite cycles");
         assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("outside the loop"))
+            cycles < baseline,
+            "a loop-exit edge participates in all-iteration presence: {cycles} < {baseline}"
         );
     }
 

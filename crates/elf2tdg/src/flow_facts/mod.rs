@@ -515,10 +515,8 @@ impl FlowFacts {
                     let iteration = match &conflict.enforcement {
                         InfeasibleEnforcement::Automaton {
                             reset: OrderedReset::LoopSpecific { iteration, .. },
-                        }
-                        | InfeasibleEnforcement::PresenceAutomaton { iteration, .. } => {
-                            Some(*iteration)
-                        }
+                        } => Some(*iteration),
+                        InfeasibleEnforcement::PresenceAutomaton { iteration, .. } => *iteration,
                         InfeasibleEnforcement::CrossFunctionAutomaton => conflict
                             .cross_function
                             .as_ref()
@@ -1053,7 +1051,8 @@ pub(crate) enum InfeasibleEnforcement {
     /// specific-iteration unordered conflicts.
     PresenceAutomaton {
         header: BlockId,
-        iteration: SpecificIteration,
+        /// `None` applies the presence check to every loop iteration.
+        iteration: Option<SpecificIteration>,
     },
     /// Product IPET with the selected call groups inlined for the conflict.
     CrossFunctionAutomaton,
@@ -1392,6 +1391,9 @@ fn resolve_conflict(
     }
     if matches!(fact.iteration, IterationContext::Specific(_)) {
         return resolve_specific_unordered_conflict(program, function, fact, record, origin);
+    }
+    if fact.iteration == IterationContext::All {
+        return resolve_all_unordered_conflict(program, function, fact, record, origin);
     }
     let structural = conflict_scope(function, &record.elements);
     if !fact.iteration.is_iteration() && structural.is_err() {
@@ -1856,7 +1858,76 @@ fn resolve_specific_unordered_conflict(
     });
     record.enforcement = InfeasibleEnforcement::PresenceAutomaton {
         header: scope.header,
-        iteration,
+        iteration: Some(iteration),
+    };
+    record.applied = true;
+    Ok(record)
+}
+
+fn resolve_all_unordered_conflict(
+    program: &ProgramCfg,
+    function: &CfgFunction,
+    fact: &ConflictFact,
+    mut record: InfeasiblePathConstraint,
+    origin: &str,
+) -> Result<InfeasiblePathConstraint, String> {
+    let scope = match declared_loop_scope(program, function, fact, &record.elements, origin)? {
+        DeclaredLoopOutcome::Selected(scope) | DeclaredLoopOutcome::AllMixed(scope) => scope,
+        DeclaredLoopOutcome::Ignore(reason) => {
+            record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
+            return Ok(record);
+        }
+        DeclaredLoopOutcome::None
+        | DeclaredLoopOutcome::Mixed
+        | DeclaredLoopOutcome::SpecificMixed(_) => {
+            record.reason = Some(format!(
+                "{origin}: all-iteration unordered conflict has no selected loop; conflict ignored"
+            ));
+            return Ok(record);
+        }
+    };
+    let structural = conflict_scope(function, &record.elements);
+    if let Ok(InfeasibleScope::Loop { header }) = &structural
+        && *header == scope.header
+        && record
+            .elements
+            .iter()
+            .all(|element| element_within_loop(element, &scope.blocks))
+    {
+        record.scope = Some(InfeasibleScope::Loop {
+            header: scope.header,
+        });
+        record.enforcement = InfeasibleEnforcement::Aggregate;
+        record.applied = true;
+        return Ok(record);
+    }
+    if !record
+        .elements
+        .iter()
+        .any(|element| element_within_loop(element, &scope.blocks))
+    {
+        record.reason = Some(format!(
+            "{origin}: all-iteration unordered conflict has no element inside the selected loop; conflict ignored"
+        ));
+        return Ok(record);
+    }
+    if record.elements.iter().any(|element| match element {
+        InfeasibleElement::Edge { source, target, .. } => {
+            scope.backedges.contains(&(source.clone(), target.clone()))
+        }
+        InfeasibleElement::Block { .. } => false,
+    }) {
+        record.reason = Some(format!(
+            "{origin}: all-iteration unordered conflict contains a loop-backedge element; conflict ignored"
+        ));
+        return Ok(record);
+    }
+    record.scope = Some(InfeasibleScope::Loop {
+        header: scope.header.clone(),
+    });
+    record.enforcement = InfeasibleEnforcement::PresenceAutomaton {
+        header: scope.header,
+        iteration: None,
     };
     record.applied = true;
     Ok(record)
