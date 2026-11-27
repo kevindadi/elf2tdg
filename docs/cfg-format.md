@@ -1107,9 +1107,10 @@ asserts that the CFG validates.
   An all-iteration scope uses the common-loop aggregate when available,
   otherwise a presence automaton resetting inside elements per iteration and
   retaining outside elements across the invocation. Cross-function unordered
-  conflicts use function-scope presence for caller elements and non-empty call
-  groups; a group must match within one callee invocation. Ordered conflicts
-  use aggregate
+  conflicts use presence for caller elements and non-empty call groups; a group
+  must match within one callee invocation. A loop-scoped conflict resets
+  presence at each loop entry and spans its iterations. Ordered conflicts use
+  aggregate
   constraints when reachability forces the declared order (function-scope
   acyclic order or per-iteration loop-body order); structurally impossible
   sequences add no constraint. Cross-iteration ordered conflicts use a product

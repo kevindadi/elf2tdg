@@ -106,9 +106,9 @@ Implemented:
     loop product that tracks inside elements in the selected iteration and
     outside elements across the invocation, all-iteration unordered conflicts
     through a per-iteration presence product (or the existing loop aggregate
-    for one common non-nested loop), and function-scope cross-function
-    unordered conflicts by inlining call groups and tracking per-invocation
-    group presence.
+    for one common non-nested loop), and cross-function unordered conflicts by
+    inlining call groups and tracking per-invocation group presence, with an
+    optional per-loop-entry reset.
     Sequences may be loop-scoped; caller elements and call boundaries must stay
     in the declaring function's loop, and progress resets on loop entry or, for
     iteration scope, every backedge. Nested loop contexts select the innermost
@@ -371,10 +371,11 @@ elements may complete the conflict after the loop. All-iteration unordered
 conflicts keep the loop aggregate for one common non-nested loop and otherwise
 check element presence in every iteration, resetting inside elements per
 iteration while outside elements persist. Cross-function unordered conflicts
-are enforced at function-invocation scope: caller elements and each non-empty
-call group are presence items, and a group is present only when all its callee
-elements occur in one callee invocation. Loop- and iteration-scoped
-cross-function unordered conflicts remain unsupported. Ordered
+use presence for caller elements and each non-empty call group; a group is
+present only when all its callee elements occur in one callee invocation. A
+`<loop>`-scoped conflict resets presence at each loop entry and spans its
+iterations; iteration-scoped cross-function unordered conflicts remain
+unsupported. Ordered
 conflicts with nested `<loop>` contexts select the innermost declared loop
 containing every event, lifting to an enclosing declared loop when events span
 child loops; an `<iteration>` context pins its declaring loop. An ordered

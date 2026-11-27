@@ -433,17 +433,20 @@ appear in one execution sub-trace:
     elements while all outside elements are also present. At least one element
     must be inside the selected loop; backedge elements are rejected in this
     presence form;
-  - a cross-function unordered conflict is enforced at function-invocation
-    scope. Each caller-side element and each non-empty `<call>` group is one
-    presence item; a group is present only when all its callee elements occur
-    in a single invocation of that call. The path is removed when every item is
-    present. Each group must select one unique, unconditional call site, and
-    caller elements follow the same function containment rules as other
-    unordered forms.
-- Loop- or iteration-scoped cross-function unordered conflicts and
-  iteration-scoped unordered conflicts with no element inside their selected
-  loop are ignored with warnings. Unsupported or unresolvable conflicts only
-  lose precision and never tighten the bound incorrectly.
+  - a cross-function unordered conflict is enforced with presence items for
+    each caller-side element and each non-empty `<call>` group; a group is
+    present only when all its callee elements occur in a single invocation of
+    that call. Without a `<loop>` context the path is removed when every item
+    is present in the function invocation. With a `<loop>` context (and no
+    `<iteration>`) every caller element and every group call block,
+    continuation and call-return edge must be inside the selected loop;
+    presence resets on each loop entry and spans all its iterations, so the
+    conflict is checked separately per loop entry. Each group must select one
+    unique, unconditional call site.
+- Iteration-scoped cross-function unordered conflicts and iteration-scoped
+  unordered conflicts with no element inside their selected loop are ignored
+  with warnings. Unsupported or unresolvable conflicts only lose precision and
+  never tighten the bound incorrectly.
 - Infeasible-path constraints are enforced by IPET only. `longest-path`
   records them but remains a conservative overestimate and emits a caveat.
   A conflict that contradicts the CFG or other facts can make the IPET model
