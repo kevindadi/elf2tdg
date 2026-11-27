@@ -370,7 +370,7 @@ fn analyze_program_impl(
     }
     if facts.has_infeasible_paths() {
         info.caveats.push(
-            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks inside elements in the selected iteration and outside elements across the invocation; last-iteration paths defer a completed iteration at a backedge until the loop exits and outside elements may complete the conflict afterwards. An all-iteration unordered conflict keeps the common-loop aggregate when available, otherwise a presence product resets inside elements per iteration and retains outside elements across the invocation. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Unordered cross-function conflicts are not enforced. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
+            "Infeasible-path conflicts use aggregate constraints when their scope is unordered and structurally enforceable; same-function unordered conflicts without a linear structural form (mixed loop/non-loop, nested or disjoint loops) use binary presence indicators at function scope so a repeated loop element counts as one present element. A same-function unordered conflict with a numeric or last iteration scope uses a loop product that tracks inside elements in the selected iteration and outside elements across the invocation; last-iteration paths defer a completed iteration at a backedge until the loop exits and outside elements may complete the conflict afterwards. An all-iteration unordered conflict keeps the common-loop aggregate when available, otherwise a presence product resets inside elements per iteration and retains outside elements across the invocation. Cross-function unordered conflicts use function-scope presence for caller elements and non-empty call groups; a group is present only when all its callee elements occur in one callee invocation, and loop- or iteration-scoped cross-function unordered forms remain unsupported. Ordered conflicts use aggregate reduction when reachability forces the order, otherwise a product sequence-progress automaton for function, loop or per-iteration scope. A numeric iteration scope selects one 1-based iteration, and -1 selects the last iteration. Nested loop contexts select the innermost declared loop containing all caller events; mixed loop/non-loop ordering uses function scope unless a numeric, last or all-iteration scope keeps the selected loop. Cross-function ordered conflicts with one or more direct call groups inline the selected callees in the product and require each group's elements to match within one invocation; loop-scoped sequences reset on loop entry, or on every backedge for iteration scope. The callee summary remains the cost bound. Nested-group, duplicate-edge and ambiguous call-site conflicts are skipped with warnings, and automaton state-cap overflow makes the function unknown."
                 .to_owned(),
         );
     }
@@ -569,6 +569,7 @@ fn solve_function(
         .filter(|cross| specific_iteration_possible(cfg, facts, scope, cross))
         .collect();
     let presence = presence_automata(cfg, facts, function_id, scope);
+    let cross_unordered = cross_unordered_function_constraints(facts, function_id, scope);
     let pipeline_stalls = pipeline_edge_stalls(program, cfg);
     let cache_ccg = ccg::build(program, cfg, reachable_nodes)
         .filter(|model| model.variable_count() <= MAX_MODEL_VARIABLES / 2);
@@ -589,7 +590,7 @@ fn solve_function(
         .iter()
         .any(|node| cfg.graph[*node].terminator == crate::cfg::CfgTerminator::Return);
     let ras_model = build_ras_ipet_model(program, cfg, reachable_nodes);
-    if !cross.is_empty() {
+    if !cross.is_empty() || !cross_unordered.is_empty() {
         let mut outcome = solve_function_with_cross_function_automata(
             program,
             cfg,
@@ -603,6 +604,7 @@ fn solve_function(
             &automata,
             &presence,
             &cross,
+            &cross_unordered,
             &pipeline_stalls,
             &cache_persistence,
             cache_ccg.as_ref(),
@@ -1035,7 +1037,8 @@ fn partition_facts_supported(
                 conflict.cross_function.is_none()
                     && !matches!(conflict.scope, Some(InfeasibleScope::CrossFunction))
             }
-            InfeasibleEnforcement::PresenceAutomaton { .. } => false,
+            InfeasibleEnforcement::PresenceAutomaton { .. }
+            | InfeasibleEnforcement::CrossUnorderedPresence => false,
             InfeasibleEnforcement::Automaton { .. } => {
                 allow_ordered_automata
                     && conflict.ordered
@@ -1146,9 +1149,9 @@ fn non_loop_fact_blocks(
             InfeasibleEnforcement::CrossFunctionAutomaton => {
                 conflict.cross_function.as_ref().map(|cross| &cross.reset)
             }
-            InfeasibleEnforcement::PresenceAutomaton { .. } | InfeasibleEnforcement::Aggregate => {
-                None
-            }
+            InfeasibleEnforcement::PresenceAutomaton { .. }
+            | InfeasibleEnforcement::CrossUnorderedPresence
+            | InfeasibleEnforcement::Aggregate => None,
         };
         if let Some(
             OrderedReset::LoopEntry { header }
@@ -1356,6 +1359,7 @@ fn try_solve_partitioned(
                 &automata,
                 &[],
                 &cross,
+                &[],
                 &BTreeMap::new(),
                 &CachePersistenceModels::default(),
                 None,
@@ -2578,6 +2582,31 @@ fn cross_function_constraints<'a>(
                 || !matches!(
                     conflict.enforcement,
                     InfeasibleEnforcement::CrossFunctionAutomaton
+                )
+                || conflict.function.as_ref() != Some(function_id)
+                || !scope.matches(&conflict.context)
+            {
+                return None;
+            }
+            conflict.cross_function.as_ref()
+        })
+        .collect()
+}
+
+fn cross_unordered_function_constraints<'a>(
+    facts: &'a FlowFacts,
+    function_id: &FunctionId,
+    scope: FactScope<'_>,
+) -> Vec<&'a CrossFunctionConstraint> {
+    facts
+        .infeasible_paths()
+        .iter()
+        .filter_map(|conflict| {
+            if !conflict.applied
+                || conflict.ordered
+                || !matches!(
+                    conflict.enforcement,
+                    InfeasibleEnforcement::CrossUnorderedPresence
                 )
                 || conflict.function.as_ref() != Some(function_id)
                 || !scope.matches(&conflict.context)
@@ -3879,6 +3908,8 @@ struct ModelGraph {
     enter_edges: Vec<usize>,
     /// One spec id per `<call>` group, in pattern order.
     constraint_groups: Vec<Vec<usize>>,
+    /// One spec id per unordered cross-function group, in constraint order.
+    unordered_groups: Vec<Vec<usize>>,
     outgoing: Vec<Vec<usize>>,
 }
 
@@ -3946,6 +3977,67 @@ struct CrossGroupModel {
     call: usize,
     start: usize,
     len: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CrossUnorderedGroupModel {
+    spec: usize,
+    elements: Vec<InfeasibleElement>,
+    full: Vec<u64>,
+}
+
+impl CrossUnorderedGroupModel {
+    fn zero_mask(&self) -> Vec<u64> {
+        vec![0; self.elements.len().div_ceil(64)]
+    }
+
+    fn mask_full(&self, mask: &[u64]) -> bool {
+        mask == self.full.as_slice()
+    }
+
+    fn apply(&self, element: &InfeasibleElement, mask: &mut [u64]) {
+        if let Some(index) = self
+            .elements
+            .iter()
+            .position(|candidate| candidate == element)
+        {
+            mask[index / 64] |= 1_u64 << (index % 64);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CrossUnorderedModel {
+    caller_elements: Vec<InfeasibleElement>,
+    caller_full: Vec<u64>,
+    groups: Vec<CrossUnorderedGroupModel>,
+}
+
+impl CrossUnorderedModel {
+    fn zero_caller_mask(&self) -> Vec<u64> {
+        vec![0; self.caller_elements.len().div_ceil(64)]
+    }
+
+    fn caller_complete(&self, mask: &[u64]) -> bool {
+        mask == self.caller_full.as_slice()
+    }
+
+    fn caller_apply(&self, element: &InfeasibleElement, mask: &mut [u64]) {
+        if let Some(index) = self
+            .caller_elements
+            .iter()
+            .position(|candidate| candidate == element)
+        {
+            mask[index / 64] |= 1_u64 << (index % 64);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CrossUnorderedState {
+    caller: Vec<u64>,
+    group_masks: Vec<Vec<u64>>,
+    group_present: Vec<bool>,
 }
 
 struct CrossAutomatonModel {
@@ -4294,11 +4386,18 @@ fn build_cross_model(
     function_id: &FunctionId,
     scope: FactScope<'_>,
     cross: &[&CrossFunctionConstraint],
+    unordered: &[&CrossFunctionConstraint],
 ) -> Result<ModelGraph, IpetError> {
     let mut specs: Vec<InlineCallSpec> = Vec::new();
     let mut spec_by_key: BTreeMap<(NodeIndex, EdgeIndex, FunctionId), usize> = BTreeMap::new();
     let mut constraint_groups: Vec<Vec<usize>> = Vec::with_capacity(cross.len());
-    for constraint in cross {
+    let mut unordered_groups: Vec<Vec<usize>> = Vec::with_capacity(unordered.len());
+    let all_constraints: Vec<(&CrossFunctionConstraint, bool)> = cross
+        .iter()
+        .map(|constraint| (*constraint, true))
+        .chain(unordered.iter().map(|constraint| (*constraint, false)))
+        .collect();
+    for (constraint, ordered) in all_constraints {
         let mut group_specs = Vec::with_capacity(constraint.groups.len());
         for group in &constraint.groups {
             let caller_block = caller_node_by_block(cfg, &group.call_block).ok_or_else(|| {
@@ -4372,7 +4471,11 @@ fn build_cross_model(
                 "cross-function-groups-missing".to_owned(),
             ));
         }
-        constraint_groups.push(group_specs);
+        if ordered {
+            constraint_groups.push(group_specs);
+        } else {
+            unordered_groups.push(group_specs);
+        }
     }
 
     let mut nodes = Vec::new();
@@ -4542,6 +4645,7 @@ fn build_cross_model(
         callee_edge_models,
         enter_edges,
         constraint_groups,
+        unordered_groups,
         outgoing,
     })
 }
@@ -4966,10 +5070,182 @@ fn advance_presence_on_model(
     }
 }
 
+fn cross_unordered_models(
+    model: &ModelGraph,
+    constraints: &[&CrossFunctionConstraint],
+) -> Result<Vec<CrossUnorderedModel>, IpetError> {
+    if model.unordered_groups.len() != constraints.len() {
+        return Err(IpetError::Unknown("cross-unordered-model".to_owned()));
+    }
+    constraints
+        .iter()
+        .zip(&model.unordered_groups)
+        .map(|(constraint, specs)| {
+            if specs.len() != constraint.groups.len() {
+                return Err(IpetError::Unknown("cross-unordered-groups".to_owned()));
+            }
+            let caller_elements: Vec<InfeasibleElement> = constraint
+                .pattern
+                .iter()
+                .filter_map(|slot| match slot {
+                    CrossFunctionSlot::Caller(element) => Some(element.clone()),
+                    CrossFunctionSlot::Callee(_) => None,
+                })
+                .collect();
+            let mut caller_full = vec![0_u64; caller_elements.len().div_ceil(64)];
+            for index in 0..caller_elements.len() {
+                caller_full[index / 64] |= 1_u64 << (index % 64);
+            }
+            let mut groups = Vec::with_capacity(constraint.groups.len());
+            for (group, &spec) in constraint.groups.iter().zip(specs) {
+                let start = group.slot_start;
+                let end = start.saturating_add(group.slot_len);
+                if group.slot_len == 0 || end > constraint.pattern.len() {
+                    return Err(IpetError::Unknown(
+                        "cross-unordered-pattern-order".to_owned(),
+                    ));
+                }
+                let elements: Vec<InfeasibleElement> = constraint.pattern[start..end]
+                    .iter()
+                    .filter_map(|slot| match slot {
+                        CrossFunctionSlot::Callee(element) => Some(element.clone()),
+                        CrossFunctionSlot::Caller(_) => None,
+                    })
+                    .collect();
+                if elements.is_empty() {
+                    return Err(IpetError::Unknown(
+                        "cross-unordered-pattern-order".to_owned(),
+                    ));
+                }
+                let mut full = vec![0_u64; elements.len().div_ceil(64)];
+                for index in 0..elements.len() {
+                    full[index / 64] |= 1_u64 << (index % 64);
+                }
+                groups.push(CrossUnorderedGroupModel {
+                    spec,
+                    elements,
+                    full,
+                });
+            }
+            Ok(CrossUnorderedModel {
+                caller_elements,
+                caller_full,
+                groups,
+            })
+        })
+        .collect()
+}
+
+fn initial_cross_unordered_progress(
+    models: &[CrossUnorderedModel],
+    entry_block: &BlockId,
+) -> Vec<CrossUnorderedState> {
+    models
+        .iter()
+        .map(|model| {
+            let mut caller = model.zero_caller_mask();
+            model.caller_apply(
+                &InfeasibleElement::Block {
+                    block: entry_block.clone(),
+                },
+                &mut caller,
+            );
+            CrossUnorderedState {
+                caller,
+                group_masks: model
+                    .groups
+                    .iter()
+                    .map(CrossUnorderedGroupModel::zero_mask)
+                    .collect(),
+                group_present: vec![false; model.groups.len()],
+            }
+        })
+        .collect()
+}
+
+fn advance_cross_unordered(
+    model: &ModelGraph,
+    program: &ProgramCfg,
+    cfg: &FunctionCfg,
+    runtimes: &[CrossUnorderedModel],
+    states: &[CrossUnorderedState],
+    edge: &ModelEdge,
+) -> Option<Vec<CrossUnorderedState>> {
+    let mut next = Vec::with_capacity(runtimes.len());
+    for (index, runtime) in runtimes.iter().enumerate() {
+        let mut state = states[index].clone();
+        if matches!(edge.kind, ModelEdgeKind::Caller | ModelEdgeKind::ReturnCall) {
+            let (_, target) = cfg
+                .graph
+                .edge_endpoints(edge.original)
+                .expect("model graph caller edge endpoint");
+            runtime.caller_apply(&caller_edge_element(cfg, edge.original), &mut state.caller);
+            runtime.caller_apply(
+                &InfeasibleElement::Block {
+                    block: cfg.graph[target].id.clone(),
+                },
+                &mut state.caller,
+            );
+        }
+        if let Some(spec) = edge.call {
+            for (group_index, group) in runtime.groups.iter().enumerate() {
+                if group.spec != spec {
+                    continue;
+                }
+                match edge.kind {
+                    ModelEdgeKind::EnterCall => {
+                        state.group_masks[group_index] = group.zero_mask();
+                        group.apply(
+                            &InfeasibleElement::Block {
+                                block: model.nodes[edge.target].block.clone(),
+                            },
+                            &mut state.group_masks[group_index],
+                        );
+                    }
+                    ModelEdgeKind::CalleeEdge => {
+                        let call = model.specs.get(spec)?;
+                        let callee = program.functions.get(call.callee_index)?;
+                        let (_, target) = callee
+                            .cfg
+                            .graph
+                            .edge_endpoints(edge.original)
+                            .expect("model graph callee edge endpoint");
+                        group.apply(
+                            &callee_edge_element(&callee.cfg, edge.original),
+                            &mut state.group_masks[group_index],
+                        );
+                        group.apply(
+                            &InfeasibleElement::Block {
+                                block: callee.cfg.graph[target].id.clone(),
+                            },
+                            &mut state.group_masks[group_index],
+                        );
+                    }
+                    ModelEdgeKind::ReturnCall => {
+                        if group.mask_full(&state.group_masks[group_index]) {
+                            state.group_present[group_index] = true;
+                        }
+                        state.group_masks[group_index] = group.zero_mask();
+                    }
+                    ModelEdgeKind::Caller => {}
+                }
+            }
+        }
+        let complete = runtime.caller_complete(&state.caller)
+            && state.group_present.iter().all(|present| *present);
+        if complete {
+            return None;
+        }
+        next.push(state);
+    }
+    Some(next)
+}
+
 type CrossProductKey = (
     usize,
     Vec<AutomatonProgress>,
     Vec<PresenceState>,
+    Vec<CrossUnorderedState>,
     Vec<CrossState>,
 );
 
@@ -4977,6 +5253,7 @@ struct CrossProductNode {
     model: usize,
     existing: Vec<AutomatonProgress>,
     presence: Vec<PresenceState>,
+    unordered: Vec<CrossUnorderedState>,
     cross: Vec<CrossState>,
 }
 
@@ -4986,12 +5263,14 @@ struct CrossProductEdge {
     to: usize,
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_cross_product_graph(
     model: &ModelGraph,
     program: &ProgramCfg,
     cfg: &FunctionCfg,
     runtimes: &[AutomatonRuntime],
     presence_runtimes: &[PresenceRuntime],
+    unordered_models: &[CrossUnorderedModel],
     automata: &[CrossAutomatonModel],
 ) -> Result<(Vec<CrossProductNode>, Vec<CrossProductEdge>), IpetError> {
     let entry_block = model.nodes[model.entry].block.clone();
@@ -5001,6 +5280,7 @@ fn build_cross_product_graph(
     let Some(start_presence) = initial_presence_progress(presence_runtimes, &entry_block) else {
         return Err(IpetError::Unknown("infeasible-presence-entry".to_owned()));
     };
+    let start_unordered = initial_cross_unordered_progress(unordered_models, &entry_block);
     let mut start_cross = Vec::with_capacity(automata.len());
     for automaton in automata {
         let Some(state) = initial_cross_state(automaton, &entry_block) else {
@@ -5013,10 +5293,17 @@ fn build_cross_product_graph(
         model: model.entry,
         existing: start_existing.clone(),
         presence: start_presence.clone(),
+        unordered: start_unordered.clone(),
         cross: start_cross.clone(),
     }];
     index_by_key.insert(
-        (model.entry, start_existing, start_presence, start_cross),
+        (
+            model.entry,
+            start_existing,
+            start_presence,
+            start_unordered,
+            start_cross,
+        ),
         0,
     );
     let mut edges = Vec::new();
@@ -5025,6 +5312,7 @@ fn build_cross_product_graph(
         let source_model = nodes[from].model;
         let existing = nodes[from].existing.clone();
         let presence = nodes[from].presence.clone();
+        let unordered = nodes[from].unordered.clone();
         let cross = nodes[from].cross.clone();
         for &model_edge in &model.outgoing[source_model] {
             let edge = &model.edges[model_edge];
@@ -5034,6 +5322,11 @@ fn build_cross_product_graph(
             };
             let Some(next_presence) =
                 advance_presence_on_model(cfg, presence_runtimes, &presence, edge)
+            else {
+                continue;
+            };
+            let Some(next_unordered) =
+                advance_cross_unordered(model, program, cfg, unordered_models, &unordered, edge)
             else {
                 continue;
             };
@@ -5055,6 +5348,7 @@ fn build_cross_product_graph(
                 edge.target,
                 next_existing.clone(),
                 next_presence.clone(),
+                next_unordered.clone(),
                 next_cross.clone(),
             );
             let to = if let Some(&index) = index_by_key.get(&key) {
@@ -5068,6 +5362,7 @@ fn build_cross_product_graph(
                     model: edge.target,
                     existing: next_existing,
                     presence: next_presence,
+                    unordered: next_unordered,
                     cross: next_cross,
                 });
                 index_by_key.insert(key, index);
@@ -5220,6 +5515,7 @@ fn solve_function_with_cross_function_automata(
     automata: &[OrderedAutomaton],
     presence: &[PresenceAutomaton],
     cross: &[&CrossFunctionConstraint],
+    unordered: &[&CrossFunctionConstraint],
     pipeline_stalls: &BTreeMap<EdgeIndex, f64>,
     cache_persistence: &CachePersistenceModels,
     cache_ccg: Option<&CcgModel>,
@@ -5234,10 +5530,12 @@ fn solve_function_with_cross_function_automata(
         function_id,
         scope,
         cross,
+        unordered,
     )?;
     let runtimes = automaton_runtimes(cfg, automata)?;
     let presence_runtimes = presence_runtimes(cfg, presence)?;
     let cross_automata = cross_automaton_models(&model, cfg, cross)?;
+    let unordered_models = cross_unordered_models(&model, unordered)?;
     let model_loops = build_model_loops(&model, loops);
     let nonexit_headers: BTreeSet<usize> = loops
         .iter()
@@ -5250,6 +5548,7 @@ fn solve_function_with_cross_function_automata(
         cfg,
         &runtimes,
         &presence_runtimes,
+        &unordered_models,
         &cross_automata,
     )?;
     let (product_nodes, product_edges) =
@@ -10184,6 +10483,7 @@ max_states = 16
             &caller.id,
             scope,
             &cross,
+            &[],
         )
         .expect("cross model");
         let automaton = super::cross_automaton_models(&model, &caller.cfg, &cross)
@@ -12791,6 +13091,7 @@ max_states = 16
             &caller.id,
             scope,
             &cross,
+            &[],
         )
         .expect("cross model");
         let automata =
@@ -14234,8 +14535,151 @@ max_states = 1
     }
 
     #[test]
-    fn unordered_cross_function_conflicts_are_ignored() {
+    fn cross_function_unordered_group_must_match_one_invocation() {
+        let program = two_call_branching_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0x1000"/>
+      <call name="helper" address="0x1002">
+        <block address="0x2004"/>
+        <block address="0x2006"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert_eq!(
+            constrained, baseline,
+            "callee elements in alternative branches cannot complete one invocation"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossUnorderedPresence
+        ));
+    }
+
+    #[test]
+    fn cross_function_unordered_multiple_groups_require_all_calls() {
+        let program = multi_group_cross_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <call name="helper" address="0xa012">
+        <block address="0xb002"/>
+      </call>
+      <call name="helper" address="0xa016">
+        <block address="0xb002"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            constrained < baseline,
+            "both call groups together must be infeasible: {constrained} < {baseline}"
+        );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossUnorderedPresence
+        ));
+        assert_eq!(
+            conflict
+                .cross_function
+                .as_ref()
+                .map(|cross| cross.groups.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn loop_scoped_cross_function_unordered_conflicts_are_ignored() {
+        let program = loop_cross_partition_program();
+        let baseline = analyze_baseline_for(&program, 0xc000);
+        let (constrained, facts) = analyze_with_for(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <loop address="0xc010">
+      <conflict>
+        <block address="0xc010"/>
+        <call name="helper">
+          <block address="0x9000"/>
+        </call>
+      </conflict>
+    </loop>
+  </function>
+</flowfacts>
+"#,
+            0xc000,
+        );
+        assert_eq!(constrained, baseline);
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(!conflict.applied);
+        assert!(
+            conflict
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("loop- or iteration-scoped"))
+        );
+    }
+
+    #[test]
+    fn cross_function_unordered_coexists_with_ordered_cross_facts() {
         let program = branch_caller_program();
+        let baseline = analyze_baseline(&program);
+        let (constrained, facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict ordered="yes">
+      <block address="0x1004"/>
+      <call name="helper">
+        <block address="0x2002"/>
+      </call>
+    </conflict>
+    <conflict>
+      <block address="0x1008"/>
+      <call name="helper">
+        <block address="0x2002"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(constrained < baseline);
+        assert_eq!(facts.infeasible_paths().len(), 2);
+        assert!(facts.infeasible_paths().iter().any(|conflict| matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossFunctionAutomaton
+        )));
+        assert!(facts.infeasible_paths().iter().any(|conflict| matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossUnorderedPresence
+        )));
+    }
+
+    #[test]
+    fn cross_function_unordered_presence_prunes_caller_paths() {
+        let program = branch_caller_program();
+        let baseline = analyze_baseline(&program);
         let (constrained, facts) = analyze_with(
             &program,
             r#"
@@ -14251,14 +14695,66 @@ max_states = 1
 </flowfacts>
 "#,
         );
-        assert_eq!(constrained, 63.0);
-        let conflict = &facts.infeasible_paths()[0];
-        assert!(!conflict.applied);
         assert!(
-            conflict
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("ordered=\"yes\""))
+            constrained < baseline,
+            "caller presence and a matching callee group must be exclusive: \
+             {constrained} < {baseline}"
         );
+        let conflict = &facts.infeasible_paths()[0];
+        assert!(conflict.applied);
+        assert!(matches!(
+            conflict.enforcement,
+            InfeasibleEnforcement::CrossUnorderedPresence
+        ));
+        assert_eq!(conflict.scope, Some(InfeasibleScope::CrossFunction));
+        assert_eq!(
+            facts.info().conflicts[0].scope.as_deref(),
+            Some("cross-function")
+        );
+        assert_eq!(facts.info().conflicts[0].mode.as_deref(), Some("automaton"));
+        assert_eq!(facts.info().conflicts[0].iteration, None);
+
+        let (after_call, after_facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0x1008"/>
+      <call name="helper">
+        <block address="0x2002"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            after_call < baseline,
+            "the call continuation must join the caller presence set: \
+             {after_call} < {baseline}"
+        );
+        assert!(after_facts.infeasible_paths()[0].applied);
+
+        let (entry, entry_facts) = analyze_with(
+            &program,
+            r#"
+<flowfacts>
+  <function name="main">
+    <conflict>
+      <block address="0x1004"/>
+      <call name="helper">
+        <block address="0x2000"/>
+      </call>
+    </conflict>
+  </function>
+</flowfacts>
+"#,
+        );
+        assert!(
+            entry < baseline,
+            "a callee entry block must count as group presence: {entry} < {baseline}"
+        );
+        assert!(entry_facts.infeasible_paths()[0].applied);
     }
 }

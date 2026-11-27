@@ -522,6 +522,7 @@ impl FlowFacts {
                             .as_ref()
                             .and_then(|cross| cross.specific_iteration),
                         InfeasibleEnforcement::Automaton { .. }
+                        | InfeasibleEnforcement::CrossUnorderedPresence
                         | InfeasibleEnforcement::Aggregate => None,
                     }
                     .map(|iteration| match iteration {
@@ -537,7 +538,8 @@ impl FlowFacts {
                                 InfeasibleEnforcement::Aggregate => "aggregate",
                                 InfeasibleEnforcement::Automaton { .. }
                                 | InfeasibleEnforcement::PresenceAutomaton { .. }
-                                | InfeasibleEnforcement::CrossFunctionAutomaton => "automaton",
+                                | InfeasibleEnforcement::CrossFunctionAutomaton
+                                | InfeasibleEnforcement::CrossUnorderedPresence => "automaton",
                             }
                             .to_owned()
                         }),
@@ -1056,6 +1058,9 @@ pub(crate) enum InfeasibleEnforcement {
     },
     /// Product IPET with the selected call groups inlined for the conflict.
     CrossFunctionAutomaton,
+    /// Product IPET with the selected call groups inlined and presence tracked
+    /// for an unordered cross-function conflict.
+    CrossUnorderedPresence,
 }
 
 /// Where an ordered-conflict automaton resets its progress.
@@ -1480,12 +1485,6 @@ fn resolve_cross_function_conflict(
     origin: &str,
     warnings: &mut Vec<String>,
 ) -> Result<InfeasiblePathConstraint, String> {
-    if !fact.ordered {
-        record.reason = Some(format!(
-            "{origin}: cross-function conflicts are supported only with ordered=\"yes\"; conflict ignored"
-        ));
-        return Ok(record);
-    }
     if fact
         .elements
         .iter()
@@ -1562,7 +1561,7 @@ fn resolve_cross_function_conflict(
                     if !seen_group.insert(resolved.clone()) {
                         record.elements = flatten_pattern(&pattern);
                         record.reason = Some(format!(
-                            "{origin}: ordered conflict repeats an element; conflict ignored"
+                            "{origin}: cross-function conflict repeats an element; conflict ignored"
                         ));
                         return Ok(record);
                     }
@@ -1592,7 +1591,7 @@ fn resolve_cross_function_conflict(
                 if !seen.insert(resolved.clone()) {
                     record.elements = flatten_pattern(&pattern);
                     record.reason = Some(format!(
-                        "{origin}: ordered conflict repeats an element; conflict ignored"
+                        "{origin}: cross-function conflict repeats an element; conflict ignored"
                     ));
                     return Ok(record);
                 }
@@ -1601,6 +1600,42 @@ fn resolve_cross_function_conflict(
         }
     }
     record.elements = flatten_pattern(&pattern);
+    if !fact.ordered {
+        if fact.iteration.is_iteration() || fact.loop_context.is_some() {
+            record.reason = Some(format!(
+                "{origin}: loop- or iteration-scoped cross-function unordered conflicts are not supported; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        if groups.iter().any(|group| group.slot_len == 0) {
+            record.reason = Some(format!(
+                "{origin}: cross-function unordered conflict has an empty call group; conflict ignored"
+            ));
+            return Ok(record);
+        }
+        let Some(first) = groups.first() else {
+            record.reason = Some(format!(
+                "{origin}: cross-function unordered conflict has no call group; conflict ignored"
+            ));
+            return Ok(record);
+        };
+        record.scope = Some(InfeasibleScope::CrossFunction);
+        record.enforcement = InfeasibleEnforcement::CrossUnorderedPresence;
+        record.cross_function = Some(CrossFunctionConstraint {
+            caller: function.id.clone(),
+            callee: first.callee.clone(),
+            call_block: first.call_block.clone(),
+            call_site: first.call_site,
+            continuation: first.continuation.clone(),
+            call_return: first.call_return.clone(),
+            groups,
+            reset: OrderedReset::Function,
+            specific_iteration: None,
+            pattern,
+        });
+        record.applied = true;
+        return Ok(record);
+    }
     let mut scope_elements: Vec<InfeasibleElement> = pattern
         .iter()
         .filter_map(|slot| match slot {
