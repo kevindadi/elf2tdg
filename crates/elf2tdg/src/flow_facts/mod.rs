@@ -1644,29 +1644,63 @@ fn resolve_cross_function_conflict(
         let (loop_header, specific_iteration) = if let Some(iteration) = specific_iteration {
             let scope = match declared_loop_scope(program, function, fact, &scope_elements, origin)?
             {
-                DeclaredLoopOutcome::Selected(scope) => scope,
+                DeclaredLoopOutcome::Selected(scope)
+                | DeclaredLoopOutcome::SpecificMixed(scope) => scope,
                 DeclaredLoopOutcome::Ignore(reason) => {
                     record.reason = Some(format!("{origin}: {reason}; conflict ignored"));
                     return Ok(record);
                 }
                 DeclaredLoopOutcome::None
                 | DeclaredLoopOutcome::Mixed
-                | DeclaredLoopOutcome::SpecificMixed(_)
                 | DeclaredLoopOutcome::AllMixed(_) => {
                     record.reason = Some(format!(
-                        "{origin}: specific-iteration cross-function unordered conflict has an element outside the selected loop; conflict ignored"
+                        "{origin}: specific-iteration cross-function unordered conflict has no selected loop; conflict ignored"
                     ));
                     return Ok(record);
                 }
             };
+            let group_inside = |group: &CrossFunctionGroup| {
+                let call_block = scope.blocks.contains(&group.call_block);
+                let continuation = scope.blocks.contains(&group.continuation);
+                let call_return = element_within_loop(&group.call_return, &scope.blocks);
+                let count =
+                    usize::from(call_block) + usize::from(continuation) + usize::from(call_return);
+                match count {
+                    0 | 3 => Ok(count == 3),
+                    _ => Err(()),
+                }
+            };
+            let mut group_inside_flags = Vec::with_capacity(groups.len());
+            for group in &groups {
+                if let Ok(inside) = group_inside(group) {
+                    group_inside_flags.push(inside);
+                } else {
+                    record.reason = Some(format!(
+                        "{origin}: specific-iteration cross-function unordered call group straddles the selected loop boundary; conflict ignored"
+                    ));
+                    return Ok(record);
+                }
+            }
+            let caller_inside = pattern.iter().any(|slot| {
+                matches!(slot, CrossFunctionSlot::Caller(element) if element_within_loop(element, &scope.blocks))
+            });
+            if !caller_inside && !group_inside_flags.iter().any(|inside| *inside) {
+                record.reason = Some(format!(
+                    "{origin}: specific-iteration cross-function unordered conflict has no element inside the selected loop; conflict ignored"
+                ));
+                return Ok(record);
+            }
             if pattern.iter().any(|slot| {
                 matches!(slot, CrossFunctionSlot::Caller(InfeasibleElement::Edge { source, target, .. })
                     if scope.backedges.contains(&(source.clone(), target.clone())))
-            }) || groups.iter().any(|group| match &group.call_return {
-                InfeasibleElement::Edge { source, target, .. } => {
-                    scope.backedges.contains(&(source.clone(), target.clone()))
-                }
-                InfeasibleElement::Block { .. } => false,
+            }) || groups.iter().zip(&group_inside_flags).any(|(group, inside)| {
+                *inside
+                    && match &group.call_return {
+                        InfeasibleElement::Edge { source, target, .. } => {
+                            scope.backedges.contains(&(source.clone(), target.clone()))
+                        }
+                        InfeasibleElement::Block { .. } => false,
+                    }
             }) {
                 record.reason = Some(format!(
                     "{origin}: specific-iteration cross-function unordered conflict contains a loop-backedge element; conflict ignored"
